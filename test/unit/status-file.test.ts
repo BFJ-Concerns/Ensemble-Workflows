@@ -105,7 +105,7 @@ test("every published snapshot carries the writer's own liveness evidence and th
   try {
     const raw = await waitForFile(writer.path);
     const published = JSON.parse(raw) as { schema: number; owner?: { host: string; pid: number; start_ticks: string | null } };
-    assert.equal(published.schema, 2);
+    assert.equal(published.schema, 3);
     // The pid + start-ticks discipline the archive manifest's owner block
     // uses: a poller refutes a snapshot a killed run left behind instead of
     // trusting cleanup-by-cooperation.

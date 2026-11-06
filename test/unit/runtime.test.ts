@@ -4708,7 +4708,7 @@ test("held turns retain independent spend and reject stale observer callbacks", 
 
 for (const engine of ["claude", "codex"] as const) {
   test(`${engine} live status names the archive's published readable transcript`, async () => {
-    const store = await mkdtemp("/mnt/ai-data/scratch/ensemble-status-transcript-");
+    const store = await mkdtemp(path.join(tmpdir(), "ensemble-status-transcript-"));
     let release!: () => void;
     let observed!: () => void;
     const waiting = new Promise<void>((resolve) => { release = resolve; });
@@ -4795,5 +4795,41 @@ test("same-engine fallback starts fresh output evidence while retaining the requ
     assert.equal(finished.resolvedModel, "served-fallback");
     assert.equal(runtime.progress.snapshot().totals.active, 0);
     assert.equal(runtime.progress.snapshot().totals.done, 1);
+  } finally { await runtime.close(); }
+});
+
+
+test("streamed usage survives a thrown attempt and accumulates on its retry", async () => {
+  const observations: Array<number | null> = [];
+  let calls = 0;
+  class UsageEngine extends ChainEngine {
+    override createInvocation(): EngineInvocation {
+      return { runAttempt: async (context) => {
+        calls += 1;
+        const amount = calls === 1 ? 50_000 : 10_000;
+        const event = { threadId: "usage", turnId: String(calls), last: usage(amount), total: usage(amount), raw: {} };
+        context.onUsage?.(event);
+        observations.push(runtime.progress.snapshot().agents[0]!.spent);
+        if (calls === 1) throw new Error("transport closed after usage");
+        return { ...turn("answer"), tokenUsageEvents: [event] };
+      } };
+    }
+  }
+  const { runtime, records } = chainRuntime([new UsageEngine("codex", [])], 2);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex" }), "answer");
+    assert.deepEqual(observations, [50_000, 60_000]);
+    assert.equal(runtime.progress.snapshot().agents[0]!.spent, 60_000);
+    assert.deepEqual(records.at(-1)?.attempts.map((attempt) => attempt.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0)), [50_000, 10_000]);
+  } finally { await runtime.close(); }
+});
+
+test("invalid observed usage cannot replace a successful attempt outcome", async () => {
+  const event = { threadId: "invalid", turnId: "1", last: usage(-1), total: usage(-1), raw: {} };
+  const { runtime } = chainRuntime([new ChainEngine("codex", [async () => ({ ...turn("answer"), tokenUsageEvents: [event] })])], 1);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex" }), "answer");
+    assert.equal(runtime.progress.snapshot().agents[0]!.state, "done");
+    assert.equal(runtime.progress.snapshot().agents[0]!.spent, null);
   } finally { await runtime.close(); }
 });

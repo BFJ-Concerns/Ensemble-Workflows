@@ -18266,6 +18266,8 @@ var ClaudeEngineInvocation = class {
   #blockedRecoveryBound;
   #namePrefix;
   #handle = null;
+  #resolvedModel = null;
+  #resolvedEffort = null;
   #budgetEventCounter = 0;
   #abortController = new AbortController();
   #closed = false;
@@ -18304,13 +18306,29 @@ var ClaudeEngineInvocation = class {
     };
   }
   runAttempt(context) {
-    const settlement = this.#runAttempt(context);
+    const settlement = this.#runAttempt(context).then(
+      (result) => this.#withObservedIdentity(result),
+      (error) => {
+        const failed = failedTurnResultOf(error);
+        if (error instanceof Error && failed !== null) {
+          attachFailedTurnResult(error, this.#withObservedIdentity(failed));
+        }
+        throw error;
+      }
+    );
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#settlement === settlement) {
         this.#settlement = null;
       }
     });
+  }
+  #withObservedIdentity(result) {
+    return {
+      ...result,
+      ...result.resolvedModel === void 0 && this.#resolvedModel !== null ? { resolvedModel: this.#resolvedModel } : {},
+      ...result.resolvedEffort === void 0 && this.#resolvedEffort !== null ? { resolvedEffort: this.#resolvedEffort } : {}
+    };
   }
   async #runAttempt(context) {
     this.#assertOpen();
@@ -18372,6 +18390,12 @@ var ClaudeEngineInvocation = class {
     await this.#closePromise;
   }
   async #dispatchAndCollect(previousFailure, observers) {
+    this.#resolvedModel = null;
+    this.#resolvedEffort = null;
+    try {
+      observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null });
+    } catch {
+    }
     const denyRules = permissionDenyRulesFor(this.#options.strip);
     const handle = await this.#controlPlane.dispatch({
       prompt: this.#buildDispatchPrompt(previousFailure),
@@ -18507,10 +18531,9 @@ var ClaudeEngineInvocation = class {
         sawLife = true;
         this.#reportUsage(handle, transcript.entries, fromIndex, observers);
         try {
-          observers.onIdentity?.({
-            resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
-            resolvedEffort: effortSince(transcript.entries, fromIndex)
-          });
+          this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
+          this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
+          observers.onIdentity?.({ resolvedModel: this.#resolvedModel, resolvedEffort: this.#resolvedEffort });
           const evidence = JSON.stringify(transcript.entries.slice(fromIndex).filter((entry) => entry.type === "assistant"));
           if (evidence !== assistantEvidence && hasAssistantEntrySince(transcript.entries, fromIndex)) {
             assistantEvidence = evidence;
@@ -19204,7 +19227,7 @@ var RunProgress = class {
       totals.failed += counters.failed;
     }
     return {
-      schema: 2,
+      schema: 3,
       runId: this.runId,
       pid: this.#pid,
       archiveDir: this.#archiveDir,
@@ -19216,11 +19239,11 @@ var RunProgress = class {
       currentPhase: this.#currentPhase,
       totals,
       engines,
-      agents: this.#liveAgents(),
+      agents: this.#agents(),
       holds: [...this.#openHolds.values()]
     };
   }
-  #liveAgents() {
+  #agents() {
     const records = [...this.#live.values(), ...this.#finished.values()];
     records.sort((a, b) => rank(a.state) - rank(b.state) || (rank(a.state) === 2 ? b.id - a.id : a.id - b.id));
     return records.slice(0, MAX_AGENTS_IN_SNAPSHOT).map((record) => ({
@@ -23006,6 +23029,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const record = this.#unsettledAgentRecords.get(agentId)?.record;
     const previousSpend = record?.attempts.flatMap((attempt) => attempt.tokenUsageEvents).reduce((sum, event) => sum + event.last.totalTokens, 0) ?? 0;
     let attemptSpend = 0;
+    const observedUsage = [];
     let result;
     let active = true;
     let transcriptPath;
@@ -23020,7 +23044,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       await this.#recordArchiveWriteSafely(agentId, () => recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
     }
     this.progress.noteAgentTranscript(agentId, null);
-    if (record?.session === null) {
+    if (record?.session === null && engine !== "claude") {
       this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
     }
     try {
@@ -23040,6 +23064,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         },
         onUsage: (event) => {
           if (!active) return;
+          observedUsage.push(event);
           attemptSpend += event.last.totalTokens;
           this.progress.noteAgentSpend(agentId, previousSpend + attemptSpend);
         },
@@ -23071,20 +23096,37 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return result;
     } catch (error) {
       result = failedTurnResultOf(error) ?? void 0;
+      if (result === void 0 && error instanceof Error && observedUsage.length > 0) {
+        const transcript = partialTranscriptOf(error);
+        const text = partialWorkerTextOf(error) ?? "";
+        result = {
+          text,
+          deltaText: text,
+          durationMs: null,
+          firstDeltaMs: firstDeltaMsOf(error),
+          items: {},
+          tokenUsageEvents: observedUsage,
+          ...transcript === null ? {} : { transcripts: [transcript] }
+        };
+        attachFailedTurnResult(error, result);
+      }
       throw error;
     } finally {
       active = false;
       await Promise.all(pending);
-      if (result !== void 0) {
-        if (record !== void 0) {
-          this.progress.noteAgentIdentity(agentId, {
-            resolvedModel: result.resolvedModel ?? (record.session === null ? null : record.resolvedModel),
-            resolvedEffort: result.resolvedEffort ?? (record.session === null ? null : record.resolvedEffort)
-          });
+      try {
+        if (result !== void 0) {
+          if (record !== void 0) {
+            this.progress.noteAgentIdentity(agentId, {
+              resolvedModel: result.resolvedModel ?? (record.session === null ? null : record.resolvedModel),
+              resolvedEffort: result.resolvedEffort ?? (record.session === null ? null : record.resolvedEffort)
+            });
+          }
+          if (result.tokenUsageEvents.length > 0) {
+            this.progress.noteAgentSpend(agentId, previousSpend + result.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0));
+          }
         }
-        if (result.tokenUsageEvents.length > 0) {
-          this.progress.noteAgentSpend(agentId, previousSpend + result.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0));
-        }
+      } catch {
       }
     }
   }

@@ -84,11 +84,12 @@ export interface OpenHoldSnapshot {
 
 export interface ProgressSnapshot {
   /**
-   * Snapshot schema version. 2: one file per run in the status directory
+   * Snapshot schema version. 3 retains finished workers and their outcomes.
+   * 2: one file per run in the status directory
    * (`ensemble.<run-uuid>.local.json`), each carrying its writer's owner
    * evidence; 1 was the single-slot `ensemble.local.json`.
    */
-  schema: 2;
+  schema: 3;
   runId: string;
   pid: number;
   archiveDir: string | null;
@@ -463,7 +464,7 @@ export class RunProgress {
     }
 
     return {
-      schema: 2,
+      schema: 3,
       runId: this.runId,
       pid: this.#pid,
       archiveDir: this.#archiveDir,
@@ -475,14 +476,14 @@ export class RunProgress {
       currentPhase: this.#currentPhase,
       totals,
       engines,
-      agents: this.#liveAgents(),
+      agents: this.#agents(),
       holds: [...this.#openHolds.values()]
     };
   }
 
-  #liveAgents(): LiveAgentSnapshot[] {
+  #agents(): LiveAgentSnapshot[] {
     const records = [...this.#live.values(), ...this.#finished.values()];
-    // Running agents first, then the queued tail, capped for file size. The
+    // Running, queued, then retained finished workers, capped for file size. The
     // counts are never lost — `totals`/`engines` carry the full tally.
     records.sort((a, b) => rank(a.state) - rank(b.state) || (rank(a.state) === 2 ? b.id - a.id : a.id - b.id));
     return records.slice(0, MAX_AGENTS_IN_SNAPSHOT).map((record) => ({

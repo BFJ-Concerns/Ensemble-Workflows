@@ -29,6 +29,7 @@ import {
   TallyRejectedError,
   appServerDiagnosticOf,
   attachAgentIdentity,
+  attachFailedTurnResult,
   describeError,
   failedTurnResultOf,
   firstDeltaMsOf,
@@ -1680,6 +1681,7 @@ export class EnsembleRuntime {
     const previousSpend = record?.attempts.flatMap((attempt) => attempt.tokenUsageEvents)
       .reduce((sum, event) => sum + event.last.totalTokens, 0) ?? 0;
     let attemptSpend = 0;
+    const observedUsage: TokenUsageEvent[] = [];
     let result: EngineAttemptResult | undefined;
     let active = true;
     let transcriptPath: string | undefined;
@@ -1695,7 +1697,7 @@ export class EnsembleRuntime {
         recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
     }
     this.progress.noteAgentTranscript(agentId, null);
-    if (record?.session === null) {
+    if (record?.session === null && engine !== "claude") {
       this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
     }
     try {
@@ -1709,6 +1711,7 @@ export class EnsembleRuntime {
         },
         onUsage: (event) => {
           if (!active) return;
+          observedUsage.push(event);
           attemptSpend += event.last.totalTokens;
           this.progress.noteAgentSpend(agentId, previousSpend + attemptSpend);
         },
@@ -1740,24 +1743,36 @@ export class EnsembleRuntime {
       return result;
     } catch (error) {
       result = failedTurnResultOf(error) ?? undefined;
+      if (result === undefined && error instanceof Error && observedUsage.length > 0) {
+        const transcript = partialTranscriptOf(error);
+        const text = partialWorkerTextOf(error) ?? "";
+        result = {
+          text, deltaText: text, durationMs: null, firstDeltaMs: firstDeltaMsOf(error),
+          items: {}, tokenUsageEvents: observedUsage,
+          ...(transcript === null ? {} : { transcripts: [transcript] })
+        };
+        attachFailedTurnResult(error, result);
+      }
       throw error;
     } finally {
       active = false;
       await Promise.all(pending);
-      if (result !== undefined) {
-        if (record !== undefined) {
-          this.progress.noteAgentIdentity(agentId, {
-            resolvedModel: result.resolvedModel ?? (record.session === null ? null : record.resolvedModel),
-            resolvedEffort: result.resolvedEffort ?? (record.session === null ? null : record.resolvedEffort)
-          });
+      try {
+        if (result !== undefined) {
+          if (record !== undefined) {
+            this.progress.noteAgentIdentity(agentId, {
+              resolvedModel: result.resolvedModel ?? (record.session === null ? null : record.resolvedModel),
+              resolvedEffort: result.resolvedEffort ?? (record.session === null ? null : record.resolvedEffort)
+            });
+          }
+          // The final result is the archive's canonical per-attempt accounting.
+          // Replace the streamed subtotal instead of counting it twice.
+          if (result.tokenUsageEvents.length > 0) {
+            this.progress.noteAgentSpend(agentId, previousSpend + result.tokenUsageEvents
+              .reduce((sum, event) => sum + event.last.totalTokens, 0));
+          }
         }
-        // The final result is the archive's canonical per-attempt accounting.
-        // Replace the streamed subtotal instead of counting it twice.
-        if (result.tokenUsageEvents.length > 0) {
-          this.progress.noteAgentSpend(agentId, previousSpend + result.tokenUsageEvents
-            .reduce((sum, event) => sum + event.last.totalTokens, 0));
-        }
-      }
+      } catch { /* Observability cannot replace the attempt outcome. */ }
     }
   }
 
@@ -2793,8 +2808,8 @@ function rejectBlankHoldScope(holdScope: string | undefined): void {
 }
 
 function recordTurnMetadata(record: RuntimeAgentRecord, result: TurnResult): void {
-  // A one-shot retry opens a fresh worker. Absence on that attempt is not
-  // evidence that it reused the preceding worker's served identity.
+  // Engines that reuse a worker carry its observed identity on the result.
+  // A fresh worker's missing identity must not inherit an earlier worker's.
   if (result.resolvedModel !== undefined || record.session === null) {
     record.resolvedModel = result.resolvedModel ?? null;
   }

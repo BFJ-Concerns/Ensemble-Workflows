@@ -255,6 +255,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #namePrefix: string;
 
   #handle: ClaudeSessionHandle | null = null;
+  #resolvedModel: string | null = null;
+  #resolvedEffort: string | null = null;
   #budgetEventCounter = 0;
   #abortController = new AbortController();
   #closed = false;
@@ -299,13 +301,30 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     // close() must be able to await a live attempt so cancellation is not
     // "torn down under a caller still running": track the settlement.
-    const settlement = this.#runAttempt(context);
+    const settlement = this.#runAttempt(context).then(
+      (result) => this.#withObservedIdentity(result),
+      (error: unknown) => {
+        const failed = failedTurnResultOf(error);
+        if (error instanceof Error && failed !== null) {
+          attachFailedTurnResult(error, this.#withObservedIdentity(failed));
+        }
+        throw error;
+      }
+    );
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#settlement === settlement) {
         this.#settlement = null;
       }
     });
+  }
+
+  #withObservedIdentity(result: EngineAttemptResult): EngineAttemptResult {
+    return {
+      ...result,
+      ...(result.resolvedModel === undefined && this.#resolvedModel !== null ? { resolvedModel: this.#resolvedModel } : {}),
+      ...(result.resolvedEffort === undefined && this.#resolvedEffort !== null ? { resolvedEffort: this.#resolvedEffort } : {})
+    };
   }
 
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
@@ -406,6 +425,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     previousFailure: PreviousAttemptFailure | undefined,
     observers: AttemptObservers
   ): Promise<TurnResult> {
+    this.#resolvedModel = null;
+    this.#resolvedEffort = null;
+    try { observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null }); }
+    catch { /* Observability cannot fail dispatch. */ }
     const denyRules = permissionDenyRulesFor(this.#options.strip);
     const handle = await this.#controlPlane.dispatch({
       prompt: this.#buildDispatchPrompt(previousFailure),
@@ -575,10 +598,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         sawLife = true;
         this.#reportUsage(handle, transcript.entries, fromIndex, observers);
         try {
-          observers.onIdentity?.({
-            resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
-            resolvedEffort: effortSince(transcript.entries, fromIndex)
-          });
+          this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
+          this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
+          observers.onIdentity?.({ resolvedModel: this.#resolvedModel, resolvedEffort: this.#resolvedEffort });
           // Compare assistant rows only: polling an unchanged transcript or a
           // newly persisted user prompt is not continuing worker output.
           const evidence = JSON.stringify(transcript.entries.slice(fromIndex).filter((entry) => entry.type === "assistant"));

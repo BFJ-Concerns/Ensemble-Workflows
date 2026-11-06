@@ -49,7 +49,7 @@ try {
       throw error;
     }
     snapshot = current;
-    assert.equal(current.schema, 2);
+    assert.equal(current.schema, 3);
     assert.deepEqual(Object.keys(current).sort(), snapshotKeys);
     assert.equal(current.runId, announcement.run_id);
     assert.equal(current.pid, child.pid);

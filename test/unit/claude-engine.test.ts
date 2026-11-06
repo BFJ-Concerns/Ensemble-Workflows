@@ -1994,3 +1994,40 @@ test("Claude continues reporting new assistant rows after the first output", asy
     } finally { await invocation.close?.(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+
+test("a failed in-session correction retains the served identity in status and archive", async () => {
+  await withControlPlane([{ assistant: { text: "not json", model: "claude-observed", effort: "high" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 2 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+    try {
+      assert.equal(await runtime.agent("decide", { engine: "claude", schema: okSchema }), null);
+      assert.equal(controlPlane.dispatchCount, 1);
+      assert.equal(controlPlane.steerCount, 1);
+      const agent = runtime.progress.snapshot().agents[0]!;
+      assert.equal(agent.resolvedModel, "claude-observed");
+      assert.equal(agent.resolvedEffort, "high");
+      assert.equal(records.at(-1)?.resolvedModel, "claude-observed");
+      assert.equal(records.at(-1)?.resolvedEffort, "high");
+      assert.equal(records.at(-1)?.attempts[1]?.rawOutput, null);
+    } finally { await runtime.close(); }
+  }, { steerSucceeds: false });
+});
+
+test("a held Claude turn retains observed identity before new assistant output", async () => {
+  await withControlPlane([
+    { assistant: { text: "first", model: "claude-held", effort: "high" } },
+    { busyPolls: 2 }
+  ], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const held = adapter.createSession({});
+    try {
+      await held.beginTurn("first", {}).runAttempt({ attempt: 1 });
+      const observed: Array<{ resolvedModel: string | null; resolvedEffort: string | null }> = [];
+      await held.beginTurn("second", {}).runAttempt({ attempt: 1, onIdentity: (identity) => observed.push(identity) });
+      assert.ok(observed.length > 0, "the held turn must expose its identity while waiting");
+      assert.ok(observed.every((identity) => identity.resolvedModel === "claude-held" && identity.resolvedEffort === "high"));
+    } finally { await held.close(); await adapter.close(); }
+  });
+});

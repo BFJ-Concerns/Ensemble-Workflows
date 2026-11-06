@@ -58,9 +58,11 @@ rules, and a token on one engine does not cost the same as on another.
 
 ### `ensemble.<run-uuid>.local.json` schema
 
+Schema 3 retains finished workers in `agents` and permits `done` and `failed` states. Schema 2 contains only live workers. Consumers must check the schema before interpreting the worker list.
+
 Each status file contains one JSON object with these fields:
 
-- `schema`: `2`.
+- `schema`: `3`.
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
 - `archiveDir`: string or `null`, the run archive directory when published.
@@ -122,7 +124,7 @@ Example:
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "runId": "run-01HZY7V4Q8P2",
   "pid": 43122,
   "archiveDir": null,
@@ -367,7 +369,7 @@ carries:
   `agent_record`.
 
 The completion sentinel and the live status file are separate artefact
-families with their own schema versions (`3` and `2`), described above.
+families with their own schema versions (`3` and `3`), described above.
 
 ### Manifest
 

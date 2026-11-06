@@ -397,14 +397,14 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           // is no session to wait for, so surface immediately with its stderr.
           if (!dispatch.result.ok) {
             // A refusal before any session exists: the directory is the
-            // fact the operator needs, Claude Code's own words are the reason,
+            // fact the operator needs, the launch command's stderr is the reason,
             // and the declaration is named so a refusal that survived it reads
             // as the substrate's, not as a lift the harness forgot. The text is
             // engine-controlled and lands on a one-line operator surface, so it
             // takes the bounded-evidence discipline: control stripped,
             // whitespace flattened, bounded.
             throw new ClaudeDispatchError(
-              `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} ` +
+              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} ` +
                 `(workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` +
                 boundedEvidence(dispatch.result.stderr.trim() || dispatch.result.stdout.trim() || "claude --bg exited without a message")
             );

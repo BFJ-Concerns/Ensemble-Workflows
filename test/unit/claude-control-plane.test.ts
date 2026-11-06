@@ -1205,7 +1205,7 @@ test("a dispatch Claude Code refuses is a ClaudeDispatchError naming the directo
         assert.ok(error instanceof ClaudeDispatchError);
         // The operator reads the directory, sees the lift was declared, and
         // gets Claude Code's words whole — the remedy is in the environment.
-        assert.match(error.message, new RegExp(`refused to dispatch worker 'refused-probe' in ${dir.replaceAll(".", "\\.")}`));
+        assert.match(error.message, new RegExp(`dispatch command failed for worker 'refused-probe' in ${dir.replaceAll(".", "\\.")}`));
         assert.match(error.message, new RegExp(`declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}`));
         // Engine-controlled text on a one-line operator surface: flattened,
         // control-stripped, bounded — so the run's failure is one clean line.

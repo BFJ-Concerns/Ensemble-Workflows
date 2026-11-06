@@ -115,7 +115,7 @@ const CLAUDE_AVAILABILITY_CODES = new Map<string, string>([
 ]);
 
 const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
-  // Claude Code refused to start the worker at all. The engine throws
+  // The Claude dispatch command failed before a worker registered. The engine throws
   // it rather than returning a failed turn, so the kind is the thrown class
   // name, as the Codex rows are keyed; the runtime spends no attempt on it —
   // it advances the chain or propagates as a pre-spawn refusal.

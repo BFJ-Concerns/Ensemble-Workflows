@@ -225,6 +225,29 @@ it.
 See [Run records and live status](run-records.md) for what these files
 contain.
 
+### Publishing status from a library caller
+
+`resolveStatusDir(env, cwd)` returns the selected path or `null` when disabled.
+The automatic data-home directory may not exist yet. `StatusFileWriter` takes
+`createDirectory: true` to create it, and `ready()` reports whether the first
+snapshot was published. A caller that owns directory creation can use:
+
+```js
+const dir = resolveStatusDir(process.env, process.cwd());
+const writer = dir === null ? null : new StatusFileWriter({
+  progress: runtime.progress, dir, createDirectory: true
+});
+if (writer !== null) await writer.ready();
+// Close the writer when the caller stops publishing.
+```
+
+The writer leaves directories untouched unless creation is requested. Explicit
+missing directories are rejected by `resolveStatusDir` before writer creation.
+Call `await writer.close()` when publication ends. For layer-aware handling,
+`resolveAmbientSettings({ env, cwd }).statusDir` exposes both `value` and `layer`;
+the CLI creates only its automatic data-home directory.
+
+
 ## Library runtime options
 
 Ensemble can also be used as a library from a source checkout

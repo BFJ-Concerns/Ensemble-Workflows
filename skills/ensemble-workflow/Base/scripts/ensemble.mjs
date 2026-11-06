@@ -18306,16 +18306,7 @@ var ClaudeEngineInvocation = class {
     };
   }
   runAttempt(context) {
-    const settlement = this.#runAttempt(context).then(
-      (result) => this.#withObservedIdentity(result),
-      (error) => {
-        const failed = failedTurnResultOf(error);
-        if (error instanceof Error && failed !== null) {
-          attachFailedTurnResult(error, this.#withObservedIdentity(failed));
-        }
-        throw error;
-      }
-    );
+    const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#settlement === settlement) {
@@ -18363,7 +18354,7 @@ var ClaudeEngineInvocation = class {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
       if (error instanceof EngineShutdownError && evidence !== null) {
-        attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+        attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       }
       if (error instanceof ClaudeWorkerError) {
         if (!this.#multiTurn) {
@@ -18416,7 +18407,7 @@ var ClaudeEngineInvocation = class {
       if (evidence !== null) {
         this.#attachWorkerText(error, evidence, 0);
       }
-      attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+      attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       await this.#teardown();
       throw error;
     }

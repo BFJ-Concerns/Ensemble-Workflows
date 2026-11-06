@@ -301,16 +301,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     // close() must be able to await a live attempt so cancellation is not
     // "torn down under a caller still running": track the settlement.
-    const settlement = this.#runAttempt(context).then(
-      (result) => this.#withObservedIdentity(result),
-      (error: unknown) => {
-        const failed = failedTurnResultOf(error);
-        if (error instanceof Error && failed !== null) {
-          attachFailedTurnResult(error, this.#withObservedIdentity(failed));
-        }
-        throw error;
-      }
-    );
+    const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#settlement === settlement) {
@@ -383,7 +374,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // Interruption remains a rejection — it must neither settle as an
         // operational failure nor enter the retry loop — but its record must
         // retain the same fields an already-built failed result would carry.
-        attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+        attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       }
       if (error instanceof ClaudeWorkerError) {
         // Preserve the operational cause and current-turn text on the failed
@@ -455,7 +446,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       if (evidence !== null) {
         this.#attachWorkerText(error, evidence, 0);
       }
-      attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+      attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       await this.#teardown();
       throw error;
     }

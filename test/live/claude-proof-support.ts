@@ -69,8 +69,10 @@ export function classifySupervisorTransition(
   }
   if (baseline.length === 0 || evidence.some((row) => row.event === "log-unavailable") ||
       baseline.some((row, index) => JSON.stringify(row) !== JSON.stringify(evidence[index]))) return "unexplained";
-  const original = baseline.findLast((row) => row.event === "start" || row.event === "shutdown");
-  if (original?.event !== "start" || original.pid !== String(before.pid) || original.version !== before.version) return "unexplained";
+  // Startup attempts log before acquiring the daemon lock. The observed
+  // process, rather than the last attempt, identifies the serving supervisor.
+  const original = baseline.findLastIndex(row => row.event === "start" && row.pid === String(before.pid) && row.version === before.version);
+  if (original < 0 || baseline.slice(original + 1).some(row => row.event === "shutdown")) return "unexplained";
   const transitions = evidence.slice(baseline.length).filter((row) => row.event === "start" || row.event === "shutdown");
   return transitions.length === 2 && transitions[0]!.event === "shutdown" && transitions[0]!.cause === "upgrade" &&
     transitions[1]!.event === "start" && transitions[1]!.pid === String(after.pid) && transitions[1]!.version === after.version

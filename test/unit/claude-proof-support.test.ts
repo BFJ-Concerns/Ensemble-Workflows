@@ -111,3 +111,22 @@ test("unchanged supervisors require readable matching process identity and cgrou
     assert.equal(classifySupervisorTransition({ ...before, ...change }, before, [], []), "unexplained");
   }
 });
+
+
+test("competing startup records do not hide the observed supervisor's upgrade", async () => {
+  await fixture(async (root) => {
+    const file = path.join(root, "daemon.log");
+    for (const confirmed of [false, true]) {
+      const prefix = start(before) + start({ ...before, pid: 303 }) + (confirmed
+        ? `[now] another daemon is already running (pid=${before.pid}, version=${before.version})\n` : "");
+      await writeFile(file, prefix);
+      const baseline = await supervisorLifecycle(root);
+      await writeFile(file, prefix + shutdown("upgrade") + start(after));
+      assert.equal(classifySupervisorTransition(before, after, baseline, await supervisorLifecycle(root)), "upgrade",
+        "a competing startup hid the live supervisor's documented upgrade");
+      await writeFile(file, prefix + shutdown("idle") + start(after));
+      assert.equal(classifySupervisorTransition(before, after, baseline, await supervisorLifecycle(root)), "unexplained",
+        "a competing startup excused a non-upgrade replacement");
+    }
+  });
+});

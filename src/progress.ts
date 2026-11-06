@@ -1,10 +1,5 @@
 import type { AgentWaitSnapshot, EngineName } from "./types.js";
 
-// Live agents are bounded in the serialised snapshot so a thousand-wide fan-out
-// doesn't produce a thousand-entry file on every change. Running agents are
-// favoured over merely-queued ones; the true counts always live in `totals`.
-const MAX_AGENTS_IN_SNAPSHOT = 64;
-
 /** A worker's lifecycle state as the progress model sees it. */
 export type AgentState = "queued" | "running" | "done" | "failed";
 
@@ -398,10 +393,6 @@ export class RunProgress {
     record.failure = outcome === "failed" && failure !== null ? { ...failure } : null;
     record.waitingOn = null;
     this.#finished.set(id, record);
-    if (this.#finished.size > MAX_AGENTS_IN_SNAPSHOT) {
-      const oldest = this.#finished.keys().next().value;
-      if (oldest !== undefined) this.#finished.delete(oldest);
-    }
     this.#touch();
   }
 
@@ -483,10 +474,9 @@ export class RunProgress {
 
   #agents(): LiveAgentSnapshot[] {
     const records = [...this.#live.values(), ...this.#finished.values()];
-    // Running, queued, then retained finished workers, capped for file size. The
-    // counts are never lost — `totals`/`engines` carry the full tally.
+    // Running, queued, then finished workers; every worker stays visible.
     records.sort((a, b) => rank(a.state) - rank(b.state) || (rank(a.state) === 2 ? b.id - a.id : a.id - b.id));
-    return records.slice(0, MAX_AGENTS_IN_SNAPSHOT).map((record) => ({
+    return records.map((record) => ({
       requestedModel: record.requestedModel,
       requestedEffort: record.requestedEffort,
       resolvedModel: record.resolvedModel,

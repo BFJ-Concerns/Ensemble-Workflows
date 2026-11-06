@@ -233,7 +233,7 @@ test("new engine spend republishes the live snapshot once while an agent is runn
   assert.equal(progress.snapshot().agents[0]?.state, "running");
 });
 
-test("the live agent list is bounded and lists running agents before queued ones", () => {
+test("the live agent list retains all workers and lists running agents before queued ones", () => {
   const clock = 1_000;
   const progress = progressAt(() => clock);
 
@@ -252,8 +252,11 @@ test("the live agent list is bounded and lists running agents before queued ones
   }
   snapshot = progress.snapshot();
   assert.equal(snapshot.totals.active, 101);
-  assert.equal(snapshot.agents.length, 64);
-  assert.ok(snapshot.agents.every((agent) => agent.state === "running"));
+  assert.equal(snapshot.agents.length, 102);
+  assert.equal(snapshot.totals.queued, 1);
+  assert.deepEqual(snapshot.agents.map((agent) => agent.id).sort((a, b) => a - b),
+    Array.from({ length: 102 }, (_, index) => index + 1));
+  assert.equal(snapshot.agents.at(-1)?.id, queued);
 });
 
 test("what a worker is waiting on rides the live agent snapshot, last report winning, cleared on a fresh attempt", () => {
@@ -343,24 +346,53 @@ test("producer evidence survives settlement and unknowns stay null", () => {
   assert.equal(snapshot.agents[0]?.transcript, "/session.jsonl");
 });
 
-test("finished retention evicts oldest settlements without losing counts or active workers", () => {
-  const progress = progressAt(() => 100);
-  const first = progress.queueAgent({ engine: "codex", label: null, phase: null });
+test("all finished evidence survives alongside queued and running workers until run completion", () => {
+  let clock = 100;
+  const progress = progressAt(() => clock);
+  const expected = [];
   for (let index = 0; index < 100; index += 1) {
-    const id = progress.queueAgent({ engine: "codex", label: null, phase: null });
-    progress.settleAgent(id, "done");
+    const id = progress.queueAgent({ engine: "codex", label: `worker-${index}`, phase: "build" });
+    progress.noteAgentIdentity(id, {
+      requestedModel: "wanted", requestedEffort: "high",
+      resolvedModel: "served", resolvedEffort: "medium"
+    });
+    progress.noteAgentTranscript(id, `/transcripts/${id}`);
+    progress.noteAgentWorktree(id, `/worktrees/${id}`);
+    progress.noteAgentSpend(id, id * 10);
+    progress.startAgent(id);
+    progress.noteAgentEvidence(id);
+    clock += 1;
+    progress.noteAgentEvidence(id);
+    progress.settleAgent(id, index % 2 === 0 ? "done" : "failed",
+      { kind: "timeout", message: `expired-${id}` });
+    expected.push(progress.snapshot().agents.find((agent) => agent.id === id));
   }
-  progress.settleAgent(first, "failed");
-  let snapshot = progress.snapshot();
-  assert.equal(snapshot.agents.length, 64);
-  assert.ok(snapshot.agents.some((agent) => agent.id === first));
-  assert.equal(snapshot.totals.done, 100);
-  assert.equal(snapshot.totals.failed, 1);
   const queued = progress.queueAgent({ engine: "claude", label: null, phase: null });
   const running = progress.queueAgent({ engine: "claude", label: null, phase: null });
   progress.startAgent(running);
-  snapshot = progress.snapshot();
-  assert.equal(snapshot.agents.length, 64);
+  progress.noteAgentEvidence(running);
+  const snapshot = progress.snapshot();
+  assert.equal(snapshot.agents.length, 102);
+  assert.deepEqual(snapshot.agents.map((agent) => agent.id).sort((a, b) => a - b),
+    Array.from({ length: 102 }, (_, index) => index + 1));
   assert.equal(snapshot.agents[0]?.id, running);
   assert.equal(snapshot.agents[1]?.id, queued);
+  assert.deepEqual(snapshot.agents.slice(2), expected.reverse());
+  assert.deepEqual(snapshot.totals, { active: 1, queued: 1, done: 50, failed: 50 });
+  assert.equal(snapshot.engines.codex?.done, 50);
+  assert.equal(snapshot.engines.codex?.failed, 50);
+  assert.equal(snapshot.engines.codex?.active, 0);
+  assert.equal(snapshot.engines.codex?.queued, 0);
+  assert.equal(snapshot.engines.claude?.active, 1);
+  assert.equal(snapshot.engines.claude?.queued, 1);
+
+  clock += 1;
+  progress.settleAgent(1, "failed", { kind: "late", message: "duplicate" });
+  progress.settleAgent(2, "done");
+  assert.deepEqual(progress.snapshot(), snapshot);
+  progress.finish();
+  const finished = progress.snapshot();
+  assert.equal(finished.state, "finished");
+  assert.deepEqual(finished.agents, snapshot.agents);
+  assert.deepEqual(finished.totals, snapshot.totals);
 });

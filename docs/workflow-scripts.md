@@ -496,15 +496,14 @@ await builder.close();
   in one worktree for its whole life, finalised when the session closes.
 - **Claude follow-ups need tmux:** follow-up turns are typed into the held
   session through tmux as individual terminal key records, batched without
-  splitting a record. This preserves LF line breaks and Unicode while keeping
-  each tmux command bounded. Each injection uses a private tmux server that
-  loads no tmux configuration and does not appear among your own sessions. Without
+  splitting a record. Follow-ups stay typed even when the reader pauses,
+  so a leading `/skill` line expands. Unicode and LF line breaks are preserved;
+  tabs become four spaces and CR or CRLF line endings become LF, matching
+  Claude Code's paste-handler conversions. The turn is submitted once, after
+  all records arrive. Each injection uses a private tmux server that loads
+  no tmux configuration and does not appear among your own sessions. Without
   tmux, a follow-up or correction fails with a `claude-valve-error` naming
   the tmux step that failed, rather than silently starting a fresh worker.
-  Control-character delivery has known defects: tab characters are discarded.
-  CRLF line endings split one follow-up into separate submissions. The workflow
-  reports the intended turn complete while remaining lines reach the worker as
-  later input that the script does not see, so the returned result is unreliable.
 
 ## Holds
 

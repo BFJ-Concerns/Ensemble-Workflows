@@ -90,9 +90,9 @@ export const TYPED_FOLLOW_UP_UNICODE_LINE = "Unicode: café £ Ω 中文 😀 �
  * the paste threshold, holding the shapes the delivery has to carry
  * unchanged — a second slash line that is data rather than a command, a
  * line opening with a hyphen, the Unicode line, and `marker` so a test
- * matches the row to its own turn. Printable characters and newlines only,
- * no trailing whitespace: Claude Code trims a message's final space, and
- * the typed-input contract covers no other control characters.
+ * matches the row to its own turn. This base fixture uses printable text
+ * and LF, with no trailing whitespace: Claude Code trims a message's final
+ * space. followUpWhitespace supplies transport variants of the same text.
  */
 export function typedFollowUpArguments(marker: string): string {
   const filler = Array.from({ length: 18 }, () => "abcdefghij").join(" ");
@@ -108,6 +108,23 @@ export function typedFollowUpArguments(marker: string): string {
 /** The follow-up turn as sent: the slash line first, its arguments after one space. */
 export function typedFollowUpPrompt(marker: string): string {
   return `/${TYPED_FOLLOW_UP_SKILL.name} ${typedFollowUpArguments(marker)}`;
+}
+
+/**
+ * Vary only the transport whitespace of existing fixture data, leaving the
+ * slash line and instruction wording intact. Data lines gain indentation;
+ * separators cycle through LF, CR and CRLF. Expected text is constructed
+ * independently with spaces and LF, without calling the delivery encoder.
+ */
+export function followUpWhitespace(message: string): { input: string; expected: string } {
+  const lines = message.split("\n");
+  return {
+    input: lines.map((line, index) =>
+      (index === 0 ? "" : ["\n", "\r", "\r\n"][(index - 1) % 3]) +
+      (index >= 3 && line.length > 0 ? "\t" : "") + line).join(""),
+    expected: lines.map((line, index) =>
+      (index >= 3 && line.length > 0 ? "    " : "") + line).join("\n")
+  };
 }
 
 /** How a delivered follow-up turn shows in the transcript, read from its user rows. */

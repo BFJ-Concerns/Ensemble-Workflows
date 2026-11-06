@@ -17815,6 +17815,7 @@ function refused(step, result) {
   return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
 }
 function valveSlices(message) {
+  message = message.replace(/\r\n?/g, "\n").replaceAll("	", "    ");
   const slices = [];
   let current2 = "";
   let currentBytes = 0;

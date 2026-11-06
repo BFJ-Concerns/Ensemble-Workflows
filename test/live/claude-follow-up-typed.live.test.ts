@@ -11,6 +11,7 @@ import {
   TYPED_FOLLOW_UP_OPENING_PROMPT,
   TYPED_FOLLOW_UP_SKILL,
   followUpArrival,
+  followUpWhitespace,
   installTypedFollowUpSkill,
   typedFollowUpArguments,
   typedFollowUpPrompt
@@ -40,17 +41,17 @@ for (const pause of [false, true]) {
       await mkdir(store);
       const commandMarker = `COMMAND_${randomUUID()}`;
       const plainMarker = `PLAIN_${randomUUID()}`;
-      const command = typedFollowUpPrompt(commandMarker);
+      const command = followUpWhitespace(typedFollowUpPrompt(commandMarker));
       // Reuse the authored fixture text; these blank lines and JSON are data.
-      const plain = typedFollowUpArguments(plainMarker) + "\n\n" + JSON.stringify({ value: "é😀", schema: { type: "object" } });
+      const plain = followUpWhitespace(typedFollowUpArguments(plainMarker) + "\n\n" + JSON.stringify({ value: "é😀", schema: { type: "object" } }));
       const workflow = path.join(directory, "workflow.mjs");
       await writeFile(workflow, `
         export const meta = { name: "typed-follow-up" };
         const held = session(${JSON.stringify({ engine: "claude", cwd: directory, timeoutMs: 240_000, maxAttempts: 1 })});
         try {
           await held.send(${JSON.stringify(TYPED_FOLLOW_UP_OPENING_PROMPT)});
-          await held.send(${JSON.stringify(command)});
-          await held.send(${JSON.stringify(plain)});
+          await held.send(${JSON.stringify(command.input)});
+          await held.send(${JSON.stringify(plain.input)});
         } finally { await held.close(); }
         return "complete";
       `);
@@ -73,13 +74,18 @@ for (const pause of [false, true]) {
       assert.equal(new Set(records.flatMap((record) => record.transcripts.map((ref) => ref.session_id))).size, 1);
 
       for (const [index, marker, prompt, kind] of [
-        [1, commandMarker, command, "command"],
-        [2, plainMarker, plain, "plain"]
+        [1, commandMarker, command.expected, "command"],
+        [2, plainMarker, plain.expected, "plain"]
       ] as const) {
         const reference = records[index]?.transcripts[0];
         assert.ok(reference, "turn has no native transcript");
         assert.equal(reference.source, "claude-session-jsonl");
         const entries = parseTranscriptText(await readFile(path.join(archive, reference.path), "utf8"));
+        // Claude writes typed input as string-content user rows and skill
+        // expansion as text blocks. Count every input, including fragments
+        // without our marker, rather than trusting the runtime's turn count.
+        const inputs = entries.filter((entry) => entry.type === "user" && typeof entry.message?.content === "string");
+        assert.equal(inputs.length, index + 1, "a follow-up split into extra native submissions");
         // Locate this test's unique input row, never an assistant's echo or
         // an earlier turn's classification. No transcript rows are seeded.
         const start = entries.findIndex((entry) => entry.type === "user" && (JSON.stringify(entry.message?.content) ?? "").includes(marker));

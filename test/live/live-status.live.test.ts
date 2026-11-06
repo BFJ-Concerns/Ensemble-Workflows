@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -19,7 +20,7 @@ for (const engine of ["claude", "codex"] as const) {
     skip: process.env.ENSEMBLE_LIVE !== "1" || (engine === "codex" && liveCodexModel === undefined),
     timeout: 1_200_000
   }, async () => {
-    const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-live-status-");
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-status-"));
     const repo = path.join(directory, "repo");
     const probes: HeldProbe[] = ["first", "queued", "held-first", "held-second"].map((name) => ({
       paths: probePaths(directory, name), evidence: { kind: "marker", content: `${name}_${randomUUID()}` },
@@ -106,7 +107,7 @@ for (const engine of ["claude", "codex"] as const) {
 // exercises the same failure step as the native workflows without credentials.
 for (const engine of ["claude", "codex"] as const) {
   test(`${engine} placement failure is retained with its harness kind and message`, { timeout: 35_000 }, async () => {
-    const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-status-placement-");
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-placement-"));
     try {
       const repo = path.join(directory, "not-a-repository");
       await mkdir(repo);

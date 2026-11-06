@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile, access } from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -11,7 +12,7 @@ const consumer = path.resolve("test/consumers/read-live-status.mjs");
 const fixture = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 
 async function setup() {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-live-status-estate-");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-status-estate-"));
   const bin = path.join(directory, "bin");
   await mkdir(bin);
   await writeFile(path.join(bin, "codex"), `#!/usr/bin/env node\nimport ${JSON.stringify(fixture)};\n`);

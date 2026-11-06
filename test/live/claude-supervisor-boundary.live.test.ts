@@ -41,7 +41,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
   const sibling: HeldProbe = { paths: probePaths(root, "sibling"), evidence: { kind: "cgroup" }, token: `SIBLING_${randomUUID()}` };
   const ownCgroup = cgroupPath(await readFile("/proc/self/cgroup", "utf8"));
   const slice = containingSlice(`0::${ownCgroup}\n`);
-  const operatorDaemon = await supervisorSnapshot(process.env);
+  const operatorDaemon = await supervisorSnapshot(process.env, "current");
   const observations: Record<string, unknown> = { ownCgroup, slice, claudeExecutable: claude.executable, operatorDaemonBefore: operatorDaemon };
   const boxes = [`ensemble-live-box-${process.pid}.scope`, `ensemble-live-box-${process.pid}-sibling.scope`];
   const runs: ReturnType<typeof launchInBox>[] = [];
@@ -148,7 +148,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     if ((await daemonPid(env)) !== null) {
       await execFileAsync(claude.executable, ["daemon", "stop", "--any"], { env });
     }
-    const operatorAfter = await supervisorSnapshot(process.env);
+    const operatorAfter = await supervisorSnapshot(process.env, operatorDaemon.offset);
     observations.operatorDaemonAfter = operatorAfter;
     observations.operatorTransition = operatorDaemon.identity.pid === null && operatorAfter.identity.pid === null
       ? "absent" : classifySupervisorTransition(operatorDaemon.identity, operatorAfter.identity, operatorDaemon.lifecycle, operatorAfter.lifecycle);
@@ -164,7 +164,7 @@ test("the built launcher re-places an idle held session after respawn without an
   const root = await mkdtemp(path.join(tmpdir(), "ensemble-supervisor-replacement-"));
   const env = await ownedSupervisorEnvironment(root);
   const slice = containingSlice(await readFile("/proc/self/cgroup", "utf8"));
-  const operatorDaemon = await supervisorSnapshot(process.env);
+  const operatorDaemon = await supervisorSnapshot(process.env, "current");
   const probe: HeldProbe = { paths: probePaths(root, "replacement"), evidence: { kind: "cgroup" }, token: `REPLACEMENT_${randomUUID()}` };
   const idle = path.join(root, "idle");
   const close = path.join(root, "close");
@@ -231,7 +231,7 @@ test("the built launcher re-places an idle held session after respawn without an
     observations.ownedLifecycleBeforeStop = await supervisorLifecycle(env.CLAUDE_CONFIG_DIR!);
     observations.upgradeRestarts = (observations.ownedLifecycleBeforeStop as Record<string, string>[]).filter(row => row.event === "shutdown" && row.cause === "upgrade");
     await execFileAsync(claude.executable, ["daemon", "stop", "--any"], { env }).catch((error: Error) => { observations.ownedDaemonStop = error.message.slice(0, 200); });
-    const operatorAfter = await supervisorSnapshot(process.env);
+    const operatorAfter = await supervisorSnapshot(process.env, operatorDaemon.offset);
     observations.operatorDaemonAfter = operatorAfter;
     observations.operatorTransition = operatorDaemon.identity.pid === null && operatorAfter.identity.pid === null
       ? "absent" : classifySupervisorTransition(operatorDaemon.identity, operatorAfter.identity, operatorDaemon.lifecycle, operatorAfter.lifecycle);
@@ -408,16 +408,20 @@ function cgroupPath(cgroupFile: string): string {
   return line.slice("0::".length).trim();
 }
 
-async function supervisorSnapshot(env: NodeJS.ProcessEnv): Promise<{ identity: SupervisorIdentity; lifecycle: Record<string, string>[] }> {
+async function supervisorSnapshot(env: NodeJS.ProcessEnv, startAt: number | "current" = 0): Promise<{ identity: SupervisorIdentity; lifecycle: Record<string, string>[]; offset: number }> {
   const pid = await daemonPid(env);
-  const lifecycle = await supervisorLifecycle(env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"));
+  const all = await supervisorLifecycle(env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"));
+  // The operator's log spans unrelated sessions. Retain the serving daemon's
+  // start and subsequent lifecycle, using the same offset after the journey.
+  const offset = startAt === "current" ? Math.max(0, all.findLastIndex(row => row.event === "start" && row.pid === String(pid))) : startAt;
+  const lifecycle = all.slice(offset).filter(row => row.event !== "settled");
   const identity: SupervisorIdentity = {
     pid,
     startTicks: pid === null ? null : await readProcessStartTicks("/proc", pid),
     cgroup: pid === null ? null : await readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null),
     version: lifecycle.findLast(row => row.event === "start" && row.pid === String(pid))?.version ?? ""
   };
-  return { identity, lifecycle };
+  return { identity, lifecycle, offset };
 }
 
 function assertSupervisorTransition(

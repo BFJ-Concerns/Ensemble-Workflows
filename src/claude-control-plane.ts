@@ -7,6 +7,7 @@ import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
+import type { RuntimeEvent } from "./types.js";
 import { NoWorkerScopes, RUN_SCOPE_GROUP, processTree, type WorkerScopeGrouping, type ScopePlacement, type WorkerScopes } from "./worker-scopes.js";
 
 /**
@@ -211,8 +212,9 @@ export interface ClaudeCliControlPlaneOptions {
    * it does, the process and its live descendants are placed in a scope
    * named for the dispatch or shared by the run, according to `workerScope`.
    * A session restarted under a new pid is placed again at the next poll.
-   * Placement is best-effort: its outcome is kept per session
-   * (`placementOf`), and a refusal never fails the dispatch.
+   * Refusals are retried within the registration settle window and on later
+   * polls, even at the same pid; refusal and recovery emit runtime notices.
+   * Placement remains best-effort (`placementOf`): refusal does not fail dispatch.
    *
    * Launch: any `claude` command can start the per-user supervisor, which
    * then serves every Claude session on the machine and must not sit in
@@ -225,8 +227,10 @@ export interface ClaudeCliControlPlaneOptions {
    */
   scopes?: WorkerScopes;
   workerScope?: WorkerScopeGrouping;
-  /** How long after registration to wait for the roster to name the session's pid before leaving placement to the next poll. */
+  /** How long after registration to wait for a pid and successful placement before leaving retries to the next poll. */
   placementSettleMs?: number;
+  /** Placement refusal and recovery notices, delivered through the runtime event channel. */
+  onEvent?: (event: RuntimeEvent) => void;
 }
 
 interface ExecResult {
@@ -254,7 +258,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #scopes: WorkerScopes;
   #workerScope: WorkerScopeGrouping;
   #placementSettleMs: number;
-  /** The pid each session was last placed under, and how that placement went; a changed roster pid is placed again. */
+  #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  /** Last placement attempt per session: refused attempts remain eligible at the same pid. */
   #placements = new Map<string, { pid: number; outcome: ScopePlacement }>();
   #valveCounter = 0;
   /**
@@ -308,6 +313,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
     this.#placementSettleMs = options.placementSettleMs ?? 10_000;
+    this.#onEvent = options.onEvent;
   }
 
   /** How the session's process was last placed, or null before the roster has named a pid for it. */
@@ -366,16 +372,18 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           registered = found.handle;
           // The row registers before it carries a pid (measured: about half
           // a second before), so the wait continues, bounded, for the pid
-          // alone, and the session is placed the moment it is named; past
+          // and placement, and the session is placed the moment it is named; past
           // the bound the next poll places it.
           const settled = Date.now() + this.#placementSettleMs;
           let pid = found.pid;
-          while (pid === null && Date.now() < settled) {
+          for (;;) {
+            if (pid !== null) {
+              const outcome = await this.#place(registered, pid);
+              if (outcome.kind !== "refused") break;
+            }
+            if (Date.now() >= settled) break;
             await delay(100);
             pid = (await this.#findByName(options.name))?.pid ?? null;
-          }
-          if (pid !== null) {
-            await this.#place(registered, pid);
           }
           break;
         }
@@ -555,8 +563,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       return { status: "absent", state: "unknown", present: false };
     }
     // A session the supervisor restarted runs under a new pid, in the
-    // supervisor's cgroup again: place it again.
-    if (typeof record.pid === "number" && this.#placements.get(handle.sessionId)?.pid !== record.pid) {
+    // supervisor's cgroup again: place it again. A refused move is still
+    // pending even when the pid stays the same.
+    const previous = this.#placements.get(handle.sessionId);
+    if (typeof record.pid === "number" && (previous?.pid !== record.pid || previous.outcome.kind === "refused")) {
       await this.#place(handle, record.pid);
     }
     const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : undefined;
@@ -671,9 +681,27 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * otherwise stay in the supervisor's cgroup. Best-effort — the outcome
    * is recorded, never thrown.
    */
-  async #place(handle: ClaudeSessionHandle, pid: number): Promise<void> {
+  async #place(handle: ClaudeSessionHandle, pid: number): Promise<ScopePlacement> {
+    const previous = this.#placements.get(handle.sessionId);
     const outcome = await this.#scopes.place(this.#workerScope === "run" ? RUN_SCOPE_GROUP : handle.name, await processTree(pid, this.#procDir));
     this.#placements.set(handle.sessionId, { pid, outcome });
+    // Report a changed refusal once, and its recovery. Repeated polls still
+    // retry a refused pid without repeating the same notice indefinitely.
+    const changedRefusal = outcome.kind === "refused" &&
+      (previous?.pid !== pid || previous.outcome.kind !== "refused" || previous.outcome.reason !== outcome.reason);
+    const recovered = outcome.kind === "placed" && previous?.outcome.kind === "refused";
+    if (changedRefusal || recovered) {
+      this.#onEvent?.({
+        method: "claude/workerScopePlacement",
+        params: {
+          sessionId: handle.sessionId, name: handle.name, pid, kind: outcome.kind,
+          ...(outcome.kind === "refused" ? { reason: boundedEvidence(outcome.reason) } : {}),
+          ...(outcome.kind === "placed" ? { unit: outcome.unit } : {})
+        },
+        receivedAt: Date.now()
+      });
+    }
+    return outcome;
   }
 
   async stop(handle: ClaudeSessionHandle): Promise<void> {

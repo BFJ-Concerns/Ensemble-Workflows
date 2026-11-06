@@ -784,7 +784,8 @@ export async function createDefaultEngineRegistry(
           ...(options.workerEnvironment?.claude !== undefined ? { workerEnv: options.workerEnvironment.claude } : {}),
           ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {}),
           scopes: workerScopes,
-          workerScope: grouping
+          workerScope: grouping,
+          ...(options.onClaudeEvent !== undefined ? { onEvent: options.onClaudeEvent } : {})
         }),
         ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {}),
         // Claude deliberately emits the same usage event shape as Codex. Keep the

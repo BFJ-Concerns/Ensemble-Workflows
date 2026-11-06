@@ -170,8 +170,14 @@ Ensemble moves the process and its descendants when the pid appears, and
 moves a session the daemon restarts under a new pid at the next poll. Codex
 placement is attempted before the app-server's protocol handshake. Placement
 is best-effort: without a reachable user manager workers run where they
-started; manager refusals do not fail dispatch. Linux keeps memory already charged before a
-move in the original cgroup. Run teardown stops the scopes Ensemble owns;
+started; manager refusals do not fail dispatch. Claude placement refusals are
+retried within the registration settle window and on subsequent roster polls,
+even when the PID has not changed. A changed refusal and its recovery are
+reported on stderr; library event listeners receive
+`claude/workerScopePlacement` with the session ID, name, PID and outcome
+(`refused` with a bounded reason, or `placed` with the scope unit). Repeated
+identical refusals do not repeat the notice. Linux keeps memory already charged
+before a move in the original cgroup. Run teardown stops the scopes Ensemble owns;
 Claude control-command scopes and the shared supervisor are outside that
 ownership.
 

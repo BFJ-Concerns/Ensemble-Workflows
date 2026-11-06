@@ -17613,7 +17613,8 @@ var ClaudeCliControlPlane = class {
   #scopes;
   #workerScope;
   #placementSettleMs;
-  /** The pid each session was last placed under, and how that placement went; a changed roster pid is placed again. */
+  #onEvent;
+  /** Last placement attempt per session: refused attempts remain eligible at the same pid. */
   #placements = /* @__PURE__ */ new Map();
   #valveCounter = 0;
   /**
@@ -17652,6 +17653,7 @@ var ClaudeCliControlPlane = class {
     this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
     this.#placementSettleMs = options.placementSettleMs ?? 1e4;
+    this.#onEvent = options.onEvent;
   }
   /** How the session's process was last placed, or null before the roster has named a pid for it. */
   placementOf(handle) {
@@ -17683,12 +17685,14 @@ var ClaudeCliControlPlane = class {
           registered = found.handle;
           const settled = Date.now() + this.#placementSettleMs;
           let pid = found.pid;
-          while (pid === null && Date.now() < settled) {
+          for (; ; ) {
+            if (pid !== null) {
+              const outcome = await this.#place(registered, pid);
+              if (outcome.kind !== "refused") break;
+            }
+            if (Date.now() >= settled) break;
             await delay(100);
             pid = (await this.#findByName(options.name))?.pid ?? null;
-          }
-          if (pid !== null) {
-            await this.#place(registered, pid);
           }
           break;
         }
@@ -17801,7 +17805,8 @@ var ClaudeCliControlPlane = class {
     if (record === null) {
       return { status: "absent", state: "unknown", present: false };
     }
-    if (typeof record.pid === "number" && this.#placements.get(handle.sessionId)?.pid !== record.pid) {
+    const previous = this.#placements.get(handle.sessionId);
+    if (typeof record.pid === "number" && (previous?.pid !== record.pid || previous.outcome.kind === "refused")) {
       await this.#place(handle, record.pid);
     }
     const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : void 0;
@@ -17887,8 +17892,26 @@ var ClaudeCliControlPlane = class {
    * is recorded, never thrown.
    */
   async #place(handle, pid) {
+    const previous = this.#placements.get(handle.sessionId);
     const outcome = await this.#scopes.place(this.#workerScope === "run" ? RUN_SCOPE_GROUP : handle.name, await processTree(pid, this.#procDir));
     this.#placements.set(handle.sessionId, { pid, outcome });
+    const changedRefusal = outcome.kind === "refused" && (previous?.pid !== pid || previous.outcome.kind !== "refused" || previous.outcome.reason !== outcome.reason);
+    const recovered = outcome.kind === "placed" && previous?.outcome.kind === "refused";
+    if (changedRefusal || recovered) {
+      this.#onEvent?.({
+        method: "claude/workerScopePlacement",
+        params: {
+          sessionId: handle.sessionId,
+          name: handle.name,
+          pid,
+          kind: outcome.kind,
+          ...outcome.kind === "refused" ? { reason: boundedEvidence(outcome.reason) } : {},
+          ...outcome.kind === "placed" ? { unit: outcome.unit } : {}
+        },
+        receivedAt: Date.now()
+      });
+    }
+    return outcome;
   }
   async stop(handle) {
     await this.#run(this.#claudeBin, ["stop", handle.id]);
@@ -22007,7 +22030,8 @@ async function createDefaultEngineRegistry(options) {
           ...options.workerEnvironment?.claude !== void 0 ? { workerEnv: options.workerEnvironment.claude } : {},
           ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {},
           scopes: workerScopes,
-          workerScope: grouping
+          workerScope: grouping,
+          ...options.onClaudeEvent !== void 0 ? { onEvent: options.onClaudeEvent } : {}
         }),
         ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
         // Claude deliberately emits the same usage event shape as Codex. Keep the
@@ -31048,6 +31072,18 @@ async function runEnsembleCli(argv, options = {}) {
       });
     }
     runtime.onEvent((event) => {
+      if (event.method === "claude/workerScopePlacement") {
+        const name = boundedEvidence(String(event.params.name ?? "unknown"));
+        const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
+        if (event.params.kind === "refused") {
+          stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement refused; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
+`);
+        } else if (event.params.kind === "placed") {
+          stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement recovered in ${boundedEvidence(String(event.params.unit ?? "unknown scope"))}
+`);
+        }
+        return;
+      }
       if (event.method === "claude/unpinnedModel") {
         const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";

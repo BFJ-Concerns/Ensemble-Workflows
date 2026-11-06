@@ -186,6 +186,11 @@ Logs and diagnostics go to stderr. These lines are written there:
   fallback entry answered for a refused target.
 - `[<engine>] agent <id> (<label>) fallback chain not consulted — …` — a
   failure the classifier did not recognise, so the declared chain was not used.
+- `[claude] worker <name> (pid <pid>) scope placement refused; retrying: <reason>`
+  — the worker could not be moved into its scope. Ensemble retries within the
+  registration window and on later roster polls; repeated identical refusals
+  are quiet. `scope placement recovered in <unit>` reports a successful retry.
+  Dispatch remains best-effort; see [worker scope placement](configuration.md#worker_environment).
 - `[teardown] …` — the script returned while a worker it started was still
   running, or tried to end the process after returning.
 

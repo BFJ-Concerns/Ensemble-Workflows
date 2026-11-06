@@ -15,7 +15,8 @@ import {
   valveSlices
 } from "../../src/claude-control-plane.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "../../src/errors.js";
-import type { ScopePlacement, WorkerScopes } from "../../src/worker-scopes.js";
+import { SystemdWorkerScopes, containingSlice, type ScopePlacement, type WorkerScopes } from "../../src/worker-scopes.js";
+import type { RuntimeEvent } from "../../src/types.js";
 import { writeProcStat } from "../fixtures/proc-stat.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 
@@ -1489,3 +1490,83 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+
+test("refused Claude placement retries during registration and at the same polled pid, reporting refusal and recovery", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-refused-placement-"));
+  const first = spawn("sleep", ["infinity"], { stdio: "ignore" });
+  const replacement = spawn("sleep", ["infinity"], { stdio: "ignore" });
+  const slice = containingSlice(await readFile("/proc/self/cgroup", "utf8"));
+  const manager = new SystemdWorkerScopes({ slice, label: `retry-${process.pid}` });
+  let releaseMove!: () => void;
+  const released = new Promise<void>((resolve) => { releaseMove = resolve; });
+  let thirdAttempt!: () => void;
+  const retried = new Promise<void>((resolve) => { thirdAttempt = resolve; });
+  let calls = 0;
+  let dispatching: ReturnType<ClaudeCliControlPlane["dispatch"]> | undefined;
+  let plane: ClaudeCliControlPlane | undefined;
+  try {
+    const stub = path.join(dir, "claude.mjs");
+    const replacementPath = path.join(dir, "replacement");
+    const name = "retry-probe";
+    await writeFile(stub, `#!/usr/bin/env node
+      import { readFile } from "node:fs/promises";
+      if (process.argv[2] === "--bg") {
+        for await (const chunk of process.stdin) void chunk;
+      } else if (process.argv[2] === "agents") {
+        const pid = await readFile(${JSON.stringify(replacementPath)}, "utf8").then(Number).catch(() => ${first.pid});
+        process.stdout.write(JSON.stringify([{ id: "retry-1", sessionId: "retry-session", name: ${JSON.stringify(name)}, kind: "background", cwd: ${JSON.stringify(dir)}, pid, status: "busy", state: "working" }]));
+      }
+    `);
+    await chmod(stub, 0o755);
+    const scopes: WorkerScopes = {
+      slice,
+      launch: async (file, args, options) => spawn(file, [...args], options),
+      close: manager.close.bind(manager),
+      async place(group, pids) {
+        calls += 1;
+        // Supply only the transient refusal. Recovery is an actual move by
+        // systemd, checked against the live processes' kernel cgroup files.
+        if (calls <= 2 || calls === 4) return { kind: "refused", reason: "controlled manager refusal" };
+        if (calls === 3) { thirdAttempt(); await released; }
+        return manager.place(group, pids);
+      }
+    };
+    const events: RuntimeEvent[] = [];
+    plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir, scopes, placementSettleMs: 60_000, onEvent: (event) => events.push(event) });
+    dispatching = plane.dispatch({ prompt: "hello", name, cwd: dir });
+    assert.equal(await Promise.race([dispatching.then(() => "dispatch settled"), retried.then(() => "placement retried")]), "placement retried",
+      "dispatch treated the first refused placement as final");
+    assert.equal(events.length, 1, "identical refusals repeated the notice");
+    assert.equal(events[0]?.method, "claude/workerScopePlacement");
+    assert.equal(events[0]?.params.reason, "controlled manager refusal");
+    const unit = manager.unitFor(name);
+    assert.ok(!(await readFile(`/proc/${first.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`));
+    releaseMove();
+    const handle = await dispatching;
+    assert.ok((await readFile(`/proc/${first.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`), "registration retry left the process outside its worker scope");
+    await plane.poll(handle);
+    assert.equal(calls, 3, "a successfully placed pid was moved again");
+
+    await writeFile(replacementPath, String(replacement.pid));
+    await plane.poll(handle);
+    assert.equal(plane.placementOf(handle)?.kind, "refused");
+    assert.ok(!(await readFile(`/proc/${replacement.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`));
+    await plane.poll(handle);
+    assert.ok((await readFile(`/proc/${replacement.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`), "same-pid poll did not recover refused placement");
+    assert.deepEqual(events.map((event) => event.params.kind), ["refused", "placed", "refused", "placed"]);
+    assert.equal(events.at(-1)?.params.unit, unit);
+    assert.equal(events.at(-1)?.params.pid, replacement.pid);
+    assert.equal(events.at(-1)?.params.sessionId, handle.sessionId);
+    await plane.poll(handle);
+    assert.equal(calls, 5);
+  } finally {
+    releaseMove();
+    const handle = await dispatching?.catch(() => undefined);
+    if (handle) await plane?.stop(handle);
+    first.kill("SIGKILL");
+    replacement.kill("SIGKILL");
+    await manager.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -4002,3 +4002,41 @@ test("both CLI forms deliver worker scope grouping and reject invalid flags", as
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test("CLI renders Claude placement refusal and recovery notices without control-line injection", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-placement-notice-"));
+  const stderr = new CaptureStream();
+  try {
+    const engine = new FixedResponseEngine("claude", "done");
+    const original = engine.createInvocation.bind(engine);
+    let runtime: EnsembleRuntime;
+    engine.createInvocation = (prompt, options) => {
+      const invocation = original(prompt, options);
+      return {
+        async runAttempt(context) {
+          // Renderer inputs, not placement proof: the control-plane test
+          // supplies the real process/manager evidence for these notices.
+          for (const params of [
+            { kind: "refused", reason: "manager\nrefused\u001b[31m", name: "probe\nworker", pid: 123 },
+            { kind: "placed", unit: "ensemble-recovered.scope", name: "probe worker", pid: 123 }
+          ]) runtime.handleEngineEvent("claude", { method: "claude/workerScopePlacement", params, receivedAt: Date.now() });
+          return invocation.runAttempt(context);
+        }
+      };
+    };
+    const exitCode = await runEnsembleCli(["agent", "--engine=claude", "--model=opus", "hello"], {
+      cwd: directory, stdout: new CaptureStream(), stderr, runRecordDir: null,
+      createRuntime: async (options) => { runtime = fixedEngineRuntime(engine, 1, options); return runtime; }
+    });
+    assert.equal(exitCode, 0, stderr.text());
+    const lines = stderr.text().split("\n").filter((line) => line.includes("scope placement"));
+    assert.deepEqual(lines, [
+      "[claude] worker probe worker (pid 123) scope placement refused; retrying: manager refused",
+      "[claude] worker probe worker (pid 123) scope placement recovered in ensemble-recovered.scope"
+    ]);
+    assert.equal(stderr.text().includes("\u001b"), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

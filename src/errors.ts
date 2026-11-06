@@ -363,6 +363,29 @@ export function agentIdentityOf(error: unknown): AgentCallIdentity | null {
   return null;
 }
 
+/**
+ * The mark the runtime puts on the run's own ending as it leaves `agent()`
+ * or a session's `send()`: an interrupt, the whole-run timeout, the
+ * launcher closing the run under a leg still in flight. A worker's failure
+ * is a value the combinators collapse; the run ending is not the worker
+ * failing, and a body awaiting `parallel()` or `pipeline()` must not resume
+ * to run further code after the ending has begun — so the combinators
+ * rethrow a marked error, identity envelope or not. A sibling carrier to
+ * the identity, and like it not a metadata channel: it says one thing.
+ */
+interface RunEndingCarrier {
+  ensembleRunEnding?: true;
+}
+
+export function markRunEnding<T extends Error>(error: T): T {
+  (error as T & RunEndingCarrier).ensembleRunEnding = true;
+  return error;
+}
+
+export function isRunEnding(error: unknown): boolean {
+  return error instanceof Error && (error as RunEndingCarrier).ensembleRunEnding === true;
+}
+
 export class AppServerExitedError extends EnsembleError {}
 
 export class AppServerRequestError extends EnsembleError {

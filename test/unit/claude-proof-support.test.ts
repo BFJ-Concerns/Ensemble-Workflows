@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -13,7 +14,7 @@ const start = (identity: SupervisorIdentity): string => `[now] daemon start vers
 const shutdown = (cause: string): string => `[now] shutting down (cause=${cause}, uptime=10s, leases=1, live_workers=1)\n`;
 
 async function fixture(run: (root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(path.join(process.cwd(), ".claude-proof-test-"));
+  const root = await mkdtemp(path.join(tmpdir(), ".claude-proof-test-"));
   try {
     await run(root);
   } finally {

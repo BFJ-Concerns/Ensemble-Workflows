@@ -12,7 +12,9 @@ alias ensemble='node /path/to/Ensemble-Workflows/skills/ensemble-workflow/Base/s
 ## Synopsis
 
 Running the launcher with no arguments prints this usage text on stderr. It
-names the program as you invoked it:
+names the program as you typed it, with the launcher's path relative to the
+directory you launched from, so the printed name runs from that directory.
+Launched from its own directory, it reads:
 
 ```text
 Usage: node ensemble.mjs [run options] <script.js> [args...]
@@ -37,7 +39,12 @@ Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.
 ```
 
 `--help` and `--version` print text on stdout, and each subcommand answers its
-own `--help`.
+own `--help`. `--help` opens with what Ensemble does, then gives the synopsis,
+a worked workflow script and agent dispatch, the option lists, and where the
+documentation lives. `agent --help` shows only the agent form and the options
+a dispatch accepts. When the reader of stdout goes away early, as in
+`--help | head -3`, the launcher stops writing and exits without a stack
+trace.
 
 ## Running a workflow
 
@@ -92,7 +99,10 @@ the prompt.
 | `--task <identity>` | Grouping identity copied into the run record |
 
 The run options `--budget`, `--concurrency`, `--agent-ceiling`, `--timeout`,
-`--strip`, `--caller-identity`, and `--hold-scope` apply here too.
+`--strip`, `--caller-identity`, and `--hold-scope` apply here too. `--timeout` has
+no default: without it the dispatch waits until the worker answers or uses up
+its attempts, and when it is set and passes, a partial-result envelope is
+printed.
 
 The option semantics match `agent()` in a script; see
 [`agent()` options](workflow-scripts.md#agent-options). There is no fallback

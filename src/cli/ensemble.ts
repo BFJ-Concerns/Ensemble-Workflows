@@ -24,7 +24,23 @@ function flushed(stream: NodeJS.WriteStream): Promise<void> {
   });
 }
 
+/**
+ * A reader that goes away early — `--help | head -3`, a consumer that stops
+ * reading the JSON — closes the pipe, and the next write fails with `EPIPE`
+ * on the stream's `error` event. Like any Unix tool, the launcher then
+ * stops writing to that stream and ends with the code it settles, without
+ * a stack; the run still tears down, seals, and writes its sentinel. Any
+ * other write failure is rethrown and surfaces as before.
+ */
+function ignoreClosedReader(error: NodeJS.ErrnoException): void {
+  if (error.code !== "EPIPE") {
+    throw error;
+  }
+}
+
 if (isMain) {
+  process.stdout.on("error", ignoreClosedReader);
+  process.stderr.on("error", ignoreClosedReader);
   const versionError = nodeVersionError();
   if (versionError !== null) {
     process.stderr.write(`${versionError}\n`);
@@ -33,7 +49,7 @@ if (isMain) {
     const cwd = process.cwd();
     const exitCode = await runEnsembleCli(process.argv.slice(2), {
       cwd,
-      programName: programNameFor(process.argv[1])
+      programName: programNameFor(process.argv[1], cwd)
     });
     // The launcher's terminal work is done: the result or envelope is
     // printed, the record sealed, the sentinel written, the workers torn

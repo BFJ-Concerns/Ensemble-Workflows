@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -46,15 +46,19 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
 
     assert.equal(result.code, 2, result.stderr);
     assert.equal(result.stdout, "");
-    // Run as `node ensemble.mjs`, so the usage names that invocation.
+    // Run from the repository root by the launcher's path, so the usage
+    // names that invocation.
     assert.equal(
       result.stderr,
-      "Usage: node ensemble.mjs [run options] <script.js> [args...]\n" +
-      "       node ensemble.mjs agent --engine <engine> [agent options] [prompt]\n" +
-      "       node ensemble.mjs workflows\n" +
-      "       node ensemble.mjs holds [--json] [--scope <scope> | --all]\n" +
-      "       node ensemble.mjs holds answer <hold-id> --verdict <verdict>\n" +
-      "                         [--note <note>]\n" +
+      "Usage: node skills/ensemble-workflow/Base/scripts/ensemble.mjs [run options]\n" +
+      "         <script.js> [args...]\n" +
+      "       node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent\n" +
+      "         --engine <engine> [agent options] [prompt]\n" +
+      "       node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows\n" +
+      "       node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json]\n" +
+      "         [--scope <scope> | --all]\n" +
+      "       node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds answer\n" +
+      "         <hold-id> --verdict <verdict> [--note <note>]\n" +
       "\n" +
       "Run options (before the script path):\n" +
       "  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N\n" +
@@ -67,7 +71,8 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
       "  --agent-ceiling N|null  --concurrency engine=N  --timeout ms\n" +
       "  --caller-identity <identity>  --hold-scope <scope>\n" +
       "The prompt is the one positional argument, or stdin when omitted.\n" +
-      "Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.\n"
+      "Run `node skills/ensemble-workflow/Base/scripts/ensemble.mjs --help` for\n" +
+      "orientation; each subcommand answers --help.\n"
     );
   } finally {
     for (const [key, value] of saved) {
@@ -3082,3 +3087,221 @@ async function waitForFile(file: string): Promise<void> {
   }
   throw new Error(`file never appeared: ${file}`);
 }
+
+/**
+ * A cold arrival's layout: the launcher installed under a skill directory
+ * inside a workspace, launched by its full path from the workspace root.
+ */
+async function shippedWorkspace(prefix: string): Promise<{ workspace: string; launcher: string }> {
+  const workspace = await mkdtemp(path.join(tmpdir(), prefix));
+  const launcher = path.join(workspace, ".claude", "skills", "ensemble-workflow", "scripts", "ensemble.mjs");
+  await mkdir(path.dirname(launcher), { recursive: true });
+  await copyFile(bundledCliPath, launcher);
+  return { workspace, launcher };
+}
+
+function runIn(
+  cwd: string,
+  command: string,
+  args: string[],
+  envOverrides: NodeJS.ProcessEnv = {}
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, env: hermeticEstateEnvironment(envOverrides), stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => (stdout += chunk));
+    child.stderr.on("data", (chunk: string) => (stderr += chunk));
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+test("built CLI names a program that runs from a short shipped path", async () => {
+  const { workspace, launcher } = await shippedWorkspace("ensemble-literal-program-");
+  try {
+    for (const argv of [[], ["--help"]]) {
+      const shown = await runIn(workspace, process.execPath, [launcher, ...argv]);
+      const text = argv.length === 0 ? shown.stderr : shown.stdout;
+      const program = text.match(/^Usage: (.+?) \[run options\]/m)?.[1];
+      assert.ok(program, `no usage line in:\n${text}`);
+      for (const line of text.split("\n")) {
+        assert.ok(line.length <= 80, `short shipped path: ${line.length} columns: ${line}`);
+      }
+      // Typed exactly as printed, from the same directory, the name must
+      // reach the launcher again — not a file name Node cannot find there.
+      const typed = await runIn(workspace, "/bin/sh", ["-c", `${program} --version`]);
+      assert.equal(typed.code, 0, `${program} --version: ${typed.stderr}`);
+      assert.doesNotMatch(typed.stderr, /MODULE_NOT_FOUND/);
+      assert.match(typed.stdout, /^\d+\.\d+\.\d+/);
+    }
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("built CLI keeps a distant shipped invocation runnable when its name exceeds the usage width", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "ensemble-distant-program-"));
+  try {
+    for (const argv of [[], ["--help"]]) {
+      const shown = await runIn(workspace, process.execPath, [bundledCliPath, ...argv]);
+      const output = argv.length === 0 ? shown.stderr : shown.stdout;
+      const usageLine = output.split("\n").find((line) => line.startsWith("Usage: "));
+      const program = usageLine?.match(/^Usage: (.+?) \[run options\]/)?.[1];
+      assert.ok(program, `no usage line in:\n${output}`);
+      assert.ok(usageLine!.length > 80, `expected the distant path to exceed the width: ${usageLine}`);
+      const typed = await runIn(workspace, "/bin/sh", ["-c", `${program} --version`]);
+      assert.equal(typed.code, 0, `${program} --version: ${typed.stderr}`);
+      assert.match(typed.stdout, /^\d+\.\d+\.\d+/);
+    }
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("built CLI help answers orient first and agent --help sizes the wait", async () => {
+  const { workspace, launcher } = await shippedWorkspace("ensemble-help-answers-");
+  try {
+    const top = await runIn(workspace, process.execPath, [launcher, "--help"]);
+    assert.equal(top.code, 0);
+    assert.equal(top.stderr, "");
+    const topLines = top.stdout.split("\n");
+    assert.match(topLines[0] ?? "", /^Runs a JavaScript workflow script/);
+    assert.ok(top.stdout.indexOf("Runs a JavaScript") < top.stdout.indexOf("Run options"));
+    assert.match(top.stdout, /Example workflow script/);
+    assert.match(top.stdout, /export const meta = /);
+    assert.match(top.stdout, /agent\s+--engine claude --model haiku/);
+    assert.match(top.stdout, /^Documentation: https:\/\//m);
+    // The help screen points elsewhere, never back at itself.
+    assert.doesNotMatch(top.stdout, /--help` for orientation/);
+
+    const agent = await runIn(workspace, process.execPath, [launcher, "agent", "--help"]);
+    assert.equal(agent.code, 0);
+    assert.equal(agent.stderr, "");
+    assert.match(agent.stdout, /^Dispatches one worker/);
+    assert.match(agent.stdout, /--engine <codex\|claude\|opencode>/);
+    assert.match(agent.stdout, /--timeout ms bounds the whole dispatch and has no default/);
+    assert.match(agent.stdout, /^Documentation: https:\/\//m);
+    // Run-only options belong to the script form, not to a dispatch.
+    assert.doesNotMatch(agent.stdout, /--json-args/);
+    assert.doesNotMatch(agent.stdout, /Run options/);
+    for (const line of agent.stdout.split("\n")) {
+      assert.ok(line.length <= 80, `${line.length} columns: ${line}`);
+    }
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+/** Spawns the bundle with its stdout read end closed before the launcher writes anything. */
+function runWithClosedReader(cwd: string, args: string[], envOverrides: NodeJS.ProcessEnv = {}): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [bundledCliPath, ...args], {
+      cwd,
+      env: hermeticEstateEnvironment(envOverrides),
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    child.stdout.destroy();
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => (stderr += chunk));
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ code, stderr }));
+  });
+}
+
+test("built CLI exits quietly when its reader closes stdout early", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-closed-reader-"));
+  try {
+    const help = await runWithClosedReader(directory, ["--help"]);
+    assert.equal(help.stderr, "", "help piped into a reader that went away");
+    assert.equal(help.code, 0);
+
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, `export const meta = { name: "closed-reader" };\nreturn { answer: "x".repeat(200000) };\n`);
+    const run = await runWithClosedReader(directory, [script], isolatedEnvironment(directory));
+    assert.doesNotMatch(run.stderr, /EPIPE|^\s+at /m, run.stderr);
+    assert.equal(run.code, 0, run.stderr);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("built CLI still surfaces a stdout write failure other than a closed reader", async () => {
+  // A full device is a write failure the launcher must not swallow.
+  const full = await open("/dev/full", "w");
+  try {
+    const result = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, [bundledCliPath, "--help"], {
+        env: hermeticEstateEnvironment(),
+        stdio: ["ignore", full.fd, "pipe"]
+      });
+      let stderr = "";
+      child.stderr!.setEncoding("utf8");
+      child.stderr!.on("data", (chunk: string) => (stderr += chunk));
+      child.once("error", reject);
+      child.once("close", (code) => resolve({ code, stderr }));
+    });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /ENOSPC/);
+  } finally {
+    await full.close();
+  }
+});
+
+test("built CLI with recording off says why there is no sentinel and attempts no archive", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-record-off-setup-"));
+  try {
+    const blocker = path.join(directory, "data-home-blocker");
+    await writeFile(blocker, "not a directory");
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, `export const meta = { name: "record-off" };\nreturn "ok";\n`);
+    const result = await runIn(directory, process.execPath, [bundledCliPath, script], {
+      ENSEMBLE_RUN_RECORD: "off",
+      ENSEMBLE_STATUS: "off",
+      XDG_DATA_HOME: blocker,
+      ENSEMBLE_RUN_RECORD_DIR: undefined
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "\"ok\"\n");
+    const lines = result.stderr.split("\n").filter((line) => line.length > 0);
+    assert.equal(lines.length, 1, result.stderr);
+    assert.match(lines[0]!, /^\[sentinel\] no sentinel will be written for this run — recording is off, so only the sentinel uses the store/);
+    assert.match(lines[0]!, /ENSEMBLE_RUN_RECORD_DIR names a writable data home/);
+    assert.doesNotMatch(result.stderr, /mkdir|could not start/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("built CLI names an unwritable data home and both ways on", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-record-unwritable-"));
+  const dataHome = path.join(directory, "data-home");
+  try {
+    await mkdir(dataHome);
+    await chmod(dataHome, 0o500);
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, `export const meta = { name: "record-unwritable" };\nreturn "ok";\n`);
+    const result = await runIn(directory, process.execPath, [bundledCliPath, script], {
+      ENSEMBLE_RUN_RECORD: undefined,
+      ENSEMBLE_STATUS: "off",
+      XDG_DATA_HOME: dataHome,
+      ENSEMBLE_RUN_RECORD_DIR: undefined
+    });
+    assert.equal(result.code, 1, result.stderr);
+    const store = path.join(dataHome, "ensemble");
+    const diagnosis = result.stderr.split("\n").filter((line) => line.startsWith("the durable run record could not start:"));
+    assert.equal(diagnosis.length, 1, result.stderr);
+    assert.equal(
+      diagnosis[0],
+      `the durable run record could not start: cannot create ${store} — the location is not writable or creatable for this caller (EACCES) — run without a record: ENSEMBLE_RUN_RECORD=off; or keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>`
+    );
+    assert.doesNotMatch(result.stderr, /^ {2}(?:to run without a record|to keep one):/m);
+    assert.doesNotMatch(result.stderr, /^\s+at /m);
+  } finally {
+    await chmod(dataHome, 0o700);
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -175,6 +175,12 @@ Logs and diagnostics go to stderr. These lines are written there:
 
 - `[sentinel] will write <path> when the run ends` — where the completion
   sentinel will appear (see [Run records](run-records.md#completion-sentinel)).
+- `[status-file] {"run_id":…,"status_path":…}` — the exact live status path,
+  announced after initial publication and before workflow execution. Creates
+  `$XDG_DATA_HOME/ensemble/status/` (normally
+  `~/.local/share/ensemble/status/`), independently of `<cwd>/.claude`;
+  see [status settings](configuration.md#run-record-and-status-locations) for
+  overrides and disablement. The file is removed at shutdown.
 - `[run-record-archive] {"run_id":…,"archive_path":…}` — the run's archive,
   when recording is enabled.
 - `[<engine>] agent <id> (<label>) failed after N attempts — <cause>` — a

@@ -910,12 +910,12 @@ export class RunRecordWriter {
   }
 
   /** Append an event before publishing its archive reference. */
-  async appendCodexTranscript(id: number, attempt: number, event: unknown): Promise<void> {
+  async appendCodexTranscript(id: number, attempt: number, event: unknown): Promise<string | null> {
     const content = `${JSON.stringify(event)}\n`;
-    await this.#serialise(async () => {
-      if (this.#sealed) return;
+    return await this.#serialise(async () => {
+      if (this.#sealed) return null;
       const current = this.#currentAttempts.get(id);
-      if (current?.attempt !== attempt) return;
+      if (current?.attempt !== attempt) return null;
       const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-transcript.codex.jsonl`;
       await mkdir(path.dirname(path.join(this.archiveDir, relativePath)), { recursive: true });
       await appendFile(path.join(this.archiveDir, relativePath), content);
@@ -933,6 +933,7 @@ export class RunRecordWriter {
       } else {
         await this.#writeManifest();
       }
+      return relativePath;
     });
   }
 

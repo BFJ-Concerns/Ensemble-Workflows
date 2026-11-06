@@ -8,26 +8,35 @@ A run can leave three kinds of file behind or alongside it:
 | Completion sentinel (`completion-sentinel.json`) | Permanent | Learn that a run has ended, and how |
 | Durable run record (the archive) | Permanent; on by default | Audit or evaluate a run after the fact |
 
-The live status file is written only where a status directory exists (by
-default, `.claude/` in the run's working directory).
+The live status file defaults to an automatically created status directory
+in the Ensemble data home. The CLI announces the exact file path on stderr
+before workflow execution.
 
 Where these files live, and how to turn them off, is covered in
 [Configuration](configuration.md).
 
 ## Live status
 
-While a run is active it publishes a small JSON snapshot of what it is doing —
+While a run is active it publishes a JSON snapshot of what it is doing —
 current phase, per-engine active/queued/done/failed counts, per-engine token
-spend, and the live worker list — to its own file in the status directory:
-`.claude/ensemble.<run-uuid>.local.json` under the run's working directory by
-default. Ensemble writes there only when `.claude/` already exists and never
-creates it. Writes are atomic, so a reader never sees a half-written file.
+spend, and every queued, running and finished worker — to its own
+file in the status directory. By default it creates
+`$XDG_DATA_HOME/ensemble/status` (`~/.local/share/ensemble/status` by default)
+and writes there, independently of the working directory and any `.claude`
+entry. Explicit status directories must already exist. Writes
+are atomic, so a reader never sees a half-written file.
 
-Each run has its own file, so concurrent runs in one directory are each
+After the first successful write and before workflow execution, the CLI prints
+`[status-file] {"run_id":…, "status_path":…}` on stderr. A supervisor can
+follow that path without knowing the working directory's layout or searching
+the archive. Disable publication with `ENSEMBLE_STATUS=off`; directory
+overrides and machine settings are described in [Configuration](configuration.md).
+
+Each run has its own file, so concurrent runs sharing a status directory are each
 visible for their whole lifetime: a later run never overwrites an earlier
 run's view, and a run that ends removes only its own file. A file left by a
-killed run stays until the next run starts in that directory, whose startup
-sweep removes any file whose writer is provably dead (below).
+killed run stays until the next run publishing to the same status directory
+starts; its startup sweep removes any file whose writer is provably dead (below).
 
 Consumers list the directory for `ensemble.*.local.json` and parse each file
 directly; Ensemble provides no rendering command. A reader decides liveness by
@@ -49,11 +58,14 @@ rules, and a token on one engine does not cost the same as on another.
 
 ### `ensemble.<run-uuid>.local.json` schema
 
+Schema 3 retains finished workers in `agents` and permits `done` and `failed` states. Schema 2 contains only live workers. Consumers must check the schema before interpreting the worker list.
+
 Each status file contains one JSON object with these fields:
 
-- `schema`: `2`.
+- `schema`: `3`.
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
+- `archiveDir`: string or `null`, the run archive directory when published.
 - `workflow`: string or `null`, from `meta.name` when present.
 - `state`: `"running"` or `"finished"`. A finished snapshot may exist briefly
   while the writer closes; `close()` then removes the file. Readers should treat
@@ -68,23 +80,36 @@ Each status file contains one JSON object with these fields:
   `opencode`). Each entry has numeric `active`, `queued`, `done`, `failed`, and
   `spent`; `cap`, `ceiling`, and `remaining` are numbers or `null`. Spend and
   ceilings are per-engine and are never summed.
-- `agents`: array of live worker objects, capped for file size. Each object has
-  numeric `id` and `attempt`, `engine` (`"codex"`, `"claude"`, or
-  `"opencode"`), `state` (`"queued"` or `"running"`), nullable string
-  `label` and `phase`, and two liveness stamps (numbers or `null`, Unix epoch
-  milliseconds): `startedAtMs`, when the worker left the queue and began
-  executing, and `firstEvidenceAtMs`, when the engine first saw the worker
-  produce output. The evidence stamp is set once per target and never
-  updated; a fallback to another engine starts both stamps afresh. A worker
-  running long with no evidence stamp has not produced output on its current
-  target and is suspect, while one with a stamp has produced output at least
-  once; the stamps cannot tell a worker streaming now from one that stalled
-  after its first output. `waitingOn` is `null`, or an object while Ensemble is holding
-  a Claude worker for a background task it started (a long command or a
-  Monitor): its kind is background-task, and it carries the task's id, Claude
-  Code's description of the task, and the epoch-millisecond time the wait was
-  first observed. That distinguishes a stuck background task from a worker
-  that is still generating.
+- `agents`: array of every worker: running first, then queued (oldest
+  first within each), then finished (newest registered first). Each object has
+  `id`, `attempt`, `engine` (codex, claude or opencode), `state` (queued,
+  running, done or failed), nullable strings `label`, `phase`, `requestedModel`,
+  `requestedEffort`, `resolvedModel`, `resolvedEffort`, `transcript`, and
+  `worktree`; nullable numeric `spent`, `startedAtMs`, `firstEvidenceAtMs`,
+  `lastEvidenceAtMs`, and `finishedAtMs`; and nullable `failure` and `waitingOn`.
+
+Worker spend is cumulative across attempts and fallback targets; null means
+unobserved, not zero. Identity and paths are producer-supplied evidence, never
+inferred. Requested identity describes the original call; resolved identity
+names what was served. Transcript paths match the running agent record's
+current attempt: archive-relative for Codex, absolute native paths for
+Claude. Resolve relative paths against archiveDir. A settled Claude record
+archives a copy of the native transcript; the status entry retains its
+live path.
+Failure is an object with kind and message, or null when unavailable or successful.
+Finished time is the settlement observation time. All timestamps are epoch
+milliseconds. First evidence stays fixed across same-target retries, while last
+evidence advances on each output observation. A fallback clears both evidence
+stamps, start time, served identity and transcript; spend and original requested
+identity persist. Same-target retries preserve the evidence stamps and spend
+and clear waitingOn. Each attempt clears its transcript reference until
+publication, and a fresh worker's served identity is unknown until observed.
+Queued and settled workers ignore output observations. waitingOn is null or the
+background-task object described by the engine (taskId, description, sinceMs).
+Every worker remains listed until the run ends; neither live nor finished
+entries are evicted or omitted from the snapshot. Finished entries have
+state done or failed and no outstanding wait. Repeated settlement is inert.
+
 - `holds`: array of open decision holds, empty when the run is not waiting.
   Each object has string `id`, string `content` (cut to 500 characters plus
   an ellipsis when longer; the hold file carries the full text), string-array
@@ -98,9 +123,10 @@ Example:
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "runId": "run-01HZY7V4Q8P2",
   "pid": 43122,
+  "archiveDir": null,
   "workflow": "verify-findings",
   "state": "running",
   "startedAt": 1766491200000,
@@ -150,6 +176,16 @@ Example:
       "attempt": 1,
       "startedAtMs": 1766491209000,
       "firstEvidenceAtMs": 1766491211200,
+      "lastEvidenceAtMs": 1766491211200,
+      "finishedAtMs": null,
+      "requestedModel": null,
+      "requestedEffort": null,
+      "resolvedModel": null,
+      "resolvedEffort": null,
+      "transcript": null,
+      "worktree": null,
+      "spent": null,
+      "failure": null,
       "waitingOn": null
     }
   ],
@@ -332,7 +368,7 @@ carries:
   `agent_record`.
 
 The completion sentinel and the live status file are separate artefact
-families with their own schema versions (`3` and `2`), described above.
+families with their own schema versions (`3` and `3`), described above.
 
 ### Manifest
 

@@ -2,23 +2,19 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFile, readFile, readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { URL } from "node:url";
+
+import { createAcknowledgementWriter } from "./archive-helpers.mjs";
 
 const [store, expectedCount, timeout = "45000", acknowledgements] = process.argv.slice(2);
 assert.ok(store && Number(expectedCount) > 0, "usage: read-live-agent-records.mjs <store> <agent-count> [timeout-ms] [acknowledgements-file]");
 const expectedKeys = JSON.parse(await readFile(new URL("../fixtures/run-record/v4-agent-keys.json", import.meta.url), "utf8"));
 const observed = new Map();
 const deadline = Date.now() + Number(timeout);
-const acknowledged = new Set();
-
-async function acknowledge(marker) {
-  if (acknowledgements === undefined || acknowledged.has(marker)) return;
-  await appendFile(acknowledgements, `${marker}\n`);
-  acknowledged.add(marker);
-}
+const { acknowledge } = createAcknowledgementWriter(acknowledgements);
 
 async function readJson(file) {
   try {

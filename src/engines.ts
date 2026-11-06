@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseWorkerScopeGrouping } from "./ambient-settings.js";
+import type { TurnProgressObserver } from "./app-server.js";
 import type { LiveTranscriptObserver } from "./types.js";
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
@@ -96,7 +97,7 @@ export interface PreviousAttemptFailure {
   message: string;
 }
 
-export interface EngineAttemptContext extends LiveTranscriptObserver {
+export interface EngineAttemptContext extends LiveTranscriptObserver, TurnProgressObserver {
   attempt: number;
   previousFailure?: PreviousAttemptFailure;
   /**
@@ -409,7 +410,7 @@ class CodexWorkerSession implements EngineWorkerSession {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(schema !== undefined ? { schema: normaliseForCodexOutputSchema(schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(context.onLiveEvidence !== undefined ? { onFirstOutput: context.onLiveEvidence } : {}),
+      ...codexProgressObservers(context),
       ...(context.onTranscriptEvent !== undefined ? { onTranscriptEvent: context.onTranscriptEvent } : {}),
       ...(context.onTranscriptPath !== undefined ? { onTranscriptPath: context.onTranscriptPath } : {})
     });
@@ -479,12 +480,24 @@ class CodexEngineInvocation implements EngineInvocation {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.schema !== undefined ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(context.onLiveEvidence !== undefined ? { onFirstOutput: context.onLiveEvidence } : {}),
+      ...codexProgressObservers(context),
       ...(context.onTranscriptEvent !== undefined ? { onTranscriptEvent: context.onTranscriptEvent } : {}),
       ...(context.onTranscriptPath !== undefined ? { onTranscriptPath: context.onTranscriptPath } : {})
     });
   }
 
+}
+
+/** Preserve observer fields through RuntimeTransport's narrower public option type. */
+function codexProgressObservers(context: EngineAttemptContext): TurnProgressObserver & {
+  onFirstOutput?: () => void;
+} {
+  return {
+    ...(context.onLiveEvidence !== undefined ? { onFirstOutput: context.onLiveEvidence } : {}),
+    ...(context.onOutput !== undefined ? { onOutput: context.onOutput } : {}),
+    ...(context.onIdentity !== undefined ? { onIdentity: context.onIdentity } : {}),
+    ...(context.onUsage !== undefined ? { onUsage: context.onUsage } : {})
+  };
 }
 
 export interface ClaudeEngineAdapterOptions {

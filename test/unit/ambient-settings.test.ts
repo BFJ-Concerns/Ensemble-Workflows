@@ -107,7 +107,7 @@ test("an absent machine config is silent and resolves built-in defaults", async 
     value: path.join(cwd, "data", "ensemble"),
     layer: "default"
   });
-  assert.deepEqual(settings.statusDir, { value: null, layer: "default" });
+  assert.deepEqual(settings.statusDir, { value: path.join(cwd, "data", "ensemble", "status"), layer: "default" });
   await rm(cwd, { recursive: true, force: true });
 });
 
@@ -402,6 +402,29 @@ test("a configured status directory that does not exist is refused quoting the p
   );
 });
 
+test("status uses the data home despite a project directory and honours disablement", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-status-default-"));
+  const env = { XDG_CONFIG_HOME: path.join(cwd, "config"), XDG_DATA_HOME: path.join(cwd, "data") };
+  try {
+    await mkdir(path.join(cwd, ".claude"));
+    assert.equal(resolveAmbientSettings({ env, cwd }).statusDir.value, path.join(cwd, "data", "ensemble", "status"));
+    assert.deepEqual(resolveAmbientSettings({ env: { ...env, ENSEMBLE_STATUS: "off", ENSEMBLE_STATUS_DIR: "" }, cwd }).statusDir, { value: null, layer: "env" });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the status directory environment overrides machine configuration", async () => {
+  const fixture = await configFixture({ schema_version: 1, status: { dir: "missing-configured-directory" } });
+  try {
+    const configured = path.join(fixture.cwd, "configured");
+    await mkdir(configured);
+    const settings = resolveAmbientSettings({ cwd: fixture.cwd, env: { XDG_CONFIG_HOME: fixture.configHome, ENSEMBLE_STATUS_DIR: configured } });
+    assert.deepEqual(settings.statusDir, { value: configured, layer: "env" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
 
 test("worker scope grouping resolves and validates every setting layer", async () => {
   const fixture = await configFixture({ schema_version: 1, worker_scope: "run" });

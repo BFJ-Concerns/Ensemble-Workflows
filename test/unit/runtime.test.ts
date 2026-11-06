@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import type { LiveAgentSnapshot } from "../../src/progress.js";
+import type { TurnProgressObserver } from "../../src/app-server.js";
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { CodexEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import { parallel } from "../../src/hooks.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import {
   AgentCwdRejectedError,
+  attachFailedTurnResult,
+  attachPartialWorkerText,
   AgentOptionRejectedError,
   AgentPromptRejectedError,
   AppServerExitedError,
@@ -58,7 +62,7 @@ const ignoreAttemptEnd: RunRecordWriter["recordAttemptEnd"] = async () => undefi
 class FakeTransport implements RuntimeTransport {
   readonly cwd = "/fake/repo";
   openedThreads: ThreadStartOptions[] = [];
-  turns: Array<{ threadId: string; prompt: string; options: TurnStartOptions }> = [];
+  turns: Array<{ threadId: string; prompt: string; options: TurnStartOptions & TurnProgressObserver }> = [];
   discoveredSkillCwds: Array<string | undefined> = [];
   #responses: TurnResult[];
   #skills: readonly string[];
@@ -1125,7 +1129,8 @@ test("Codex agents pass only turn options that remain configurable", async () =>
   assert.deepEqual(transport.openedThreads, [{ cwd: "/fake/repo" }]);
   // The liveness callback is runtime plumbing on every turn; the remaining
   // options are the configurable surface this test pins.
-  const { onFirstOutput, ...turnOptions } = transport.turns[0]?.options ?? {};
+  const { onFirstOutput, onOutput, onIdentity, onUsage, ...turnOptions } = transport.turns[0]?.options ?? {};
+  assert.ok(onOutput && onIdentity && onUsage);
   assert.equal(typeof onFirstOutput, "function");
   assert.deepEqual(turnOptions, { timeoutMs: 1_000 });
 });
@@ -1179,7 +1184,8 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
       cwd: "/fake/worktree-1"
     }
   ]);
-  const { onFirstOutput, onTranscriptEvent, ...turnOptions } = transport.turns[0]?.options ?? {};
+  const { onFirstOutput, onTranscriptEvent, onOutput, onIdentity, onUsage, ...turnOptions } = transport.turns[0]?.options ?? {};
+  assert.ok(onOutput && onIdentity && onUsage);
   assert.equal(typeof onFirstOutput, "function");
   assert.equal(typeof onTranscriptEvent, "function");
   assert.deepEqual(turnOptions, { timeoutMs: 1_000 });
@@ -4617,3 +4623,277 @@ for (const boundary of ["retry", "settlement"] as const) {
     }
   });
 }
+
+
+test("runtime supervision follows live evidence, retry spend and settlement without an archive", async () => {
+  let clock = 100;
+  const observations: Array<{ agent: LiveAgentSnapshot; clock: number; calls: number }> = [];
+  class ObservedTransport extends FakeTransport {
+    calls = 0;
+    override async runTurn(threadId: string, _prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
+      this.calls += 1;
+      const event = { threadId, turnId: String(this.calls), last: usage(7), total: usage(7), raw: {} };
+      options.onIdentity?.({ resolvedModel: "served", resolvedEffort: "medium" });
+      options.onOutput?.();
+      clock += 10;
+      options.onOutput?.();
+      options.onUsage?.(event);
+      observations.push({ agent: structuredClone(runtime.progress.snapshot().agents[0]!), clock, calls: this.calls });
+      return { ...turn(this.calls === 1 ? "" : "answer"), tokenUsageEvents: [event], resolvedModel: "served", resolvedEffort: "medium" };
+    }
+  }
+  const transport = new ObservedTransport([]);
+  const runtime = new EnsembleRuntime({
+    transport, now: () => clock, defaultMaxAttempts: 2, worktreeManager: new FakeWorktreeManager(true)
+  });
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex", model: "wanted", effort: "high", isolation: "worktree" }), "answer");
+    assert.equal(observations.length, 2);
+    for (const { agent, clock: observedClock, calls } of observations) {
+      assert.equal(agent.state, "running");
+      assert.equal(agent.requestedModel, "wanted");
+      assert.equal(agent.requestedEffort, "high");
+      assert.equal(agent.resolvedModel, "served");
+      assert.equal(agent.resolvedEffort, "medium");
+      assert.equal(agent.lastEvidenceAtMs, observedClock);
+      assert.equal(agent.spent, calls * 7);
+      assert.equal(agent.worktree, "/fake/worktree-1");
+    }
+    const snapshot = runtime.progress.snapshot();
+    assert.equal(snapshot.archiveDir, null);
+    const finished = snapshot.agents[0]!;
+    assert.equal(finished.state, "done");
+    assert.equal(finished.spent, 14, "final usage replaces, rather than duplicates, streamed usage");
+    assert.equal(finished.firstEvidenceAtMs, 100);
+    assert.equal(finished.lastEvidenceAtMs, 120);
+    assert.equal(finished.failure, null);
+    assert.equal(finished.transcript, null, "no archive means no fabricated Codex transcript path");
+  } finally { await runtime.close(); }
+});
+
+test("retained runtime failures carry the archive's own kind and message", async () => {
+  const { runtime, records } = chainRuntime([new ChainEngine("codex", [answers("")])], 1);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex" }), null);
+    const finished = runtime.progress.snapshot().agents[0]!;
+    assert.equal(finished.state, "failed");
+    assert.deepEqual(finished.failure, records.at(-1)?.attempts.at(-1)?.failure);
+    assert.equal(finished.failure?.kind, "empty-output");
+  } finally { await runtime.close(); }
+});
+
+
+test("held turns retain independent spend and reject stale observer callbacks", async () => {
+  const observers: Array<TurnStartOptions & TurnProgressObserver> = [];
+  class HeldTransport extends FakeTransport {
+    override async runTurn(threadId: string, _prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
+      observers.push(options);
+      const tokens = observers.length * 3;
+      const event = { threadId, turnId: String(observers.length), last: usage(tokens), total: usage(tokens + 100), raw: {} };
+      options.onIdentity?.({ resolvedModel: "held-model", resolvedEffort: "high" });
+      options.onOutput?.();
+      options.onUsage?.(event);
+      return { ...turn("answer"), resolvedModel: "held-model", resolvedEffort: "high", tokenUsageEvents: [event] };
+    }
+  }
+  const transport = new HeldTransport([]);
+  const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 1, worktreeManager: new FakeWorktreeManager(true) });
+  const held = runtime.createWorkerSession({ engine: "codex", isolation: "worktree" });
+  try {
+    await held.send("first");
+    await held.send("second");
+    const snapshot = runtime.progress.snapshot();
+    assert.equal(transport.openedThreads.length, 1);
+    assert.deepEqual(snapshot.agents.map((agent) => [agent.id, agent.spent, agent.worktree]), [
+      [2, 6, "/fake/worktree-1"], [1, 3, "/fake/worktree-1"]
+    ]);
+    observers[0]?.onOutput?.();
+    observers[0]?.onIdentity?.({ resolvedModel: "stale", resolvedEffort: "low" });
+    observers[0]?.onUsage?.({ threadId: "old", turnId: "old", last: usage(999), total: usage(999), raw: {} });
+    assert.deepEqual(runtime.progress.snapshot().agents, snapshot.agents);
+  } finally { await held.close(); await runtime.close(); }
+});
+
+
+for (const engine of ["claude", "codex"] as const) {
+  test(`${engine} live status names the archive's published readable transcript`, async () => {
+    const store = await mkdtemp(path.join(tmpdir(), "ensemble-status-transcript-"));
+    let release!: () => void;
+    let observed!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    const publication = new Promise<void>((resolve) => { observed = resolve; });
+    const external = path.join(store, "session.jsonl");
+    await writeFile(external, "{}\n");
+    class TranscriptEngine extends ChainEngine {
+      override createInvocation(): EngineInvocation {
+        return { runAttempt: async (context) => {
+          if (engine === "codex") context.onTranscriptEvent?.({ direction: "server", method: "output" });
+          else context.onTranscriptPath?.(external);
+          await waiting;
+          return turn("answer");
+        } };
+      }
+    }
+    const runtime = new EnsembleRuntime({ engines: new EngineRegistry([new TranscriptEngine(engine, [])]), defaultMaxAttempts: 1 });
+    const writer = await RunRecordWriter.start({
+      storeDir: store, cwd: process.cwd(), runUuid: `status-${engine}`,
+      workflowPath: path.join(store, "workflow.js"), workflowSource: "return true;", args: [], cliFlags: { jsonArgs: false }
+    });
+    runtime.setRunRecorder(writer);
+    const unsubscribe = runtime.progress.onChange(() => {
+      if (runtime.progress.snapshot().agents.some((agent) => agent.transcript !== null)) observed();
+    });
+    const call = runtime.agent("work", { engine });
+    try {
+      await Promise.race([publication, call.then(() => { throw new Error("worker settled before transcript publication"); })]);
+      const snapshot = runtime.progress.snapshot();
+      assert.equal(snapshot.archiveDir, writer.archiveDir);
+      const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+      const transcript = snapshot.agents[0]!.transcript!;
+      assert.equal(transcript, record.current_attempt.transcript);
+      assert.ok((await readFile(path.isAbsolute(transcript) ? transcript : path.join(snapshot.archiveDir!, transcript))).length > 0);
+      release();
+      assert.equal(await call, "answer");
+      assert.equal(runtime.progress.snapshot().agents[0]?.transcript, transcript);
+    } finally {
+      unsubscribe(); release(); await call; await runtime.close();
+      await writer.finish({ status: "complete", exitCode: 0, result: null });
+      await rm(store, { recursive: true, force: true });
+    }
+  });
+}
+
+
+test("a fresh retry cannot inherit an unreported served identity", async () => {
+  const engine = new ChainEngine("codex", [
+    async () => ({ ...turn(""), resolvedModel: "previous-worker", resolvedEffort: "high" }),
+    answers("answer")
+  ]);
+  const { runtime, records } = chainRuntime([engine], 2);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex" }), "answer");
+    const finished = runtime.progress.snapshot().agents[0]!;
+    assert.equal(finished.resolvedModel, null);
+    assert.equal(finished.resolvedEffort, null);
+    assert.equal(records.at(-1)?.resolvedModel, null);
+    assert.equal(records.at(-1)?.attempts[0]?.resolvedModel, "previous-worker");
+  } finally { await runtime.close(); }
+});
+
+
+test("same-engine fallback starts fresh output evidence while retaining the request", async () => {
+  let clock = 100;
+  class ObservedChain extends ChainEngine {
+    override createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
+      const invocation = super.createInvocation(prompt, options);
+      return { runAttempt: async (context) => {
+        context.onOutput?.();
+        clock += 10;
+        return invocation.runAttempt(context);
+      } };
+    }
+  }
+  const engine = new ObservedChain("codex", [codexRefusal("serverOverloaded"), answers("answer", "served-fallback")]);
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 3, now: () => clock });
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex", model: "original", fallback: [{ engine: "codex", model: "next" }] }), "answer");
+    const finished = runtime.progress.snapshot().agents[0]!;
+    assert.equal(finished.firstEvidenceAtMs, 110);
+    assert.equal(finished.lastEvidenceAtMs, 110);
+    assert.equal(finished.requestedModel, "original");
+    assert.equal(finished.resolvedModel, "served-fallback");
+    assert.equal(runtime.progress.snapshot().totals.active, 0);
+    assert.equal(runtime.progress.snapshot().totals.done, 1);
+  } finally { await runtime.close(); }
+});
+
+
+test("streamed usage survives a thrown attempt and accumulates on its retry", async () => {
+  const observations: Array<number | null> = [];
+  let calls = 0;
+  class UsageEngine extends ChainEngine {
+    override createInvocation(): EngineInvocation {
+      return { runAttempt: async (context) => {
+        calls += 1;
+        const amount = calls === 1 ? 50_000 : 10_000;
+        const event = { threadId: "usage", turnId: String(calls), last: usage(amount), total: usage(amount), raw: {} };
+        context.onUsage?.(event);
+        observations.push(runtime.progress.snapshot().agents[0]!.spent);
+        if (calls === 1) throw new Error("transport closed after usage");
+        return { ...turn("answer"), tokenUsageEvents: [event] };
+      } };
+    }
+  }
+  const { runtime, records } = chainRuntime([new UsageEngine("codex", [])], 2);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex" }), "answer");
+    assert.deepEqual(observations, [50_000, 60_000]);
+    assert.equal(runtime.progress.snapshot().agents[0]!.spent, 60_000);
+    assert.deepEqual(records.at(-1)?.attempts.map((attempt) => attempt.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0)), [50_000, 10_000]);
+  } finally { await runtime.close(); }
+});
+
+test("an attached failure with empty usage retains streamed tokens across a retry", async () => {
+  const observations: Array<number | null> = [];
+  let calls = 0;
+  class UsageEngine extends ChainEngine {
+    override createInvocation(): EngineInvocation {
+      return { runAttempt: async (context) => {
+        calls += 1;
+        const amount = calls === 1 ? 50_000 : 10_000;
+        const event = { threadId: "usage", turnId: String(calls), last: usage(amount), total: usage(amount), raw: {} };
+        context.onUsage?.(event);
+        observations.push(runtime.progress.snapshot().agents[0]!.spent);
+        if (calls === 1) {
+          throw attachPartialWorkerText(attachFailedTurnResult(new Error("final transcript unreadable"), turn("partial answer")), "partial answer");
+        }
+        return { ...turn("answer"), tokenUsageEvents: [event] };
+      } };
+    }
+  }
+  const { runtime, records } = chainRuntime([new UsageEngine("claude", [])], 2);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "claude" }), "answer");
+    assert.deepEqual(observations, [50_000, 60_000]);
+    assert.equal(runtime.progress.snapshot().agents[0]!.spent, 60_000);
+    assert.deepEqual(records.at(-1)?.attempts.map((attempt) => attempt.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0)), [50_000, 10_000]);
+    assert.equal(records.at(-1)?.attempts[0]?.rawOutput, "partial answer");
+  } finally { await runtime.close(); }
+});
+
+test("invalid observed usage cannot replace a successful attempt outcome", async () => {
+  const event = { threadId: "invalid", turnId: "1", last: usage(-1), total: usage(-1), raw: {} };
+  const { runtime } = chainRuntime([new ChainEngine("codex", [async () => ({ ...turn("answer"), tokenUsageEvents: [event] })])], 1);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex" }), "answer");
+    assert.equal(runtime.progress.snapshot().agents[0]!.state, "done");
+    assert.equal(runtime.progress.snapshot().agents[0]!.spent, null);
+  } finally { await runtime.close(); }
+});
+
+
+test("thrown Codex turns retain observed identity with and without streamed usage", async () => {
+  for (const withUsage of [true, false]) {
+    class FailingTransport extends FakeTransport {
+      override async runTurn(_threadId: string, _prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
+        options.onIdentity?.({ resolvedModel: "initial", resolvedEffort: "medium" });
+        options.onIdentity?.({ resolvedModel: "rerouted", resolvedEffort: "high" });
+        if (withUsage) options.onUsage?.({ threadId: "failed", turnId: "1", last: usage(7), total: usage(7), raw: {} });
+        throw new Error("transport closed after identity");
+      }
+    }
+    const transport = new FailingTransport([]);
+    const { runtime, records } = chainRuntime([new CodexEngineAdapter({ transport, concurrency: 1 })], 1);
+    try {
+      assert.equal(await runtime.agent("work", { engine: "codex" }), null);
+      const agent = runtime.progress.snapshot().agents[0]!;
+      assert.equal(agent.state, "failed");
+      assert.equal(agent.resolvedModel, "rerouted");
+      assert.equal(agent.resolvedEffort, "high");
+      assert.equal(agent.spent, withUsage ? 7 : null);
+      assert.equal(records.at(-1)?.resolvedModel, "rerouted");
+      assert.equal(records.at(-1)?.resolvedEffort, "high");
+      assert.equal(records.at(-1)?.attempts[0]?.resolvedModel, "rerouted");
+    } finally { await runtime.close(); }
+  }
+});

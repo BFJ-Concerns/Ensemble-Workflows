@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash, type Hash } from "node:crypto";
+import { appendFile, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -595,6 +595,9 @@ export class RunRecordWriter {
   #tmpSeq = 0;
   #writeChain: Promise<unknown> = Promise.resolve();
   #sealed = false;
+  #currentAttempts = new Map<number, { attempt: number; started_at: string; transcript: string | null }>();
+  #liveCodex = new Map<string, string>();
+  #liveCodexHashes = new Map<string, { hash: Hash; size: number }>();
 
   private constructor(archiveDir: string, cwd: string, manifest: Manifest) {
     this.archiveDir = archiveDir;
@@ -869,6 +872,79 @@ export class RunRecordWriter {
     });
   }
 
+  /** Publish execution start separately from dispatch and settlement. */
+  async recordAttemptStart(id: number, attempt: number, startedAt: string): Promise<void> {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const record = this.#agents.get(id);
+      if (record === undefined || record.status !== "in-progress") return;
+      this.#currentAttempts.set(id, { attempt, started_at: startedAt, transcript: null });
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+
+  /** Clear execution metadata before another target waits for admission. */
+  async recordAttemptEnd(id: number, attempt: number): Promise<void> {
+    await this.#serialise(async () => {
+      if (this.#sealed || this.#currentAttempts.get(id)?.attempt !== attempt) return;
+      this.#currentAttempts.delete(id);
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+
+  /** Reference Claude's own readable transcript without copying a growing file. */
+  async recordClaudeTranscript(id: number, attempt: number, transcriptPath: string): Promise<void> {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const current = this.#currentAttempts.get(id);
+      if (current?.attempt !== attempt) return;
+      await stat(transcriptPath);
+      current.transcript = transcriptPath;
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+
+  /** Append an event before publishing its archive reference. */
+  async appendCodexTranscript(id: number, attempt: number, event: unknown): Promise<void> {
+    const content = `${JSON.stringify(event)}\n`;
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const current = this.#currentAttempts.get(id);
+      if (current?.attempt !== attempt) return;
+      const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-transcript.codex.jsonl`;
+      await mkdir(path.dirname(path.join(this.archiveDir, relativePath)), { recursive: true });
+      await appendFile(path.join(this.archiveDir, relativePath), content);
+      const digest = this.#liveCodexHashes.get(relativePath) ?? { hash: createHash("sha256"), size: 0 };
+      digest.hash.update(content);
+      digest.size += Buffer.byteLength(content);
+      this.#liveCodexHashes.set(relativePath, digest);
+      this.#files.set(relativePath, {
+        path: relativePath, size: digest.size, sha256: digest.hash.copy().digest("hex")
+      });
+      this.#liveCodex.set(`${id}:${attempt}`, relativePath);
+      if (current.transcript !== relativePath) {
+        current.transcript = relativePath;
+        await this.#publishCurrentAttempt(id);
+      } else {
+        await this.#writeManifest();
+      }
+    });
+  }
+
+  /** Update live metadata without replaying settled attempt artefact writes. */
+  async #publishCurrentAttempt(id: number): Promise<void> {
+    const relativePath = `agents/${padId(id)}/agent.json`;
+    const record = JSON.parse(await readFile(path.join(this.archiveDir, relativePath), "utf8"));
+    const current = this.#currentAttempts.get(id);
+    if (current === undefined) {
+      delete record.current_attempt;
+    } else {
+      record.current_attempt = { ...current };
+    }
+    await this.#writeJson(relativePath, record);
+    await this.#writeManifest();
+  }
+
   async recordAgent(record: RuntimeAgentRecord): Promise<void> {
     // Snapshot at the boundary: the runtime keeps mutating its live record
     // between the dispatch-time write and settlement, and the manifest
@@ -886,6 +962,7 @@ export class RunRecordWriter {
 
   async #recordAgent(record: RuntimeAgentRecord): Promise<void> {
     this.#agents.set(record.id, record);
+    if (record.status !== "in-progress") this.#currentAttempts.delete(record.id);
     const agentDir = `agents/${padId(record.id)}`;
     const transcriptRefs = [];
 
@@ -902,7 +979,15 @@ export class RunRecordWriter {
         index += 1;
         const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
         const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
-        await this.#writeText(relativePath, transcript.content);
+        const liveFile = this.#files.get(relativePath);
+        const liveMatches = this.#liveCodex.get(`${record.id}:${attempt.attempt}`) === relativePath &&
+          liveFile?.sha256 === sha256(transcript.content) &&
+          (await stat(path.join(this.archiveDir, relativePath)).catch(() => null))?.size === liveFile.size;
+        if (liveMatches) {
+          await this.#trackFile(relativePath);
+        } else {
+          await this.#writeText(relativePath, transcript.content);
+        }
         transcriptRefs.push({
           attempt: attempt.attempt,
           path: relativePath,
@@ -917,6 +1002,7 @@ export class RunRecordWriter {
 
     const agentJsonPath = `${agentDir}/agent.json`;
     await this.#writeJson(agentJsonPath, {
+      ...(this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id)! } } : {}),
       schema_version: SCHEMA_VERSION,
       kind: "agent_record",
       id: record.id,
@@ -1462,8 +1548,8 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
  * snapshot as an outcome. The same ordering argument as the manifest's
  * applies — the owner was observed dead before these reads, so every write
  * the dead process made is visible, and a settled record shows its
- * terminal status and is skipped. Status resolution only: nothing else in
- * the record changes, and a record that cannot be read or written is left
+ * terminal status and is skipped. Execution metadata is removed from
+ * abandoned records; the captured content stays intact. An unreadable record is left
  * as it stands rather than ending the sweep. Returns the rewritten files'
  * refreshed table entries, keyed by archive-relative path, for the
  * caller's single manifest write.
@@ -1487,12 +1573,14 @@ async function resolveAbandonedAgentRecords(
       const agentRecord = JSON.parse(await readFile(agentJsonPath, "utf8")) as {
         status?: unknown;
         abandonment?: AbandonmentRecord;
+        current_attempt?: unknown;
       };
       if (agentRecord.status !== "in-progress") {
         continue;
       }
       agentRecord.status = "abandoned";
       agentRecord.abandonment = abandonment;
+      delete agentRecord.current_attempt;
       const content = `${canonicalJson(agentRecord)}\n`;
       await writeStandaloneText(agentJsonPath, content);
       rewritten.set(`agents/${agentEntry.name}/agent.json`, {

@@ -958,7 +958,14 @@ test("a terminal frame from an abandoned turn cannot settle the live turn on a r
       TurnTimeoutError
     );
 
-    const second = await transport.runTurn(threadId, "second turn, live", { timeoutMs: 2_000 });
+    const observed: unknown[] = [];
+    const second = await transport.runTurn(threadId, "second turn, live", {
+      timeoutMs: 2_000,
+      onTranscriptEvent: (event) => observed.push(structuredClone(event))
+    });
+    assert.deepEqual(observed, second.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)),
+      "the live observer must retain every captured frame, including abandoned-turn stragglers");
+    assert.ok(JSON.stringify(observed).includes('"turnId":"turn-1"'));
     // Settled by its own completion, not the straggler's: the fake's turn-2
     // answer arrives only after both turn-1 stragglers have been sent.
     assert.equal(second.text, "the live turn's own answer");
@@ -986,7 +993,14 @@ test("a straggler arriving before the live turn learns its id is not learned as 
       () => transport.runTurn(threadId, "first turn, abandoned", { timeoutMs: 60 }),
       TurnTimeoutError
     );
-    const second = await transport.runTurn(threadId, "second turn, live", { timeoutMs: 2_000 });
+    const observed: unknown[] = [];
+    const second = await transport.runTurn(threadId, "second turn, live", {
+      timeoutMs: 2_000,
+      onTranscriptEvent: (event) => observed.push(structuredClone(event))
+    });
+    assert.deepEqual(observed, second.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)),
+      "the live observer must retain every captured frame, including abandoned-turn stragglers");
+    assert.ok(JSON.stringify(observed).includes('"turnId":"turn-1"'));
     assert.equal(second.text, "the live turn's own answer");
   } finally {
     await transport.close();
@@ -2092,6 +2106,36 @@ test("the first output-bearing frame fires the supervisor-facing liveness callba
     // Later output frames (the completed item, turn completion) must not
     // re-fire it: once per turn is the contract.
     assert.equal(fires, 1);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("live transcript events stay ordered across concurrent threads and successive turns", async () => {
+  const codexBin = await fakeCodexTurnServer();
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threads = await Promise.all([transport.openThread({}), transport.openThread({})]);
+    const captures: unknown[][] = [[], []];
+    const results = await Promise.all(threads.map((thread, index) =>
+      transport.runTurn(thread, "hello", {
+        onTranscriptEvent: (event) => {
+          captures[index]!.push(structuredClone(event));
+          if (index === 1) throw new Error("observer failed");
+        }
+      })));
+    for (const [index, result] of results.entries()) {
+      assert.deepEqual(captures[index], result.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)),
+        "concurrent live observers must receive their own complete ordered capture");
+      assert.equal(result.text, "hello");
+    }
+    const previous = structuredClone(captures[0]);
+    const next: unknown[] = [];
+    const result = await transport.runTurn(threads[0]!, "again", {
+      onTranscriptEvent: (event) => next.push(structuredClone(event))
+    });
+    assert.deepEqual(captures[0], previous);
+    assert.deepEqual(next, result.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)));
   } finally {
     await transport.close();
   }

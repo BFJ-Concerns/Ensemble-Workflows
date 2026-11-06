@@ -1,3 +1,4 @@
+import type { LiveTranscriptObserver } from "./types.js";
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
@@ -92,7 +93,7 @@ export interface PreviousAttemptFailure {
   message: string;
 }
 
-export interface EngineAttemptContext {
+export interface EngineAttemptContext extends LiveTranscriptObserver {
   attempt: number;
   previousFailure?: PreviousAttemptFailure;
   /**
@@ -398,7 +399,9 @@ class CodexWorkerSession implements EngineWorkerSession {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(schema !== undefined ? { schema: normaliseForCodexOutputSchema(schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(context.onLiveEvidence !== undefined ? { onFirstOutput: context.onLiveEvidence } : {})
+      ...(context.onLiveEvidence !== undefined ? { onFirstOutput: context.onLiveEvidence } : {}),
+      ...(context.onTranscriptEvent !== undefined ? { onTranscriptEvent: context.onTranscriptEvent } : {}),
+      ...(context.onTranscriptPath !== undefined ? { onTranscriptPath: context.onTranscriptPath } : {})
     });
   }
 
@@ -452,13 +455,13 @@ class CodexEngineInvocation implements EngineInvocation {
     // Codex retries open a fresh thread, so the correction rides the prompt —
     // the same degraded-correction shape the opencode engine uses.
     const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
-    return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
+    return this.#runTurnInCwd(prompt, this.#options.cwd, context);
   }
 
   async #runTurnInCwd(
     prompt: string,
     cwd: string | undefined,
-    onLiveEvidence: (() => void) | undefined
+    context: EngineAttemptContext
   ): Promise<TurnResult> {
     const threadId = await openCodexThread(this.#transport, this.#options, cwd);
 
@@ -466,7 +469,9 @@ class CodexEngineInvocation implements EngineInvocation {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.schema !== undefined ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(onLiveEvidence !== undefined ? { onFirstOutput: onLiveEvidence } : {})
+      ...(context.onLiveEvidence !== undefined ? { onFirstOutput: context.onLiveEvidence } : {}),
+      ...(context.onTranscriptEvent !== undefined ? { onTranscriptEvent: context.onTranscriptEvent } : {}),
+      ...(context.onTranscriptPath !== undefined ? { onTranscriptPath: context.onTranscriptPath } : {})
     });
   }
 

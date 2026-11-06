@@ -323,7 +323,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // The high-water mark is read first so a failure past this point
         // attaches only *this* turn's text, never the previous turn's.
         const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
         this.#requireValve(await this.#controlPlane.tmuxAvailable());
         return await this.#sendTurnInSession(handle, fromIndex, context);
       }
@@ -331,7 +331,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       const correcting = previousFailure !== undefined && this.#handle !== null;
       if (correcting && (await this.#controlPlane.tmuxAvailable())) {
         const handle = this.#handle as ClaudeSessionHandle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
         return await this.#correctInSession(handle, previousFailure, fromIndex, context);
       }
       if (correcting && this.#multiTurn) {
@@ -452,7 +452,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
     }
 
-    await this.#awaitReceipt(handle, fromIndex);
+    await this.#awaitReceipt(handle, fromIndex, observers);
     this.#turnDelivered = true;
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
@@ -482,13 +482,13 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
     }
 
-    await this.#awaitReceipt(handle, fromIndex);
+    await this.#awaitReceipt(handle, fromIndex, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
 
   /** Confirm the steered worker received the message (started generating, or the transcript grew). */
-  async #awaitReceipt(handle: ClaudeSessionHandle, mark: number): Promise<void> {
+  async #awaitReceipt(handle: ClaudeSessionHandle, mark: number, observers: AttemptObservers): Promise<void> {
     const deadline = Date.now() + this.#receiptTimeoutMs;
     for (;;) {
       this.#assertOpen();
@@ -497,7 +497,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       if (status.status === "busy") {
         return;
       }
-      const transcript = await this.#tryReadTranscript(handle);
+      const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null && transcript.entries.length > mark) {
         return;
       }
@@ -569,7 +569,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 
     for (;;) {
       this.#assertOpen();
-      const transcript = await this.#tryReadTranscript(handle);
+      const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null) {
         sawLife = true;
         this.#reportUsage(handle, transcript.entries, fromIndex);
@@ -630,12 +630,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // Re-read at nudge time: entries written between the loop-top read
         // and the blocked observation would otherwise satisfy the receipt's
         // growth test immediately, acknowledging a nudge never received.
-        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
+        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
         const delivery = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
         if (!delivery.delivered) {
           throw new ClaudeValveError(`reply valve failed to inject the blocked-worker nudge: ${delivery.reason}`);
         }
-        await this.#awaitReceipt(handle, mark);
+        await this.#awaitReceipt(handle, mark, observers);
         continue;
       }
 
@@ -741,18 +741,24 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     };
   }
 
-  async #readTranscript(handle: ClaudeSessionHandle): Promise<TranscriptFile> {
+  async #readTranscript(handle: ClaudeSessionHandle, observers?: AttemptObservers): Promise<TranscriptFile> {
     const path = await this.#controlPlane.transcriptPath(handle);
     if (path === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscriptFile(path);
+    const transcript = await readTranscriptFile(path);
+    try {
+      observers?.onTranscriptPath?.(path);
+    } catch {
+      // Observability must never change the turn's outcome.
+    }
+    return transcript;
   }
 
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
-  async #tryReadTranscript(handle: ClaudeSessionHandle): Promise<TranscriptFile | null> {
+  async #tryReadTranscript(handle: ClaudeSessionHandle, observers?: AttemptObservers): Promise<TranscriptFile | null> {
     try {
-      return await this.#readTranscript(handle);
+      return await this.#readTranscript(handle, observers);
     } catch (error) {
       if (error instanceof ClaudeTranscriptError) {
         return null;
@@ -1012,7 +1018,7 @@ interface FailureEvidence {
 }
 
 /** The per-attempt observers the runtime hands an attempt (`EngineAttemptContext`'s callbacks). */
-type AttemptObservers = Pick<EngineAttemptContext, "onLiveEvidence" | "onWaiting">;
+type AttemptObservers = Pick<EngineAttemptContext, "onLiveEvidence" | "onWaiting" | "onTranscriptPath">;
 
 
 function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {

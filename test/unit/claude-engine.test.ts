@@ -1901,3 +1901,54 @@ test("a dispatch the daemon took but never registered degrades to a failed turn 
     { registrationTimeout: "dispatched session 'w' in /fake/scratch did not register within 30000ms" }
   );
 });
+
+test("Claude reports a readable transcript after an initially absent path", async () => {
+  await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
+    const lookup = controlPlane.transcriptPath.bind(controlPlane);
+    let reads = 0;
+    controlPlane.transcriptPath = async () => ++reads === 1 ? null : lookup();
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const invocation = adapter.createInvocation("go", {});
+    const paths: string[] = [];
+    const result = await invocation.runAttempt({
+      attempt: 1,
+      onTranscriptPath: (file) => {
+        paths.push(file);
+        throw new Error("observer failed");
+      }
+    });
+    assert.equal(result.text, "ok");
+    assert.ok(reads >= 2);
+    assert.ok(paths.length > 0, "transcript discovery must notify the observer after an initially absent path");
+    assert.equal(await readFile(paths[0]!, "utf8"), result.transcripts![0]!.content);
+    await invocation.close?.();
+  });
+});
+
+test("Claude reports its transcript for every held-session turn and correction", async () => {
+  await withControlPlane([
+    { assistant: { text: "first" } },
+    { assistant: { text: "second" } },
+    { assistant: { text: "corrected" } }
+  ], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const session = adapter.createSession({});
+    const paths: string[][] = [[], [], []];
+    try {
+      const first = session.beginTurn("first", {});
+      assert.equal((await first.runAttempt({ attempt: 1, onTranscriptPath: (file) => paths[0]!.push(file) })).text, "first");
+      const second = session.beginTurn("second", {});
+      assert.equal((await second.runAttempt({ attempt: 1, onTranscriptPath: (file) => paths[1]!.push(file) })).text, "second");
+      assert.equal((await second.runAttempt({
+        attempt: 2, previousFailure: { kind: "validation", message: "correct it" },
+        onTranscriptPath: (file) => paths[2]!.push(file)
+      })).text, "corrected");
+      for (const captured of paths) {
+        assert.ok(captured.length > 0, "each held turn and correction must publish its transcript path");
+        assert.ok(captured.every((file) => file === paths[0]![0]));
+      }
+    } finally {
+      await session.close();
+    }
+  });
+});

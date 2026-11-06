@@ -178,10 +178,12 @@ see [CLI](docs/cli.md).
 
 Ensemble runs Codex and Claude workers without any configuration. An optional
 file at `~/.config/ensemble/config.json` sets concurrency caps, a run-wide
-agent ceiling, where run records and status files go, extra environment
-variables for workers, and the models opencode may use. `ENSEMBLE_*`
-environment variables override the caps, the ceiling, and the run record and
-status settings. See [Configuration](docs/configuration.md).
+agent ceiling, worker scope grouping (`worker_scope`), where run records and
+status files go, extra environment variables for workers, and the models
+opencode may use. `ENSEMBLE_*` environment variables override the caps, the
+ceiling, and the run record and status settings; `ENSEMBLE_WORKER_SCOPE`
+overrides scope grouping. `--worker-scope worker|run` overrides both.
+See [Configuration](docs/configuration.md).
 
 ## Run records and live status
 

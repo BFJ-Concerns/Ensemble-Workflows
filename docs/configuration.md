@@ -171,6 +171,11 @@ or one scope shared by both engines (`run`). Codex workers are threads of one
 process, so they share a scope even in `worker` mode. `ENSEMBLE_WORKER_SCOPE`
 overrides the file; `--worker-scope worker|run` overrides both.
 
+A launcher directly in the user manager's root slice (`-.slice`) keeps its
+workers in that root slice. Its control commands also use root-slice scopes
+separate from the launcher's own scope; the root slice has no higher user
+slice.
+
 The daemon forks each Claude session in its own cgroup, and the roster
 (`claude agents --json`) names that process by `pid` shortly after registration.
 Ensemble moves the process and its descendants when the pid appears, and

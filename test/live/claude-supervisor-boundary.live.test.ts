@@ -108,7 +108,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     observations.afterSibling = afterSibling;
     observations.afterSiblingTransition = assertFixedClaudeVersion(supervisorState, afterSibling, "afterSibling");
     supervisorState = afterSibling;
-    assert.equal(containingSlice(afterSibling.identity.cgroup!), slice === null || parentSlice(slice) === "-.slice" ? null : parentSlice(slice), "the supervisor moved into the launcher's slice");
+    assert.equal(containingSlice(afterSibling.identity.cgroup!), slice === null ? null : parentSlice(slice), "the supervisor moved into the launcher's slice");
 
     await writeFile(first.paths.release, "");
     const result1 = await run1.result;
@@ -122,7 +122,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     observations.afterBox = afterBox;
     observations.afterBoxTransition = assertFixedClaudeVersion(supervisorState, afterBox, "afterBox");
     supervisorState = afterBox;
-    assert.equal(containingSlice(afterBox.identity.cgroup!), slice === null || parentSlice(slice) === "-.slice" ? null : parentSlice(slice), "the supervisor moved into the launcher's slice");
+    assert.equal(containingSlice(afterBox.identity.cgroup!), slice === null ? null : parentSlice(slice), "the supervisor moved into the launcher's slice");
     const siblingRow = await waitForRow(env, seen2.registered!.sessionId, (row) => row.pid === seen2.pid, 30_000);
     assert.ok(siblingRow !== null, "the supervisor lost its sibling when the first box ended");
     assert.equal(run2.settled, false, "the sibling ended with the first launcher's box");
@@ -137,7 +137,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     observations.afterCompletion = afterCompletion;
     observations.afterCompletionTransition = assertFixedClaudeVersion(supervisorState, afterCompletion, "afterCompletion");
     supervisorState = afterCompletion;
-    assert.equal(containingSlice(afterCompletion.identity.cgroup!), slice === null || parentSlice(slice) === "-.slice" ? null : parentSlice(slice), "the supervisor moved into the launcher's slice");
+    assert.equal(containingSlice(afterCompletion.identity.cgroup!), slice === null ? null : parentSlice(slice), "the supervisor moved into the launcher's slice");
   } finally {
     await Promise.all([first, sibling].map((probe) => writeFile(probe.paths.release, "")));
     // Stop proof-owned boxes before their private supervisor. A failed

@@ -230,8 +230,9 @@ export class SystemdWorkerScopes implements WorkerScopes {
    * sits outside the box the launcher's slice draws, whether that box is
    * the slice itself or a scope inside it. A launcher in `agents-run1.slice`
    * launches into `agents.slice`; one in `agents.slice` or `app.slice`
-   * launches into the user manager's root slice. Null where the launcher's
-   * slice is unknown: the manager's default then applies.
+   * launches into the user manager's root slice. A root-slice launcher also
+   * launches into the root slice, in a scope separate from its own. Null
+   * where the launcher's slice is unknown: the manager's default applies.
    */
   get launchSlice(): string | null {
     return this.slice === null ? null : parentSlice(this.slice);
@@ -354,10 +355,10 @@ export async function createWorkerScopes(options: CreateWorkerScopesOptions = {}
  * line (cgroup v2: `0::/user.slice/user-1000.slice/user@1000.service/agents.slice/pane.scope`).
  * Only the part below the user manager's own service counts — the slices
  * above it belong to the system manager — and a process sitting directly
- * in the user manager, or outside any user manager, has no containing
- * slice. A slice directory's name is its unit name (nesting is encoded in
- * the name itself: `agents-run1.slice` lives under `agents.slice`), so the
- * nearest `.slice` segment is the answer.
+ * in the user manager belongs to its root slice, `-.slice`. Outside any
+ * user manager the slice is unknown. A slice directory's name is its unit
+ * name: `agents-run1.slice` lives under `agents.slice`. The nearest `.slice`
+ * segment is the answer.
  */
 export function containingSlice(cgroupFile: string): string | null {
   const line = cgroupFile.split("\n").find((entry) => entry.startsWith("0::"));
@@ -375,15 +376,16 @@ export function containingSlice(cgroupFile: string): string | null {
       return segment;
     }
   }
-  return null;
+  return "-.slice";
 }
 
 /**
  * The slice a slice lives in, from systemd's naming: `agents-run1.slice`
  * lives in `agents.slice`, and a name with no dash lives in the root
- * slice, `-.slice`.
+ * slice, `-.slice`. The root slice remains its own launch destination.
  */
 export function parentSlice(slice: string): string {
+  if (slice === "-.slice") return slice;
   const name = slice.slice(0, -".slice".length);
   const dash = name.lastIndexOf("-");
   return dash === -1 ? "-.slice" : `${name.slice(0, dash)}.slice`;
@@ -428,7 +430,8 @@ function userManagerAnswers(busctlBin: string, env: NodeJS.ProcessEnv): Promise<
   });
 }
 
-function isLive(pid: number): boolean {
+/** Whether the current user can signal an existing process. */
+export function isLive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

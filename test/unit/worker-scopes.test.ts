@@ -13,6 +13,7 @@ import {
   SystemdWorkerScopes,
   containingSlice,
   createWorkerScopes,
+  isLive,
   parentSlice,
   processTree
 } from "../../src/worker-scopes.js";
@@ -27,8 +28,8 @@ test("containingSlice names the nearest slice below the user manager and nothing
   assert.equal(containingSlice(`0::${userManager}/app.slice/app-foot.slice/pane.scope\n`), "app-foot.slice");
   assert.equal(containingSlice(`0::${userManager}/agents.slice\n`), "agents.slice");
   // Directly in the user manager: the slices above it are the system manager's, never the answer.
-  assert.equal(containingSlice(`0::${userManager}/init.scope\n`), null);
-  assert.equal(containingSlice(`0::${userManager}\n`), null);
+  assert.equal(containingSlice(`0::${userManager}/init.scope\n`), "-.slice");
+  assert.equal(containingSlice(`0::${userManager}\n`), "-.slice");
   // Outside any user manager, or an unreadable file.
   assert.equal(containingSlice("0::/system.slice/foo.service\n"), null);
   assert.equal(containingSlice("0::/\n"), null);
@@ -40,6 +41,7 @@ test("parentSlice follows systemd's nesting-by-name", () => {
   assert.equal(parentSlice("app-foot-bar.slice"), "app-foot.slice");
   assert.equal(parentSlice("agents.slice"), "-.slice");
   assert.equal(parentSlice("app.slice"), "-.slice");
+  assert.equal(parentSlice("-.slice"), "-.slice");
 });
 
 test("unit names carry the label and group made unit-name safe", () => {
@@ -239,13 +241,58 @@ test("createWorkerScopes discovers the launcher's slice where the user manager a
   const scopes = await createWorkerScopes();
   assert.equal(scopes.constructor, SystemdWorkerScopes);
   // Read independently of containingSlice: the last slice segment below the
-  // user manager's service in this process's own cgroup path, or null when
-  // the process sits directly in the user manager (init.scope and the like).
+  // user manager's service in this process's own cgroup path. Direct children
+  // of the user manager belong to its root slice.
   const segments = (await readFile("/proc/self/cgroup", "utf8")).trim().slice("0::".length).split("/");
   const managerIndex = segments.findIndex((segment) => /^user@\d+\.service$/.test(segment));
   const below = managerIndex < 0 ? [] : segments.slice(managerIndex + 1);
-  const expected = below.filter((segment) => segment.endsWith(".slice")).at(-1) ?? null;
+  const expected = managerIndex < 0 ? null : below.filter((segment) => segment.endsWith(".slice")).at(-1) ?? "-.slice";
   assert.equal(scopes.slice, expected);
+});
+
+test("root-slice launchers keep workers and control commands in the root slice", async () => {
+  const moduleUrl = new URL("../../src/worker-scopes.js", import.meta.url).href;
+  const script = `
+    import { createWorkerScopes } from ${JSON.stringify(moduleUrl)};
+    import { spawn, execFile } from "node:child_process";
+    import { once } from "node:events";
+    import { readFile } from "node:fs/promises";
+    import { promisify } from "node:util";
+    const scopes = await createWorkerScopes();
+    const worker = spawn("sleep", ["infinity"], { stdio: "ignore" });
+    try {
+      const placement = await scopes.place("root", [worker.pid]);
+      if (placement.kind !== "placed") throw new Error(JSON.stringify(placement));
+      const workerSlice = await promisify(execFile)("systemctl", ["--user", "show", placement.unit, "--property=Slice", "--value"]);
+      const control = await scopes.launch("cat", ["/proc/self/cgroup"], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+      let controlCgroup = "", controlError = "";
+      control.stdout.setEncoding("utf8").on("data", chunk => { controlCgroup += chunk; });
+      control.stderr.setEncoding("utf8").on("data", chunk => { controlError += chunk; });
+      const [controlCode] = await once(control, "close");
+      console.log(JSON.stringify({
+        launcherCgroup: await readFile("/proc/self/cgroup", "utf8"),
+        workerCgroup: await readFile("/proc/" + worker.pid + "/cgroup", "utf8"),
+        workerSlice: workerSlice.stdout.trim(), controlCgroup, controlCode, controlError
+      }));
+    } finally {
+      await scopes.close();
+      worker.kill("SIGKILL");
+    }
+  `;
+  const result = await execFileAsync("systemd-run", [
+    "--user", "--scope", "--quiet", "--collect", "--slice=-.slice", "--",
+    process.execPath, "--input-type=module", "-e", script
+  ]);
+  const observed = JSON.parse(result.stdout) as {
+    launcherCgroup: string; workerCgroup: string; workerSlice: string;
+    controlCgroup: string; controlCode: number; controlError: string;
+  };
+  assert.equal(observed.workerSlice, "-.slice", "the worker escaped the root slice into the manager's default slice");
+  assert.equal(containingSlice(observed.launcherCgroup), "-.slice");
+  assert.equal(containingSlice(observed.workerCgroup), "-.slice");
+  assert.equal(observed.controlCode, 0, observed.controlError);
+  assert.equal(containingSlice(observed.controlCgroup), "-.slice");
+  assert.notEqual(observed.controlCgroup, observed.launcherCgroup, "the control command ran in the launcher's own scope");
 });
 
 test("processTree lists a process with every live descendant", async () => {
@@ -276,15 +323,6 @@ function sleeper(): ChildProcess {
 async function cgroupUnit(pid: number): Promise<string> {
   const line = (await readFile(`/proc/${pid}/cgroup`, "utf8")).trim();
   return line.slice(line.lastIndexOf("/") + 1);
-}
-
-function isLive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function collect(child: ChildProcess, input: string): Promise<{ code: number | null; stdout: string; stderr: string }> {

@@ -17559,8 +17559,9 @@ var SystemdWorkerScopes = class {
    * sits outside the box the launcher's slice draws, whether that box is
    * the slice itself or a scope inside it. A launcher in `agents-run1.slice`
    * launches into `agents.slice`; one in `agents.slice` or `app.slice`
-   * launches into the user manager's root slice. Null where the launcher's
-   * slice is unknown: the manager's default then applies.
+   * launches into the user manager's root slice. A root-slice launcher also
+   * launches into the root slice, in a scope separate from its own. Null
+   * where the launcher's slice is unknown: the manager's default applies.
    */
   get launchSlice() {
     return this.slice === null ? null : parentSlice(this.slice);
@@ -17656,9 +17657,10 @@ function containingSlice(cgroupFile) {
       return segment;
     }
   }
-  return null;
+  return "-.slice";
 }
 function parentSlice(slice) {
+  if (slice === "-.slice") return slice;
   const name = slice.slice(0, -".slice".length);
   const dash = name.lastIndexOf("-");
   return dash === -1 ? "-.slice" : `${name.slice(0, dash)}.slice`;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile, access } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile, access } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -125,6 +125,7 @@ test("status disablement and explicit directories preserve discovery and indepen
     const disabled = await runNode([bundle, quick], { ...env, ENSEMBLE_STATUS: "off", ENSEMBLE_STATUS_DIR: path.join(directory, "absent") });
     assert.equal(disabled.code, 0, disabled.stderr);
     assert.doesNotMatch(disabled.stderr, /\[status-file\]/);
+    await assert.rejects(access(path.join(directory, "data", "ensemble", "status")), { code: "ENOENT" });
     const invalid = await runNode([bundle, quick], { ...env, ENSEMBLE_STATUS_DIR: path.join(directory, "absent") });
     assert.equal(invalid.code, 2);
     assert.match(invalid.stderr, /Configured status directory/);
@@ -136,19 +137,65 @@ test("status disablement and explicit directories preserve discovery and indepen
   }
 });
 
-test("the built status surface bounds finished entries without losing totals", { timeout: 90_000 }, async () => {
+test("the built status surface retains every finished worker beyond 64 entries", { timeout: 90_000 }, async () => {
   const { directory, env } = await setup();
   try {
     const releaseFile = path.join(directory, "release");
     const workflow = path.join(directory, "workflow.mjs");
-    await writeFile(workflow, `export const meta = { name: "bounded-status" }; for (let index = 0; index < 70; index += 1) await agent("fixture", { engine: "codex" }); ${barrier(releaseFile)}`);
+    await writeFile(workflow, `export const meta = { name: "complete-status" }; for (let index = 0; index < 70; index += 1) await agent("fixture", { engine: "codex" }); ${barrier(releaseFile)}`);
     const spec = path.join(directory, "spec.json");
-    await writeFile(spec, JSON.stringify({ bundle, workflow, cwd: directory, releaseFile, workers: [], terminalTotals: 70, retainedCount: 64 }));
+    await writeFile(spec, JSON.stringify({ bundle, workflow, cwd: directory, releaseFile,
+      workers: Array.from({ length: 70 }, (_, index) => ({ id: index + 1, state: "done" })),
+      terminalTotals: 70, retainedCount: 70 }));
     const result = await runNode([consumer, spec], env, 60_000);
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).snapshot.totals.done, 70);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.snapshot.totals.done, 70);
+    assert.deepEqual(report.snapshot.agents.map((agent: { id: number }) => agent.id).sort((a: number, b: number) => a - b),
+      Array.from({ length: 70 }, (_, index) => index + 1));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+for (const claudeEntry of ["absent", "directory", "file"]) {
+  test(`the built launcher publishes in the data home before execution with .claude ${claudeEntry}`, { timeout: 60_000 }, async () => {
+    const { directory, env } = await setup();
+    try {
+      const cwd = path.join(directory, "work");
+      await mkdir(cwd);
+      const localClaude = path.join(cwd, ".claude");
+      if (claudeEntry === "directory") await mkdir(localClaude);
+      if (claudeEntry === "file") await writeFile(localClaude, "existing file");
+      const before = await readdir(cwd);
+      const statusDir = path.join(directory, "data", "ensemble", "status");
+      const workflow = path.join(directory, "workflow.mjs");
+      const releaseFile = path.join(directory, "release");
+      await writeFile(workflow, `
+        export const meta = { name: "status-before-execution" };
+        const initialFs = require("node:fs");
+        const statusDir = ${JSON.stringify(statusDir)};
+        const files = initialFs.readdirSync(statusDir);
+        if (files.length !== 1) throw new Error("initial status missing");
+        const snapshot = JSON.parse(initialFs.readFileSync(statusDir + "/" + files[0], "utf8"));
+        if (snapshot.pid !== process.pid || snapshot.state !== "running") throw new Error("invalid initial status");
+        log("status-visible-before-workflow");
+        ${barrier(releaseFile)}
+      `);
+      const spec = path.join(directory, "spec.json");
+      await writeFile(spec, JSON.stringify({ bundle, workflow, cwd, releaseFile, workers: [] }));
+      const result = await runNode([consumer, spec], env, 50_000);
+      assert.equal(result.code, 0, result.stderr);
+      const report = JSON.parse(result.stdout);
+      assert.equal(path.dirname(report.announcement.status_path), statusDir);
+      const announcementAt = report.stderr.indexOf("[status-file] ");
+      const executionAt = report.stderr.indexOf("status-visible-before-workflow");
+      assert.ok(announcementAt >= 0 && executionAt > announcementAt, report.stderr);
+      assert.deepEqual(await readdir(cwd), before, "status publication must not add project files");
+      if (claudeEntry === "directory") assert.deepEqual(await readdir(localClaude), []);
+      if (claudeEntry === "file") assert.equal(await readFile(localClaude, "utf8"), "existing file");
+      assert.deepEqual(await readdir(statusDir), [], "shutdown must remove the status file");
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+}
 
 async function waitForFile(file: string): Promise<void> {
   const deadline = Date.now() + 30_000;

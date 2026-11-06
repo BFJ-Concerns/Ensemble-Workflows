@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -33,6 +33,8 @@ for (const engine of ["claude", "codex"] as const) {
       assert.equal(init.code, 0, init.stderr);
       const commit = await runProcess("git", ["-C", repo, "-c", "user.name=Ensemble test", "-c", "user.email=ensemble@example.invalid", "commit", "--allow-empty", "-m", "initialise test repository"]);
       assert.equal(commit.code, 0, commit.stderr);
+      // Exercise the same data-home default with and without a project namespace.
+      if (engine === "claude") await mkdir(path.join(repo, ".claude"));
       const acknowledgements = path.join(directory, "observed");
       const releaseFile = path.join(directory, "finish");
       const unplaceable = path.join(directory, "not-a-repository");
@@ -88,6 +90,11 @@ for (const engine of ["claude", "codex"] as const) {
       assert.equal(report.stdout, "complete");
       const dataHome = process.env.XDG_DATA_HOME ?? path.join(process.env.HOME!, ".local", "share");
       assert.equal(path.dirname(report.announcement.status_path), path.join(dataHome, "ensemble", "status"));
+      if (engine === "claude") {
+        assert.ok((await readdir(path.join(repo, ".claude"))).every((name) => !name.startsWith("ensemble.")));
+      } else {
+        await assert.rejects(access(path.join(repo, ".claude")), { code: "ENOENT" });
+      }
       assert.equal(report.snapshot.totals.done, 4);
       assert.equal(report.snapshot.totals.failed, 1);
       assert.deepEqual(report.workers.find(([id]: [number]) => id === 5)[1].latest.failure, placementFailure(unplaceable));

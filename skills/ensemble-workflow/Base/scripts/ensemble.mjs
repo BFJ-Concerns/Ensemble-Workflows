@@ -15263,7 +15263,7 @@ function resolveAmbientSettings(input) {
     ),
     runRecordDir: resolveRunRecord(config, input.env),
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd),
+    statusDir: resolveStatus(config, input.env),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
@@ -15495,7 +15495,7 @@ function resolveRunRecordStoreDir(config, env) {
     path4.join(dataHome(env), "ensemble")
   );
 }
-function resolveStatus(config, env, cwd) {
+function resolveStatus(config, env) {
   const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
   if (!enabled.value) {
     return { value: null, layer: enabled.layer };
@@ -15504,7 +15504,7 @@ function resolveStatus(config, env, cwd) {
     env.ENSEMBLE_STATUS_DIR,
     "ENSEMBLE_STATUS_DIR",
     config?.status?.dir,
-    isDirectory(path4.join(cwd, ".claude")) ? path4.join(cwd, ".claude") : path4.join(dataHome(env), "ensemble", "status")
+    path4.join(dataHome(env), "ensemble", "status")
   );
   if (isDirectory(directory.value)) {
     return directory;
@@ -18940,7 +18940,6 @@ function delay2(ms, signal, abortError) {
 }
 
 // src/progress.ts
-var MAX_AGENTS_IN_SNAPSHOT = 64;
 var RunProgress = class {
   runId;
   #budget;
@@ -19165,10 +19164,6 @@ var RunProgress = class {
     record.failure = outcome === "failed" && failure !== null ? { ...failure } : null;
     record.waitingOn = null;
     this.#finished.set(id, record);
-    if (this.#finished.size > MAX_AGENTS_IN_SNAPSHOT) {
-      const oldest = this.#finished.keys().next().value;
-      if (oldest !== void 0) this.#finished.delete(oldest);
-    }
     this.#touch();
   }
   /** Marks the run finished. The serialiser writes one final snapshot after. */
@@ -19244,7 +19239,7 @@ var RunProgress = class {
   #agents() {
     const records = [...this.#live.values(), ...this.#finished.values()];
     records.sort((a, b) => rank(a.state) - rank(b.state) || (rank(a.state) === 2 ? b.id - a.id : a.id - b.id));
-    return records.slice(0, MAX_AGENTS_IN_SNAPSHOT).map((record) => ({
+    return records.map((record) => ({
       requestedModel: record.requestedModel,
       requestedEffort: record.requestedEffort,
       resolvedModel: record.resolvedModel,
@@ -31095,7 +31090,7 @@ async function runEnsembleCli(argv, options = {}) {
       statusWriter = new StatusFileWriter({
         progress,
         dir: statusDir,
-        createDirectory: options.statusDir === void 0 && ambientSettings.statusDir.layer === "default" && statusDir !== path13.join(cwd, ".claude"),
+        createDirectory: options.statusDir === void 0 && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
 `);

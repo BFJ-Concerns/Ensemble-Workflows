@@ -54,7 +54,12 @@ try {
     assert.equal(current.runId, announcement.run_id);
     assert.equal(current.pid, child.pid);
     assert.equal(current.owner.pid, child.pid);
-    assert.ok(current.agents.length <= 64);
+    assert.equal(current.agents.length,
+      current.totals.active + current.totals.queued + current.totals.done + current.totals.failed,
+      "every registered worker must be listed");
+    const listedIds = new Set(current.agents.map((agent) => agent.id));
+    assert.equal(listedIds.size, current.agents.length, "worker IDs must be unique");
+    for (const id of workers.keys()) assert.ok(listedIds.has(id), `worker ${id} disappeared during the run`);
     if (spec.recording !== false) assert.ok(path.isAbsolute(current.archiveDir));
     else assert.equal(current.archiveDir, null);
     if (spec.readyFile && !hasAcknowledged("ready")) {

@@ -8,25 +8,25 @@ A run can leave three kinds of file behind or alongside it:
 | Completion sentinel (`completion-sentinel.json`) | Permanent | Learn that a run has ended, and how |
 | Durable run record (the archive) | Permanent; on by default | Audit or evaluate a run after the fact |
 
-The live status file uses an existing `.claude/` directory in the run's
-working directory, or an automatically created status directory in the
-Ensemble data home. The CLI announces the exact file path on stderr.
+The live status file defaults to an automatically created status directory
+in the Ensemble data home. The CLI announces the exact file path on stderr
+before workflow execution.
 
 Where these files live, and how to turn them off, is covered in
 [Configuration](configuration.md).
 
 ## Live status
 
-While a run is active it publishes a small JSON snapshot of what it is doing —
+While a run is active it publishes a JSON snapshot of what it is doing —
 current phase, per-engine active/queued/done/failed counts, per-engine token
-spend, and a bounded worker list that retains finished workers — to its own
-file in the status directory. It uses `.claude/ensemble.<run-uuid>.local.json` under
-the run's working directory when `.claude/` exists. Otherwise it creates
+spend, and every queued, running and finished worker — to its own
+file in the status directory. By default it creates
 `$XDG_DATA_HOME/ensemble/status` (`~/.local/share/ensemble/status` by default)
-and writes there. Explicit status directories must already exist. Writes
+and writes there, independently of the working directory and any `.claude`
+entry. Explicit status directories must already exist. Writes
 are atomic, so a reader never sees a half-written file.
 
-After the first successful write, the CLI prints
+After the first successful write and before workflow execution, the CLI prints
 `[status-file] {"run_id":…, "status_path":…}` on stderr. A supervisor can
 follow that path without knowing the working directory's layout or searching
 the archive. Disable publication with `ENSEMBLE_STATUS=off`; directory
@@ -80,7 +80,7 @@ Each status file contains one JSON object with these fields:
   `opencode`). Each entry has numeric `active`, `queued`, `done`, `failed`, and
   `spent`; `cap`, `ceiling`, and `remaining` are numbers or `null`. Spend and
   ceilings are per-engine and are never summed.
-- `agents`: array capped at 64 workers: running first, then queued (oldest
+- `agents`: array of every worker: running first, then queued (oldest
   first within each), then finished (newest registered first). Each object has
   `id`, `attempt`, `engine` (codex, claude or opencode), `state` (queued,
   running, done or failed), nullable strings `label`, `phase`, `requestedModel`,
@@ -106,9 +106,8 @@ and clear waitingOn. Each attempt clears its transcript reference until
 publication, and a fresh worker's served identity is unknown until observed.
 Queued and settled workers ignore output observations. waitingOn is null or the
 background-task object described by the engine (taskId, description, sinceMs).
-The model retains at most 64 finished workers in settlement order, evicting the
-oldest settled entry; live workers remain tracked until settlement. Aggregate
-counts include evicted and serialisation-omitted workers. Finished entries have
+Every worker remains listed until the run ends; neither live nor finished
+entries are evicted or omitted from the snapshot. Finished entries have
 state done or failed and no outstanding wait. Repeated settlement is inert.
 
 - `holds`: array of open decision holds, empty when the run is not waiting.

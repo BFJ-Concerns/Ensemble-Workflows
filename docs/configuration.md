@@ -214,8 +214,9 @@ The CLI announces the exact path on stderr as
 Read that file while the run is active; normal shutdown removes it. Startup
 removes leftovers only when owner evidence proves their process has gone.
 Directory creation failure produces one `[status]` diagnostic and leaves
-publication off for that run. Other publication failures produce a diagnostic
-without stopping the run or announcing an unpublished path. If a published directory
+publication off for that run. A failed initial write also produces one diagnostic and leaves publication
+off for that run, so later activity cannot create an unannounced status file.
+Failures after publication produce a diagnostic without stopping the run. If a published directory
 is removed, the run continues quietly and resumes publication when the
 directory exists again. Disable publication with
 `ENSEMBLE_STATUS=off` or `status.enabled: false`.

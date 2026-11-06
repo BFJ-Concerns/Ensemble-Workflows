@@ -143,6 +143,7 @@ export class StatusFileWriter {
   #writing: Promise<void> | null = null;
   #dirty = false;
   #published = false;
+  #unavailable = false;
   #closed = false;
   #tmpSeq = 0;
   #heartbeat: NodeJS.Timeout;
@@ -217,7 +218,7 @@ export class StatusFileWriter {
 
   #request(): void {
     // Once closed, only close()'s own final flush may publish.
-    if (this.#closed) {
+    if (this.#closed || this.#unavailable) {
       return;
     }
     this.#dirty = true;
@@ -240,6 +241,12 @@ export class StatusFileWriter {
     try {
       await this.#writeAtomic(this.#progress.snapshot());
     } catch (error) {
+      // The CLI announces only successful initial publication. A later retry
+      // must not create a file whose path was never announced.
+      if (!this.#published) {
+        this.#unavailable = true;
+        this.#dirty = false;
+      }
       if (this.#published && isNodeError(error) && error.code === "ENOENT") {
         return;
       }

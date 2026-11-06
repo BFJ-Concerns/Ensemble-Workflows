@@ -14633,6 +14633,7 @@ var StatusFileWriter = class {
   #writing = null;
   #dirty = false;
   #published = false;
+  #unavailable = false;
   #closed = false;
   #tmpSeq = 0;
   #heartbeat;
@@ -14696,7 +14697,7 @@ var StatusFileWriter = class {
     }
   }
   #request() {
-    if (this.#closed) {
+    if (this.#closed || this.#unavailable) {
       return;
     }
     this.#dirty = true;
@@ -14716,6 +14717,10 @@ var StatusFileWriter = class {
     try {
       await this.#writeAtomic(this.#progress.snapshot());
     } catch (error) {
+      if (!this.#published) {
+        this.#unavailable = true;
+        this.#dirty = false;
+      }
       if (this.#published && isNodeError(error) && error.code === "ENOENT") {
         return;
       }

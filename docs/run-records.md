@@ -32,11 +32,11 @@ follow that path without knowing the working directory's layout or searching
 the archive. Disable publication with `ENSEMBLE_STATUS=off`; directory
 overrides and machine settings are described in [Configuration](configuration.md).
 
-Each run has its own file, so concurrent runs in one directory are each
+Each run has its own file, so concurrent runs sharing a status directory are each
 visible for their whole lifetime: a later run never overwrites an earlier
 run's view, and a run that ends removes only its own file. A file left by a
-killed run stays until the next run starts in that directory, whose startup
-sweep removes any file whose writer is provably dead (below).
+killed run stays until the next run publishing to the same status directory
+starts; its startup sweep removes any file whose writer is provably dead (below).
 
 Consumers list the directory for `ensemble.*.local.json` and parse each file
 directly; Ensemble provides no rendering command. A reader decides liveness by

@@ -380,3 +380,33 @@ test("a failed automatic directory creation reports once through updates and clo
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a failed initial write never publishes on subsequent progress changes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-initial-write-"));
+  const progress = newProgress();
+  let writes = 0;
+  const errors: unknown[] = [];
+  const writer = new StatusFileWriter({ progress, dir, fileOperations: {
+    writeFile: async (file, contents, encoding) => {
+      writes += 1;
+      if (writes === 1) {
+        progress.setPhase("changed during initial publication");
+        throw Object.assign(new Error("temporary disk failure"), { code: "ENOSPC" });
+      }
+      await writeFile(file, contents, encoding);
+    }
+  }, onError: (error) => errors.push(error) });
+  try {
+    assert.equal(await writer.ready(), false);
+    for (const phase of ["first", "second", "third"]) {
+      progress.setPhase(phase);
+      await writer.ready();
+    }
+    assert.equal(await exists(writer.path), false, "an unannounced status file must not appear");
+    assert.equal(writes, 1);
+    assert.equal(errors.length, 1);
+  } finally {
+    await writer.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

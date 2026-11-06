@@ -123,7 +123,7 @@ test("a declared worker environment reaches the dispatched claude child, above i
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { writeFile } from "node:fs/promises";
+        import { readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           await writeFile(${JSON.stringify(envPath)}, JSON.stringify({
@@ -133,6 +133,9 @@ test("a declared worker environment reaches the dispatched claude child, above i
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // Registration acknowledges the completed child observation.
+          try { JSON.parse(await readFile(${JSON.stringify(envPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "env-1",
             sessionId: ${JSON.stringify(sessionId)},

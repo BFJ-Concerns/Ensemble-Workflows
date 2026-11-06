@@ -501,9 +501,10 @@ await builder.close();
   loads no tmux configuration and does not appear among your own sessions. Without
   tmux, a follow-up or correction fails with a `claude-valve-error` naming
   the tmux step that failed, rather than silently starting a fresh worker.
-  Control-character delivery has known defects: tabs can be lost, and CRLF
-  line endings can submit the turn in fragments. Follow-ups containing those
-  characters do not currently arrive exactly.
+  Control-character delivery has known defects: tab characters are discarded.
+  CRLF line endings split one follow-up into separate submissions. The workflow
+  reports the intended turn complete while remaining lines reach the worker as
+  later input that the script does not see, so the returned result is unreliable.
 
 ## Holds
 

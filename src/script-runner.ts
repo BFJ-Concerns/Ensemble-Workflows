@@ -272,6 +272,9 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   // script may read the object it was required to declare, never mutate it.
   const declaredMeta = readWorkflowMeta(options.source, options.filename);
   assertKnownFreeIdentifiers(buildWrappedSource(extracted), options.filename);
+  if (workflowDepth === 0) {
+    await assertKnownWorkflowReferences(extracted, options.filename, cwd, options.env);
+  }
   const run = await importWorkflowBody(extracted, resolvedFilename);
   const bindings: WorkflowBodyBindings = {
     agent: hooks.agent,
@@ -600,6 +603,15 @@ interface WorkflowModuleOrigin {
   bodyLine: number;
   bodyColumn: number;
 }
+function workflowModuleOrigin(workflow: ExtractedWorkflow, filename: string): WorkflowModuleOrigin {
+  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
+  return {
+    authorPath: filename,
+    source: workflow.source,
+    bodyLine: bodyPosition.line,
+    bodyColumn: bodyPosition.column
+  };
+}
 /**
  * The module URL is content-keyed on the wrapped body alone
  * (`content-keyed-workflow-modules` — the key covers the served source
@@ -618,7 +630,14 @@ function positionAt(source: string, offset: number): { line: number; column: num
   let lineStart = 0;
   const end = Math.min(offset, source.length);
   for (let index = 0; index < end; index += 1) {
-    if (source[index] === "\n") {
+    if (source[index] === "\r") {
+      line += 1;
+      lineStart = index + 1;
+      if (source[index + 1] === "\n" && index + 1 < end) {
+        index += 1;
+        lineStart = index + 1;
+      }
+    } else if (source[index] === "\n") {
       line += 1;
       lineStart = index + 1;
     }
@@ -700,13 +719,7 @@ async function importWrappedModule(
   const digest = createHash("sha256").update(wrappedSource).digest("hex");
   const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
   registeredWorkflowModules.set(url, wrappedSource);
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  workflowModuleOrigins.set(url, {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
-  });
+  workflowModuleOrigins.set(url, workflowModuleOrigin(workflow, filename));
   return (await import(url)) as Record<string, unknown>;
 }
 
@@ -771,13 +784,7 @@ async function importWorkflowBody(workflow: ExtractedWorkflow, filename: string)
  */
 function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, filename: string): WorkflowScriptError {
   const wrappedSource = buildWrappedSource(workflow);
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  const origin: WorkflowModuleOrigin = {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
-  };
+  const origin = workflowModuleOrigin(workflow, filename);
 
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
   // An unfinished expression or an extra author `}` can make V8 reject the
@@ -788,7 +795,7 @@ function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, fi
     wrappedPosition !== null &&
     (wrappedPosition.line > bodyEnd.line ||
       (wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column));
-  const earlyClose = pointsPastBody ? prematureWrapperClose(wrappedSource, bodyEndOffset, origin) : null;
+  const earlyClose = prematureWrapperClose(wrappedSource, bodyEndOffset, origin);
   const authorPosition =
     earlyClose ??
     (pointsPastBody
@@ -800,7 +807,7 @@ function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, fi
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
 
-  const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
+  const sourceLine = workflow.source.split(/\r\n|\r|\n/)[authorPosition.line - 1] ?? "";
   const start = Math.max(0, authorPosition.column - 1 - 72);
   const end = Math.min(sourceLine.length, start + 96);
   const prefix = start > 0 ? "…" : "";
@@ -826,21 +833,38 @@ function prematureWrapperClose(
   origin: WorkflowModuleOrigin
 ): { line: number; column: number } | null {
   try {
-    const program = acorn.parse(wrappedSource.slice(0, bodyEndOffset), { ecmaVersion: "latest", sourceType: "module" });
-    const declaration = program.body[0];
-    if (
-      declaration?.type !== "ExportDefaultDeclaration" ||
-      declaration.declaration.type !== "ArrowFunctionExpression" ||
-      declaration.declaration.body.type !== "BlockStatement"
-    ) {
-      return null;
+    const tokens = acorn.tokenizer(wrappedSource.slice(0, bodyEndOffset), {
+      ecmaVersion: "latest",
+      sourceType: "module"
+    });
+    while (true) {
+      const token = tokens.getToken();
+      if (token.type.label === "eof") {
+        break;
+      }
+      if (token.type.label !== "}") {
+        continue;
+      }
+      try {
+        const program = acorn.parse(wrappedSource.slice(0, token.end), { ecmaVersion: "latest", sourceType: "module" });
+        const declaration = program.body[0];
+        if (
+          declaration?.type === "ExportDefaultDeclaration" &&
+          declaration.declaration.type === "ArrowFunctionExpression" &&
+          declaration.declaration.body.type === "BlockStatement" &&
+          declaration.declaration.body.end === token.end
+        ) {
+          const closingBrace = positionAt(wrappedSource, token.start);
+          return authorPositionOf(origin, closingBrace.line, closingBrace.column);
+        }
+      } catch {
+        // A nested brace cannot close the exported body yet.
+      }
     }
-    const closingBrace = positionAt(wrappedSource, declaration.declaration.body.end - 1);
-    return authorPositionOf(origin, closingBrace.line, closingBrace.column);
   } catch {
     // Acorn is only helping describe a rejection V8 has already made.
-    return null;
   }
+  return null;
 }
 
 /**
@@ -1129,6 +1153,142 @@ function assertKnownFreeIdentifiers(wrappedSource: string, filename: string): vo
         "(require, dynamic import(), import.meta) — a mistyped name fails here, at load, " +
         "before any worker spawns."
     );
+  }
+}
+
+/**
+ * Resolve literal calls through the wrapper's workflow hook throughout the
+ * body before evaluating it. Calls through a local binding retain ordinary
+ * JavaScript behaviour, including bindings in nested functions and blocks.
+ * Dynamic names remain runtime decisions.
+ */
+async function assertKnownWorkflowReferences(
+  workflow: ExtractedWorkflow,
+  filename: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv | undefined
+): Promise<void> {
+  const wrappedSource = buildWrappedSource(workflow);
+  let program: acorn.Program;
+  try {
+    program = acorn.parse(wrappedSource, { ecmaVersion: "latest", sourceType: "module" });
+  } catch {
+    // V8 remains the syntax authority, as in the free-identifier check.
+    return;
+  }
+  const declaration = program.body[0];
+  if (declaration?.type !== "ExportDefaultDeclaration" || declaration.declaration.type !== "ArrowFunctionExpression") {
+    return;
+  }
+  const body = declaration.declaration.body;
+  if (body.type !== "BlockStatement") {
+    return;
+  }
+  const literalCalls: Array<{ name: string; offset: number }> = [];
+  type WalkNode = { type: string; start?: number; [key: string]: unknown };
+  const asNode = (value: unknown): WalkNode | null =>
+    typeof value === "object" && value !== null && "type" in value && typeof value.type === "string"
+      ? value as WalkNode
+      : null;
+  const bindsWorkflow = (pattern: unknown): boolean => {
+    const node = asNode(pattern);
+    if (node === null) return false;
+    switch (node.type) {
+      case "Identifier": return node.name === "workflow";
+      case "RestElement": return bindsWorkflow(node.argument);
+      case "AssignmentPattern": return bindsWorkflow(node.left);
+      case "ArrayPattern": return Array.isArray(node.elements) && node.elements.some(bindsWorkflow);
+      case "ObjectPattern": return Array.isArray(node.properties) && node.properties.some((property) => {
+        const entry = asNode(property);
+        return entry?.type === "RestElement" ? bindsWorkflow(entry.argument) : bindsWorkflow(entry?.value);
+      });
+      default: return false;
+    }
+  };
+  const declarationBindsWorkflow = (statement: WalkNode, includeVar: boolean): boolean => {
+    if (statement.type === "VariableDeclaration") {
+      return (includeVar || statement.kind !== "var") &&
+        Array.isArray(statement.declarations) && statement.declarations.some((entry) => bindsWorkflow(asNode(entry)?.id));
+    }
+    return (statement.type === "FunctionDeclaration" || statement.type === "ClassDeclaration") &&
+      bindsWorkflow(statement.id);
+  };
+  const bodyBindsWorkflow = (statements: unknown, includeVar: boolean): boolean =>
+    Array.isArray(statements) && statements.some((statement) => {
+      const node = asNode(statement);
+      return node !== null && declarationBindsWorkflow(node, includeVar);
+    });
+  const hasHoistedVar = (candidate: unknown): boolean => {
+    const node = asNode(candidate);
+    if (node === null || ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression", "ClassDeclaration", "ClassExpression"].includes(node.type)) {
+      return false;
+    }
+    if (node.type === "VariableDeclaration" && node.kind === "var" && declarationBindsWorkflow(node, true)) {
+      return true;
+    }
+    return Object.entries(node).some(([key, value]) => key !== "start" && key !== "end" && hasHoistedVarIn(value));
+  };
+  const hasHoistedVarIn = (value: unknown): boolean =>
+    Array.isArray(value) ? value.some(hasHoistedVar) : hasHoistedVar(value);
+  const inspectNode = (node: unknown, shadowed: boolean): void => {
+    if (typeof node !== "object" || node === null) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((child) => inspectNode(child, shadowed));
+      return;
+    }
+    const expression = asNode(node);
+    if (expression === null) return;
+    let localShadow = shadowed;
+    if (expression.type === "BlockStatement") {
+      localShadow ||= bodyBindsWorkflow(expression.body, false);
+    } else if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(expression.type)) {
+      localShadow ||= bindsWorkflow(expression.id) ||
+        (Array.isArray(expression.params) && expression.params.some(bindsWorkflow)) ||
+        hasHoistedVar(expression.body);
+    } else if (expression.type === "CatchClause") {
+      localShadow ||= bindsWorkflow(expression.param);
+    } else if (["ForStatement", "ForInStatement", "ForOfStatement"].includes(expression.type)) {
+      const binding = asNode(expression.init ?? expression.left);
+      localShadow ||= binding !== null && declarationBindsWorkflow(binding, false);
+    } else if (expression.type === "SwitchStatement") {
+      localShadow ||= Array.isArray(expression.cases) && expression.cases.some((entry) =>
+        bodyBindsWorkflow(asNode(entry)?.consequent, false));
+    } else if (expression.type === "ClassExpression") {
+      localShadow ||= bindsWorkflow(expression.id);
+    }
+    if (expression.type === "CallExpression") {
+      const callee = asNode(expression.callee);
+      const first = Array.isArray(expression.arguments) ? asNode(expression.arguments[0]) : null;
+      if (!localShadow && callee?.type === "Identifier" && callee.name === "workflow" && first?.type === "Literal" && typeof first.value === "string") {
+        literalCalls.push({ name: first.value, offset: expression.start ?? 0 });
+      }
+    }
+    for (const [key, value] of Object.entries(expression)) {
+      if (key !== "start" && key !== "end") inspectNode(value, localShadow);
+    }
+  };
+  // The first statement binds the runtime hooks. It is the hook itself, not
+  // an author shadow, so walk only the author's statements beneath it.
+  for (const statement of body.body.slice(1)) inspectNode(statement, false);
+  const origin = workflowModuleOrigin(workflow, filename);
+  for (const call of literalCalls) {
+    try {
+      await resolveWorkflowReference(call.name, {
+        cwd,
+        ...(env !== undefined ? { env } : {}),
+        readMeta: readWorkflowMeta
+      });
+    } catch (error) {
+      if (!(error instanceof WorkflowResolutionError)) {
+        throw error;
+      }
+      const wrappedPosition = positionAt(wrappedSource, call.offset);
+      const authorPosition = authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+      const location = authorPosition === null ? filename : `${filename}:${authorPosition.line}:${authorPosition.column}`;
+      throw new WorkflowResolutionError(`${location}: ${error.message}`, { cause: error });
+    }
   }
 }
 

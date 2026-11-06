@@ -13861,7 +13861,7 @@ function defaultOpenCodeConcurrency() {
 
 // src/holds.ts
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile as readFile3, readdir as readdir2, rename as rename2, rm, stat, writeFile as writeFile2 } from "node:fs/promises";
+import { mkdir as mkdir2, readFile as readFile3, readdir as readdir2, rename as rename2, rm, stat, writeFile as writeFile2 } from "node:fs/promises";
 import { homedir, hostname as hostname2 } from "node:os";
 import path3 from "node:path";
 
@@ -14590,7 +14590,7 @@ async function readProcessStartTicks(procDir, pid) {
 }
 
 // src/status-file.ts
-import { readdir, readFile as readFile2, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile as readFile2, rename, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path2 from "node:path";
 var STATUS_FILE_PREFIX = "ensemble.";
@@ -14623,7 +14623,7 @@ async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
   }
   return true;
 }
-var DEFAULT_FILE_OPERATIONS = { readFile: readFile2, readdir, rename, unlink, writeFile };
+var DEFAULT_FILE_OPERATIONS = { mkdir, readFile: readFile2, readdir, rename, unlink, writeFile };
 var StatusFileWriter = class {
   #progress;
   #target;
@@ -14632,6 +14632,8 @@ var StatusFileWriter = class {
   #unsubscribe;
   #writing = null;
   #dirty = false;
+  #published = false;
+  #unavailable = false;
   #closed = false;
   #tmpSeq = 0;
   #heartbeat;
@@ -14650,11 +14652,26 @@ var StatusFileWriter = class {
       pid: process.pid,
       start_ticks: await readProcessStartTicks(procDir, process.pid)
     }))();
-    this.#initialSweep = this.#sweepDeadRuns(options.dir);
+    const fileOperations = this.#fileOperations;
+    this.#initialSweep = (async () => {
+      if (options.createDirectory === true) {
+        await fileOperations.mkdir(options.dir, { recursive: true });
+      }
+      await this.#sweepDeadRuns(options.dir);
+      return true;
+    })().catch((error) => {
+      this.#reportError(error);
+      return false;
+    });
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
     this.#heartbeat.unref();
     this.#request();
+  }
+  /** Wait for the initial publication before announcing its location. */
+  async ready() {
+    await this.#writing;
+    return this.#published;
   }
   /** The path this run publishes to. */
   get path() {
@@ -14668,6 +14685,9 @@ var StatusFileWriter = class {
     while (this.#writing !== null) {
       await this.#writing;
     }
+    if (!this.#published) {
+      return;
+    }
     try {
       await this.#fileOperations.unlink(this.#target);
     } catch (error) {
@@ -14677,7 +14697,7 @@ var StatusFileWriter = class {
     }
   }
   #request() {
-    if (this.#closed) {
+    if (this.#closed || this.#unavailable) {
       return;
     }
     this.#dirty = true;
@@ -14697,18 +14717,24 @@ var StatusFileWriter = class {
     try {
       await this.#writeAtomic(this.#progress.snapshot());
     } catch (error) {
-      if (!isNodeError(error) || error.code !== "ENOENT") {
-        this.#reportError(error);
+      if (!this.#published) {
+        this.#unavailable = true;
+        this.#dirty = false;
       }
+      if (this.#published && isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#reportError(error);
     }
   }
   async #writeAtomic(snapshot) {
-    await this.#initialSweep;
+    if (!await this.#initialSweep) return;
     const tmp = `${this.#target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
     const published = { ...snapshot, owner: await this.#ownerEvidence };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
 `, "utf8");
     await this.#fileOperations.rename(tmp, this.#target);
+    this.#published = true;
   }
   /**
    * The new-writer trigger for what a killed run left behind (the same
@@ -14862,7 +14888,7 @@ var HoldManager = class {
       },
       decision_path: decisionPath
     };
-    await mkdir(this.#dir, { recursive: true });
+    await mkdir2(this.#dir, { recursive: true });
     await this.#retireDeadSiblings();
     record.run_identity = this.#identity?.() ?? null;
     await publishHoldRecord(holdPath, record);
@@ -15242,7 +15268,7 @@ function resolveAmbientSettings(input) {
     ),
     runRecordDir: resolveRunRecord(config, input.env),
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd),
+    statusDir: resolveStatus(config, input.env),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
@@ -15474,7 +15500,7 @@ function resolveRunRecordStoreDir(config, env) {
     path4.join(dataHome(env), "ensemble")
   );
 }
-function resolveStatus(config, env, cwd) {
+function resolveStatus(config, env) {
   const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
   if (!enabled.value) {
     return { value: null, layer: enabled.layer };
@@ -15483,7 +15509,7 @@ function resolveStatus(config, env, cwd) {
     env.ENSEMBLE_STATUS_DIR,
     "ENSEMBLE_STATUS_DIR",
     config?.status?.dir,
-    path4.join(cwd, ".claude")
+    path4.join(dataHome(env), "ensemble", "status")
   );
   if (isDirectory(directory.value)) {
     return directory;
@@ -15493,7 +15519,7 @@ function resolveStatus(config, env, cwd) {
       `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} (from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
     );
   }
-  return { value: null, layer: directory.layer };
+  return directory;
 }
 function resolveEnabled(envValue, envKey, fileValue) {
   if (envValue !== void 0) {
@@ -15566,7 +15592,7 @@ function errorMessage(error) {
 }
 
 // src/completion-sentinel.ts
-import { mkdir as mkdir3, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir4, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
 import path7 from "node:path";
 
 // src/canonical-document.ts
@@ -15594,7 +15620,7 @@ function sha256(text) {
 
 // src/run-record.ts
 import { createHash as createHash2 } from "node:crypto";
-import { appendFile, mkdir as mkdir2, readdir as readdir3, readFile as readFile4, realpath, rename as rename3, rm as rm2, stat as stat2, writeFile as writeFile3 } from "node:fs/promises";
+import { appendFile, mkdir as mkdir3, readdir as readdir3, readFile as readFile4, realpath, rename as rename3, rm as rm2, stat as stat2, writeFile as writeFile3 } from "node:fs/promises";
 import os from "node:os";
 import path6 from "node:path";
 import { execFile } from "node:child_process";
@@ -15818,7 +15844,7 @@ var RunRecordWriter = class _RunRecordWriter {
     const namespace = await deriveNamespace(options.cwd);
     const runId = `${namespace.id}:${options.runUuid}`;
     const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
-    await mkdir2(archiveDir, { recursive: true });
+    await mkdir3(archiveDir, { recursive: true });
     const harnessRoot = await findHarnessRoot();
     const packageInfo = await readPackageInfo(harnessRoot ?? path6.dirname(fileURLToPath2(import.meta.url)));
     const harnessCommit = harnessRoot === null ? null : await git(["rev-parse", "HEAD"], harnessRoot);
@@ -16064,12 +16090,12 @@ var RunRecordWriter = class _RunRecordWriter {
   async appendCodexTranscript(id, attempt, event) {
     const content = `${JSON.stringify(event)}
 `;
-    await this.#serialise(async () => {
-      if (this.#sealed) return;
+    return await this.#serialise(async () => {
+      if (this.#sealed) return null;
       const current2 = this.#currentAttempts.get(id);
-      if (current2?.attempt !== attempt) return;
+      if (current2?.attempt !== attempt) return null;
       const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-transcript.codex.jsonl`;
-      await mkdir2(path6.dirname(path6.join(this.archiveDir, relativePath)), { recursive: true });
+      await mkdir3(path6.dirname(path6.join(this.archiveDir, relativePath)), { recursive: true });
       await appendFile(path6.join(this.archiveDir, relativePath), content);
       const digest = this.#liveCodexHashes.get(relativePath) ?? { hash: createHash2("sha256"), size: 0 };
       digest.hash.update(content);
@@ -16087,6 +16113,7 @@ var RunRecordWriter = class _RunRecordWriter {
       } else {
         await this.#writeManifest();
       }
+      return relativePath;
     });
   }
   /** Update live metadata without replaying settled attempt artefact writes. */
@@ -16277,7 +16304,7 @@ var RunRecordWriter = class _RunRecordWriter {
   }
   async #writeText(relativePath, content) {
     const destination = path6.join(this.archiveDir, relativePath);
-    await mkdir2(path6.dirname(destination), { recursive: true });
+    await mkdir3(path6.dirname(destination), { recursive: true });
     const temporary = path6.join(path6.dirname(destination), `.${path6.basename(destination)}${this.#tmpSuffix()}`);
     await writeAndRename(temporary, destination, content);
     await this.#trackFile(relativePath);
@@ -16643,7 +16670,7 @@ async function hashFile(filePath) {
   return createHash2("sha256").update(text).digest("hex");
 }
 async function writeStandaloneText(destination, content) {
-  await mkdir2(path6.dirname(destination), { recursive: true });
+  await mkdir3(path6.dirname(destination), { recursive: true });
   const temporary = path6.join(path6.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
   await writeAndRename(temporary, destination, content);
 }
@@ -16687,7 +16714,7 @@ var CompletionSentinel = class {
     let runDir;
     try {
       runDir = await resolveRunDirectory(options.storeDir, options.cwd, options.runUuid);
-      await mkdir3(runDir, { recursive: true });
+      await mkdir4(runDir, { recursive: true });
     } catch (error) {
       onError(new SentinelUnavailableError(`no sentinel will be written for this run \u2014 cannot create ${sentinelDirectory(options, error)}: ${causeMessage(error)}`, { cause: error }));
       return null;
@@ -16733,7 +16760,7 @@ var CompletionSentinel = class {
     };
     payload.integrity.sentinel_sha256 = sha256(canonicalJson(payload));
     try {
-      await mkdir3(path7.dirname(this.#path), { recursive: true });
+      await mkdir4(path7.dirname(this.#path), { recursive: true });
       const temporary = `${this.#path}.${process.pid}.tmp`;
       try {
         await writeFile4(temporary, `${canonicalJson(payload)}
@@ -16918,7 +16945,7 @@ import path9 from "node:path";
 // src/worktree-isolation.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { execFile as execFile2 } from "node:child_process";
-import { mkdir as mkdir4, rmdir } from "node:fs/promises";
+import { mkdir as mkdir5, rmdir } from "node:fs/promises";
 import path8 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var execFileAsync2 = promisify2(execFile2);
@@ -16931,7 +16958,7 @@ var GitWorktreeIsolationManager = class {
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
     const worktreePath = path8.join(path8.dirname(repoRoot), `${path8.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
-    await mkdir4(path8.dirname(worktreePath), { recursive: true });
+    await mkdir5(path8.dirname(worktreePath), { recursive: true });
     await git2(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
     const baseCommit = (await git2(worktreePath, ["rev-parse", "HEAD"])).trim();
     this.#worktreeRoots.set(worktreePath, repoRoot);
@@ -18254,6 +18281,8 @@ var ClaudeEngineInvocation = class {
   #blockedRecoveryBound;
   #namePrefix;
   #handle = null;
+  #resolvedModel = null;
+  #resolvedEffort = null;
   #budgetEventCounter = 0;
   #abortController = new AbortController();
   #closed = false;
@@ -18292,13 +18321,20 @@ var ClaudeEngineInvocation = class {
     };
   }
   runAttempt(context) {
-    const settlement = this.#runAttempt(context);
+    const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#settlement === settlement) {
         this.#settlement = null;
       }
     });
+  }
+  #withObservedIdentity(result) {
+    return {
+      ...result,
+      ...result.resolvedModel === void 0 && this.#resolvedModel !== null ? { resolvedModel: this.#resolvedModel } : {},
+      ...result.resolvedEffort === void 0 && this.#resolvedEffort !== null ? { resolvedEffort: this.#resolvedEffort } : {}
+    };
   }
   async #runAttempt(context) {
     this.#assertOpen();
@@ -18333,7 +18369,7 @@ var ClaudeEngineInvocation = class {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
       if (error instanceof EngineShutdownError && evidence !== null) {
-        attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+        attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       }
       if (error instanceof ClaudeWorkerError) {
         if (!this.#multiTurn) {
@@ -18360,6 +18396,12 @@ var ClaudeEngineInvocation = class {
     await this.#closePromise;
   }
   async #dispatchAndCollect(previousFailure, observers) {
+    this.#resolvedModel = null;
+    this.#resolvedEffort = null;
+    try {
+      observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null });
+    } catch {
+    }
     const denyRules = permissionDenyRulesFor(this.#options.strip);
     const handle = await this.#controlPlane.dispatch({
       prompt: this.#buildDispatchPrompt(previousFailure),
@@ -18380,7 +18422,7 @@ var ClaudeEngineInvocation = class {
       if (evidence !== null) {
         this.#attachWorkerText(error, evidence, 0);
       }
-      attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+      attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       await this.#teardown();
       throw error;
     }
@@ -18485,6 +18527,7 @@ var ClaudeEngineInvocation = class {
     let absences = 0;
     let settledPolls = 0;
     let evidenceReported = false;
+    let assistantEvidence = "";
     let waitingOn = null;
     let awaitingTask = false;
     for (; ; ) {
@@ -18492,7 +18535,18 @@ var ClaudeEngineInvocation = class {
       const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null) {
         sawLife = true;
-        this.#reportUsage(handle, transcript.entries, fromIndex);
+        this.#reportUsage(handle, transcript.entries, fromIndex, observers);
+        try {
+          this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
+          this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
+          observers.onIdentity?.({ resolvedModel: this.#resolvedModel, resolvedEffort: this.#resolvedEffort });
+          const evidence = JSON.stringify(transcript.entries.slice(fromIndex).filter((entry) => entry.type === "assistant"));
+          if (evidence !== assistantEvidence && hasAssistantEntrySince(transcript.entries, fromIndex)) {
+            assistantEvidence = evidence;
+            observers.onOutput?.();
+          }
+        } catch {
+        }
         if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
           evidenceReported = true;
           try {
@@ -18701,7 +18755,7 @@ var ClaudeEngineInvocation = class {
    * and the archived event's `total` is the same figure the agent record's
    * usage summarises — budget and archive read one arithmetic.
    */
-  #reportUsage(handle, entries, fromIndex) {
+  #reportUsage(handle, entries, fromIndex, observers) {
     const total = usageSince(entries, fromIndex);
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
@@ -18711,6 +18765,10 @@ var ClaudeEngineInvocation = class {
     const event = this.#usageEvent(handle, last, total);
     if (event === null) {
       return;
+    }
+    try {
+      observers?.onUsage?.(event);
+    } catch {
     }
     this.#onEvent?.({
       method: "thread/tokenUsage/updated",
@@ -18890,12 +18948,13 @@ function delay2(ms, signal, abortError) {
 }
 
 // src/progress.ts
-var MAX_AGENTS_IN_SNAPSHOT = 64;
 var RunProgress = class {
   runId;
   #budget;
   #now;
   #pid;
+  #archiveDir = null;
+  #finished = /* @__PURE__ */ new Map();
   #workflow = null;
   #currentPhase = null;
   #state = "running";
@@ -18937,6 +18996,39 @@ var RunProgress = class {
     this.#counters(engine).cap = cap;
     this.#touch();
   }
+  setArchiveDir(path15) {
+    this.#archiveDir = path15;
+    this.#touch();
+  }
+  /** Publishes only observed identity; served values must not echo the request. */
+  noteAgentIdentity(id, identity) {
+    const record = this.#live.get(id);
+    if (record === void 0) return;
+    Object.assign(record, identity);
+    this.#touch();
+  }
+  noteAgentTranscript(id, path15) {
+    const record = this.#live.get(id);
+    if (record === void 0) return;
+    record.transcript = path15;
+    this.#touch();
+  }
+  noteAgentWorktree(id, path15) {
+    const record = this.#live.get(id);
+    if (record === void 0) return;
+    record.worktree = path15;
+    this.#touch();
+  }
+  /** Cumulative worker tokens across attempts and targets; null means unobserved. */
+  noteAgentSpend(id, spent) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.spent === spent) return;
+    if (spent !== null && (!Number.isFinite(spent) || spent < 0)) {
+      throw new RangeError("Worker spend must be finite and non-negative");
+    }
+    record.spent = spent;
+    this.#touch();
+  }
   setWorkflow(name) {
     this.#workflow = name;
     this.#touch();
@@ -18953,6 +19045,16 @@ var RunProgress = class {
     const id = this.#nextAgentId += 1;
     this.#live.set(id, {
       id,
+      requestedModel: null,
+      requestedEffort: null,
+      resolvedModel: null,
+      resolvedEffort: null,
+      transcript: null,
+      worktree: null,
+      spent: null,
+      lastEvidenceAtMs: null,
+      finishedAtMs: null,
+      failure: null,
       engine: input.engine,
       label: input.label,
       phase: input.phase ?? this.#currentPhase,
@@ -18988,6 +19090,10 @@ var RunProgress = class {
     record.state = "queued";
     record.startedAt = null;
     record.firstEvidenceAt = null;
+    record.lastEvidenceAtMs = null;
+    record.resolvedModel = null;
+    record.resolvedEffort = null;
+    record.transcript = null;
     record.waitingOn = null;
     this.#counters(engine).queued += 1;
     this.#touch();
@@ -19007,15 +19113,17 @@ var RunProgress = class {
   }
   /**
    * Records the first observed sign of worker output for a live agent.
-   * Idempotent — the earliest observation wins — so engines may report on
-   * every attempt without the consumer losing the original timestamp.
+   * Each observation advances the last-output stamp; the first stamp stays fixed
+   * across retries on the same target.
    */
   noteAgentEvidence(id) {
     const record = this.#live.get(id);
-    if (record === void 0 || record.firstEvidenceAt !== null) {
+    if (record === void 0 || record.state !== "running") {
       return;
     }
-    record.firstEvidenceAt = this.#now();
+    const now = this.#now();
+    record.firstEvidenceAt ??= now;
+    record.lastEvidenceAtMs = now;
     this.#touch();
   }
   /**
@@ -19042,7 +19150,7 @@ var RunProgress = class {
     this.#touch();
   }
   /** Retires a worker, tallying it as done or failed and freeing its slot. */
-  settleAgent(id, outcome) {
+  settleAgent(id, outcome, failure = null) {
     const record = this.#live.get(id);
     if (record === void 0) {
       return;
@@ -19059,6 +19167,11 @@ var RunProgress = class {
     } else {
       counters.failed += 1;
     }
+    record.state = outcome;
+    record.finishedAtMs = this.#now();
+    record.failure = outcome === "failed" && failure !== null ? { ...failure } : null;
+    record.waitingOn = null;
+    this.#finished.set(id, record);
     this.#touch();
   }
   /** Marks the run finished. The serialiser writes one final snapshot after. */
@@ -19115,9 +19228,10 @@ var RunProgress = class {
       totals.failed += counters.failed;
     }
     return {
-      schema: 2,
+      schema: 3,
       runId: this.runId,
       pid: this.#pid,
+      archiveDir: this.#archiveDir,
       workflow: this.#workflow,
       state: this.#state,
       startedAt: this.#startedAt,
@@ -19126,14 +19240,24 @@ var RunProgress = class {
       currentPhase: this.#currentPhase,
       totals,
       engines,
-      agents: this.#liveAgents(),
+      agents: this.#agents(),
       holds: [...this.#openHolds.values()]
     };
   }
-  #liveAgents() {
-    const records = [...this.#live.values()];
-    records.sort((a, b) => rank(a.state) - rank(b.state) || a.id - b.id);
-    return records.slice(0, MAX_AGENTS_IN_SNAPSHOT).map((record) => ({
+  #agents() {
+    const records = [...this.#live.values(), ...this.#finished.values()];
+    records.sort((a, b) => rank(a.state) - rank(b.state) || (rank(a.state) === 2 ? b.id - a.id : a.id - b.id));
+    return records.map((record) => ({
+      requestedModel: record.requestedModel,
+      requestedEffort: record.requestedEffort,
+      resolvedModel: record.resolvedModel,
+      resolvedEffort: record.resolvedEffort,
+      transcript: record.transcript,
+      worktree: record.worktree,
+      spent: record.spent,
+      lastEvidenceAtMs: record.lastEvidenceAtMs,
+      finishedAtMs: record.finishedAtMs,
+      failure: record.failure === null ? null : { ...record.failure },
       id: record.id,
       engine: record.engine,
       label: record.label,
@@ -19162,7 +19286,7 @@ var RunProgress = class {
   }
 };
 function rank(state) {
-  return state === "running" ? 0 : 1;
+  return state === "running" ? 0 : state === "queued" ? 1 : 2;
 }
 
 // src/app-server.ts
@@ -19423,6 +19547,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     }
     const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
     state.onTranscriptEvent = options.onTranscriptEvent;
+    state.progress = options;
+    this.#reportTurnIdentity(threadId, state);
     this.#turns.set(threadId, state);
     for (const event of this.#transcripts.get(threadId).events) {
       this.#observeTranscriptEvent(state, event);
@@ -19677,6 +19803,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
           this.#disarmRetryPromiseSilenceDeadline(turn);
           this.#disarmFirstOutputDeadline(turn);
           this.#noteTurnFirstOutput(turn);
+          try {
+            turn.progress.onOutput?.();
+          } catch {
+          }
         }
       }
       this.#sendApprovalDenial(id);
@@ -19732,6 +19862,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       if (isOutputBearingTurnFrame(method)) {
         this.#disarmFirstOutputDeadline(turn);
         this.#noteTurnFirstOutput(turn);
+        try {
+          turn.progress.onOutput?.();
+        } catch {
+        }
       }
     }
     const now = Date.now();
@@ -19749,6 +19883,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       const transcript = this.#transcripts.get(threadId);
       if (transcript !== void 0 && typeof toModel === "string" && toModel.length > 0) {
         transcript.resolvedModel = toModel;
+        this.#reportTurnIdentity(threadId, turn);
       }
       return;
     }
@@ -19779,6 +19914,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       const event = tokenUsageEventFromParams(params);
       if (event !== null) {
         turn.tokenUsageEvents.push(event);
+        try {
+          turn.progress.onUsage?.(event);
+        } catch {
+        }
       }
       return;
     }
@@ -19934,6 +20073,14 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       turn.firstOutputDeadline = void 0;
     }
   }
+  #reportTurnIdentity(threadId, turn) {
+    const identity = this.#transcripts.get(threadId);
+    if (identity === void 0) return;
+    try {
+      turn.progress.onIdentity?.({ resolvedModel: identity.resolvedModel, resolvedEffort: identity.resolvedEffort });
+    } catch {
+    }
+  }
   /**
    * Fire the supervisor-facing first-output callback, once per turn. Called
    * only from the frame-driven sites (an output-bearing notification, a
@@ -20069,6 +20216,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       startedAt: Date.now(),
       firstDeltaAt: null,
       firstOutputSeen: false,
+      progress: {},
       onFirstOutput,
       onTranscriptEvent: void 0,
       completedAt: null,
@@ -21523,7 +21671,7 @@ var CodexWorkerSession = class {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...schema !== void 0 ? { schema: normaliseForCodexOutputSchema(schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {},
+      ...codexProgressObservers(context),
       ...context.onTranscriptEvent !== void 0 ? { onTranscriptEvent: context.onTranscriptEvent } : {},
       ...context.onTranscriptPath !== void 0 ? { onTranscriptPath: context.onTranscriptPath } : {}
     });
@@ -21572,12 +21720,20 @@ var CodexEngineInvocation = class {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {},
+      ...codexProgressObservers(context),
       ...context.onTranscriptEvent !== void 0 ? { onTranscriptEvent: context.onTranscriptEvent } : {},
       ...context.onTranscriptPath !== void 0 ? { onTranscriptPath: context.onTranscriptPath } : {}
     });
   }
 };
+function codexProgressObservers(context) {
+  return {
+    ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {},
+    ...context.onOutput !== void 0 ? { onOutput: context.onOutput } : {},
+    ...context.onIdentity !== void 0 ? { onIdentity: context.onIdentity } : {},
+    ...context.onUsage !== void 0 ? { onUsage: context.onUsage } : {}
+  };
+}
 var ClaudeEngineAdapter = class {
   name = "claude";
   concurrency;
@@ -22100,6 +22256,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   setRunRecorder(recorder) {
     this.#runRecorder = recorder;
+    this.progress.setArchiveDir(recorder?.archiveDir ?? null);
   }
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
   notePhase(title) {
@@ -22439,6 +22596,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new SessionClosedError();
     }
     agentRecord.resolvedCwd = state.placement.cwd;
+    this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
     agentRecord.isolation = options.isolation ?? null;
     const createSession = state.engine.createSession;
     if (createSession === void 0) {
@@ -22596,6 +22754,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
               return new ChainAdvance(target.engine);
             }
             agentRecord.concurrencyGroup = admittedEngine.name;
+            if (position.next > 0) {
+              this.progress.requeueAgent(agentId, admittedEngine.name);
+              this.progress.startAgent(agentId);
+              agentRecord.resolvedModel = null;
+              agentRecord.resolvedEffort = null;
+              this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
+              this.progress.noteAgentWorktree(agentId, null);
+            }
             const settled = await runTarget(target, admittedEngine, ledger, position.next + 1 < targets.length);
             if (settled.status !== "refused") {
               return settled;
@@ -22643,7 +22809,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
       );
     } catch (error) {
       if (!started) {
-        this.progress.settleAgent(agentId, "failed");
         this.#settleTerminalStatus(agentRecord, error, "queued");
         agentRecord.queuedMs += Math.max(0, Date.now() - queuedAt);
         await this.#recordSettlementSafely(agentId, agentRecord);
@@ -22668,7 +22833,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const executionEndedAt = Date.now();
       agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
-      this.progress.settleAgent(agentId, outcome);
       if (outcome === "done") {
         agentRecord.status = "complete";
       } else {
@@ -22695,7 +22859,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const executionEndedAt = Date.now();
       agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
-      this.progress.settleAgent(agentId, "failed");
       this.#settleTerminalStatus(agentRecord, error);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
@@ -22832,6 +22995,19 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * surface as an event the CLI logs to stderr.
    */
   async #recordAgentSafely(record) {
+    this.progress.noteAgentIdentity(record.id, {
+      requestedModel: record.model,
+      requestedEffort: record.effort,
+      resolvedModel: record.resolvedModel,
+      resolvedEffort: record.resolvedEffort
+    });
+    if (record.status !== "in-progress") {
+      this.progress.settleAgent(
+        record.id,
+        record.status === "complete" ? "done" : "failed",
+        record.terminationCause ?? attemptedFailureAccount(record)
+      );
+    }
     await this.#recordArchiveWriteSafely(record.id, async () => {
       await this.#runRecorder?.recordAgent(record);
     });
@@ -22851,10 +23027,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /** Bind transcript callbacks to one attempt and drain them before its outcome is recorded. */
   async #runRecordedAttempt(engine, invocation, context, agentId, startedAt) {
     const recorder = this.#runRecorder;
-    if (recorder === null || engine === "opencode") {
-      return invocation.runAttempt(context);
-    }
-    await this.#recordArchiveWriteSafely(agentId, () => recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
+    const record = this.#unsettledAgentRecords.get(agentId)?.record;
+    const previousSpend = record?.attempts.flatMap((attempt) => attempt.tokenUsageEvents).reduce((sum, event) => sum + event.last.totalTokens, 0) ?? 0;
+    let attemptSpend = 0;
+    const observedUsage = [];
+    let observedModel = null;
+    let observedEffort = null;
+    let result;
     let active = true;
     let transcriptPath;
     const pending = /* @__PURE__ */ new Set();
@@ -22864,29 +23043,102 @@ var EnsembleRuntime = class _EnsembleRuntime {
       pending.add(operation);
       void operation.then(() => pending.delete(operation));
     };
+    if (recorder !== null && engine !== "opencode") {
+      await this.#recordArchiveWriteSafely(agentId, () => recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
+    }
+    this.progress.noteAgentTranscript(agentId, null);
+    if (record?.session === null && engine !== "claude") {
+      this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
+    }
     try {
-      return await invocation.runAttempt({
+      result = await invocation.runAttempt({
         ...context,
-        ...engine === "codex" ? {
-          onTranscriptEvent: (event) => enqueue(() => recorder.appendCodexTranscript(agentId, context.attempt, event))
-        } : {
+        onLiveEvidence: () => {
+          if (active) context.onLiveEvidence?.();
+        },
+        onWaiting: (wait) => {
+          if (active) context.onWaiting?.(wait);
+        },
+        onOutput: () => {
+          if (active) this.progress.noteAgentEvidence(agentId);
+        },
+        onIdentity: (identity) => {
+          if (!active) return;
+          observedModel = identity.resolvedModel;
+          observedEffort = identity.resolvedEffort;
+          this.progress.noteAgentIdentity(agentId, identity);
+        },
+        onUsage: (event) => {
+          if (!active) return;
+          observedUsage.push(event);
+          attemptSpend += event.last.totalTokens;
+          this.progress.noteAgentSpend(agentId, previousSpend + attemptSpend);
+        },
+        ...engine === "codex" && recorder !== null ? {
+          onTranscriptEvent: (event) => enqueue(async () => {
+            const path15 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            if (path15 != null) this.progress.noteAgentTranscript(agentId, path15);
+          })
+        } : engine === "claude" ? {
           onTranscriptPath: (path15) => {
             if (path15 === transcriptPath || !active) return;
             transcriptPath = path15;
+            if (recorder === null) {
+              this.progress.noteAgentTranscript(agentId, path15);
+              return;
+            }
             enqueue(async () => {
               try {
                 await recorder.recordClaudeTranscript(agentId, context.attempt, path15);
+                this.progress.noteAgentTranscript(agentId, path15);
               } catch (error) {
                 transcriptPath = void 0;
                 throw error;
               }
             });
           }
-        }
+        } : {}
       });
+      return result;
+    } catch (error) {
+      result = failedTurnResultOf(error) ?? void 0;
+      if (result === void 0 && error instanceof Error && (observedUsage.length > 0 || observedModel !== null || observedEffort !== null)) {
+        const transcript = partialTranscriptOf(error);
+        const text = partialWorkerTextOf(error) ?? "";
+        result = {
+          text,
+          deltaText: text,
+          durationMs: null,
+          firstDeltaMs: firstDeltaMsOf(error),
+          items: {},
+          tokenUsageEvents: observedUsage,
+          ...observedModel === null ? {} : { resolvedModel: observedModel },
+          ...observedEffort === null ? {} : { resolvedEffort: observedEffort },
+          ...transcript === null ? {} : { transcripts: [transcript] }
+        };
+        attachFailedTurnResult(error, result);
+      }
+      throw error;
     } finally {
       active = false;
       await Promise.all(pending);
+      try {
+        if (result !== void 0) {
+          if (result.tokenUsageEvents.length === 0 && observedUsage.length > 0) {
+            result.tokenUsageEvents = [...observedUsage];
+          }
+          if (record !== void 0) {
+            this.progress.noteAgentIdentity(agentId, {
+              resolvedModel: result.resolvedModel ?? (record.session === null ? null : record.resolvedModel),
+              resolvedEffort: result.resolvedEffort ?? (record.session === null ? null : record.resolvedEffort)
+            });
+          }
+          if (result.tokenUsageEvents.length > 0) {
+            this.progress.noteAgentSpend(agentId, previousSpend + result.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0));
+          }
+        }
+      } catch {
+      }
     }
   }
   async #recordSettlementSafely(agentId, record) {
@@ -23085,6 +23337,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   async #runAgent(engine, prompt, options, agentId, agentRecord, target, ledger, chainRemains) {
     const placement = await this.#placement.open(options);
     agentRecord.resolvedCwd = placement.cwd;
+    this.progress.noteAgentWorktree(agentId, placement.worktree?.path ?? null);
     agentRecord.isolation = options.isolation ?? null;
     this.#recordStripRoutesFor(agentRecord, engine, options.strip);
     let invocation;
@@ -23658,11 +23911,11 @@ function rejectBlankHoldScope(holdScope) {
   }
 }
 function recordTurnMetadata(record, result) {
-  if (result.resolvedModel !== void 0) {
-    record.resolvedModel = result.resolvedModel;
+  if (result.resolvedModel !== void 0 || record.session === null) {
+    record.resolvedModel = result.resolvedModel ?? null;
   }
-  if (result.resolvedEffort !== void 0) {
-    record.resolvedEffort = result.resolvedEffort;
+  if (result.resolvedEffort !== void 0 || record.session === null) {
+    record.resolvedEffort = result.resolvedEffort ?? null;
   }
   if (result.transcriptCapture !== void 0) {
     record.transcriptCapture = result.transcriptCapture;
@@ -30848,11 +31101,19 @@ async function runEnsembleCli(argv, options = {}) {
       statusWriter = new StatusFileWriter({
         progress,
         dir: statusDir,
+        createDirectory: options.statusDir === void 0 && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
 `);
         }
       });
+      if (await statusWriter.ready()) {
+        try {
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: runtimeRunId, status_path: statusWriter.path })}
+`);
+        } catch {
+        }
+      }
     }
     runtime.onEvent((event) => {
       if (event.method === "claude/unpinnedModel") {
@@ -31034,9 +31295,6 @@ async function runEnsembleCli(argv, options = {}) {
     try {
       try {
         progress?.finish();
-        if (statusWriter !== null) {
-          await statusWriter.close();
-        }
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
           await runtime.close(
@@ -31051,6 +31309,9 @@ async function runEnsembleCli(argv, options = {}) {
         teardownError = describeError(error);
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError2(error)}
 `);
+      }
+      if (statusWriter !== null) {
+        await statusWriter.close();
       }
       teardownError ??= judgeLateEnding();
       try {

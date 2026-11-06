@@ -180,7 +180,7 @@ export function resolveAmbientSettings(input: {
     ) as Record<EngineName, Resolved<number>>,
     runRecordDir: resolveRunRecord(config, input.env),
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd),
+    statusDir: resolveStatus(config, input.env),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
@@ -504,8 +504,7 @@ function resolveRunRecordStoreDir(
 
 function resolveStatus(
   config: MachineConfig | null,
-  env: NodeJS.ProcessEnv,
-  cwd: string
+  env: NodeJS.ProcessEnv
 ): Resolved<string | null> {
   const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
   if (!enabled.value) {
@@ -515,23 +514,18 @@ function resolveStatus(
     env.ENSEMBLE_STATUS_DIR,
     "ENSEMBLE_STATUS_DIR",
     config?.status?.dir,
-    path.join(cwd, ".claude")
+    path.join(dataHome(env), "ensemble", "status")
   );
   if (isDirectory(directory.value)) {
     return directory;
   }
   if (directory.layer !== "default") {
-    // An explicitly configured layer fails loud on malformation. A
-    // named directory that does not exist would otherwise publish nothing
-    // at exit 0 — the operator asked for observability and silently got
-    // none. Only the *default* location (`<cwd>/.claude`) opts out by
-    // absence: its existence is the publication opt-in.
     throw new AmbientConfigError(
       `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} ` +
         `(from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
     );
   }
-  return { value: null, layer: directory.layer };
+  return directory;
 }
 
 function resolveEnabled(

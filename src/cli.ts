@@ -421,10 +421,18 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       statusWriter = new StatusFileWriter({
         progress,
         dir: statusDir,
+        createDirectory: options.statusDir === undefined && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError(error)}\n`);
         }
       });
+      if (await statusWriter.ready()) {
+        try {
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: runtimeRunId, status_path: statusWriter.path })}\n`);
+        } catch {
+          // A broken supervision stream cannot fail a run that published status.
+        }
+      }
     }
 
     runtime.onEvent((event) => {
@@ -656,9 +664,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // Tear workers down while the archive is still open so their terminal
         // status can replace the dispatch-time snapshot before the run is sealed.
         progress?.finish();
-        if (statusWriter !== null) {
-          await statusWriter.close();
-        }
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
           // A run whose body returned cleanly did not fail, so the workers it
@@ -681,6 +686,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // app-server death must not be attributed to the author's own
         // calls with a stack into the bundle.
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError(error)}\n`);
+      }
+      if (statusWriter !== null) {
+        await statusWriter.close();
       }
       teardownError ??= judgeLateEnding();
       // The seal runs even when worker teardown failed: close() rejects by

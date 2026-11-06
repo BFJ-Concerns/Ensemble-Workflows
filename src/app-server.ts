@@ -54,7 +54,15 @@ interface RpcMessage {
   error?: unknown;
 }
 
+/** Observed turn evidence; callbacks are best-effort and never control execution. */
+export interface TurnProgressObserver {
+  onOutput?: () => void;
+  onIdentity?: (identity: { resolvedModel: string | null; resolvedEffort: string | null }) => void;
+  onUsage?: (event: TokenUsageEvent) => void;
+}
+
 interface TurnState {
+  progress: TurnProgressObserver;
   threadId: string;
   /** Learned from turn/start or the first turn-correlated inbound frame; ephemeral threads run one turn. */
   turnId: string | undefined;
@@ -194,7 +202,7 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
     return transport.listSkills(cwd);
   }
 
-  async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
+  async runTurn(threadId: string, prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
     const transport = await this.#transport();
     return transport.runTurn(threadId, prompt, options);
   }
@@ -457,7 +465,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     return [...names].sort();
   }
 
-  async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
+  async runTurn(threadId: string, prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
     // A held Codex session reuses its thread, but each runtime turn writes a
     // separate agent record. #completeTurn prunes the previous turn's buffer,
     // so register a fresh capture before a follow-up turn begins rather than
@@ -471,6 +479,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
     const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
     state.onTranscriptEvent = options.onTranscriptEvent;
+    state.progress = options;
+    this.#reportTurnIdentity(threadId, state);
     this.#turns.set(threadId, state);
     for (const event of this.#transcripts.get(threadId)!.events) {
       this.#observeTranscriptEvent(state, event);
@@ -782,6 +792,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
           this.#disarmRetryPromiseSilenceDeadline(turn);
           this.#disarmFirstOutputDeadline(turn);
           this.#noteTurnFirstOutput(turn);
+          try { turn.progress.onOutput?.(); } catch { /* Observability cannot fail a turn. */ }
         }
       }
       this.#sendApprovalDenial(id);
@@ -859,6 +870,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       if (isOutputBearingTurnFrame(method)) {
         this.#disarmFirstOutputDeadline(turn);
         this.#noteTurnFirstOutput(turn);
+        try { turn.progress.onOutput?.(); } catch { /* Observability cannot fail a turn. */ }
       }
     }
 
@@ -882,6 +894,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       const transcript = this.#transcripts.get(threadId);
       if (transcript !== undefined && typeof toModel === "string" && toModel.length > 0) {
         transcript.resolvedModel = toModel;
+        this.#reportTurnIdentity(threadId, turn);
       }
       return;
     }
@@ -916,6 +929,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       const event = tokenUsageEventFromParams(params);
       if (event !== null) {
         turn.tokenUsageEvents.push(event);
+        try { turn.progress.onUsage?.(event); } catch { /* Observability cannot fail a turn. */ }
       }
       return;
     }
@@ -1103,6 +1117,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
   }
 
+  #reportTurnIdentity(threadId: string, turn: TurnState): void {
+    const identity = this.#transcripts.get(threadId);
+    if (identity === undefined) return;
+    try {
+      turn.progress.onIdentity?.({ resolvedModel: identity.resolvedModel, resolvedEffort: identity.resolvedEffort });
+    } catch { /* Observability cannot fail a turn. */ }
+  }
+
   /**
    * Fire the supervisor-facing first-output callback, once per turn. Called
    * only from the frame-driven sites (an output-bearing notification, a
@@ -1267,6 +1289,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       startedAt: Date.now(),
       firstDeltaAt: null,
       firstOutputSeen: false,
+      progress: {},
       onFirstOutput,
       onTranscriptEvent: undefined,
       completedAt: null,

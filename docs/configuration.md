@@ -28,7 +28,7 @@ concurrency caps with the layer that supplied each (`flag`, `env`,
 | Concurrency cap | `codex` 12, `claude` 12, `opencode` 2 workers at once |
 | Agent ceiling (all engines together) | Unbounded |
 | Durable run record | On, stored under `$XDG_DATA_HOME/ensemble/` (normally `~/.local/share/ensemble/`) |
-| Live status file | On when the run's working directory contains a `.claude/` directory; written there |
+| Live status file | On, stored under `$XDG_DATA_HOME/ensemble/status/` |
 | Token budget per engine | Unbounded (set per run with `--budget`) |
 | Whole-run timeout | None (set per run with `--timeout`) |
 
@@ -208,14 +208,52 @@ subdirectory: archives land under `<dir>/runs/cwd/…`, so a value ending in
 recording. Disable recording with
 `ENSEMBLE_RUN_RECORD=off` or `run_record.enabled: false`.
 
-The live status file defaults to the `.claude/` directory under the run's
-working directory, and is written only when that directory already exists.
+The live status file defaults to
+`$XDG_DATA_HOME/ensemble/status` (normally
+`~/.local/share/ensemble/status`), creating the directory automatically.
+This location is independent of the working directory, any `.claude` entry
+and archive-directory overrides. Each run publishes
+`ensemble.<run-uuid>.local.json`; concurrent runs have separate files.
+The CLI announces the exact path on stderr as
+`[status-file] {"run_id":…,"status_path":…}` after the first successful write and before workflow execution.
+Read that file while the run is active; normal shutdown removes it. Startup
+removes leftovers only when owner evidence proves their process has gone.
+Directory creation failure produces one `[status]` diagnostic and leaves
+publication off for that run. A failed initial write also produces one diagnostic and leaves publication
+off for that run, so later activity cannot create an unannounced status file.
+Failures after publication produce a diagnostic without stopping the run. If a published directory
+is removed, the run continues quietly and resumes publication when the
+directory exists again. Disable publication with
+`ENSEMBLE_STATUS=off` or `status.enabled: false`.
 While status is on, a status directory set by `ENSEMBLE_STATUS_DIR` or
 `status.dir` must already exist; otherwise the run stops with an error naming
 it.
 
 See [Run records and live status](run-records.md) for what these files
 contain.
+
+### Publishing status from a library caller
+
+`resolveStatusDir(env, cwd)` returns the selected path or `null` when disabled.
+The automatic data-home directory may not exist yet. `StatusFileWriter` takes
+`createDirectory: true` to create it, and `ready()` reports whether the first
+snapshot was published. A caller that owns directory creation can use:
+
+```js
+const dir = resolveStatusDir(process.env, process.cwd());
+const writer = dir === null ? null : new StatusFileWriter({
+  progress: runtime.progress, dir, createDirectory: true
+});
+if (writer !== null) await writer.ready();
+// Close the writer when the caller stops publishing.
+```
+
+The writer leaves directories untouched unless creation is requested. Explicit
+missing directories are rejected by `resolveStatusDir` before writer creation.
+Call `await writer.close()` when publication ends. For layer-aware handling,
+`resolveAmbientSettings({ env, cwd }).statusDir` exposes both `value` and `layer`;
+the CLI creates only its automatic data-home directory.
+
 
 ## Library runtime options
 

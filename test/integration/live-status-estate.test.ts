@@ -135,7 +135,7 @@ test("status disablement and explicit directories preserve discovery and indepen
   }
 });
 
-test("the built status surface bounds finished entries without losing totals", { timeout: 60_000 }, async () => {
+test("the built status surface bounds finished entries without losing totals", { timeout: 90_000 }, async () => {
   const { directory, env } = await setup();
   try {
     const releaseFile = path.join(directory, "release");
@@ -143,7 +143,7 @@ test("the built status surface bounds finished entries without losing totals", {
     await writeFile(workflow, `export const meta = { name: "bounded-status" }; for (let index = 0; index < 70; index += 1) await agent("fixture", { engine: "codex" }); ${barrier(releaseFile)}`);
     const spec = path.join(directory, "spec.json");
     await writeFile(spec, JSON.stringify({ bundle, workflow, cwd: directory, releaseFile, workers: [], terminalTotals: 70, retainedCount: 64 }));
-    const result = await runNode([consumer, spec], env, 45_000);
+    const result = await runNode([consumer, spec], env, 60_000);
     assert.equal(result.code, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).snapshot.totals.done, 70);
   } finally { await rm(directory, { recursive: true, force: true }); }

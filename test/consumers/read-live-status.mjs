@@ -134,8 +134,8 @@ try {
     await delay(10);
   }
   const result = await completion;
-  assert.equal(result.code, spec.exitCode ?? 0, stderr);
   assert.ok(announcement, `no status location announced\n${stderr}`);
+  assert.equal(result.code, spec.exitCode ?? 0, stderr);
   assert.ok(snapshot, "status file was never read while the launcher lived");
   assert.ok(released, "workflow exited before the consumer observed its settlements");
   assert.equal(await exists(announcement.status_path), false, "status survived normal shutdown");

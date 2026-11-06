@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import type { LiveAgentSnapshot } from "../../src/progress.js";
 import type { TurnProgressObserver } from "../../src/app-server.js";
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { CodexEngineAdapter, EngineRegistry } from "../../src/engines.js";
@@ -4617,6 +4618,7 @@ for (const boundary of ["retry", "settlement"] as const) {
 
 test("runtime supervision follows live evidence, retry spend and settlement without an archive", async () => {
   let clock = 100;
+  const observations: Array<{ agent: LiveAgentSnapshot; clock: number; calls: number }> = [];
   class ObservedTransport extends FakeTransport {
     calls = 0;
     override async runTurn(threadId: string, _prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
@@ -4627,15 +4629,7 @@ test("runtime supervision follows live evidence, retry spend and settlement with
       clock += 10;
       options.onOutput?.();
       options.onUsage?.(event);
-      const live = runtime.progress.snapshot().agents[0]!;
-      assert.equal(live.state, "running");
-      assert.equal(live.requestedModel, "wanted");
-      assert.equal(live.requestedEffort, "high");
-      assert.equal(live.resolvedModel, "served");
-      assert.equal(live.resolvedEffort, "medium");
-      assert.equal(live.lastEvidenceAtMs, clock);
-      assert.equal(live.spent, this.calls * 7);
-      assert.equal(live.worktree, "/fake/worktree-1");
+      observations.push({ agent: structuredClone(runtime.progress.snapshot().agents[0]!), clock, calls: this.calls });
       return { ...turn(this.calls === 1 ? "" : "answer"), tokenUsageEvents: [event], resolvedModel: "served", resolvedEffort: "medium" };
     }
   }
@@ -4645,6 +4639,17 @@ test("runtime supervision follows live evidence, retry spend and settlement with
   });
   try {
     assert.equal(await runtime.agent("work", { engine: "codex", model: "wanted", effort: "high", isolation: "worktree" }), "answer");
+    assert.equal(observations.length, 2);
+    for (const { agent, clock: observedClock, calls } of observations) {
+      assert.equal(agent.state, "running");
+      assert.equal(agent.requestedModel, "wanted");
+      assert.equal(agent.requestedEffort, "high");
+      assert.equal(agent.resolvedModel, "served");
+      assert.equal(agent.resolvedEffort, "medium");
+      assert.equal(agent.lastEvidenceAtMs, observedClock);
+      assert.equal(agent.spent, calls * 7);
+      assert.equal(agent.worktree, "/fake/worktree-1");
+    }
     const snapshot = runtime.progress.snapshot();
     assert.equal(snapshot.archiveDir, null);
     const finished = snapshot.agents[0]!;

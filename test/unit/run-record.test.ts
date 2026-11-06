@@ -2354,8 +2354,9 @@ test("live attempts publish readable references, append in order and settle with
     const event = { message: "first" };
     const first = writer.appendCodexTranscript(1, 1, event);
     event.message = "mutated";
-    await Promise.all([first, writer.appendCodexTranscript(1, 1, { message: "second" })]);
+    const publishedPaths = await Promise.all([first, writer.appendCodexTranscript(1, 1, { message: "second" })]);
     const relativePath = (await readAgent()).current_attempt.transcript;
+    assert.deepEqual(publishedPaths, [relativePath, relativePath], "status producers receive the exact published archive reference");
     const transcriptPath = path.join(writer.archiveDir, relativePath);
     const content = '{"message":"first"}\n{"message":"second"}\n';
     assert.equal(await readFile(transcriptPath, "utf8"), content);
@@ -2368,7 +2369,7 @@ test("live attempts publish readable references, append in order and settle with
     assert.equal(final.current_attempt, undefined);
     assert.equal(final.transcripts[0].path, relativePath);
     assert.equal(await readFile(transcriptPath, "utf8"), content);
-    await writer.appendCodexTranscript(1, 1, { late: true });
+    assert.equal(await writer.appendCodexTranscript(1, 1, { late: true }), null);
     assert.equal(await readFile(transcriptPath, "utf8"), content);
     assert.equal(writer.manifest.files.find((file) => file.path === relativePath)?.sha256, sha256(Buffer.from(content)));
     const comparison = agentRecord(2, "codex", null, 3);

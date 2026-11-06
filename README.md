@@ -185,10 +185,12 @@ status settings. See [Configuration](docs/configuration.md).
 
 ## Run records and live status
 
-While a run is active it writes a small JSON status file — phase, per-engine
-counts and token spend, live workers, open holds — by default to `.claude/` in
-its working directory, when that directory exists. By default every run also
-leaves an archive under `~/.local/share/ensemble/runs/` holding the workflow
+While a run is active it writes a JSON status file — phase, per-engine counts
+and token spend, every queued, running and finished worker, open holds — by
+default under `$XDG_DATA_HOME/ensemble/status/` (normally
+`~/.local/share/ensemble/status/`). The CLI announces the exact path on stderr
+before workflow execution; workers stay listed until the run ends. By default
+every run also leaves an archive under `~/.local/share/ensemble/runs/` holding the workflow
 source and arguments, each agent's prompt, attempts, outputs, transcripts,
 and token usage, and a manifest with integrity hashes. A completion sentinel
 file tells a supervising process when, and how, the run ended. See

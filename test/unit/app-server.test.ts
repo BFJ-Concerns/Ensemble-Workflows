@@ -1628,6 +1628,7 @@ async function fakeCodexTurnServer(
     capturePath?: string;
     envCapturePath?: string;
     servedModel?: string | null;
+    emitUsage?: boolean;
     skillResponses?: string[][];
     skillErrors?: boolean;
   } = {}
@@ -1651,6 +1652,7 @@ const envCapturePath = ${JSON.stringify(options.envCapturePath ?? null)};
 const servedModel = ${JSON.stringify(options.servedModel === undefined ? "gpt-test-default" : options.servedModel)};
 const skillResponses = ${JSON.stringify(options.skillResponses ?? [[]])};
 const skillErrors = ${JSON.stringify(options.skillErrors ?? false)};
+const emitUsage = ${JSON.stringify(options.emitUsage ?? false)};
 let skillResponseIndex = 0;
 if (envCapturePath !== null) {
   writeFileSync(envCapturePath, process.env.ENSEMBLE_TEST_SCOPED ?? "__ABSENT__");
@@ -1703,6 +1705,10 @@ reader.on("line", (line) => {
       : "hello";
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId } });
+    if (emitUsage) {
+      const usage = { cachedInputTokens: 0, inputTokens: 3, outputTokens: 2, totalTokens: 5 };
+      send({ method: "thread/tokenUsage/updated", params: { threadId, turnId: "turn-1", tokenUsage: { last: usage, total: usage } } });
+    }
     send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text } } });
     send({ method: "turn/completed", params: { threadId } });
   }
@@ -2096,7 +2102,9 @@ test("the first output-bearing frame fires the supervisor-facing liveness callba
   try {
     const threadId = await transport.openThread({});
     let fires = 0;
+    let outputs = 0;
     const result = await transport.runTurn(threadId, "speak slowly", {
+      onOutput: () => { outputs += 1; },
       timeoutMs: 2_000,
       onFirstOutput: () => {
         fires += 1;
@@ -2106,6 +2114,7 @@ test("the first output-bearing frame fires the supervisor-facing liveness callba
     // Later output frames (the completed item, turn completion) must not
     // re-fire it: once per turn is the contract.
     assert.equal(fires, 1);
+    assert.ok(outputs > 1, "continuing output must remain observable after the first frame");
   } finally {
     await transport.close();
   }
@@ -2136,6 +2145,27 @@ test("live transcript events stay ordered across concurrent threads and successi
     });
     assert.deepEqual(captures[0], previous);
     assert.deepEqual(next, result.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)));
+  } finally {
+    await transport.close();
+  }
+});
+
+
+test("served identity and usage observers receive transport evidence and cannot fail the turn", async () => {
+  const codexBin = await fakeCodexTurnServer({ servedModel: "gpt-observed", emitUsage: true });
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({ effort: "high" });
+    const identities: unknown[] = [];
+    const usage: unknown[] = [];
+    const result = await transport.runTurn(threadId, "observe", {
+      onIdentity: (identity) => { identities.push(identity); throw new Error("observer"); },
+      onUsage: (event) => { usage.push(event); throw new Error("observer"); },
+      onOutput: () => { throw new Error("observer"); }
+    });
+    assert.deepEqual(identities[0], { resolvedModel: "gpt-observed", resolvedEffort: "high" });
+    assert.ok(usage.length > 0);
+    assert.deepEqual(usage, result.tokenUsageEvents);
   } finally {
     await transport.close();
   }

@@ -6,20 +6,21 @@ import test from "node:test";
 
 import { AmbientConfigError, resolveStatusDir } from "../../src/ambient-settings.js";
 
-test("resolveStatusDir uses the cwd .claude directory only when it already exists", async () => {
+test("resolveStatusDir prefers an existing .claude directory and otherwise uses the data home", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-status-config-"));
-  assert.equal(resolveStatusDir({}, cwd), null);
+  const env = { XDG_CONFIG_HOME: path.join(cwd, "config"), XDG_DATA_HOME: path.join(cwd, "data") };
+  assert.equal(resolveStatusDir(env, cwd), path.join(cwd, "data", "ensemble", "status"));
 
   const localClaude = path.join(cwd, ".claude");
   await mkdir(localClaude);
-  assert.equal(resolveStatusDir({}, cwd), localClaude);
+  assert.equal(resolveStatusDir(env, cwd), localClaude);
 });
 
-test("resolveStatusDir does not treat a cwd .claude file as an opt-in directory", async () => {
+test("resolveStatusDir falls back to the data home when .claude is a file", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-status-config-"));
   await writeFile(path.join(cwd, ".claude"), "not a directory");
 
-  assert.equal(resolveStatusDir({}, cwd), null);
+  assert.equal(resolveStatusDir({ XDG_CONFIG_HOME: path.join(cwd, "config"), XDG_DATA_HOME: path.join(cwd, "data") }, cwd), path.join(cwd, "data", "ensemble", "status"));
 });
 
 test("resolveStatusDir keeps the environment controls", async () => {
@@ -28,8 +29,8 @@ test("resolveStatusDir keeps the environment controls", async () => {
 
   // An explicitly named directory that does not exist fails loud — the
   // operator asked for observability, so publishing nothing at exit 0 is
-  // the failure to avoid, not a fallback. Only the *default* .claude location
-  // opts out by absence (the tests above).
+  // the failure to avoid. Automatic data-home directory creation belongs to
+  // the CLI; explicit directories must already exist.
   assert.throws(
     () => resolveStatusDir({ ENSEMBLE_STATUS_DIR: explicit }, cwd),
     (error: unknown) => {

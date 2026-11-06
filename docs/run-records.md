@@ -8,8 +8,9 @@ A run can leave three kinds of file behind or alongside it:
 | Completion sentinel (`completion-sentinel.json`) | Permanent | Learn that a run has ended, and how |
 | Durable run record (the archive) | Permanent; on by default | Audit or evaluate a run after the fact |
 
-The live status file is written only where a status directory exists (by
-default, `.claude/` in the run's working directory).
+The live status file uses an existing `.claude/` directory in the run's
+working directory, or an automatically created status directory in the
+Ensemble data home. The CLI announces the exact file path on stderr.
 
 Where these files live, and how to turn them off, is covered in
 [Configuration](configuration.md).
@@ -18,10 +19,18 @@ Where these files live, and how to turn them off, is covered in
 
 While a run is active it publishes a small JSON snapshot of what it is doing —
 current phase, per-engine active/queued/done/failed counts, per-engine token
-spend, and the live worker list — to its own file in the status directory:
-`.claude/ensemble.<run-uuid>.local.json` under the run's working directory by
-default. Ensemble writes there only when `.claude/` already exists and never
-creates it. Writes are atomic, so a reader never sees a half-written file.
+spend, and a bounded worker list that retains finished workers — to its own
+file in the status directory. It uses `.claude/ensemble.<run-uuid>.local.json` under
+the run's working directory when `.claude/` exists. Otherwise it creates
+`$XDG_DATA_HOME/ensemble/status` (`~/.local/share/ensemble/status` by default)
+and writes there. Explicit status directories must already exist. Writes
+are atomic, so a reader never sees a half-written file.
+
+After the first successful write, the CLI prints
+`[status-file] {"run_id":…, "status_path":…}` on stderr. A supervisor can
+follow that path without knowing the working directory's layout or searching
+the archive. Disable publication with `ENSEMBLE_STATUS=off`; directory
+overrides and machine settings are described in [Configuration](configuration.md).
 
 Each run has its own file, so concurrent runs in one directory are each
 visible for their whole lifetime: a later run never overwrites an earlier
@@ -80,13 +89,19 @@ Each status file contains one JSON object with these fields:
 Worker spend is cumulative across attempts and fallback targets; null means
 unobserved, not zero. Identity and paths are producer-supplied evidence, never
 inferred. Requested identity describes the original call; resolved identity
-names what was served. Transcript paths use the agent record's path convention.
+names what was served. Transcript paths match the running agent record's
+current attempt: archive-relative for Codex, absolute native paths for
+Claude. Resolve relative paths against archiveDir. A settled Claude record
+archives a copy of the native transcript; the status entry retains its
+live path.
 Failure is an object with kind and message, or null when unavailable or successful.
 Finished time is the settlement observation time. All timestamps are epoch
 milliseconds. First evidence stays fixed across same-target retries, while last
 evidence advances on each output observation. A fallback clears both evidence
 stamps, start time, served identity and transcript; spend and original requested
-identity persist. Same-target retries preserve those fields and clear waitingOn.
+identity persist. Same-target retries preserve the evidence stamps and spend
+and clear waitingOn. Each attempt clears its transcript reference until
+publication, and a fresh worker's served identity is unknown until observed.
 Queued and settled workers ignore output observations. waitingOn is null or the
 background-task object described by the engine (taskId, description, sinceMs).
 The model retains at most 64 finished workers in settlement order, evicting the

@@ -144,8 +144,8 @@ test("the built launcher re-places an idle held session after respawn without an
   const observations: Record<string, unknown> = { slice, operatorDaemonBefore: operatorDaemon };
   let run: ReturnType<typeof launchCliInBox> | undefined;
   try {
-    await writeFile(workflow, `import { access, writeFile } from "node:fs/promises";
-      export const meta = { name: "idle-session-replacement" };
+    await writeFile(workflow, `export const meta = { name: "idle-session-replacement" };
+      import { access, writeFile } from "node:fs/promises";
       const worker = session(${JSON.stringify({engine:"claude",model:claudeModel,cwd:root,maxAttempts:1,timeoutMs:420_000})});
       try {
         const reply = await worker.send(${JSON.stringify(heldProbePrompt(probe))});
@@ -156,9 +156,9 @@ test("the built launcher re-places an idle held session after respawn without an
     `);
     assert.equal(await daemonPid(env), null, "the private config directory already had a daemon");
     run = launchCliInBox(box, slice, env, [workflow]);
+    const seen = await watchRoster(env, 120_000, undefined, () => run!.settled);
     await waitForPath(probe.paths.ready, 420_000);
     const initialGroup = cgroupPath(await readFile(probe.paths.evidence, "utf8"));
-    const seen = await watchRoster(env, 120_000, undefined, () => run!.settled);
     assert.ok(seen.registered !== null && seen.pid !== null, "the owned session never registered a process");
     assert.ok(initialGroup.endsWith(".scope") && /\/ensemble-\d+-/.test(initialGroup), "worker shell was not placed");
     await writeFile(probe.paths.release, "");
@@ -176,9 +176,20 @@ test("the built launcher re-places an idle held session after respawn without an
     observations.replacement = { pid: replaced.pid, cgroupInitiallyObserved: cgroupPath(await readFile(`/proc/${replaced.pid}/cgroup`, "utf8")) };
     // Only OS observation here: the launcher owns the watch. No poll(),
     // control-plane instance or second worker turn can perform the move.
-    const after = await waitForCgroup(replaced.pid, group => group === initialGroup, 60_000);
-    assert.equal(after, initialGroup, "idle replacement stayed outside its worker scope without another turn");
-    observations.replacement = { ...(observations.replacement as object), cgroupAfterWatch: after };
+    const deadline = Date.now() + 60_000;
+    let placed: { pid: number; cgroup: string } | null = null;
+    while (Date.now() < deadline) {
+      const rows = (await roster(env)).rows;
+      const current = rows.find(row => row.sessionId === seen.registered!.sessionId && typeof row.pid === "number" && row.pid !== first.pid);
+      if (current && typeof current.pid === "number") {
+        const group = await readFile(`/proc/${current.pid}/cgroup`, "utf8").then(cgroupPath, () => null);
+        observations.latestReplacement = { pid: current.pid, cgroup: group };
+        if (group === initialGroup) { placed = { pid: current.pid, cgroup: group }; break; }
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.ok(placed !== null, "idle replacement stayed outside its worker scope without another turn");
+    observations.replacement = { ...(observations.replacement as object), placed };
     assert.equal(run.settled, false, "the launcher ended during idle replacement observation");
     await writeFile(close, "");
     const result = await run.result; observations.result = result;

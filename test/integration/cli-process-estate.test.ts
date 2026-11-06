@@ -59,13 +59,13 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
       "Run options (before the script path):\n" +
       "  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N\n" +
       "  --agent-ceiling N|null  --timeout ms  --strip capability\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run\n" +
       "Agent options (after agent, before the prompt):\n" +
       "  --model <model>  --effort <effort>  --label <label>  --phase <phase>\n" +
       "  --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'\n" +
       "  --max-attempts N  --task <identity>  --strip capability  --budget engine=N\n" +
       "  --agent-ceiling N|null  --concurrency engine=N  --timeout ms\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run\n" +
       "The prompt is the one positional argument, or stdin when omitted.\n" +
       "Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.\n"
     );
@@ -3082,3 +3082,31 @@ async function waitForFile(file: string): Promise<void> {
   }
   throw new Error(`file never appeared: ${file}`);
 }
+
+
+test("the built launcher archives worker grouping with its winning setting layer", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-scope-provenance-"));
+  try {
+    const script = path.join(root, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "scope-provenance" }; return "done";');
+    for (const entry of [
+      { name: "default", file: undefined, env: undefined, flag: undefined, value: "worker", layer: "default" },
+      { name: "file", file: "run", env: undefined, flag: undefined, value: "run", layer: "config-file" },
+      { name: "env", file: "run", env: "worker", flag: undefined, value: "worker", layer: "env" },
+      { name: "flag", file: "worker", env: "worker", flag: "run", value: "run", layer: "flag" }
+    ]) {
+      const dir = path.join(root, entry.name);
+      const xdg = path.join(dir, "config");
+      const store = path.join(dir, "records");
+      await mkdir(path.join(xdg, "ensemble"), { recursive: true });
+      await writeFile(path.join(xdg, "ensemble", "config.json"), JSON.stringify({ schema_version: 1, ...(entry.file ? { worker_scope: entry.file } : {}) }));
+      const result = await runNode([bundledCliPath, ...(entry.flag ? [`--worker-scope=${entry.flag}`] : []), script], {
+        XDG_CONFIG_HOME: xdg, ENSEMBLE_WORKER_SCOPE: entry.env, ENSEMBLE_RUN_RECORD_DIR: store
+      }, 120_000);
+      assert.equal(result.code, 0, result.stderr);
+      const manifest = JSON.parse(await readFile(await findOnlyFile(store, "manifest.json"), "utf8"));
+      assert.deepEqual(manifest.worker_scope, { value: entry.value, layer: entry.layer }, `grouping provenance lost for ${entry.name}`);
+      assert.equal(manifest.cli_flags.workerScope, entry.flag);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

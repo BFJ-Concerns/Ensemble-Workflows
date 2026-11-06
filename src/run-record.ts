@@ -22,6 +22,7 @@ import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 
 import type { Resolved } from "./ambient-settings.js";
+import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { OwnerGoneReason, ProcessOwnerRecord } from "./process-owner-evidence.js";
 import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
 import type { AppServerDiagnostic } from "./errors.js";
@@ -61,6 +62,7 @@ type AgentStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interr
 type ParseRoute = "direct" | "object-fallback" | "array-fallback" | "scalar-line";
 
 export interface CliFlagsRecord {
+  workerScope?: WorkerScopeGrouping;
   budget?: Record<string, number | null>;
   agentCeiling?: number | null;
   concurrency?: Record<string, number>;
@@ -78,6 +80,7 @@ export interface RunRecordStartOptions {
   args: unknown;
   cliFlags: CliFlagsRecord;
   concurrency?: EffectiveConcurrencyRecord;
+  workerScope?: Resolved<WorkerScopeGrouping>;
   effectiveSettings?: EffectiveRunSettingsRecord;
   /** Opaque identity supplied by the process that invoked this run, if any. */
   callerIdentity?: string;
@@ -440,6 +443,7 @@ interface Manifest {
     raw: unknown;
   };
   cli_flags: CliFlagsRecord;
+  worker_scope: Resolved<WorkerScopeGrouping>;
   concurrency: {
     agent_ceiling: Resolved<number | null>;
     engines: Partial<Record<EngineName, Resolved<number>>>;
@@ -665,6 +669,7 @@ export class RunRecordWriter {
         raw: null
       },
       cli_flags: options.cliFlags,
+      worker_scope: options.workerScope ?? { value: "worker", layer: "default" },
       concurrency: {
         agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
         engines: options.concurrency?.engines ?? {}

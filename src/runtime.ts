@@ -593,6 +593,7 @@ export class EnsembleRuntime {
       cwd,
       codexBin: options.codexBin ?? "codex",
       holdScope,
+      ...(options.workerScope !== undefined ? { workerScope: options.workerScope } : {}),
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
       ...(options.retryPromiseSilenceTimeoutMs !== undefined
         ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs }

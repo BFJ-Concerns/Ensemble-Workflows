@@ -1,3 +1,4 @@
+import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 
@@ -239,6 +240,8 @@ export interface RuntimeOptions {
    * set, holds land in the default shared scope.
    */
   holdScope?: string;
+  /** Systemd scope grouping; defaults to worker (Codex threads share one app-server scope). */
+  workerScope?: WorkerScopeGrouping;
   /** Gap between hold decision-file polls; a library/test knob like the timeouts above. */
   holdPollIntervalMs?: number;
 }

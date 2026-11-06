@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "../../src/ambient-settings.js";
+import { CALLER_IDENTITY_ENV, resolveAmbientSettings, withoutRunScopedVariables } from "../../src/ambient-settings.js";
 
 test("caller identity has a named environment route without widening ambient settings", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-caller-identity-env-"));
@@ -23,7 +23,8 @@ test("caller identity has a named environment route without widening ambient set
       "runRecordDir",
       "runRecordStoreDir",
       "statusDir",
-      "workerEnvironment"
+      "workerEnvironment",
+      "workerScope"
     ]);
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -420,6 +421,26 @@ test("the status directory environment overrides machine configuration", async (
     await mkdir(configured);
     const settings = resolveAmbientSettings({ cwd: fixture.cwd, env: { XDG_CONFIG_HOME: fixture.configHome, ENSEMBLE_STATUS_DIR: configured } });
     assert.deepEqual(settings.statusDir, { value: configured, layer: "env" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("worker scope grouping resolves and validates every setting layer", async () => {
+  const fixture = await configFixture({ schema_version: 1, worker_scope: "run" });
+  const env = { XDG_CONFIG_HOME: fixture.configHome };
+  try {
+    assert.deepEqual(resolveAmbientSettings({ cwd: fixture.cwd, env }).workerScope, { value: "run", layer: "config-file" });
+    assert.deepEqual(resolveAmbientSettings({ cwd: fixture.cwd, env: { ...env, ENSEMBLE_WORKER_SCOPE: "worker" } }).workerScope,
+      { value: "worker", layer: "env" });
+    assert.deepEqual(resolveAmbientSettings({ cwd: fixture.cwd, env: { ...env, ENSEMBLE_WORKER_SCOPE: "worker" }, flags: { workerScope: "run" } }).workerScope,
+      { value: "run", layer: "flag" });
+    assert.deepEqual(resolveAmbientSettings({ cwd: fixture.cwd, env: { XDG_CONFIG_HOME: path.join(fixture.cwd, "absent") } }).workerScope,
+      { value: "worker", layer: "default" });
+    assert.throws(() => resolveAmbientSettings({ cwd: fixture.cwd, env: { ...env, ENSEMBLE_WORKER_SCOPE: "other" } }), /ENSEMBLE_WORKER_SCOPE.*worker or run/);
+    assert.deepEqual(withoutRunScopedVariables({ ENSEMBLE_WORKER_SCOPE: "run", PATH: "kept" }), { PATH: "kept" });
+    await writeFile(path.join(fixture.configHome, "ensemble", "config.json"), JSON.stringify({ schema_version: 1, worker_scope: false }));
+    assert.throws(() => resolveAmbientSettings({ cwd: fixture.cwd, env }), /worker_scope.*worker or run/);
   } finally {
     await fixture.cleanup();
   }

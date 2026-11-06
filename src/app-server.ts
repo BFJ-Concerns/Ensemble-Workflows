@@ -1,3 +1,4 @@
+import type { WorkerScopes } from "./worker-scopes.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 
@@ -157,6 +158,9 @@ interface ThreadTranscript {
 export interface CodexAppServerTransportOptions {
   cwd: string;
   codexBin: string;
+  /** Shared run-owned manager; placement completes before the protocol handshake. */
+  scopes?: WorkerScopes;
+  scopeGroup?: string;
   /** Machine-declared variables injected over the inherited environment. */
   workerEnv?: Record<string, string>;
   requestTimeoutMs: number;
@@ -312,6 +316,17 @@ export class CodexAppServerTransport implements RuntimeTransport {
   static async start(options: CodexAppServerTransportOptions): Promise<CodexAppServerTransport> {
     const transport = new CodexAppServerTransport(options);
     try {
+      if (transport.#process.pid !== undefined && options.scopes !== undefined) {
+        const pid = transport.#process.pid;
+        const outcome = await options.scopes.place(options.scopeGroup ?? "codex", [pid]);
+        if (outcome.kind !== "placed") {
+          options.onEvent?.({
+            method: "codex/workerScopePlacement",
+            params: { pid, kind: outcome.kind, ...(outcome.kind === "refused" ? { reason: outcome.reason } : {}) },
+            receivedAt: Date.now()
+          });
+        }
+      }
       await transport.#handshake(options.clientName, options.clientVersion);
     } catch (error) {
       await transport.close();

@@ -397,6 +397,11 @@ families with their own schema versions (`3` and `3`), described above.
 - `meta`: `{ raw, task }` — the workflow's `meta` export and its `task`,
   copied verbatim; each is `null` when absent.
 - `cli_flags`: parsed run-tuning flags.
+- `worker_scope`: effective systemd grouping as `{ value, layer }`, where value is
+  `worker` or `run` and layer is `flag`, `env`, `config-file` or `default`.
+  `cli_flags.workerScope` records an explicitly supplied grouping flag. Earlier
+  version-4 manifests may omit `worker_scope`; its absence carries no grouping
+  provenance.
 - `concurrency`: the effective agent ceiling and per-engine caps —
   `agent_ceiling` as `Resolved<number | null>`, `engines` as a partial map of
   engine name to `Resolved<number>` — each recording the value and the layer

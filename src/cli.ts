@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "./ambient-settings.js";
+import { CALLER_IDENTITY_ENV, parseWorkerScopeGrouping, resolveAmbientSettings } from "./ambient-settings.js";
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
@@ -20,6 +20,7 @@ import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-recor
 import { defaultWorkflowRegistryDirs, listSavedWorkflows } from "./workflow-registry.js";
 import { harnessVersion } from "./harness-version.js";
 
+import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { AmbientSettings } from "./ambient-settings.js";
 import type { RunProgress } from "./progress.js";
 import type { CompletedAgentOutput, EnsembleRuntime, ShutdownTally, UnfinishedLeg } from "./runtime.js";
@@ -49,7 +50,8 @@ const AGENT_INVOCATION_OPTIONS = {
   concurrency: { type: "string", multiple: true },
   timeout: { type: "string" },
   "caller-identity": { type: "string" },
-  "hold-scope": { type: "string" }
+  "hold-scope": { type: "string" },
+  "worker-scope": { type: "string" }
 } as const;
 
 export interface EnsembleCliOptions {
@@ -283,6 +285,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       env,
       cwd,
       flags: {
+        ...(invocation.workerScope !== undefined ? { workerScope: invocation.workerScope } : {}),
         ...(invocation.agentCeiling !== undefined ? { agentCeiling: invocation.agentCeiling } : {}),
         ...(invocation.concurrencyCaps !== undefined ? { concurrencyCaps: invocation.concurrencyCaps } : {})
       }
@@ -357,6 +360,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     const holdScope = resolveHoldScope(invocation.holdScope, env);
     runtime = await (options.createRuntime ?? createRuntime)({
       cwd,
+      workerScope: ambientSettings.workerScope.value,
       ...(invocation.budgetCeilings !== undefined ? { budgetCeilings: invocation.budgetCeilings } : {}),
       ...(holdScope !== null ? { holdScope } : {}),
       ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
@@ -410,6 +414,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         cliFlags: cliFlags(invocation),
         ...(callerIdentity !== undefined ? { callerIdentity } : {}),
         concurrency: recordConcurrency(ambientSettings, progress),
+        workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
@@ -436,6 +441,27 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     }
 
     runtime.onEvent((event) => {
+      if (event.method === "claude/workerScopeWatchError") {
+        stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
+        return;
+      }
+      if (event.method === "codex/workerScopePlacement") {
+        if (event.params.kind === "refused") {
+          const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
+          stderr.write(`[codex] app-server (pid ${pid}) scope placement refused: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
+        }
+        return;
+      }
+      if (event.method === "claude/workerScopePlacement") {
+        const name = boundedEvidence(String(event.params.name ?? "unknown"));
+        const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
+        if (event.params.kind === "refused") {
+          stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement refused; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
+        } else if (event.params.kind === "placed") {
+          stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement recovered in ${boundedEvidence(String(event.params.unit ?? "unknown scope"))}\n`);
+        }
+        return;
+      }
       if (event.method === "claude/unpinnedModel") {
         const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
@@ -825,6 +851,7 @@ function workflowName(meta: unknown): string | null {
 }
 
 interface InvocationTuning {
+  workerScope?: WorkerScopeGrouping;
   budgetCeilings?: EngineBudgetCeilings;
   agentCeiling?: number | null;
   concurrencyCaps?: EngineConcurrencyCaps;
@@ -916,6 +943,7 @@ function singleAgentWorkflowSource(invocation: ParsedAgentInvocation): string {
 }
 
 function cliFlags(invocation: ParsedInvocation): {
+  workerScope?: WorkerScopeGrouping;
   budget?: Record<string, number | null>;
   agentCeiling?: number | null;
   concurrency?: Record<string, number>;
@@ -926,6 +954,7 @@ function cliFlags(invocation: ParsedInvocation): {
   return {
     ...(invocation.budgetCeilings !== undefined ? { budget: invocation.budgetCeilings } : {}),
     ...(invocation.agentCeiling !== undefined ? { agentCeiling: invocation.agentCeiling } : {}),
+    ...(invocation.workerScope !== undefined ? { workerScope: invocation.workerScope } : {}),
     ...(invocation.concurrencyCaps !== undefined ? { concurrency: invocation.concurrencyCaps } : {}),
     ...(invocation.timeoutMs !== undefined ? { timeoutMs: invocation.timeoutMs } : {}),
     ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
@@ -1262,7 +1291,8 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
         timeout: { type: "string" },
         strip: { type: "string", multiple: true },
         "caller-identity": { type: "string" },
-        "hold-scope": { type: "string" }
+        "hold-scope": { type: "string" },
+        "worker-scope": { type: "string" }
       },
       strict: true,
       allowPositionals: false
@@ -1284,6 +1314,7 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const workerScope = parsed.values["worker-scope"] === undefined ? undefined : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
 
   return {
     kind: "workflow",
@@ -1296,6 +1327,7 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(strip !== undefined ? { strip } : {}),
     ...(callerIdentity !== undefined ? { callerIdentity } : {}),
+    ...(workerScope !== undefined ? { workerScope } : {}),
     ...(holdScope !== undefined ? { holdScope } : {})
   };
 }
@@ -1357,6 +1389,7 @@ async function parseAgentInvocation(
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const workerScope = parsed.values["worker-scope"] === undefined ? undefined : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
   const agentOptions: AgentOptions = {
     engine,
     ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {}),
@@ -1381,6 +1414,7 @@ async function parseAgentInvocation(
     ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(callerIdentity !== undefined ? { callerIdentity } : {}),
+    ...(workerScope !== undefined ? { workerScope } : {}),
     ...(holdScope !== undefined ? { holdScope } : {})
   };
 }
@@ -1574,6 +1608,7 @@ function isKnownOption(value: string): boolean {
     value === "--timeout" ||
     value === "--strip" ||
     value === "--caller-identity" ||
+    value === "--worker-scope" ||
     value === "--hold-scope"
   );
 }
@@ -1587,6 +1622,7 @@ function isKnownInlineOption(value: string): boolean {
     value.startsWith("--timeout=") ||
     value.startsWith("--strip=") ||
     value.startsWith("--caller-identity=") ||
+    value.startsWith("--worker-scope=") ||
     value.startsWith("--hold-scope=")
   );
 }
@@ -1922,7 +1958,8 @@ const RUN_OPTION_SYNOPSES: readonly string[] = [
   "--timeout ms",
   "--strip capability",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--worker-scope worker|run"
 ];
 
 /** The flags `agent` accepts between the subcommand and the prompt (`--engine` is in the synopsis). */
@@ -1943,7 +1980,8 @@ const AGENT_OPTION_SYNOPSES: readonly string[] = [
   "--concurrency engine=N",
   "--timeout ms",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--worker-scope worker|run"
 ];
 
 /**

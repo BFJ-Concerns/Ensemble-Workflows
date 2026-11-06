@@ -25,13 +25,13 @@ Usage: node ensemble.mjs [run options] <script.js> [args...]
 Run options (before the script path):
   --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N
   --agent-ceiling N|null  --timeout ms  --strip capability
-  --caller-identity <identity>  --hold-scope <scope>
+  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run
 Agent options (after agent, before the prompt):
   --model <model>  --effort <effort>  --label <label>  --phase <phase>
   --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'
   --max-attempts N  --task <identity>  --strip capability  --budget engine=N
   --agent-ceiling N|null  --concurrency engine=N  --timeout ms
-  --caller-identity <identity>  --hold-scope <scope>
+  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run
 The prompt is the one positional argument, or stdin when omitted.
 Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.
 ```
@@ -61,10 +61,11 @@ a script argument spelled like a run option, put `--` before the script path:
 | `--timeout ms` | Whole-run deadline, at most 2147483647. Distinct from an `agent()` call's own `timeoutMs` |
 | `--strip capability` | Remove a tool-surface capability (`skills` or `agents`) from every worker in the run; an opencode worker refuses any strip (see [Permissions](workflow-scripts.md#permissions-and-strip)). Repeatable |
 | `--caller-identity <identity>` | Opaque identity of the invoking session, recorded in the run record. Overrides `ENSEMBLE_CALLER_IDENTITY` |
+| `--worker-scope worker\|run` | Systemd scope grouping for Claude and Codex; overrides environment and configuration (see [Configuration](configuration.md)) |
 | `--hold-scope <scope>` | Scope for decision holds raised during the run. Overrides `ENSEMBLE_HOLD_SCOPE` |
 
 Only `--budget`, `--concurrency`, and `--strip` may be repeated; every other
-option may appear once. `--concurrency` and `--agent-ceiling` sit on top of the
+option may appear once. `--worker-scope`, `--concurrency` and `--agent-ceiling` sit on top of the
 environment and configuration-file layers described in
 [Configuration](configuration.md).
 
@@ -92,7 +93,7 @@ the prompt.
 | `--task <identity>` | Grouping identity copied into the run record |
 
 The run options `--budget`, `--concurrency`, `--agent-ceiling`, `--timeout`,
-`--strip`, `--caller-identity`, and `--hold-scope` apply here too.
+`--strip`, `--caller-identity`, `--hold-scope`, and `--worker-scope` apply here too.
 
 The option semantics match `agent()` in a script; see
 [`agent()` options](workflow-scripts.md#agent-options). There is no fallback
@@ -191,6 +192,17 @@ Logs and diagnostics go to stderr. These lines are written there:
   fallback entry answered for a refused target.
 - `[<engine>] agent <id> (<label>) fallback chain not consulted — …` — a
   failure the classifier did not recognise, so the declared chain was not used.
+- `[codex] app-server (pid <pid>) scope placement refused: <reason>` — the
+  app-server could not be moved; its threads still dispatch, with the refusal
+  also available through `codex/workerScopePlacement` runtime events.
+- `[claude] worker <name> (pid <pid>) scope placement refused; retrying: <reason>`
+  — the worker could not be moved into its scope. Ensemble retries within the
+  registration window and on later roster polls; repeated identical refusals
+  are quiet. `scope placement recovered in <unit>` reports a successful retry.
+  Dispatch remains best-effort; see [worker scope placement](configuration.md#worker_environment).
+- `[claude] worker scope watch failed; retrying: <reason>` — an unexpected
+  background roster-watch error. The watch continues across idle turns and
+  retries while Ensemble owns a Claude session.
 - `[teardown] …` — the script returned while a worker it started was still
   running, or tried to end the process after returning.
 

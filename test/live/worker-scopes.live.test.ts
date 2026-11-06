@@ -218,7 +218,12 @@ for (const scenario of scenarios) {
 
 /** Only lifecycle fields, never raw daemon messages that might contain private data. */
 async function supervisorLifecycle(config: string): Promise<Record<string, string>[]> {
-  const text = await readFile(path.join(config, "daemon.log"), "utf8").catch(() => "");
+  let text: string;
+  try {
+    text = await readFile(path.join(config, "daemon.log"), "utf8");
+  } catch (error) {
+    return [{ event: "log-unavailable", code: (error as NodeJS.ErrnoException).code ?? "unknown" }];
+  }
   return text.split("\n").flatMap<Record<string, string>>((line) => {
     const at = /^\[([^\]]+)\]/.exec(line)?.[1] ?? "unknown";
     const start = /daemon start .*version=([\w.-]+) pid=(\d+)/.exec(line);

@@ -262,7 +262,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       ...this.#workerEnv,
       [SANDBOXED_WORKSPACE_VARIABLE]: "1"
     };
-    this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
+    const configDir = this.#env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude");
+    this.#projectsDir = options.projectsDir ?? path.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
     this.#procDir = options.procDir ?? "/proc";
@@ -559,15 +560,12 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
       // The TUI needs a beat to attach and take focus before input lands.
       await delay(this.#valveAttachSettleMs);
-      // `-l` sends the message literally — no key-name interpretation, no quoting
-      // hazards. Each call carries one bounded slice: a follow-up turn routinely
-      // holds whole diffs, and one command must fit both the platform's argv
-      // element cap and tmux's own client-message cap (see VALVE_SLICE_BYTES),
-      // so the bytes go to the same pane input in order across as many calls
-      // as the message needs. Submit follows as its own keystroke.
+      // Complete Win32 terminal key records stay typed even when the reader
+      // falls behind and coalesces input. Bound each literal send and never
+      // split a record; submit follows the final batch as its own keystroke.
       const slices = valveSlices(message);
       for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", slice]);
+        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", "--", slice]);
         if (!typed.ok) {
           return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
         }
@@ -809,16 +807,20 @@ function refused(step: string, result: ExecResult): ValveDelivery {
 
 /**
  * Split a valve message into `send-keys -l` arguments of at most
- * `VALVE_SLICE_BYTES` bytes each, cutting only between code points so no
- * character is torn across two sends. Exported for the delivery tests; a
- * message within the bound is one slice, and an empty message is none.
+ * `VALVE_SLICE_BYTES` bytes each, encoding each UTF-16 unit as a complete Win32
+ * terminal key record. Tabs become four spaces; CR and CRLF become LF.
+ * No record is torn across two sends. Exported for the delivery tests; an
+ * encoded message within the bound is one slice, and an empty message is none.
  */
 export function valveSlices(message: string): string[] {
+  message = message.replace(/\r\n?/g, "\n").replaceAll("\t", "    ");
   const slices: string[] = [];
   let current = "";
   let currentBytes = 0;
-  for (const character of message) {
-    const characterBytes = Buffer.byteLength(character, "utf8");
+  for (let index = 0; index < message.length; index += 1) {
+    // Vk;Sc;Unicode;KeyDown;ControlKeyState;RepeatCount, all ASCII.
+    const character = `\u001b[0;0;${message.charCodeAt(index)};1;0;1_`;
+    const characterBytes = character.length;
     if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
       slices.push(current);
       current = "";

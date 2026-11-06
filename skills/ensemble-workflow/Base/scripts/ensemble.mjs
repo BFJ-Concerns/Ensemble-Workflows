@@ -17465,7 +17465,8 @@ var ClaudeCliControlPlane = class {
       ...this.#workerEnv,
       [SANDBOXED_WORKSPACE_VARIABLE]: "1"
     };
-    this.#projectsDir = options.projectsDir ?? path10.join(homedir3(), ".claude", "projects");
+    const configDir = this.#env.CLAUDE_CONFIG_DIR || path10.join(homedir3(), ".claude");
+    this.#projectsDir = options.projectsDir ?? path10.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";
@@ -17660,7 +17661,7 @@ var ClaudeCliControlPlane = class {
       await delay(this.#valveAttachSettleMs);
       const slices = valveSlices(message);
       for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", slice]);
+        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", "--", slice]);
         if (!typed.ok) {
           return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
         }
@@ -17842,11 +17843,13 @@ function refused(step, result) {
   return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
 }
 function valveSlices(message) {
+  message = message.replace(/\r\n?/g, "\n").replaceAll("	", "    ");
   const slices = [];
   let current2 = "";
   let currentBytes = 0;
-  for (const character of message) {
-    const characterBytes = Buffer.byteLength(character, "utf8");
+  for (let index = 0; index < message.length; index += 1) {
+    const character = `\x1B[0;0;${message.charCodeAt(index)};1;0;1_`;
+    const characterBytes = character.length;
     if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
       slices.push(current2);
       current2 = "";

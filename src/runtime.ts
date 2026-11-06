@@ -1682,6 +1682,8 @@ export class EnsembleRuntime {
       .reduce((sum, event) => sum + event.last.totalTokens, 0) ?? 0;
     let attemptSpend = 0;
     const observedUsage: TokenUsageEvent[] = [];
+    let observedModel: string | null = null;
+    let observedEffort: string | null = null;
     let result: EngineAttemptResult | undefined;
     let active = true;
     let transcriptPath: string | undefined;
@@ -1707,7 +1709,10 @@ export class EnsembleRuntime {
         onWaiting: (wait) => { if (active) context.onWaiting?.(wait); },
         onOutput: () => { if (active) this.progress.noteAgentEvidence(agentId); },
         onIdentity: (identity) => {
-          if (active) this.progress.noteAgentIdentity(agentId, identity);
+          if (!active) return;
+          observedModel = identity.resolvedModel;
+          observedEffort = identity.resolvedEffort;
+          this.progress.noteAgentIdentity(agentId, identity);
         },
         onUsage: (event) => {
           if (!active) return;
@@ -1743,12 +1748,15 @@ export class EnsembleRuntime {
       return result;
     } catch (error) {
       result = failedTurnResultOf(error) ?? undefined;
-      if (result === undefined && error instanceof Error && observedUsage.length > 0) {
+      if (result === undefined && error instanceof Error &&
+        (observedUsage.length > 0 || observedModel !== null || observedEffort !== null)) {
         const transcript = partialTranscriptOf(error);
         const text = partialWorkerTextOf(error) ?? "";
         result = {
           text, deltaText: text, durationMs: null, firstDeltaMs: firstDeltaMsOf(error),
           items: {}, tokenUsageEvents: observedUsage,
+          ...(observedModel === null ? {} : { resolvedModel: observedModel }),
+          ...(observedEffort === null ? {} : { resolvedEffort: observedEffort }),
           ...(transcript === null ? {} : { transcripts: [transcript] })
         };
         attachFailedTurnResult(error, result);

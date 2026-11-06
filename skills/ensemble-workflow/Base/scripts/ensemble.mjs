@@ -23021,6 +23021,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const previousSpend = record?.attempts.flatMap((attempt) => attempt.tokenUsageEvents).reduce((sum, event) => sum + event.last.totalTokens, 0) ?? 0;
     let attemptSpend = 0;
     const observedUsage = [];
+    let observedModel = null;
+    let observedEffort = null;
     let result;
     let active = true;
     let transcriptPath;
@@ -23051,7 +23053,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
           if (active) this.progress.noteAgentEvidence(agentId);
         },
         onIdentity: (identity) => {
-          if (active) this.progress.noteAgentIdentity(agentId, identity);
+          if (!active) return;
+          observedModel = identity.resolvedModel;
+          observedEffort = identity.resolvedEffort;
+          this.progress.noteAgentIdentity(agentId, identity);
         },
         onUsage: (event) => {
           if (!active) return;
@@ -23087,7 +23092,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return result;
     } catch (error) {
       result = failedTurnResultOf(error) ?? void 0;
-      if (result === void 0 && error instanceof Error && observedUsage.length > 0) {
+      if (result === void 0 && error instanceof Error && (observedUsage.length > 0 || observedModel !== null || observedEffort !== null)) {
         const transcript = partialTranscriptOf(error);
         const text = partialWorkerTextOf(error) ?? "";
         result = {
@@ -23097,6 +23102,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
           firstDeltaMs: firstDeltaMsOf(error),
           items: {},
           tokenUsageEvents: observedUsage,
+          ...observedModel === null ? {} : { resolvedModel: observedModel },
+          ...observedEffort === null ? {} : { resolvedEffort: observedEffort },
           ...transcript === null ? {} : { transcripts: [transcript] }
         };
         attachFailedTurnResult(error, result);

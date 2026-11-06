@@ -4833,3 +4833,30 @@ test("invalid observed usage cannot replace a successful attempt outcome", async
     assert.equal(runtime.progress.snapshot().agents[0]!.spent, null);
   } finally { await runtime.close(); }
 });
+
+
+test("thrown Codex turns retain observed identity with and without streamed usage", async () => {
+  for (const withUsage of [true, false]) {
+    class FailingTransport extends FakeTransport {
+      override async runTurn(_threadId: string, _prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
+        options.onIdentity?.({ resolvedModel: "initial", resolvedEffort: "medium" });
+        options.onIdentity?.({ resolvedModel: "rerouted", resolvedEffort: "high" });
+        if (withUsage) options.onUsage?.({ threadId: "failed", turnId: "1", last: usage(7), total: usage(7), raw: {} });
+        throw new Error("transport closed after identity");
+      }
+    }
+    const transport = new FailingTransport([]);
+    const { runtime, records } = chainRuntime([new CodexEngineAdapter({ transport, concurrency: 1 })], 1);
+    try {
+      assert.equal(await runtime.agent("work", { engine: "codex" }), null);
+      const agent = runtime.progress.snapshot().agents[0]!;
+      assert.equal(agent.state, "failed");
+      assert.equal(agent.resolvedModel, "rerouted");
+      assert.equal(agent.resolvedEffort, "high");
+      assert.equal(agent.spent, withUsage ? 7 : null);
+      assert.equal(records.at(-1)?.resolvedModel, "rerouted");
+      assert.equal(records.at(-1)?.resolvedEffort, "high");
+      assert.equal(records.at(-1)?.attempts[0]?.resolvedModel, "rerouted");
+    } finally { await runtime.close(); }
+  }
+});

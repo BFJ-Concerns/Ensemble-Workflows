@@ -495,9 +495,10 @@ await builder.close();
   `session: { id, turn }` field. A session using `isolation: "worktree"` works
   in one worktree for its whole life, finalised when the session closes.
 - **Claude follow-ups need tmux:** follow-up turns are typed into the held
-  session through tmux, in bounded slices so that a follow-up of any size
-  arrives intact. Each injection uses a private tmux server that loads no
-  tmux configuration and does not appear among your own sessions. Without
+  session through tmux as individual terminal key records, batched without
+  splitting a record. This preserves line breaks and Unicode while keeping
+  each tmux command bounded. Each injection uses a private tmux server that
+  loads no tmux configuration and does not appear among your own sessions. Without
   tmux, a follow-up or correction fails with a `claude-valve-error` naming
   the tmux step that failed, rather than silently starting a fresh worker.
 

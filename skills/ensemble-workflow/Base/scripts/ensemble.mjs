@@ -17633,7 +17633,7 @@ var ClaudeCliControlPlane = class {
       await delay(this.#valveAttachSettleMs);
       const slices = valveSlices(message);
       for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", slice]);
+        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", "--", slice]);
         if (!typed.ok) {
           return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
         }
@@ -17818,8 +17818,9 @@ function valveSlices(message) {
   const slices = [];
   let current2 = "";
   let currentBytes = 0;
-  for (const character of message) {
-    const characterBytes = Buffer.byteLength(character, "utf8");
+  for (let index = 0; index < message.length; index += 1) {
+    const character = `\x1B[0;0;${message.charCodeAt(index)};1;0;1_`;
+    const characterBytes = character.length;
     if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
       slices.push(current2);
       current2 = "";

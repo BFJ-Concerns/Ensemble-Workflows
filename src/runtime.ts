@@ -1340,6 +1340,12 @@ export class EnsembleRuntime {
       // the budget judged afresh at that dispatch, as for any call.
       admittedEngine = this.#engineFor(outcome.engine);
       readmitting = true;
+      const lastAttempt = agentRecord.attempts.at(-1)?.attempt;
+      if (lastAttempt !== undefined) {
+        await this.#recordArchiveWriteSafely(agentId, async () => {
+          await this.#runRecorder?.recordAttemptEnd(agentId, lastAttempt);
+        });
+      }
       this.progress.requeueAgent(agentId, admittedEngine.name);
       // The next step's queue time starts now; the execution time already
       // spent on the refused engine stays accumulated on the record.
@@ -1690,7 +1696,6 @@ export class EnsembleRuntime {
     } finally {
       active = false;
       await Promise.all(pending);
-      await this.#recordArchiveWriteSafely(agentId, () => recorder.recordAttemptEnd(agentId, context.attempt));
     }
   }
 

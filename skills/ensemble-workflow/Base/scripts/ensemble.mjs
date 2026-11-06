@@ -22606,6 +22606,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
       admittedEngine = this.#engineFor(outcome.engine);
       readmitting = true;
+      const lastAttempt = agentRecord.attempts.at(-1)?.attempt;
+      if (lastAttempt !== void 0) {
+        await this.#recordArchiveWriteSafely(agentId, async () => {
+          await this.#runRecorder?.recordAttemptEnd(agentId, lastAttempt);
+        });
+      }
       this.progress.requeueAgent(agentId, admittedEngine.name);
       queuedAt = Date.now();
     }
@@ -22878,7 +22884,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
     } finally {
       active = false;
       await Promise.all(pending);
-      await this.#recordArchiveWriteSafely(agentId, () => recorder.recordAttemptEnd(agentId, context.attempt));
     }
   }
   async #recordSettlementSafely(agentId, record) {

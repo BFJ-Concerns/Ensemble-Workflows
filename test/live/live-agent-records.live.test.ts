@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -18,7 +19,7 @@ for (const engine of ["claude", "codex"] as const) {
   test(`live ${engine} archive reader follows running, queued and held turns through settlement`, {
     skip: process.env.ENSEMBLE_LIVE !== "1", timeout: 1_200_000
   }, async () => {
-    const directory = await mkdtemp(`/mnt/ai-data/scratch/live-agent-records-${engine}-`);
+    const directory = await mkdtemp(path.join(tmpdir(), `live-agent-records-${engine}-`));
     const processes: Array<Promise<unknown>> = [];
     const probes: HeldProbe[] = ["first", "queued", "held-first", "held-second"].map((name) => ({
       paths: probePaths(directory, name),

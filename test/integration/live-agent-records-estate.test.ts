@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { appendFile, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -11,7 +12,7 @@ const fixture = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 const consumer = path.resolve("test/consumers/read-live-agent-records.mjs");
 
 test("an independent reader follows queued, retried and held workers through the built CLI archive", { timeout: 60_000 }, async () => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-live-records-estate-");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-records-estate-"));
   const processes: Array<Promise<unknown>> = [];
   try {
     const store = path.join(directory, "records");

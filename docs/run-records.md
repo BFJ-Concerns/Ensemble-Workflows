@@ -425,9 +425,11 @@ ISO start time), and `transcript` (a path or `null`). Ensemble writes the
 start time before invoking the engine. The transcript path appears once a
 readable file exists. A worker waiting for admission has no
 `current_attempt`, including while a fallback target waits for a slot.
-The field is removed when the attempt ends. Settled records retain their
-existing schema and fields; attempts in the `attempts` array are settled
-attempts only.
+The field remains present between retries and while the outcome is being
+archived, until the next attempt replaces it or the settled record removes
+it. It is cleared when a fallback target re-enters the admission queue.
+Settled records retain their existing schema and fields; attempts in the
+`attempts` array are settled attempts only.
 
 Claude's live path is absolute and points to the session's own JSONL file
 under `~/.claude/projects/`. A held session uses that same file across its

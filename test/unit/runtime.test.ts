@@ -4555,3 +4555,58 @@ test("fallback admission clears the refused attempt from a queued archive record
     await rm(store, { recursive: true, force: true });
   }
 });
+
+for (const boundary of ["retry", "settlement"] as const) {
+  test(`archive execution stays visible across ${boundary} publication`, async () => {
+    const store = await mkdtemp(path.join(tmpdir(), `ensemble-attempt-${boundary}-`));
+    const writer = await RunRecordWriter.start({
+      storeDir: store, cwd: process.cwd(), runUuid: `attempt-${boundary}`,
+      workflowPath: path.join(store, "workflow.js"), workflowSource: "return true;",
+      args: [], cliFlags: { jsonArgs: false }
+    });
+    let entered!: () => void;
+    let release!: () => void;
+    const reachedBoundary = new Promise<void>((resolve) => { entered = resolve; });
+    const publication = new Promise<void>((resolve) => { release = resolve; });
+    const recordStart = writer.recordAttemptStart.bind(writer);
+    writer.recordAttemptStart = async (id, attempt, at) => {
+      if (boundary === "retry" && attempt === 2) {
+        entered();
+        await publication;
+      }
+      await recordStart(id, attempt, at);
+    };
+    const recordAgent = writer.recordAgent.bind(writer);
+    writer.recordAgent = async (record) => {
+      if (boundary === "settlement" && record.status !== "in-progress") {
+        entered();
+        await publication;
+      }
+      await recordAgent(record);
+    };
+    const transport = new FakeTransport([turn("invalid JSON"), turn('{"answer":"yes"}')]);
+    const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 2 });
+    runtime.setRunRecorder(writer);
+    const call = runtime.agent("answer", { engine: "codex", schema });
+    void call.catch(() => undefined);
+    try {
+      await reachedBoundary;
+      const file = path.join(writer.archiveDir, "agents/000001/agent.json");
+      const running = JSON.parse(await readFile(file, "utf8"));
+      assert.equal(running.status, "in-progress");
+      assert.equal(running.current_attempt?.attempt, boundary === "retry" ? 1 : 2,
+        `archive classified an admitted worker as queued during ${boundary}`);
+      release();
+      assert.deepEqual(await call, { answer: "yes" });
+      const settled = JSON.parse(await readFile(file, "utf8"));
+      assert.equal(settled.status, "complete");
+      assert.equal(settled.current_attempt, undefined);
+    } finally {
+      release();
+      await Promise.allSettled([call]);
+      await runtime.close();
+      await writer.finish({ status: "complete", exitCode: 0, result: null });
+      await rm(store, { recursive: true, force: true });
+    }
+  });
+}

@@ -1,10 +1,12 @@
 /* global process */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, appendFile, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout, clearTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
+
+import { createAcknowledgementWriter } from "./archive-helpers.mjs";
 
 const spec = JSON.parse(await readFile(process.argv[2], "utf8"));
 const agentKeys = ["id", "attempt", "engine", "label", "phase", "state", "startedAtMs", "firstEvidenceAtMs", "lastEvidenceAtMs", "finishedAtMs", "waitingOn", "requestedModel", "requestedEffort", "resolvedModel", "resolvedEffort", "transcript", "worktree", "spent", "failure"].sort();
@@ -23,17 +25,12 @@ const completion = new Promise((resolve, reject) => {
 });
 // Keep failures handled even when an assertion interrupts the polling loop.
 void completion.catch(() => undefined);
-const acknowledged = new Set();
+const { acknowledge, hasAcknowledged } = createAcknowledgementWriter(spec.acknowledgements);
 const workers = new Map();
 let announcement;
 let snapshot;
 let released = false;
 const deadline = Date.now() + (spec.timeoutMs ?? 45_000);
-async function acknowledge(marker) {
-  if (acknowledged.has(marker)) return;
-  acknowledged.add(marker);
-  if (spec.acknowledgements) await appendFile(spec.acknowledgements, `${marker}\n`);
-}
 async function exists(file) {
   try { await access(file); return true; } catch (error) {
     if (error.code === "ENOENT") return false;
@@ -60,7 +57,7 @@ try {
     assert.ok(current.agents.length <= 64);
     if (spec.recording !== false) assert.ok(path.isAbsolute(current.archiveDir));
     else assert.equal(current.archiveDir, null);
-    if (spec.readyFile && !acknowledged.has("ready")) {
+    if (spec.readyFile && !hasAcknowledged("ready")) {
       await writeFile(spec.readyFile, JSON.stringify(announcement));
       await acknowledge("ready");
     }

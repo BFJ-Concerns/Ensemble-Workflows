@@ -1,6 +1,7 @@
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { readProcessStartTicks } from "../../src/process-owner-evidence.js";
 import { executablePath } from "../integration/estate-process.js";
 
 /** Test-owned clients only: the daemon and its worker processes are never signalled. */
@@ -103,8 +104,7 @@ export async function resumeDeliveryClient(directory: string): Promise<void> {
   let owner: { pid: number; start: string };
   try {
     owner = JSON.parse(await readFile(path.join(directory, "attach.json"), "utf8")) as typeof owner;
-    const stat = await readFile(`/proc/${owner.pid}/stat`, "utf8");
-    if (stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] === owner.start) {
+    if (await readProcessStartTicks("/proc", owner.pid) === owner.start) {
       process.kill(owner.pid, "SIGCONT");
     }
   } catch (error) {

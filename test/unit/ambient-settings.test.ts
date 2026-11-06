@@ -401,12 +401,12 @@ test("a configured status directory that does not exist is refused quoting the p
   );
 });
 
- test("status keeps the existing project directory and honours disablement", async () => {
+test("status uses the data home despite a project directory and honours disablement", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-status-default-"));
   const env = { XDG_CONFIG_HOME: path.join(cwd, "config"), XDG_DATA_HOME: path.join(cwd, "data") };
   try {
     await mkdir(path.join(cwd, ".claude"));
-    assert.equal(resolveAmbientSettings({ env, cwd }).statusDir.value, path.join(cwd, ".claude"));
+    assert.equal(resolveAmbientSettings({ env, cwd }).statusDir.value, path.join(cwd, "data", "ensemble", "status"));
     assert.deepEqual(resolveAmbientSettings({ env: { ...env, ENSEMBLE_STATUS: "off", ENSEMBLE_STATUS_DIR: "" }, cwd }).statusDir, { value: null, layer: "env" });
   } finally {
     await rm(cwd, { recursive: true, force: true });

@@ -34,6 +34,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
   await writeFile(path.join(configDir, "settings.json"), `${JSON.stringify({ skipDangerousModePermissionPrompt: true })}\n`, { mode: 0o600 });
   const machineEnvironment = resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment;
   const xdg = path.join(root, "config");
+  await mkdir(path.join(root, "status"));
   await mkdir(path.join(xdg, "ensemble"), { recursive: true });
   await writeFile(path.join(xdg, "ensemble", "config.json"), JSON.stringify({
     schema_version: 1,

@@ -1952,3 +1952,45 @@ test("Claude reports its transcript for every held-session turn and correction",
     }
   });
 });
+
+
+test("Claude observes changed assistant output, served identity and usage without counting unchanged polls", async () => {
+  await withControlPlane([{ busyPolls: 2, assistant: {
+    text: "observed", model: "claude-served", effort: "high", input: 10, output: 4
+  } }], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const invocation = adapter.createInvocation("go", {});
+    let outputs = 0;
+    const identities: unknown[] = [];
+    let spent = 0;
+    const result = await invocation.runAttempt({
+      attempt: 1,
+      onOutput: () => { outputs += 1; },
+      onIdentity: (identity) => { identities.push(identity); },
+      onUsage: (event) => { spent += event.last.totalTokens; }
+    });
+    assert.equal(outputs, 1, "unchanged polls must not advance the last-output stamp");
+    assert.ok(identities.some((identity) => JSON.stringify(identity) === JSON.stringify({
+      resolvedModel: "claude-served", resolvedEffort: "high"
+    })));
+    assert.equal(spent, result.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0));
+    assert.ok(spent > 0);
+    await invocation.close?.();
+  });
+});
+
+
+test("Claude continues reporting new assistant rows after the first output", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-output-growth-"));
+  try {
+    const controlPlane = new SplitRowsControlPlane(dir);
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const invocation = adapter.createInvocation("go", {});
+    const observedAt: number[] = [];
+    try {
+      await invocation.runAttempt({ attempt: 1, onOutput: () => { observedAt.push(controlPlane.pollCount); } });
+      assert.ok(observedAt.length >= 2, "each newly appended assistant batch must remain visible");
+      assert.equal(observedAt.at(-1), 3);
+    } finally { await invocation.close?.(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

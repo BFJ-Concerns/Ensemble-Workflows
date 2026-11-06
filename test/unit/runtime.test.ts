@@ -13,6 +13,7 @@ import { EnsembleRuntime } from "../../src/runtime.js";
 import {
   AgentCwdRejectedError,
   attachFailedTurnResult,
+  attachPartialWorkerText,
   AgentOptionRejectedError,
   AgentPromptRejectedError,
   AppServerExitedError,
@@ -4837,7 +4838,7 @@ test("an attached failure with empty usage retains streamed tokens across a retr
         context.onUsage?.(event);
         observations.push(runtime.progress.snapshot().agents[0]!.spent);
         if (calls === 1) {
-          throw attachFailedTurnResult(new Error("final transcript unreadable"), turn("partial answer"));
+          throw attachPartialWorkerText(attachFailedTurnResult(new Error("final transcript unreadable"), turn("partial answer")), "partial answer");
         }
         return { ...turn("answer"), tokenUsageEvents: [event] };
       } };

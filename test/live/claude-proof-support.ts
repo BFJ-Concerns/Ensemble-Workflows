@@ -1,6 +1,13 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { promisify } from "node:util";
+import { readProcessStartTicks } from "../../src/process-owner-evidence.js";
 import { access, mkdtemp, realpath, rm, symlink, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
+
+const exec = promisify(execFile);
 
 /** Resolve once; the caller owns the private directory until the proof finishes. */
 export async function selectClaudeExecutable(executable: string, temporaryRoot: string, env: NodeJS.ProcessEnv = process.env): Promise<{
@@ -77,4 +84,50 @@ export function classifySupervisorTransition(
   return transitions.length === 2 && transitions[0]!.event === "shutdown" && transitions[0]!.cause === "upgrade" &&
     transitions[1]!.event === "start" && transitions[1]!.pid === String(after.pid) && transitions[1]!.version === after.version
     ? "upgrade" : "unexplained";
+}
+
+/** Read-only status, with the command's evidence retained even when it fails. */
+export async function daemonStatus(executable: string, env: NodeJS.ProcessEnv): Promise<{ pid: number | null; code: number | string; stdout: string; stderr: string }> {
+  let result: { code: number | string; stdout: string; stderr: string };
+  try {
+    const { stdout, stderr } = await exec(executable, ["daemon", "status"], { env });
+    result = { code: 0, stdout, stderr };
+  } catch (error) {
+    const failed = error as Error & { code?: number | string; stdout?: string; stderr?: string };
+    result = { code: failed.code ?? "unknown", stdout: failed.stdout ?? "", stderr: failed.stderr ?? failed.message };
+  }
+  const match = /^pid:\s+(\d+)/m.exec(result.stdout);
+  return { ...result, pid: match === null ? null : Number(match[1]) };
+}
+
+/** Read-only PID lookup; a failed status command does not establish a live daemon. */
+export async function daemonPid(executable: string, env: NodeJS.ProcessEnv): Promise<number | null> {
+  const status = await daemonStatus(executable, env);
+  return status.code === 0 ? status.pid : null;
+}
+
+export async function supervisorSnapshot(executable: string, env: NodeJS.ProcessEnv, startAt: number | "current" = 0): Promise<{ identity: SupervisorIdentity; lifecycle: Record<string, string>[]; offset: number }> {
+  const pid = await daemonPid(executable, env);
+  const all = await supervisorLifecycle(env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"));
+  // The operator's log spans unrelated sessions. Retain the serving daemon's
+  // start and subsequent lifecycle, using the same offset after the journey.
+  const offset = startAt === "current" ? Math.max(0, all.findLastIndex(row => row.event === "start" && row.pid === String(pid))) : startAt;
+  const lifecycle = all.slice(offset).filter(row => row.event !== "settled");
+  const identity: SupervisorIdentity = {
+    pid,
+    startTicks: pid === null ? null : await readProcessStartTicks("/proc", pid),
+    cgroup: pid === null ? null : await readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null),
+    version: lifecycle.findLast(row => row.event === "start" && row.pid === String(pid))?.version ?? ""
+  };
+  return { identity, lifecycle, offset };
+}
+
+export function assertSupervisorTransition(
+  before: Awaited<ReturnType<typeof supervisorSnapshot>>,
+  after: Awaited<ReturnType<typeof supervisorSnapshot>>,
+  context: string
+): string {
+  const transition = classifySupervisorTransition(before.identity, after.identity, before.lifecycle, after.lifecycle);
+  assert.notEqual(transition, "unexplained", `${context}: supervisor stopped, moved or changed without a recorded upgrade: ${JSON.stringify({ before, after })}`);
+  return transition;
 }

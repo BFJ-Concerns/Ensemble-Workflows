@@ -1,3 +1,4 @@
+import { waitForCondition } from "../wait-for-condition.js";
 import assert from "node:assert/strict";
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
@@ -1315,14 +1316,6 @@ function fileExists(file: string): Promise<boolean> {
   );
 }
 
-async function waitUntil(condition: () => boolean | Promise<boolean>, what: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await condition())) {
-    assert.ok(Date.now() < deadline, `timed out waiting for ${what}`);
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-}
-
 function restoreEnv(name: string, saved: string | undefined): void {
   if (saved === undefined) {
     delete process.env[name];
@@ -1516,16 +1509,16 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
     const dispatching = controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
     // Placed before `claude --bg` is released: the roster was read while the
     // command still ran, and read again until it named the pid.
-    await waitUntil(() => placed.length > 0, "the session to be placed while `claude --bg` was still running", 90_000);
+    await waitForCondition(() => placed.length > 0, "the session to be placed while `claude --bg` was still running", 90_000, 25);
     assert.equal(placed[0]!.bgStillRunning, true, "the session was placed only after `claude --bg` returned");
     assert.ok(placed[0]!.rosterQueries >= 3, `the roster was read ${placed[0]!.rosterQueries} time(s) before placement; the two pid-less answers were never seen`);
     const handle = await dispatching;
     assert.equal(await fileExists(bgExitedPath), false, "dispatch waited for the held background command");
-    await waitUntil(() => fileExists(settingsPathFile), "the background command to publish its settings path", 60_000);
+    await waitForCondition(() => fileExists(settingsPathFile), "the background command to publish its settings path", 60_000, 25);
     const settingsPath = await readFile(settingsPathFile, "utf8");
     assert.equal(await fileExists(settingsPath), true, "registration removed the live session's settings");
     await writeFile(releasePath, "");
-    await waitUntil(() => fileExists(bgExitedPath), "`claude --bg` to return once released", 60_000);
+    await waitForCondition(() => fileExists(bgExitedPath), "`claude --bg` to return once released", 60_000, 25);
     assert.equal(await readFile(bgExitedPath, "utf8"), "", "`claude --bg` returned on its own ceiling, not on release");
     const lateSettings = JSON.parse(await readFile(lateSettingsPath, "utf8")) as { error?: string; settings?: { env: Record<string, string> } };
     assert.equal(lateSettings.error, undefined, "the background command lost settings after early registration");
@@ -1669,11 +1662,11 @@ test("owned idle sessions re-place replacement PIDs without turn polling", async
       await writeFile(pidFile, String(replacement.pid));
       // No poll(), steer() or turn runs here. Only the owned background watch
       // can discover the new roster PID and move this actual process.
-      await waitUntil(async () => {
+      await waitForCondition(async () => {
         const group = await readFile(`/proc/${replacement.pid}/cgroup`, "utf8");
         const placement = plane!.placementOf(handle!);
         return group.trim().endsWith(`/${unit}`) && placement?.kind === "placed" && placement.pids.includes(replacement.pid!);
-      }, "the idle-session watch to place the replacement process", 60_000);
+      }, "the idle-session watch to place the replacement process", 60_000, 25);
       assert.ok((await readFile(`/proc/${replacement.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`), "idle replacement stayed outside its worker scope");
     } finally {
       if (plane && handle) await plane.stop(handle);

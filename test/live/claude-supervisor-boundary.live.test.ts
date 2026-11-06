@@ -7,10 +7,9 @@ import path from "node:path";
 import test, { after, before } from "node:test";
 import { promisify } from "node:util";
 
-import { classifySupervisorTransition, selectClaudeExecutable, supervisorLifecycle, type SupervisorIdentity } from "./claude-proof-support.js";
+import { assertSupervisorTransition, classifySupervisorTransition, daemonPid, selectClaudeExecutable, supervisorLifecycle, supervisorSnapshot } from "./claude-proof-support.js";
 
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
-import { readProcessStartTicks } from "../../src/process-owner-evidence.js";
 import { containingSlice, parentSlice } from "../../src/worker-scopes.js";
 
 import { heldProbePrompt, probePaths, waitForPath, type HeldProbe } from "./held-worker-probes.js";
@@ -41,13 +40,13 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
   const sibling: HeldProbe = { paths: probePaths(root, "sibling"), evidence: { kind: "cgroup" }, token: `SIBLING_${randomUUID()}` };
   const ownCgroup = cgroupPath(await readFile("/proc/self/cgroup", "utf8"));
   const slice = containingSlice(`0::${ownCgroup}\n`);
-  const operatorDaemon = await supervisorSnapshot(process.env, "current");
+  const operatorDaemon = await supervisorSnapshot(claude.executable, process.env, "current");
   const observations: Record<string, unknown> = { ownCgroup, slice, claudeExecutable: claude.executable, operatorDaemonBefore: operatorDaemon };
   const boxes = [`ensemble-live-box-${process.pid}.scope`, `ensemble-live-box-${process.pid}-sibling.scope`];
   const runs: ReturnType<typeof launchInBox>[] = [];
 
   try {
-    assert.equal(await daemonPid(env), null, "the private config directory already had a daemon");
+    assert.equal(await daemonPid(claude.executable, env), null, "the private config directory already had a daemon");
     const run1 = launchInBox(boxes[0]!, slice, env, heldProbePrompt(first));
     runs.push(run1);
     const seen = await watchRoster(env, 120_000, undefined, () => run1.settled);
@@ -67,7 +66,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     observations.firstShellCgroup = await readFile(first.paths.evidence, "utf8");
     assert.equal(cgroupPath(String(observations.firstShellCgroup)), workerCgroup, "the first worker's shell escaped its placement");
 
-    let supervisorState = await supervisorSnapshot(env);
+    let supervisorState = await supervisorSnapshot(claude.executable, env);
     const daemon = supervisorState.identity.pid;
     observations.ownedSupervisorBefore = supervisorState;
     assert.ok(daemon !== null, "the launcher's claude commands did not start the owned daemon");
@@ -103,7 +102,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     assert.equal(run2.settled, false, "the sibling settled before observation");
     observations.siblingShellCgroup = await readFile(sibling.paths.evidence, "utf8");
     assert.equal(cgroupPath(String(observations.siblingShellCgroup)), siblingCgroup);
-    const afterSibling = await supervisorSnapshot(env);
+    const afterSibling = await supervisorSnapshot(claude.executable, env);
     observations.afterSibling = afterSibling;
     observations.afterSiblingTransition = assertSupervisorTransition(supervisorState, afterSibling, "afterSibling");
     supervisorState = afterSibling;
@@ -117,7 +116,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
       // --collect may already have removed an empty box when its launcher exited.
       if (!(error instanceof Error) || !/not loaded|not found/.test(error.message)) throw error;
     });
-    const afterBox = await supervisorSnapshot(env);
+    const afterBox = await supervisorSnapshot(claude.executable, env);
     observations.afterBox = afterBox;
     observations.afterBoxTransition = assertSupervisorTransition(supervisorState, afterBox, "afterBox");
     supervisorState = afterBox;
@@ -126,13 +125,13 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     assert.ok(siblingRow !== null, "the supervisor lost its sibling when the first box ended");
     assert.equal(run2.settled, false, "the sibling ended with the first launcher's box");
     assert.equal(cgroupPath(await readFile(`/proc/${seen2.pid}/cgroup`, "utf8")), siblingCgroup);
-    observations.siblingAfterBox = { pid: seen2.pid, cgroup: siblingCgroup, daemon: await daemonPid(env) };
+    observations.siblingAfterBox = { pid: seen2.pid, cgroup: siblingCgroup, daemon: await daemonPid(claude.executable, env) };
 
     await writeFile(sibling.paths.release, "");
     const result2 = await run2.result;
     observations.run2 = result2;
     assert.equal(result2.code, 0, result2.stderr);
-    const afterCompletion = await supervisorSnapshot(env);
+    const afterCompletion = await supervisorSnapshot(claude.executable, env);
     observations.afterCompletion = afterCompletion;
     observations.afterCompletionTransition = assertSupervisorTransition(supervisorState, afterCompletion, "afterCompletion");
     supervisorState = afterCompletion;
@@ -145,10 +144,10 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     observations.runResults = await Promise.all(runs.map((run) => run.result));
     observations.ownedLifecycleBeforeStop = await supervisorLifecycle(env.CLAUDE_CONFIG_DIR!);
     observations.upgradeRestarts = (observations.ownedLifecycleBeforeStop as Record<string, string>[]).filter(row => row.event === "shutdown" && row.cause === "upgrade");
-    if ((await daemonPid(env)) !== null) {
+    if ((await daemonPid(claude.executable, env)) !== null) {
       await execFileAsync(claude.executable, ["daemon", "stop", "--any"], { env });
     }
-    const operatorAfter = await supervisorSnapshot(process.env, operatorDaemon.offset);
+    const operatorAfter = await supervisorSnapshot(claude.executable, process.env, operatorDaemon.offset);
     observations.operatorDaemonAfter = operatorAfter;
     observations.operatorTransition = operatorDaemon.identity.pid === null && operatorAfter.identity.pid === null
       ? "absent" : classifySupervisorTransition(operatorDaemon.identity, operatorAfter.identity, operatorDaemon.lifecycle, operatorAfter.lifecycle);
@@ -164,7 +163,7 @@ test("the built launcher re-places an idle held session after respawn without an
   const root = await mkdtemp(path.join(tmpdir(), "ensemble-supervisor-replacement-"));
   const env = await ownedSupervisorEnvironment(root);
   const slice = containingSlice(await readFile("/proc/self/cgroup", "utf8"));
-  const operatorDaemon = await supervisorSnapshot(process.env, "current");
+  const operatorDaemon = await supervisorSnapshot(claude.executable, process.env, "current");
   const probe: HeldProbe = { paths: probePaths(root, "replacement"), evidence: { kind: "cgroup" }, token: `REPLACEMENT_${randomUUID()}` };
   const idle = path.join(root, "idle");
   const close = path.join(root, "close");
@@ -183,7 +182,7 @@ test("the built launcher re-places an idle held session after respawn without an
         return reply;
       } finally { await worker.close(); }
     `);
-    assert.equal(await daemonPid(env), null, "the private config directory already had a daemon");
+    assert.equal(await daemonPid(claude.executable, env), null, "the private config directory already had a daemon");
     run = launchCliInBox(box, slice, env, [workflow]);
     const seen = await watchRoster(env, 120_000, undefined, () => run!.settled);
     assert.ok(seen.registered !== null && seen.pid !== null, run.settled ? JSON.stringify(await run.result) : "the owned session never registered a process");
@@ -231,7 +230,7 @@ test("the built launcher re-places an idle held session after respawn without an
     observations.ownedLifecycleBeforeStop = await supervisorLifecycle(env.CLAUDE_CONFIG_DIR!);
     observations.upgradeRestarts = (observations.ownedLifecycleBeforeStop as Record<string, string>[]).filter(row => row.event === "shutdown" && row.cause === "upgrade");
     await execFileAsync(claude.executable, ["daemon", "stop", "--any"], { env }).catch((error: Error) => { observations.ownedDaemonStop = error.message.slice(0, 200); });
-    const operatorAfter = await supervisorSnapshot(process.env, operatorDaemon.offset);
+    const operatorAfter = await supervisorSnapshot(claude.executable, process.env, operatorDaemon.offset);
     observations.operatorDaemonAfter = operatorAfter;
     observations.operatorTransition = operatorDaemon.identity.pid === null && operatorAfter.identity.pid === null
       ? "absent" : classifySupervisorTransition(operatorDaemon.identity, operatorAfter.identity, operatorDaemon.lifecycle, operatorAfter.lifecycle);
@@ -324,7 +323,7 @@ async function watchRoster(env: NodeJS.ProcessEnv, timeoutMs: number, ignoreSess
   const watch: RosterWatch = { registered: null, pid: null, pidAtMs: null, processIdentity: null };
   while (Date.now() - started < timeoutMs && !ended?.()) {
     // The daemon is started by the launcher, never by this watcher: the roster is read only once the daemon exists.
-    if ((await daemonPid(env)) !== null) {
+    if ((await daemonPid(claude.executable, env)) !== null) {
       const { rows } = await roster(env);
       const row = rows.find((entry) => entry.kind === "background" && typeof entry.name === "string" && entry.name.startsWith("ensemble-") && entry.sessionId !== ignoreSessionId);
       if (row !== undefined && typeof row.sessionId === "string" && typeof row.name === "string") {
@@ -392,44 +391,7 @@ async function roster(env: NodeJS.ProcessEnv): Promise<{ ok: boolean; rows: Rost
   }
 }
 
-/** The daemon's pid as `claude daemon status` reports it, or null when none is running. Read-only: status never starts a daemon. */
-async function daemonPid(env: NodeJS.ProcessEnv): Promise<number | null> {
-  try {
-    const { stdout } = await execFileAsync(claude.executable, ["daemon", "status"], { env });
-    const match = /^pid:\s+(\d+)/m.exec(stdout);
-    return match === null ? null : Number(match[1]);
-  } catch {
-    return null;
-  }
-}
-
 function cgroupPath(cgroupFile: string): string {
   const line = cgroupFile.split("\n").find((entry) => entry.startsWith("0::")) ?? "0::";
   return line.slice("0::".length).trim();
-}
-
-async function supervisorSnapshot(env: NodeJS.ProcessEnv, startAt: number | "current" = 0): Promise<{ identity: SupervisorIdentity; lifecycle: Record<string, string>[]; offset: number }> {
-  const pid = await daemonPid(env);
-  const all = await supervisorLifecycle(env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"));
-  // The operator's log spans unrelated sessions. Retain the serving daemon's
-  // start and subsequent lifecycle, using the same offset after the journey.
-  const offset = startAt === "current" ? Math.max(0, all.findLastIndex(row => row.event === "start" && row.pid === String(pid))) : startAt;
-  const lifecycle = all.slice(offset).filter(row => row.event !== "settled");
-  const identity: SupervisorIdentity = {
-    pid,
-    startTicks: pid === null ? null : await readProcessStartTicks("/proc", pid),
-    cgroup: pid === null ? null : await readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null),
-    version: lifecycle.findLast(row => row.event === "start" && row.pid === String(pid))?.version ?? ""
-  };
-  return { identity, lifecycle, offset };
-}
-
-function assertSupervisorTransition(
-  before: Awaited<ReturnType<typeof supervisorSnapshot>>,
-  after: Awaited<ReturnType<typeof supervisorSnapshot>>,
-  context: string
-): string {
-  const transition = classifySupervisorTransition(before.identity, after.identity, before.lifecycle, after.lifecycle);
-  assert.notEqual(transition, "unexplained", `${context}: supervisor stopped, moved or changed without a recorded upgrade: ${JSON.stringify({ before, after })}`);
-  return transition;
 }

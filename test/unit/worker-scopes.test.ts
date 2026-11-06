@@ -17,6 +17,8 @@ import {
   processTree
 } from "../../src/worker-scopes.js";
 
+import { waitForCondition as waitFor } from "../wait-for-condition.js";
+
 const execFileAsync = promisify(execFile);
 
 test("containingSlice names the nearest slice below the user manager and nothing above it", () => {
@@ -282,16 +284,6 @@ function isLive(pid: number): boolean {
     return true;
   } catch {
     return false;
-  }
-}
-
-// A five-minute hang guard covers slow asynchronous systemd stops; members
-// sleep indefinitely so a missing stop cannot pass through natural expiry.
-async function waitFor(condition: () => boolean | Promise<boolean>, what: string, timeoutMs = 300_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await condition())) {
-    assert.ok(Date.now() < deadline, `timed out waiting for ${what}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
 

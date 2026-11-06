@@ -7,7 +7,7 @@ import path from "node:path";
 import test, { after, before } from "node:test";
 import { promisify } from "node:util";
 
-import { classifySupervisorTransition, selectClaudeExecutable, supervisorLifecycle, type SupervisorIdentity } from "./claude-proof-support.js";
+import { assertSupervisorTransition, daemonStatus, selectClaudeExecutable, supervisorLifecycle, supervisorSnapshot } from "./claude-proof-support.js";
 
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { ClaudeCliControlPlane, type ClaudeSessionHandle } from "../../src/claude-control-plane.js";
@@ -103,7 +103,7 @@ for (const scenario of scenarios) {
           claude: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: config, PATH: claude.env.PATH! }
         }
       }), { mode: 0o600 });
-      assert.equal((await daemonStatus(env)).pid, null, "the private config directory already had a daemon");
+      assert.equal((await daemonStatus(claude.executable, env)).pid, null, "the private config directory already had a daemon");
       const flags = scenario.flag ? [`--worker-scope=${scenario.flag}`] : [];
       let args: string[];
       if (scenario.direct) {
@@ -125,7 +125,7 @@ for (const scenario of scenarios) {
       const firstPaths = await observe(probes, run, engines, env, slice, box, scenario.fallback === true, units);
       observations.first = firstPaths;
       if (engines.includes("claude") && !scenario.fallback) {
-        supervisorState = await supervisorSnapshot(env);
+        supervisorState = await supervisorSnapshot(claude.executable, env);
         observations.supervisorStartStatus = supervisorState;
         supervisor = supervisorState.identity.pid;
         assert.ok(supervisor !== null, "the launcher did not start the private supervisor");
@@ -147,7 +147,7 @@ for (const scenario of scenarios) {
         await waitForPath(sibling.paths.ready, 420_000);
         const siblingGroup = (await readFile(sibling.paths.evidence, "utf8")).trim().slice(3);
         assert.equal(containingSlice(`0::${siblingGroup}`), parent, "the sibling is inside the tested run's slice");
-        const afterSibling = await supervisorSnapshot(env);
+        const afterSibling = await supervisorSnapshot(claude.executable, env);
         observations.supervisorAfterSibling = afterSibling;
         observations.originalSupervisorAfterSibling = await knownProcess(supervisor);
         observations.afterSiblingTransition = assertSupervisorTransition(supervisorState, afterSibling, "starting the outside sibling");
@@ -181,7 +181,7 @@ for (const scenario of scenarios) {
       }
       for (const unit of units) await waitInactive(unit);
       if (supervisor !== null) {
-        const after = await supervisorSnapshot(env);
+        const after = await supervisorSnapshot(claude.executable, env);
         observations.supervisorAfterTeardown = after;
         observations.afterTeardownTransition = assertSupervisorTransition(supervisorState!, after, "worker teardown");
         supervisorState = after;
@@ -194,7 +194,7 @@ for (const scenario of scenarios) {
         const siblingGroup = (await readFile(`/proc/${siblingRow.pid}/cgroup`, "utf8")).trim().slice(3);
         assert.equal(containingSlice(`0::${siblingGroup}`), parent, "the outside sibling moved into the tested run");
         assert.equal((await siblingPlane!.poll(siblingHandle!)).state, "working", "worker teardown settled the outside sibling");
-        const afterRoster = await supervisorSnapshot(env);
+        const afterRoster = await supervisorSnapshot(claude.executable, env);
         observations.supervisorAfterRoster = afterRoster;
         observations.afterRosterTransition = assertSupervisorTransition(supervisorState, afterRoster, "roster access");
         supervisorState = afterRoster;
@@ -204,7 +204,7 @@ for (const scenario of scenarios) {
       // Capture before releasing held workers or stopping proof-owned units:
       // teardown would otherwise hide why the original supervisor ended.
       if (supervisor !== null) {
-        observations.supervisorBeforeCleanup = await daemonStatus(env);
+        observations.supervisorBeforeCleanup = await daemonStatus(claude.executable, env);
         observations.originalSupervisorBeforeCleanup = await knownProcess(supervisor);
         observations.lifecycleBeforeCleanup = await supervisorLifecycle(config);
         observations.upgradeRestarts = (observations.lifecycleBeforeCleanup as Record<string, string>[]).filter(row => row.event === "shutdown" && row.cause === "upgrade");
@@ -316,20 +316,6 @@ function launch(args: string[], env: NodeJS.ProcessEnv): { settled: boolean; res
   return run;
 }
 
-/** Read-only status, with the command's evidence retained even when it fails. */
-async function daemonStatus(env: NodeJS.ProcessEnv): Promise<{ pid: number | null; code: number | string; stdout: string; stderr: string }> {
-  let result: { code: number | string; stdout: string; stderr: string };
-  try {
-    const { stdout, stderr } = await exec(claude.executable, ["daemon", "status"], { env });
-    result = { code: 0, stdout, stderr };
-  } catch (error) {
-    const failed = error as Error & { code?: number | string; stdout?: string; stderr?: string };
-    result = { code: failed.code ?? "unknown", stdout: failed.stdout ?? "", stderr: failed.stderr ?? failed.message };
-  }
-  const match = /^pid:\s+(\d+)/m.exec(result.stdout);
-  return { ...result, pid: match === null ? null : Number(match[1]) };
-}
-
 /** Identity and membership of an already identified supervisor, never PID discovery. */
 async function knownProcess(pid: number): Promise<{ startTicks: string | null; cgroup: string | null }> {
   const [startTicks, cgroup] = await Promise.all([
@@ -337,26 +323,4 @@ async function knownProcess(pid: number): Promise<{ startTicks: string | null; c
     readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null)
   ]);
   return { startTicks, cgroup };
-}
-
-async function supervisorSnapshot(env: NodeJS.ProcessEnv): Promise<{ identity: SupervisorIdentity; lifecycle: Record<string, string>[] }> {
-  const pid = (await daemonStatus(env)).pid;
-  const lifecycle = await supervisorLifecycle(env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"));
-  const identity: SupervisorIdentity = {
-    pid,
-    startTicks: pid === null ? null : await readProcessStartTicks("/proc", pid),
-    cgroup: pid === null ? null : await readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null),
-    version: lifecycle.findLast(row => row.event === "start" && row.pid === String(pid))?.version ?? ""
-  };
-  return { identity, lifecycle };
-}
-
-function assertSupervisorTransition(
-  before: Awaited<ReturnType<typeof supervisorSnapshot>>,
-  after: Awaited<ReturnType<typeof supervisorSnapshot>>,
-  context: string
-): string {
-  const transition = classifySupervisorTransition(before.identity, after.identity, before.lifecycle, after.lifecycle);
-  assert.notEqual(transition, "unexplained", `${context}: supervisor stopped, moved or changed without a recorded upgrade: ${JSON.stringify({ before, after })}`);
-  return transition;
 }

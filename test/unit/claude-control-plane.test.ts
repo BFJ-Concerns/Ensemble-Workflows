@@ -1412,12 +1412,15 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
   const first = spawn("sleep", ["300"], { stdio: "ignore" });
   const replacement = spawn("sleep", ["300"], { stdio: "ignore" });
+  let background: ReturnType<typeof spawn> | undefined;
   try {
     const stubPath = path.join(dir, "claude-stub.mjs");
     const releasePath = path.join(dir, "release-bg");
     const bgExitedPath = path.join(dir, "bg-exited");
     const queriesPath = path.join(dir, "roster-queries");
     const replacementPath = path.join(dir, "replacement-pid");
+    const settingsPathFile = path.join(dir, "settings-path");
+    const lateSettingsPath = path.join(dir, "late-settings.json");
     const sessionId = "00000000-0000-4000-8000-00000000000b";
     const name = "placement-probe";
     const group = workerScope === "run" ? "run" : name;
@@ -1440,6 +1443,8 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
         const exists = (file) => access(file).then(() => true, () => false);
         if (args[0] === "--bg") {
           for await (const chunk of process.stdin) void chunk;
+          const settingsPath = args[args.indexOf("--settings") + 1];
+          await writeFile(${JSON.stringify(settingsPathFile)}, settingsPath);
           const deadline = Date.now() + 120_000;
           while (!(await exists(${JSON.stringify(releasePath)}))) {
             if (Date.now() >= deadline) {
@@ -1449,6 +1454,12 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
             }
             await new Promise((resolve) => setTimeout(resolve, 20));
           }
+          // Read only after dispatch has returned and the test releases us.
+          const settings = await readFile(settingsPath, "utf8").then(
+            (text) => ({ settings: JSON.parse(text) }),
+            (error) => ({ error: error.code })
+          );
+          await writeFile(${JSON.stringify(lateSettingsPath)}, JSON.stringify(settings));
           await writeFile(${JSON.stringify(bgExitedPath)}, "");
           process.exit(0);
         }
@@ -1486,7 +1497,9 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
         return { kind: "placed", unit: `ensemble-test-${group}.scope`, pids };
       },
       async launch(file, args, options) {
-        return spawn(file, [...args], options);
+        const child = spawn(file, [...args], options);
+        if (args[0] === "--bg") background = child;
+        return child;
       },
       async close() {}
     };
@@ -1504,10 +1517,18 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
     await waitUntil(() => placed.length > 0, "the session to be placed while `claude --bg` was still running", 90_000);
     assert.equal(placed[0]!.bgStillRunning, true, "the session was placed only after `claude --bg` returned");
     assert.ok(placed[0]!.rosterQueries >= 3, `the roster was read ${placed[0]!.rosterQueries} time(s) before placement; the two pid-less answers were never seen`);
-    await writeFile(releasePath, "");
     const handle = await dispatching;
+    assert.equal(await fileExists(bgExitedPath), false, "dispatch waited for the held background command");
+    await waitUntil(() => fileExists(settingsPathFile), "the background command to publish its settings path", 60_000);
+    const settingsPath = await readFile(settingsPathFile, "utf8");
+    assert.equal(await fileExists(settingsPath), true, "registration removed the live session's settings");
+    await writeFile(releasePath, "");
     await waitUntil(() => fileExists(bgExitedPath), "`claude --bg` to return once released", 60_000);
     assert.equal(await readFile(bgExitedPath, "utf8"), "", "`claude --bg` returned on its own ceiling, not on release");
+    const lateSettings = JSON.parse(await readFile(lateSettingsPath, "utf8")) as { error?: string; settings?: { env: Record<string, string> } };
+    assert.equal(lateSettings.error, undefined, "the background command lost settings after early registration");
+    assert.equal(lateSettings.settings?.env[WORKER_MARKER_VARIABLE], name);
+    assert.equal(await fileExists(settingsPath), true, "background-command completion removed the live session's settings");
 
     assert.deepEqual(
       placed.map(({ group, pids }) => ({ group, pids })),
@@ -1525,7 +1546,10 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
     assert.deepEqual(placed.at(-1)?.pids, [replacement.pid], "the replacement pid was not placed");
     assert.equal(placed.length, 2);
     assert.equal(placed.at(-1)?.group, group);
+    await controlPlane.stop(handle);
+    assert.equal(await fileExists(settingsPath), false, "stopping the session retained its settings");
   } finally {
+    background?.kill("SIGKILL");
     first.kill("SIGKILL");
     replacement.kill("SIGKILL");
     await rm(dir, { recursive: true, force: true });

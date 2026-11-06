@@ -141,6 +141,10 @@ therefore resolves those settings from the machine configuration and the
 defaults. The hold scope is the exception: it is passed to the worker session
 through the settings file, so nested invocations still share it.
 
+Each session's settings file remains available until Ensemble stops the
+session, including when dispatch returns before `claude --bg` finishes.
+Stopping the session removes its settings file.
+
 For the same reason the daemon must not live in the launcher's own cgroup: a
 memory limit or an ending there would take every Claude session on the
 machine with it. Where a systemd user manager is reachable, Ensemble runs

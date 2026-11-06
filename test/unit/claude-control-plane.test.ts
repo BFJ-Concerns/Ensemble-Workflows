@@ -165,7 +165,7 @@ test("the run's own environment-layer settings are withheld from every claude ch
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { copyFile, writeFile } from "node:fs/promises";
+        import { copyFile, readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           await writeFile(${JSON.stringify(envPath)}, JSON.stringify({
@@ -180,6 +180,9 @@ test("the run's own environment-layer settings are withheld from every claude ch
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // The final capture acknowledges that every observed artefact is complete.
+          try { JSON.parse(await readFile(${JSON.stringify(settingsCopyPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "run-scoped-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -194,6 +197,10 @@ test("the run's own environment-layer settings are withheld from every claude ch
       `
     );
     await chmod(stubPath, 0o755);
+    // Force roster reads before capture and with an incomplete artefact.
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+    await writeFile(settingsCopyPath, '{"env":');
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
 
     const saved = Object.fromEntries(
       ["ENSEMBLE_RUN_RECORD_DIR", "ENSEMBLE_RUN_RECORD", "ENSEMBLE_STATUS_DIR", "ENSEMBLE_CONCURRENCY_CLAUDE", "ENSEMBLE_HOLD_SCOPE", "ENSEMBLE_TEST_INHERITED"].map(
@@ -259,7 +266,7 @@ test("the settings file carries the run's resolved hold scope: an explicit scope
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { copyFile } from "node:fs/promises";
+        import { copyFile, readFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           const name = args[args.indexOf("--name") + 1];
@@ -270,6 +277,9 @@ test("the settings file carries the run's resolved hold scope: an explicit scope
           // The stub registers whichever dispatch asked last: one session
           // name per control plane below, so each dispatch finds its own.
           const name = process.env.ENSEMBLE_TEST_ROSTER_NAME;
+          // The final capture acknowledges that every observed artefact is complete.
+          try { JSON.parse(await readFile(${JSON.stringify(dir)} + "/settings-" + name + ".json", "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "hold-scope-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -290,6 +300,10 @@ test("the settings file carries the run's resolved hold scope: an explicit scope
     process.env.ENSEMBLE_HOLD_SCOPE = "lead-session-42";
     const settingsFor = async (name: string, holdScope: string | null | undefined): Promise<Record<string, unknown>> => {
       process.env.ENSEMBLE_TEST_ROSTER_NAME = name;
+      // Force roster reads before capture and with an incomplete artefact.
+      assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+      await writeFile(path.join(dir, `settings-${name}.json`), '{"env":');
+      assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
       const controlPlane = new ClaudeCliControlPlane({
         claudeBin: stubPath,
         projectsDir: dir,
@@ -430,7 +444,7 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { copyFile, writeFile } from "node:fs/promises";
+        import { copyFile, readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
@@ -443,6 +457,9 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // The final capture acknowledges that every observed artefact is complete.
+          try { JSON.parse(await readFile(${JSON.stringify(settingsCopyPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "settings-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -457,6 +474,10 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
       `
     );
     await chmod(stubPath, 0o755);
+    // Force roster reads before capture and with an incomplete artefact.
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+    await writeFile(settingsCopyPath, '{"env":');
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
 
     const declared = { ANTHROPIC_BASE_URL: "https://declared.example", ANTHROPIC_AUTH_TOKEN: "sentinel-token" };
     const controlPlane = new ClaudeCliControlPlane({
@@ -502,7 +523,7 @@ test("a requested cache TTL joins the settings env block, and a machine declarat
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { copyFile, writeFile } from "node:fs/promises";
+        import { copyFile, readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           const flag = args.indexOf("--settings");
@@ -512,6 +533,9 @@ test("a requested cache TTL joins the settings env block, and a machine declarat
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // The final capture acknowledges that every observed artefact is complete.
+          try { JSON.parse(await readFile(${JSON.stringify(settingsCopyPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "cache-ttl-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -526,6 +550,10 @@ test("a requested cache TTL joins the settings env block, and a machine declarat
       `
     );
     await chmod(stubPath, 0o755);
+    // Force roster reads before capture and with an incomplete artefact.
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+    await writeFile(settingsCopyPath, '{"env":');
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
 
     // The operator's word outranks the harness default: a machine-declared
     // value for the TTL variable must survive the dispatch's own request.
@@ -846,6 +874,9 @@ test("every launched claude child sees the workspace declared sandboxed, above a
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // The final capture acknowledges that every observed artefact is complete.
+          try { JSON.parse(await readFile(${JSON.stringify(dir)} + "/observed-" + probe + ".json", "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "sandboxed-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -863,6 +894,12 @@ test("every launched claude child sees the workspace declared sandboxed, above a
 
     const observe = async (name: string, workerEnv: Record<string, string>) => {
       process.env.ENSEMBLE_TEST_ROSTER_NAME = name;
+      // Force roster reads before capture and with an incomplete artefact.
+      assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+      await writeFile(path.join(dir, `observed-${name}.json`), '{"env":');
+      assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+      // Keep direct fixture probes out of the control-plane child observations.
+      await rm(path.join(dir, `children-${name}.jsonl`));
       const controlPlane = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000, workerEnv });
       const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
       await controlPlane.stop(handle);

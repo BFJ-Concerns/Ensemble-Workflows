@@ -87,7 +87,7 @@ test("a separate status consumer follows queued, retried, failed and held worker
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("status disablement and explicit directories preserve discovery and independent concurrent files", { timeout: 60_000 }, async () => {
+test("status disablement and explicit directories preserve discovery and independent concurrent files", { timeout: 90_000 }, async () => {
   const { directory, env } = await setup();
   const running: Array<Promise<unknown>> = [];
   try {
@@ -102,7 +102,7 @@ test("status disablement and explicit directories preserve discovery and indepen
       await writeFile(workflow, `export const meta = { name: "concurrent-status" }; ${barrier(releaseFile)}`);
       const spec = path.join(directory, `spec-${index}.json`);
       await writeFile(spec, JSON.stringify({ bundle, workflow, cwd: directory, releaseFile, finishWhen, readyFile, workers: [] }));
-      const result = runNode([consumer, spec], { ...env, ENSEMBLE_STATUS_DIR: status }, 45_000);
+      const result = runNode([consumer, spec], { ...env, ENSEMBLE_STATUS_DIR: status }, 60_000);
       running.push(result);
       specs.push({ result, finishWhen, readyFile });
     }

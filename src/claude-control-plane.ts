@@ -262,7 +262,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       ...this.#workerEnv,
       [SANDBOXED_WORKSPACE_VARIABLE]: "1"
     };
-    this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
+    const configDir = this.#env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude");
+    this.#projectsDir = options.projectsDir ?? path.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
     this.#procDir = options.procDir ?? "/proc";

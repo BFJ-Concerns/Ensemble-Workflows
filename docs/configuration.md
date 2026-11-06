@@ -119,6 +119,11 @@ next run that dispatches a Claude worker removes a directory whose owner
 evidence shows its launcher is gone; a live launcher's directory, or one whose
 owner cannot be judged, is never touched.
 
+When `CLAUDE_CONFIG_DIR` is set, transcript discovery reads its `projects/`
+directory. A declared worker value overrides the launcher's inherited value,
+matching the directory used by the Claude processes; otherwise discovery uses
+`~/.claude/projects/`.
+
 Follow-up turns to a held Claude session are typed in through tmux. The tmux
 client receives the declared variables from a tmux server started for that one
 injection, so declared values never appear on a command line, where other

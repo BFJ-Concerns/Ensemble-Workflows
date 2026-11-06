@@ -18,6 +18,35 @@ import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "../../src/e
 import { writeProcStat } from "../fixtures/proc-stat.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 
+test("transcript discovery follows the configured Claude directory and explicit overrides", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "claude-transcript-config-"));
+  const inherited = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    const config = path.join(dir, "inherited");
+    const declared = path.join(dir, "declared");
+    const explicit = path.join(dir, "explicit-projects");
+    const handle = { id: "private", sessionId: "private-session", name: "private", cwd: dir };
+    const locations = [path.join(config, "projects"), path.join(declared, "projects"), explicit];
+    for (const location of locations) {
+      await mkdir(path.join(location, "project"), { recursive: true });
+      // Discovery tests only file location; native content belongs to live proof.
+      await writeFile(path.join(location, "project", `${handle.sessionId}.jsonl`), "");
+    }
+    process.env.CLAUDE_CONFIG_DIR = config;
+    for (const [controlPlane, location] of [
+      [new ClaudeCliControlPlane(), locations[0]],
+      [new ClaudeCliControlPlane({ workerEnv: { CLAUDE_CONFIG_DIR: declared } }), locations[1]],
+      [new ClaudeCliControlPlane({ projectsDir: explicit, workerEnv: { CLAUDE_CONFIG_DIR: declared } }), explicit]
+    ] as const) {
+      assert.equal(await controlPlane.transcriptPath(handle), path.join(location!, "project", `${handle.sessionId}.jsonl`));
+    }
+  } finally {
+    if (inherited === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = inherited;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing it on argv", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
   try {

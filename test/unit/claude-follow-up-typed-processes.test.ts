@@ -76,7 +76,7 @@ test("delivery clients scope daemon calls to a private config without Node test 
 test("the delivery pause accumulates multiple real tmux sends above the paste threshold until submit", { timeout: 60_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "delivery-paused-client-"));
   // A short owned socket root keeps Unix socket paths below the kernel cap.
-  const socketRoot = await mkdtemp("/mnt/ai-data/scratch/followup-socket-");
+  const socketRoot = await mkdtemp(path.join(tmpdir(), "fs-"));
   let clients: Awaited<ReturnType<typeof installDeliveryClients>> | undefined;
   try {
     const tmux = await executablePath("tmux");

@@ -122,6 +122,11 @@ next run that dispatches a Claude worker removes a directory whose owner
 evidence shows its launcher is gone; a live launcher's directory, or one whose
 owner cannot be judged, is never touched.
 
+When `CLAUDE_CONFIG_DIR` is set, transcript discovery reads its `projects/`
+directory. A declared worker value overrides the launcher's inherited value,
+matching the directory used by the Claude processes; otherwise discovery uses
+`~/.claude/projects/`.
+
 Follow-up turns to a held Claude session are typed in through tmux. The tmux
 client receives the declared variables from a tmux server started for that one
 injection, so declared values never appear on a command line, where other
@@ -158,11 +163,6 @@ Without a reachable user manager the process is launched directly. A reachable m
 that refuses the control-command scope fails that command; Ensemble does not
 retry inside the launcher's box, where it could start the shared supervisor.
 The best-effort worker placement below concerns adoption of existing processes.
-
-When `CLAUDE_CONFIG_DIR` has a non-empty value in the launcher's environment,
-Ensemble looks for Claude session transcripts under
-`$CLAUDE_CONFIG_DIR/projects`. An unset or empty value uses
-`~/.claude/projects`.
 
 Claude sessions and the Codex app-server are placed in transient scopes in
 the slice that holds the launcher. `worker_scope` chooses one scope per Claude

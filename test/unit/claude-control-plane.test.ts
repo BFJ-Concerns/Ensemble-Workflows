@@ -21,6 +21,35 @@ import type { RuntimeEvent } from "../../src/types.js";
 import { writeProcStat } from "../fixtures/proc-stat.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 
+test("transcript discovery follows the configured Claude directory and explicit overrides", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "claude-transcript-config-"));
+  const inherited = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    const config = path.join(dir, "inherited");
+    const declared = path.join(dir, "declared");
+    const explicit = path.join(dir, "explicit-projects");
+    const handle = { id: "private", sessionId: "private-session", name: "private", cwd: dir };
+    const locations = [path.join(config, "projects"), path.join(declared, "projects"), explicit];
+    for (const location of locations) {
+      await mkdir(path.join(location, "project"), { recursive: true });
+      // Discovery tests only file location; native content belongs to live proof.
+      await writeFile(path.join(location, "project", `${handle.sessionId}.jsonl`), "");
+    }
+    process.env.CLAUDE_CONFIG_DIR = config;
+    for (const [controlPlane, location] of [
+      [new ClaudeCliControlPlane(), locations[0]],
+      [new ClaudeCliControlPlane({ workerEnv: { CLAUDE_CONFIG_DIR: declared } }), locations[1]],
+      [new ClaudeCliControlPlane({ projectsDir: explicit, workerEnv: { CLAUDE_CONFIG_DIR: declared } }), explicit]
+    ] as const) {
+      assert.equal(await controlPlane.transcriptPath(handle), path.join(location!, "project", `${handle.sessionId}.jsonl`));
+    }
+  } finally {
+    if (inherited === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = inherited;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing it on argv", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
   try {
@@ -783,12 +812,13 @@ const TMUX_STUB_COMMAND = `
 `;
 
 test("steer returns false when either tmux delivery step fails", async (context) => {
-  for (const failedStep of ["literal", "enter"] as const) {
+  for (const failedStep of ["literal", "later batch", "enter"] as const) {
     await context.test(failedStep, async () => {
       const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
       try {
         const claudeStub = path.join(dir, "claude-stub.mjs");
         const tmuxStub = path.join(dir, "tmux-stub.mjs");
+        const callsPath = path.join(dir, "calls.jsonl");
         const sessionId = "00000000-0000-4000-8000-000000000002";
         await writeFile(
           claudeStub,
@@ -810,11 +840,16 @@ test("steer returns false when either tmux delivery step fails", async (context)
         await writeFile(
           tmuxStub,
           `#!/usr/bin/env node
+            import { appendFileSync, readFileSync } from "node:fs";
             ${TMUX_STUB_COMMAND}
+            appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+            const calls = readFileSync(${JSON.stringify(callsPath)}, "utf8").trim().split("\\n");
             const literal = command[0] === "send-keys" && command.includes("-l");
             const enter = command[0] === "send-keys" && command.at(-1) === "Enter";
             if ((${JSON.stringify(failedStep)} === "literal" && literal) ||
+                (${JSON.stringify(failedStep)} === "later batch" && literal && calls.length === 3) ||
                 (${JSON.stringify(failedStep)} === "enter" && enter)) {
+              process.stderr.write("delivery refused");
               process.exit(1);
             }
           `
@@ -832,10 +867,21 @@ test("steer returns false when either tmux delivery step fails", async (context)
         });
         const steered = await controlPlane.steer(
           { id: "steer-1", sessionId, name: "steer-probe", cwd: dir },
-          "continue"
+          "x\t\r\n😀\r".repeat(100)
         );
 
         assert.equal(steered.delivered, false);
+        if (!steered.delivered) {
+          assert.match(steered.reason, /delivery refused/);
+          assert.match(steered.reason, failedStep === "enter" ? /submit/ : failedStep === "literal" ? /slice 1 of/ : /slice 2 of/);
+        }
+        const calls = (await readFile(callsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
+        assert.equal(calls.at(-1)?.at(-1), "kill-server");
+        assert.equal(calls.filter((call) => call.includes("Enter")).length, failedStep === "enter" ? 1 : 0);
+        assert.equal(calls.filter((call) => call.includes("-l")).length, failedStep === "literal" ? 1 : 2);
+        const socket = calls[0]?.[1];
+        assert.ok(socket);
+        await assert.rejects(stat(path.dirname(socket)), { code: "ENOENT" });
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
@@ -1109,7 +1155,7 @@ esac
     assert.deepEqual(steered, { delivered: true });
 
     assert.equal(await readFile(path.join(dir, "attach-env"), "utf8"), "declared-gateway-token\n1\n");
-    assert.equal(await readFile(path.join(dir, "attach-input"), "utf8"), "continue\n");
+    assert.equal(await readFile(path.join(dir, "attach-input"), "utf8"), valveSlices("continue").join("") + "\n");
     assert.deepEqual(await readdir(tmuxRoot), [], "the valve left a socket directory behind, or used the default tmux server");
     // The server is forked from the client that started it and keeps that
     // client's argv, which names the stub; it exits once killed, though not
@@ -1134,21 +1180,59 @@ esac
   }
 });
 
-test("valveSlices cuts a message into bounded, code-point-whole send-keys arguments that rejoin exactly", () => {
+test("valveSlices encodes exact UTF-16 key records and cuts only between bounded whole records", () => {
   assert.deepEqual(valveSlices(""), []);
-  assert.deepEqual(valveSlices("continue"), ["continue"]);
-
-  // Three-byte characters never divide the bound evenly, so every cut lands
-  // mid-character on a byte slicer; the newline keeps the fixture line-shaped.
-  const message = "€\n".repeat(60_000);
+  assert.deepEqual(valveSlices("Aé😀\n\nB\n"), [
+    "\u001b[0;0;65;1;0;1_\u001b[0;0;233;1;0;1_\u001b[0;0;55357;1;0;1_" +
+    "\u001b[0;0;56832;1;0;1_\u001b[0;0;10;1;0;1_\u001b[0;0;10;1;0;1_" +
+    "\u001b[0;0;66;1;0;1_\u001b[0;0;10;1;0;1_"
+  ]);
+  // Exercise variable-width decimal units and surrogate pairs at batch edges.
+  const message = "Aé€😀\t\r\n\r".repeat(2_000);
+  const expected = "Aé€😀    \n\n".repeat(2_000);
   const slices = valveSlices(message);
   assert.ok(slices.length > 1);
-  for (const slice of slices) {
+  for (const [index, slice] of slices.entries()) {
     assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
-    assert.equal(Buffer.from(slice, "utf8").toString("utf8"), slice, "a slice is whole UTF-8, never a torn character");
+    // eslint-disable-next-line no-control-regex -- terminal records start with ESC.
+    const records = slice.match(/\u001b\[0;0;\d+;1;0;1_/g) ?? [];
+    assert.equal(records.join(""), slice, "every batch contains only complete records");
+    // eslint-disable-next-line no-control-regex -- terminal records start with ESC.
+    const nextRecord = slices[index + 1]?.match(/^\u001b\[0;0;\d+;1;0;1_/u)?.[0];
+    if (nextRecord !== undefined) {
+      assert.ok(slice.length + nextRecord.length > VALVE_SLICE_BYTES, "batches fill up to the next whole record");
+    }
   }
-  assert.equal(slices.join(""), message);
+  assert.equal(decodeValveRecords(slices.join("")), expected);
 });
+
+test("valveSlices converts tabs and carriage returns before batching complete records", () => {
+  for (const [message, expected] of [
+    ["\t", "    "],
+    ["a\rb", "a\nb"],
+    ["a\r\nb", "a\nb"],
+    ["é\t😀\r中\r\n\t\r", "é    😀\n中\n    \n"]
+  ] as const) {
+    assert.equal(decodeValveRecords(valveSlices(message).join("")), expected);
+  }
+
+  // An ASCII record is 15 bytes: leave room for two of a tab's four spaces.
+  const prefix = "A".repeat(Math.floor(VALVE_SLICE_BYTES / 15) - 2);
+  const tabSlices = valveSlices(prefix + "\t😀\r\nB\rC");
+  assert.equal(decodeValveRecords(tabSlices[0]!), prefix + "  ");
+  assert.equal(decodeValveRecords(tabSlices.slice(1).join("")), "  😀\nB\nC");
+
+  // A CRLF at a full batch edge still encodes just one line break.
+  const fullPrefix = "A".repeat(Math.floor(VALVE_SLICE_BYTES / 15));
+  const crlfSlices = valveSlices(fullPrefix + "\r\n\tZ");
+  assert.equal(decodeValveRecords(crlfSlices[0]!), fullPrefix);
+  assert.equal(decodeValveRecords(crlfSlices.slice(1).join("")), "\n    Z");
+});
+
+function decodeValveRecords(wire: string): string {
+  // eslint-disable-next-line no-control-regex -- decode the explicit ESC record delimiter.
+  return wire.replace(/\u001b\[0;0;(\d+);1;0;1_/g, (_, unit: string) => String.fromCharCode(Number(unit)));
+}
 
 test("a follow-up turn larger than one argv element reaches the valve whole, in order, before its submit keystroke", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-large-"));
@@ -1198,21 +1282,29 @@ test("a follow-up turn larger than one argv element reaches the valve whole, in 
     // Well past Linux's 128 KiB single-argument cap: a diff-carrying follow-up
     // of the size that a one-argument send fails on with `spawn E2BIG`.
     const message = "diff --git a/src/wide.ts b/src/wide.ts\n" + "+  const value = \"é\";\n".repeat(12_000);
+    const controls = "\t😀\ré\r\n中\t\r";
+    const expected = message + "    😀\né\n中    \n";
     assert.ok(Buffer.byteLength(message, "utf8") > 256 * 1024);
 
-    const steered = await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, message);
+    assert.deepEqual(await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, ""), { delivered: true });
+    assert.equal(await readFile(sendKeysPath, "utf8"), '["Enter"]\n');
+    await writeFile(sendKeysPath, "");
+
+    const steered = await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, message + controls);
     assert.deepEqual(steered, { delivered: true });
 
     const sends = (await readFile(sendKeysPath, "utf8"))
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as string[]);
-    const literal = sends.filter((send) => send[0] === "-l").map((send) => send[1] ?? "");
+    const literal = sends.filter((send) => send[0] === "-l").map((send) => send[2] ?? "");
     assert.ok(literal.length > 1, "the message took more than one literal send");
     for (const slice of literal) {
       assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
     }
-    assert.equal(literal.join(""), message);
+    assert.equal(decodeValveRecords(literal.join("")), expected);
+    assert.equal(sends.filter((send) => send[0] !== "-l").length, 1);
+    assert.ok(sends.slice(0, -1).every((send) => send[0] === "-l" && send[1] === "--"));
     assert.deepEqual(sends.at(-1), ["Enter"], "the submit keystroke follows the last slice");
   } finally {
     await rm(dir, { recursive: true, force: true });

@@ -14657,7 +14657,11 @@ var StatusFileWriter = class {
         await fileOperations.mkdir(options.dir, { recursive: true });
       }
       await this.#sweepDeadRuns(options.dir);
-    })();
+      return true;
+    })().catch((error) => {
+      this.#reportError(error);
+      return false;
+    });
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
     this.#heartbeat.unref();
@@ -14679,6 +14683,9 @@ var StatusFileWriter = class {
     this.#unsubscribe();
     while (this.#writing !== null) {
       await this.#writing;
+    }
+    if (!this.#published) {
+      return;
     }
     try {
       await this.#fileOperations.unlink(this.#target);
@@ -14716,7 +14723,7 @@ var StatusFileWriter = class {
     }
   }
   async #writeAtomic(snapshot) {
-    await this.#initialSweep;
+    if (!await this.#initialSweep) return;
     const tmp = `${this.#target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
     const published = { ...snapshot, owner: await this.#ownerEvidence };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}

@@ -302,13 +302,18 @@ test("automatic status directories publish independent files and clean up", asyn
   const dir = path.join(root, "nested", "status");
   const first = new StatusFileWriter({ progress: newProgress("first"), dir, createDirectory: true });
   const second = new StatusFileWriter({ progress: newProgress("second"), dir, createDirectory: true });
-  assert.equal(await first.ready(), true);
-  assert.equal(await second.ready(), true);
-  await first.close();
-  await assert.rejects(access(first.path));
-  assert.equal(JSON.parse(await readFile(second.path, "utf8")).runId, "second");
-  await second.close();
-  assert.deepEqual(await readdir(dir), []);
+  try {
+    assert.equal(await first.ready(), true);
+    assert.equal(await second.ready(), true);
+    await first.close();
+    await assert.rejects(access(first.path));
+    assert.equal(JSON.parse(await readFile(second.path, "utf8")).runId, "second");
+    await second.close();
+    assert.deepEqual(await readdir(dir), []);
+  } finally {
+    await Promise.all([first.close(), second.close()]);
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("automatic status directory creation failures are reported without rejecting", async () => {
@@ -346,6 +351,30 @@ test("a removed published status directory stays quiet and can resume publicatio
     await rm(dir, { recursive: true });
     await writer.close();
     assert.deepEqual(errors, [], "close must also tolerate a removed published directory");
+  } finally {
+    await writer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test("a failed automatic directory creation reports once through updates and close", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-status-creation-refused-"));
+  const blocker = path.join(root, "blocker");
+  await writeFile(blocker, "not a directory");
+  const errors: unknown[] = [];
+  const progress = newProgress();
+  const writer = new StatusFileWriter({ progress, dir: path.join(blocker, "status"), createDirectory: true,
+    onError: (error) => errors.push(error) });
+  try {
+    assert.equal(await writer.ready(), false);
+    assert.equal(errors.length, 1);
+    for (const phase of ["first", "second", "third"]) {
+      progress.setPhase(phase);
+      await writer.ready();
+    }
+    await writer.close();
+    assert.equal(errors.length, 1, "startup failure must not flood progress or shutdown diagnostics");
   } finally {
     await writer.close();
     await rm(root, { recursive: true, force: true });

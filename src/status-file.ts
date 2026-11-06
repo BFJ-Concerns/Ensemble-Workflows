@@ -146,7 +146,7 @@ export class StatusFileWriter {
   #closed = false;
   #tmpSeq = 0;
   #heartbeat: NodeJS.Timeout;
-  #initialSweep: Promise<void>;
+  #initialSweep: Promise<boolean>;
   #ownerEvidence: Promise<SnapshotOwnerEvidence>;
   #procDir: string;
 
@@ -168,7 +168,11 @@ export class StatusFileWriter {
         await fileOperations.mkdir(options.dir, { recursive: true });
       }
       await this.#sweepDeadRuns(options.dir);
-    })();
+      return true;
+    })().catch((error) => {
+      this.#reportError(error);
+      return false;
+    });
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     // Progress transitions re-stamp updatedAt and notify subscribers (i.e. this
     // writer), so a run with long quiet turns never reads as stale/absent.
@@ -196,6 +200,9 @@ export class StatusFileWriter {
     this.#unsubscribe();
     while (this.#writing !== null) {
       await this.#writing;
+    }
+    if (!this.#published) {
+      return;
     }
     // The file is this run's alone, so removal needs no ownership check:
     // nothing else publishes under this name.
@@ -241,7 +248,7 @@ export class StatusFileWriter {
   }
 
   async #writeAtomic(snapshot: ProgressSnapshot): Promise<void> {
-    await this.#initialSweep;
+    if (!(await this.#initialSweep)) return;
     // pid + sequence keep a killed writer's leftover temp file attributable
     // to it, so the next writer's sweep can remove it on evidence.
     const tmp = `${this.#target}.${process.pid}.${(this.#tmpSeq += 1)}.tmp`;

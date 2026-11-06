@@ -3980,20 +3980,24 @@ test("ensemble holds answer writes the decision, reports what the raiser did wit
 
 test("CLI announces an automatic status file and removes it on completion", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-auto-status-"));
-  const script = path.join(directory, "workflow.js");
-  await writeFile(script, 'export const meta = { name: "automatic-status" }; return "ok";');
-  const stderr = new CaptureStream();
-  const exitCode = await runEnsembleCli([script], {
-    cwd: directory, stdout: new CaptureStream(), stderr,
-    env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
-    runRecordDir: null,
-    createRuntime: async () => new EnsembleRuntime({ engines: new EngineRegistry([new ScheduledTextEngine("codex", 1)]), defaultMaxAttempts: 1 })
-  });
-  assert.equal(exitCode, 0, stderr.text());
-  const line = stderr.text().split("\n").find((entry) => entry.startsWith("[status-file] "));
-  assert.ok(line);
-  const announcement = JSON.parse(line.slice("[status-file] ".length)) as { run_id: string; status_path: string };
-  assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${announcement.run_id}.local.json`));
-  await assert.rejects(access(announcement.status_path));
-  assert.deepEqual(await readdir(path.dirname(announcement.status_path)), []);
+  try {
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "automatic-status" }; return "ok";');
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory, stdout: new CaptureStream(), stderr,
+      env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
+      runRecordDir: null,
+      createRuntime: async () => new EnsembleRuntime({ engines: new EngineRegistry([new ScheduledTextEngine("codex", 1)]), defaultMaxAttempts: 1 })
+    });
+    assert.equal(exitCode, 0, stderr.text());
+    const line = stderr.text().split("\n").find((entry) => entry.startsWith("[status-file] "));
+    assert.ok(line);
+    const announcement = JSON.parse(line.slice("[status-file] ".length)) as { run_id: string; status_path: string };
+    assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${announcement.run_id}.local.json`));
+    await assert.rejects(access(announcement.status_path));
+    assert.deepEqual(await readdir(path.dirname(announcement.status_path)), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

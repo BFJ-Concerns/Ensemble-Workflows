@@ -374,6 +374,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           // a second before), so the wait continues, bounded, for the pid
           // and placement, and the session is placed the moment it is named; past
           // the bound the next poll places it.
+          // A no-op manager cannot use a PID, so registration is enough.
+          if (this.#scopes instanceof NoWorkerScopes) break;
           const settled = Date.now() + this.#placementSettleMs;
           let pid = found.pid;
           for (;;) {
@@ -381,7 +383,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
               const outcome = await this.#place(registered, pid);
               if (outcome.kind !== "refused") break;
             }
-            if (Date.now() >= settled) break;
+            // Older rosters may never report a PID. Once dispatch has
+            // returned, leave discovery to normal polls instead of delaying
+            // an already registered turn for the whole settle window.
+            if ((pid === null && dispatch.result !== null) || Date.now() >= settled) break;
             await delay(100);
             pid = (await this.#findByName(options.name))?.pid ?? null;
           }

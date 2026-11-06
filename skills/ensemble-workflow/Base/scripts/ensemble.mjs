@@ -15862,6 +15862,7 @@ var RunRecordWriter = class _RunRecordWriter {
         raw: null
       },
       cli_flags: options.cliFlags,
+      worker_scope: options.workerScope ?? { value: "worker", layer: "default" },
       concurrency: {
         agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
         engines: options.concurrency?.engines ?? {}
@@ -17766,6 +17767,7 @@ var ClaudeCliControlPlane = class {
         const found = await this.#findByName(options.name);
         if (found !== null) {
           registered = found.handle;
+          if (this.#scopes instanceof NoWorkerScopes) break;
           const settled = Date.now() + this.#placementSettleMs;
           let pid = found.pid;
           for (; ; ) {
@@ -17773,7 +17775,7 @@ var ClaudeCliControlPlane = class {
               const outcome = await this.#place(registered, pid);
               if (outcome.kind !== "refused") break;
             }
-            if (Date.now() >= settled) break;
+            if (pid === null && dispatch.result !== null || Date.now() >= settled) break;
             await delay(100);
             pid = (await this.#findByName(options.name))?.pid ?? null;
           }
@@ -19639,7 +19641,15 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     const transport = new _CodexAppServerTransport(options);
     try {
       if (transport.#process.pid !== void 0 && options.scopes !== void 0) {
-        await options.scopes.place(options.scopeGroup ?? "codex", [transport.#process.pid]);
+        const pid = transport.#process.pid;
+        const outcome = await options.scopes.place(options.scopeGroup ?? "codex", [pid]);
+        if (outcome.kind !== "placed") {
+          options.onEvent?.({
+            method: "codex/workerScopePlacement",
+            params: { pid, kind: outcome.kind, ...outcome.kind === "refused" ? { reason: outcome.reason } : {} },
+            receivedAt: Date.now()
+          });
+        }
       }
       await transport.#handshake(options.clientName, options.clientVersion);
     } catch (error) {
@@ -31212,6 +31222,7 @@ async function runEnsembleCli(argv, options = {}) {
         cliFlags: cliFlags(invocation),
         ...callerIdentity !== void 0 ? { callerIdentity } : {},
         concurrency: recordConcurrency(ambientSettings, progress),
+        workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
       });
       runtime.setRunRecorder?.(runRecordWriter);
@@ -31229,6 +31240,14 @@ async function runEnsembleCli(argv, options = {}) {
       });
     }
     runtime.onEvent((event) => {
+      if (event.method === "codex/workerScopePlacement") {
+        if (event.params.kind === "refused") {
+          const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
+          stderr.write(`[codex] app-server (pid ${pid}) scope placement refused: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
+`);
+        }
+        return;
+      }
       if (event.method === "claude/workerScopePlacement") {
         const name = boundedEvidence(String(event.params.name ?? "unknown"));
         const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
@@ -31555,6 +31574,7 @@ function cliFlags(invocation) {
   return {
     ...invocation.budgetCeilings !== void 0 ? { budget: invocation.budgetCeilings } : {},
     ...invocation.agentCeiling !== void 0 ? { agentCeiling: invocation.agentCeiling } : {},
+    ...invocation.workerScope !== void 0 ? { workerScope: invocation.workerScope } : {},
     ...invocation.concurrencyCaps !== void 0 ? { concurrency: invocation.concurrencyCaps } : {},
     ...invocation.timeoutMs !== void 0 ? { timeoutMs: invocation.timeoutMs } : {},
     ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},

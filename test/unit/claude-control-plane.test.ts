@@ -1570,3 +1570,26 @@ test("refused Claude placement retries during registration and at the same polle
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+
+test("unavailable scope placement returns a PID-less completed registration without further roster reads", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-no-scope-registration-"));
+  try {
+    const queries = path.join(dir, "queries");
+    const stub = path.join(dir, "claude.mjs");
+    await writeFile(stub, `#!/usr/bin/env node
+      import { readFile, writeFile } from "node:fs/promises";
+      if (process.argv[2] === "--bg") { for await (const chunk of process.stdin) void chunk; }
+      if (process.argv[2] === "agents") {
+        const count = Number(await readFile(${JSON.stringify(queries)}, "utf8").catch(() => "0")) + 1;
+        await writeFile(${JSON.stringify(queries)}, String(count));
+        process.stdout.write(JSON.stringify([{kind:"background", name:"no-scope", id:"no-scope", sessionId:"no-scope-session", status:"done", state:"idle", ...(count > 1 ? {pid:process.pid} : {})}]));
+      }
+    `);
+    await chmod(stub, 0o755);
+    const plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir });
+    const handle = await plane.dispatch({ prompt: "hello", name: "no-scope", cwd: dir });
+    assert.equal(await readFile(queries, "utf8"), "1", "a no-op placement manager still waited for a PID");
+    await plane.stop(handle);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

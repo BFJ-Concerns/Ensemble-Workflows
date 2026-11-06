@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { AmbientConfigError, resolveStatusDir } from "../../src/ambient-settings.js";
 
-test("resolveStatusDir prefers an existing .claude directory and otherwise uses the data home", async () => {
+test("resolveStatusDir uses the data home with or without a .claude directory", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-status-config-"));
   try {
     const env = { XDG_CONFIG_HOME: path.join(cwd, "config"), XDG_DATA_HOME: path.join(cwd, "data") };
@@ -14,13 +14,13 @@ test("resolveStatusDir prefers an existing .claude directory and otherwise uses 
 
     const localClaude = path.join(cwd, ".claude");
     await mkdir(localClaude);
-    assert.equal(resolveStatusDir(env, cwd), localClaude);
+    assert.equal(resolveStatusDir(env, cwd), path.join(cwd, "data", "ensemble", "status"));
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
 });
 
-test("resolveStatusDir falls back to the data home when .claude is a file", async () => {
+test("resolveStatusDir uses the data home when .claude is a file", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-status-config-"));
   try {
     await writeFile(path.join(cwd, ".claude"), "not a directory");

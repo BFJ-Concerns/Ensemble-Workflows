@@ -3978,11 +3978,25 @@ test("ensemble holds answer writes the decision, reports what the raiser did wit
   }
 });
 
-test("CLI announces an automatic status file and removes it on completion", async () => {
+for (const claudeEntry of ["absent", "directory", "file"]) {
+test(`CLI publishes and announces automatic status before execution with .claude ${claudeEntry}`, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-auto-status-"));
   try {
     const script = path.join(directory, "workflow.js");
-    await writeFile(script, 'export const meta = { name: "automatic-status" }; return "ok";');
+    if (claudeEntry === "directory") await mkdir(path.join(directory, ".claude"));
+    if (claudeEntry === "file") await writeFile(path.join(directory, ".claude"), "file");
+    const statusDir = path.join(directory, "data", "ensemble", "status");
+    await writeFile(script, `
+      export const meta = { name: "automatic-status" };
+      const { readdir, readFile } = require("node:fs/promises");
+      const dir = ${JSON.stringify(statusDir)};
+      const files = await readdir(dir);
+      if (files.length !== 1) throw new Error("status missing before execution");
+      const snapshot = JSON.parse(await readFile(dir + "/" + files[0], "utf8"));
+      if (!snapshot.runId) throw new Error("invalid initial status");
+      log("workflow-started");
+      return "ok";
+    `);
     const stderr = new CaptureStream();
     const exitCode = await runEnsembleCli([script], {
       cwd: directory, stdout: new CaptureStream(), stderr,
@@ -3993,6 +4007,7 @@ test("CLI announces an automatic status file and removes it on completion", asyn
     assert.equal(exitCode, 0, stderr.text());
     const line = stderr.text().split("\n").find((entry) => entry.startsWith("[status-file] "));
     assert.ok(line);
+    assert.ok(stderr.text().indexOf(line) < stderr.text().indexOf("workflow-started"));
     const announcement = JSON.parse(line.slice("[status-file] ".length)) as { run_id: string; status_path: string };
     assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${announcement.run_id}.local.json`));
     await assert.rejects(access(announcement.status_path));
@@ -4001,3 +4016,5 @@ test("CLI announces an automatic status file and removes it on completion", asyn
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+}

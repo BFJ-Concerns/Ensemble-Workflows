@@ -421,8 +421,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       statusWriter = new StatusFileWriter({
         progress,
         dir: statusDir,
-        createDirectory: options.statusDir === undefined && ambientSettings.statusDir.layer === "default" &&
-          statusDir !== path.join(cwd, ".claude"),
+        createDirectory: options.statusDir === undefined && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError(error)}\n`);
         }

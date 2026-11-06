@@ -8,6 +8,7 @@ import test from "node:test";
 import { parseTranscriptText } from "../../src/claude-transcript.js";
 import { findOnlyFile, runNode } from "../integration/estate-process.js";
 import {
+  PASTE_PROMOTION_UTF16_UNITS,
   TYPED_FOLLOW_UP_OPENING_PROMPT,
   TYPED_FOLLOW_UP_SKILL,
   followUpArrival,
@@ -16,7 +17,7 @@ import {
   typedFollowUpArguments,
   typedFollowUpPrompt
 } from "./claude-follow-up-typed-prompts.js";
-import { installDeliveryClients, resumeDeliveryClient } from "./claude-follow-up-typed-processes.js";
+import { installDeliveryClients } from "./claude-follow-up-typed-processes.js";
 
 const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
@@ -34,9 +35,10 @@ for (const pause of [false, true]) {
     skip: process.env.ENSEMBLE_LIVE !== "1", timeout: 900_000
   }, async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-typed-follow-up-"));
+    let clients: Awaited<ReturnType<typeof installDeliveryClients>> | undefined;
     try {
       await installTypedFollowUpSkill(directory);
-      const bin = await installDeliveryClients(directory, pause);
+      clients = await installDeliveryClients(directory, pause);
       const store = path.join(directory, "records");
       await mkdir(store);
       const commandMarker = `COMMAND_${randomUUID()}`;
@@ -56,9 +58,8 @@ for (const pause of [false, true]) {
         return "complete";
       `);
       const result = await runNode([bundle, "--timeout", "800000", workflow], {
-        PATH: bin + path.delimiter + process.env.PATH,
-        ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: store, ENSEMBLE_STATUS: "0",
-        XDG_CONFIG_HOME: path.join(directory, "config")
+        ...clients.env,
+        ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: store, ENSEMBLE_STATUS: "0"
       }, 850_000);
       assert.equal(result.code, 0, result.stderr);
       assert.equal(JSON.parse(result.stdout), "complete");
@@ -110,8 +111,8 @@ for (const pause of [false, true]) {
       }
       if (pause) {
         const events = (await readFile(path.join(directory, "pause.jsonl"), "utf8")).trim().split("\n")
-          .map((line) => JSON.parse(line) as { event: string; pid: number; state?: string; before?: string; after?: string; exit?: number; bytes?: number });
-        const stopped = events.find((event) => event.event === "stopped-after-send");
+          .map((line) => JSON.parse(line) as { event: string; pid: number; state?: string; before?: string; after?: string; exit?: number; bytes?: number; units?: number; sends?: number });
+        const stopped = events.find((event) => event.event === "stopped-before-send");
         const sent = events.find((event) => event.event === "send-while-stopped");
         assert.ok(stopped && sent, "no send overlapped the attach-reader pause");
         assert.equal(stopped.state, "T");
@@ -120,12 +121,15 @@ for (const pause of [false, true]) {
         assert.equal(sent.after, "T");
         assert.equal(sent.exit, 0);
         assert.ok((sent.bytes ?? 0) > 0);
-        assert.ok(events.some((event) => event.event === "resumed" && event.pid === stopped.pid));
+        const resumed = events.find((event) => event.event === "resumed" && event.pid === stopped.pid);
+        assert.ok(resumed, "the paused input was never released");
+        assert.ok((resumed.sends ?? 0) > 1, "the pause did not accumulate separate sends");
+        assert.ok((resumed.units ?? 0) > PASTE_PROMOTION_UTF16_UNITS, "the paused input never exceeded the paste threshold");
         console.log(JSON.stringify({ pause, events }));
       }
     } finally {
       try {
-        await resumeDeliveryClient(directory);
+        await clients?.dispose();
       } finally {
         await rm(directory, { recursive: true, force: true });
       }

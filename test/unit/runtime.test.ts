@@ -3655,23 +3655,30 @@ test("a cross-engine advance re-resolves the capability strip against the answer
   await runtime.close();
 });
 
-test("a chained leg's queued and execution times accumulate across the re-admission, never overwriting each other", async () => {
-  const codex = new ChainEngine("codex", [codexRefusal("serverOverloaded")]);
-  const claude = new ChainEngine("claude", [
-    async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      return turn("from claude");
-    }
-  ]);
+test("a chained leg's queued and execution times accumulate across the re-admission, never overwriting each other", async (context) => {
+  let now = 1_000;
+  context.mock.method(Date, "now", () => now);
+  const codex = new ChainEngine("codex", [async () => {
+    now += 11;
+    return codexRefusal("serverOverloaded")();
+  }]);
+  const claude = new ChainEngine("claude", [async () => {
+    now += 30;
+    return turn("from claude");
+  }]);
+  codex.schedule = async (task) => { now += 7; return task(); };
+  claude.schedule = async (task) => { now += 5; return task(); };
   const { runtime, records } = chainRuntime([codex, claude], 1);
-
-  await runtime.agent("timed", { engine: "codex", model: "gpt-5.6-sol", fallback: [{ engine: "claude", model: "opus" }] });
-  const settled = records.at(-1)!;
-  // Execution spans both engines' work (at least the Claude step's 30ms);
-  // queued time is only the waits, never a re-count of earlier execution.
-  assert.ok(settled.executionMs >= 30, `executionMs ${settled.executionMs}`);
-  assert.ok(settled.queuedMs < settled.executionMs, `queuedMs ${settled.queuedMs} should not absorb execution`);
-  await runtime.close();
+  try {
+    await runtime.agent("timed", { engine: "codex", model: "gpt-5.6-sol", fallback: [{ engine: "claude", model: "opus" }] });
+    const settled = records.at(-1)!;
+    // The controlled clock advances while queued (7 + 5) and while each
+    // engine executes (11 + 30). The runtime derives both totals itself.
+    assert.equal(settled.executionMs, 41);
+    assert.equal(settled.queuedMs, 12);
+  } finally {
+    await runtime.close();
+  }
 });
 
 // ---------------------------------------------------------------------------

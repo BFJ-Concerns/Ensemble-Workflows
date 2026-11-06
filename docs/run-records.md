@@ -312,8 +312,8 @@ The next run that starts in the same namespace applies the same rule and
 rewrites a provably dead run's manifest to `status: "abandoned"`, with an
 `abandonment` block saying what was observed, when, and by which run. It also
 flips that run's agent records that are still `in-progress` to `"abandoned"`
-with the same block. An abandoned agent record keeps exactly what was recorded
-before the death: `attempts` lists settled attempts only, and `usage` and
+with the same block and removes `current_attempt`. An abandoned agent record
+keeps the captured content recorded before the death: `attempts` lists settled attempts only, and `usage` and
 `transcripts` cover only those attempts. Where none had recorded usage or a
 transcript, `usage` and `transcripts_unavailable` read `record-unsettled` —
 the attempt in flight and its spend are unobserved, never zero. An agent record that the run's own close
@@ -418,6 +418,36 @@ families with their own schema versions (`3` and `2`), described above.
 ### Agent records
 
 Each agent's record is at `agents/<zero-padded-id>/agent.json`:
+
+While a Claude or Codex attempt executes, the record also has
+`current_attempt`: an object with `attempt` (its number), `started_at` (the
+ISO start time), and `transcript` (a path or `null`). Ensemble writes the
+start time before invoking the engine. The transcript path appears once a
+readable file exists. A worker waiting for admission has no
+`current_attempt`, including while a fallback target waits for a slot.
+The field remains present between retries and while the outcome is being
+archived, until the next attempt replaces it or the settled record removes
+it. It is cleared when a fallback target re-enters the admission queue.
+Settled records retain their existing schema and fields; attempts in the
+`attempts` array are settled attempts only.
+
+Claude's live path is absolute and points to the session's own JSONL file
+under `~/.claude/projects/`. A held session uses that same file across its
+turns, so the live file includes the conversation. Codex's live path is
+relative to the run's archive directory and belongs to that agent and
+attempt. Each captured app-server event is appended as it arrives. The
+same path appears in `transcripts` at settlement, with its final size and
+digest in the manifest's files table. A failed live write is reported as
+`runRecord/writeFailed`; settlement repairs an incomplete Codex file from
+the engine's captured transcript when that capture is available.
+
+Readers should reopen the atomically replaced `agent.json` as they poll.
+Live transcripts grow independently of the record and can end with a
+partially written JSONL line during a read. File sizes and hashes in a
+live manifest describe the writer's last published snapshot, so read the
+settled manifest to verify final transcript integrity.
+
+The fields present throughout a record's lifetime are:
 
 - `schema_version`: `4`.
 - `kind`: `"agent_record"`.

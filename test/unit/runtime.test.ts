@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -32,10 +32,10 @@ import {
   WorktreePlacementRejectedError
 } from "../../src/errors.js";
 
-import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
+import { RunRecordWriter, type RuntimeAgentRecord } from "../../src/run-record.js";
 import { Scheduler } from "../../src/scheduler.js";
 
-import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
+import type { EngineAdapter, EngineAttemptContext, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
 
 import type {
   AgentOptions,
@@ -51,6 +51,9 @@ import type {
   IsolatedWorktreeRecord,
   WorktreeIsolationManager
 } from "../../src/worktree-isolation.js";
+
+const ignoreAttemptStart: RunRecordWriter["recordAttemptStart"] = async () => undefined;
+const ignoreAttemptEnd: RunRecordWriter["recordAttemptEnd"] = async () => undefined;
 
 class FakeTransport implements RuntimeTransport {
   readonly cwd = "/fake/repo";
@@ -191,6 +194,9 @@ class DispatchBlockedRecorder {
       this.#releaseDispatch = resolve;
     });
   }
+
+  async recordAttemptStart(): Promise<void> {}
+  async recordAttemptEnd(): Promise<void> {}
 
   releaseDispatch(): void {
     this.#releaseDispatch?.();
@@ -335,6 +341,8 @@ test("a text call's exhausted attempts resolve null with the account on the reco
     const events: Array<{ method: string; params: Record<string, unknown> }> = [];
     const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 2 });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -401,6 +409,8 @@ test("a transport error mid-attempt resolves null with the thrown failure's clas
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -476,6 +486,8 @@ test("the spawn boundary: an engine refusing the dispatch itself still throws, w
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -498,6 +510,8 @@ test("the spawn boundary: the run's own ending still throws through a dispatched
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -590,6 +604,8 @@ test("schema-valid null settles as complete while retry exhaustion remains faile
     defaultMaxAttempts: 1
   });
   completedRuntime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       completedRecords.push(structuredClone(record));
     }
@@ -623,6 +639,8 @@ test("schema-valid null settles as complete while retry exhaustion remains faile
     defaultMaxAttempts: 1
   });
   failedRuntime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       failedRecords.push(structuredClone(record));
     }
@@ -649,6 +667,8 @@ test("schema agents return the validated object when a retry succeeds", async ()
   });
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -683,6 +703,8 @@ test("schema agents return the last validating candidate from prose and fences",
   });
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -794,6 +816,8 @@ test("a schema-valid scalar answered inside a fence or beneath prose completes t
     });
     const records: RuntimeAgentRecord[] = [];
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -834,6 +858,8 @@ test("Codex invalid_json_schema becomes a distinguishing schema-subset error", a
 
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -930,6 +956,8 @@ test("an active Codex record retains a decode diagnostic without failing its wor
   transport.bind(() => runtime);
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
   } as unknown as RunRecordWriter);
 
@@ -991,6 +1019,8 @@ test("the budget is judged at dispatch, not per attempt: exhaustion mid-retry ca
   transport.bind(() => runtime);
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -1131,6 +1161,8 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
   const events: string[] = [];
   let recordedWorktree: unknown;
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       recordedWorktree = record.worktree;
     }
@@ -1147,8 +1179,9 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
       cwd: "/fake/worktree-1"
     }
   ]);
-  const { onFirstOutput, ...turnOptions } = transport.turns[0]?.options ?? {};
+  const { onFirstOutput, onTranscriptEvent, ...turnOptions } = transport.turns[0]?.options ?? {};
   assert.equal(typeof onFirstOutput, "function");
+  assert.equal(typeof onTranscriptEvent, "function");
   assert.deepEqual(turnOptions, { timeoutMs: 1_000 });
   assert.deepEqual(runtime.worktrees, [
     {
@@ -1213,6 +1246,8 @@ test("a failed worker still finishes and records its changed worktree", async ()
     worktreeManager
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(record);
     }
@@ -1249,6 +1284,8 @@ test("a missing worktree path remains discoverable and reports its finalisation 
     worktreeManager
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -1309,6 +1346,8 @@ test("a worker error remains primary when worktree finalisation also fails", asy
     worktreeManager
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -1594,6 +1633,8 @@ test("a cwd is read once, so it cannot answer differently after the call is admi
   });
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -1975,6 +2016,8 @@ test("an agent's record exists from dispatch, in-progress with prompt and resolv
     defaultMaxAttempts: 3
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2028,6 +2071,8 @@ test("each held turn's attempt retains the worker's observed model", async () =>
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2060,6 +2105,8 @@ test("a held turn that answered empty acquires no served-model claim", async () 
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2085,6 +2132,8 @@ test("a worker that dies uncleanly leaves its dispatch-time record", async () =>
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2113,6 +2162,8 @@ test("a recorded Codex failure serialises its observed app-server diagnostic", a
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2142,6 +2193,8 @@ test("terminal timeout and shutdown errors retain their agent statuses with two 
       defaultMaxAttempts: 1
     });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -2167,6 +2220,8 @@ test("a spontaneous app-server exit records a failed agent without runtime shutd
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2193,6 +2248,8 @@ test("thrown non-shutdown failures retain failed status while the runtime closes
       defaultMaxAttempts: 1
     });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -2220,6 +2277,8 @@ test("a returned retry-exhaustion failure retains failed status while the runtim
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2332,6 +2391,8 @@ test("a close names its occasion on every record it settles: the run ending, or 
     const transport = new ClosingTransport(new AppServerExitedError("codex app-server closed"));
     const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -2410,6 +2471,8 @@ test("a queued leg the run's end cancels is recorded as queued, and still counts
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2486,6 +2549,8 @@ test("genuine shutdown errors inherit the runtime shutdown status", async () => 
         defaultMaxAttempts: 1
       });
       runtime.setRunRecorder({
+        recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
         recordAgent: async (record) => {
           records.push(structuredClone(record));
         }
@@ -2511,6 +2576,8 @@ test("a run-record write failure surfaces as an event and never fails the agent"
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async () => {
       throw new Error("disk full");
     }
@@ -2615,6 +2682,8 @@ test("an unenforceable capability strip fails loud before any worker spawns", as
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2651,6 +2720,8 @@ test("a config-enforced strip reaches the engine and the durable record", async 
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2720,6 +2791,8 @@ test("an absent capability is satisfied by construction and recorded as absent",
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2751,6 +2824,8 @@ test("a codex skills strip denies the stabilised discovery set; an unstripped ca
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2857,6 +2932,8 @@ test("a Codex agents-only strip keeps skills untouched", async () => {
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3017,6 +3094,8 @@ test("an engine-reported attempt duration is recorded as the engine measured it"
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3043,6 +3122,8 @@ test("a run that ends under an in-flight turn names itself as the cause, agent a
       defaultMaxAttempts: 1
     });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -3085,6 +3166,8 @@ test("an engine's own failure stays the attempt's cause, with nothing beside it"
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3124,6 +3207,8 @@ test("a dispatch the engine refuses before any attempt records the engine's own 
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3187,6 +3272,8 @@ test("a refusal the runtime cannot read an account from records the absence and 
     const records: RuntimeAgentRecord[] = [];
     const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -3223,6 +3310,8 @@ test("a thrown string reaches the record as the words the engine actually threw"
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3328,6 +3417,8 @@ function chainRuntime(engines: EngineAdapter[], defaultMaxAttempts = 3): {
     defaultMaxAttempts
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3728,6 +3819,8 @@ test("a thrown Codex failure spends an attempt and retries within the bound, car
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 3 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3777,6 +3870,8 @@ test("each named Codex post-spawn failure exhausts the bound and settles with th
     const events: Array<{ method: string; params: Record<string, unknown> }> = [];
     const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 3 });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -3831,6 +3926,8 @@ test("the spawn boundary holds under the one rule: a pre-spawn rejection raised 
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 3 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3992,6 +4089,8 @@ test("a Codex substrate that cannot start refuses the dispatch pre-spawn: one re
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, cwd: "/fake/repo", concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 3 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -4271,3 +4370,250 @@ test("with no chain declared, no attempt carries a chain decision and no chain n
   );
   await runtime.close();
 });
+
+
+for (const structured of [false, true]) {
+  test(`live transcript writes drain before ${structured ? "schema" : "text"} retries and settlement`, async () => {
+    const starts: Array<{ id: number; attempt: number; at: string }> = [];
+    const writes: Array<{ id: number; attempt: number; event: unknown }> = [];
+    const snapshots: RuntimeAgentRecord[] = [];
+    const callbacks: TurnStartOptions[] = [];
+    const transport = new FakeTransport([turn(structured ? "invalid JSON" : ""), turn(structured ? '{"answer":"yes"}' : "yes")]);
+    const runTurn = transport.runTurn.bind(transport);
+    transport.runTurn = async (thread, prompt, options) => {
+      assert.equal(starts.at(-1)?.attempt, callbacks.length + 1, "publish attempt start before invoking the engine");
+      if (callbacks.length > 0) assert.equal(writes.length, callbacks.length, "retry outran transcript persistence");
+      callbacks.push(options);
+      options.onTranscriptEvent?.({ thread });
+      return runTurn(thread, prompt, options);
+    };
+    const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 2 });
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => { snapshots.push(structuredClone(record)); },
+      recordAttemptEnd: ignoreAttemptEnd,
+      recordAttemptStart: async (id: number, attempt: number, at: string) => { starts.push({ id, attempt, at }); },
+      appendCodexTranscript: async (id: number, attempt: number, event: unknown) => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        writes.push({ id, attempt, event });
+      }
+    } as unknown as RunRecordWriter);
+    try {
+      const result = await runtime.agent("answer", { engine: "codex", ...(structured ? { schema } : {}) });
+      assert.deepEqual(result, structured ? { answer: "yes" } : "yes");
+      assert.deepEqual(writes.map(({ id, attempt }) => [id, attempt]), [[1, 1], [1, 2]]);
+      const settled = snapshots.at(-1)!;
+      assert.equal(settled.status, "complete");
+      assert.deepEqual(starts.map(({ at }) => at), settled.attempts.map(({ startedAt }) => startedAt));
+      for (const callback of callbacks) callback.onTranscriptEvent?.({ late: true });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(writes.length, 2, "late callback modified a completed attempt");
+    } finally {
+      await runtime.close();
+    }
+  });
+}
+
+test("live archive write failures report the agent and preserve its answer", async () => {
+  const transport = new FakeTransport([turn("yes")]);
+  const runTurn = transport.runTurn.bind(transport);
+  transport.runTurn = async (thread, prompt, options) => {
+    options.onTranscriptEvent?.({ thread });
+    return runTurn(thread, prompt, options);
+  };
+  const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 1 });
+  const failures: Array<{ agentId: unknown; message: unknown }> = [];
+  runtime.onEvent((event) => {
+    if (event.method === "runRecord/writeFailed") failures.push({ agentId: event.params.agentId, message: event.params.message });
+  });
+  runtime.setRunRecorder({
+    recordAgent: async () => undefined,
+    recordAttemptEnd: ignoreAttemptEnd,
+    recordAttemptStart: async () => { throw new Error("start unavailable"); },
+    appendCodexTranscript: async () => { throw new Error("append unavailable"); }
+  } as unknown as RunRecordWriter);
+  try {
+    assert.equal(await runtime.agent("answer", { engine: "codex" }), "yes");
+    assert.deepEqual(failures, [
+      { agentId: 1, message: "start unavailable" },
+      { agentId: 1, message: "append unavailable" }
+    ], "both live write failures must identify the agent without losing its answer");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("runtime drains pending transcript writes before shutdown settlement", async () => {
+  const transport = new ClosingTransport();
+  // Install a turn callback at the adapter boundary, before its close rejects.
+  const adapter = new CodexEngineAdapter({ transport, concurrency: 1 });
+  const createInvocation = adapter.createInvocation.bind(adapter);
+  adapter.createInvocation = (prompt, options) => {
+    const invocation = createInvocation(prompt, options);
+    return { ...invocation, runAttempt: (context) => {
+      context.onTranscriptEvent?.({ beforeShutdown: true });
+      return invocation.runAttempt(context);
+    } };
+  };
+  let releaseWrite!: () => void;
+  const pendingWrite = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  let settled = false;
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([adapter]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => { if (record.status !== "in-progress") settled = true; },
+    recordAttemptEnd: ignoreAttemptEnd,
+    recordAttemptStart: async () => undefined,
+    appendCodexTranscript: async () => pendingWrite
+  } as unknown as RunRecordWriter);
+  const call = runtime.agent("work", { engine: "codex" });
+  void call.catch(() => undefined);
+  await transport.started;
+  const close = runtime.close();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, "shutdown settled before the last transcript write");
+  releaseWrite();
+  await close;
+  await assert.rejects(call, AppServerExitedError);
+  assert.equal(settled, true);
+});
+
+
+test("fallback targets publish their own transcript and reject callbacks from the refused target", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")]);
+  const claude = new ChainEngine("claude", [answers("yes")]);
+  let refusedContext: EngineAttemptContext | undefined;
+  const starts: Array<[number, number]> = [];
+  const writes: Array<[number, number, unknown]> = [];
+  const codexInvocation = codex.createInvocation.bind(codex);
+  codex.createInvocation = (prompt, options) => {
+    const invocation = codexInvocation(prompt, options);
+    return { runAttempt: (context) => {
+      refusedContext = context;
+      context.onTranscriptEvent?.({ refused: true });
+      return invocation.runAttempt(context);
+    } };
+  };
+  const claudeInvocation = claude.createInvocation.bind(claude);
+  claude.createInvocation = (prompt, options) => {
+    const invocation = claudeInvocation(prompt, options);
+    return { runAttempt: (context) => {
+      assert.deepEqual(starts, [[1, 1], [1, 2]], "fallback must publish the admitted target as a distinct attempt");
+      refusedContext?.onTranscriptEvent?.({ late: true });
+      context.onTranscriptPath?.("/fake/claude/session.jsonl");
+      context.onTranscriptPath?.("/fake/claude/session.jsonl");
+      return invocation.runAttempt(context);
+    } };
+  };
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([codex, claude]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({
+    recordAgent: async () => undefined,
+    recordAttemptEnd: ignoreAttemptEnd,
+    recordAttemptStart: async (id: number, attempt: number) => { starts.push([id, attempt]); },
+    appendCodexTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); },
+    recordClaudeTranscript: async (id: number, attempt: number, file: string) => { writes.push([id, attempt, file]); }
+  } as unknown as RunRecordWriter);
+  try {
+    assert.equal(await runtime.agent("answer", { engine: "codex", fallback: [{ engine: "claude", model: "test-claude" }] }), "yes");
+    assert.deepEqual(writes, [[1, 1, { refused: true }], [1, 2, "/fake/claude/session.jsonl"]]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+
+test("fallback admission clears the refused attempt from a queued archive record", async () => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-fallback-live-record-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store, cwd: process.cwd(), runUuid: "fallback-live-record",
+    workflowPath: path.join(store, "workflow.js"), workflowSource: "return true;",
+    args: [], cliFlags: { jsonArgs: false }
+  });
+  let release!: () => void;
+  let entered!: () => void;
+  const occupied = new Promise<void>((resolve) => { entered = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const claude = new ChainEngine("claude", [async () => { entered(); await blocked; return turn("blocker done"); }, answers("fallback done")], 1);
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")], 1);
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([codex, claude]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder(writer);
+  const blocker = runtime.agent("blocker", { engine: "claude" });
+  await occupied;
+  const fallback = runtime.agent("fallback", { engine: "codex", label: "fallback", fallback: [{ engine: "claude", model: "test-claude" }] });
+  try {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const state = runtime.progress.snapshot().agents.find((agent) => agent.label === "fallback");
+      if (state?.engine === "claude" && state.state === "queued") break;
+      assert.ok(Date.now() < deadline, "fallback never reached the occupied target's queue");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000002/agent.json"), "utf8"));
+    assert.equal(record.status, "in-progress");
+    assert.equal(record.current_attempt, undefined, "queued fallback still claims an executing attempt");
+    release();
+    assert.equal(await fallback, "fallback done");
+    const settled = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000002/agent.json"), "utf8"));
+    assert.deepEqual(settled.attempts.map((attempt: { target: { engine: string } }) => attempt.target.engine), ["codex", "claude"]);
+    assert.equal(settled.current_attempt, undefined);
+  } finally {
+    release();
+    await Promise.allSettled([blocker, fallback]);
+    await runtime.close();
+    await writer.finish({ status: "complete", exitCode: 0, result: null });
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
+for (const boundary of ["retry", "settlement"] as const) {
+  test(`archive execution stays visible across ${boundary} publication`, async () => {
+    const store = await mkdtemp(path.join(tmpdir(), `ensemble-attempt-${boundary}-`));
+    const writer = await RunRecordWriter.start({
+      storeDir: store, cwd: process.cwd(), runUuid: `attempt-${boundary}`,
+      workflowPath: path.join(store, "workflow.js"), workflowSource: "return true;",
+      args: [], cliFlags: { jsonArgs: false }
+    });
+    let entered!: () => void;
+    let release!: () => void;
+    const reachedBoundary = new Promise<void>((resolve) => { entered = resolve; });
+    const publication = new Promise<void>((resolve) => { release = resolve; });
+    const recordStart = writer.recordAttemptStart.bind(writer);
+    writer.recordAttemptStart = async (id, attempt, at) => {
+      if (boundary === "retry" && attempt === 2) {
+        entered();
+        await publication;
+      }
+      await recordStart(id, attempt, at);
+    };
+    const recordAgent = writer.recordAgent.bind(writer);
+    writer.recordAgent = async (record) => {
+      if (boundary === "settlement" && record.status !== "in-progress") {
+        entered();
+        await publication;
+      }
+      await recordAgent(record);
+    };
+    const transport = new FakeTransport([turn("invalid JSON"), turn('{"answer":"yes"}')]);
+    const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 2 });
+    runtime.setRunRecorder(writer);
+    const call = runtime.agent("answer", { engine: "codex", schema });
+    void call.catch(() => undefined);
+    try {
+      await reachedBoundary;
+      const file = path.join(writer.archiveDir, "agents/000001/agent.json");
+      const running = JSON.parse(await readFile(file, "utf8"));
+      assert.equal(running.status, "in-progress");
+      assert.equal(running.current_attempt?.attempt, boundary === "retry" ? 1 : 2,
+        `archive classified an admitted worker as queued during ${boundary}`);
+      release();
+      assert.deepEqual(await call, { answer: "yes" });
+      const settled = JSON.parse(await readFile(file, "utf8"));
+      assert.equal(settled.status, "complete");
+      assert.equal(settled.current_attempt, undefined);
+    } finally {
+      release();
+      await Promise.allSettled([call]);
+      await runtime.close();
+      await writer.finish({ status: "complete", exitCode: 0, result: null });
+      await rm(store, { recursive: true, force: true });
+    }
+  });
+}

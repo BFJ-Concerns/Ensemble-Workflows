@@ -145,7 +145,7 @@ test("the built launcher re-places an idle held session after respawn without an
   let run: ReturnType<typeof launchCliInBox> | undefined;
   try {
     await writeFile(workflow, `export const meta = { name: "idle-session-replacement" };
-      import { access, writeFile } from "node:fs/promises";
+      const { access, writeFile } = await import("node:fs/promises");
       const worker = session(${JSON.stringify({engine:"claude",model:claudeModel,cwd:root,maxAttempts:1,timeoutMs:420_000})});
       try {
         const reply = await worker.send(${JSON.stringify(heldProbePrompt(probe))});
@@ -157,9 +157,9 @@ test("the built launcher re-places an idle held session after respawn without an
     assert.equal(await daemonPid(env), null, "the private config directory already had a daemon");
     run = launchCliInBox(box, slice, env, [workflow]);
     const seen = await watchRoster(env, 120_000, undefined, () => run!.settled);
+    assert.ok(seen.registered !== null && seen.pid !== null, run.settled ? JSON.stringify(await run.result) : "the owned session never registered a process");
     await waitForPath(probe.paths.ready, 420_000);
     const initialGroup = cgroupPath(await readFile(probe.paths.evidence, "utf8"));
-    assert.ok(seen.registered !== null && seen.pid !== null, "the owned session never registered a process");
     assert.ok(initialGroup.endsWith(".scope") && /\/ensemble-\d+-/.test(initialGroup), "worker shell was not placed");
     await writeFile(probe.paths.release, "");
     await waitForPath(idle, 420_000);

@@ -17605,6 +17605,7 @@ var SystemdWorkerScopes = class {
         this.#busctlBin,
         [
           "--user",
+          "--",
           "call",
           "org.freedesktop.systemd1",
           "/org/freedesktop/systemd1",

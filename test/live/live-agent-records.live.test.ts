@@ -6,6 +6,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { runNode } from "../integration/estate-process.js";
+import type { ProcessResult } from "../integration/estate-process.js";
 import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths, waitForPath } from "./held-worker-probes.js";
 
 import type { HeldProbe } from "./held-worker-probes.js";
@@ -58,10 +59,10 @@ for (const engine of ["claude", "codex"] as const) {
         assert.equal(settled, false, "workflow settled while its probe was held");
         assert.equal((await readFile(probe.paths.evidence, "utf8")).trimEnd(),
           probe.evidence.kind === "marker" ? probe.evidence.content : "");
-        await waitForAcknowledgement(acknowledgements, `observed:${index + 1}:1:started`);
+        await waitForAcknowledgement(acknowledgements, `observed:${index + 1}:1:started`, readProcess);
         // Growth after the reader's first open proves a scrolling live file.
-        await waitForAcknowledgement(acknowledgements, `growth:${index + 1}:1`);
-        if (index === 0) await waitForAcknowledgement(acknowledgements, "queued:queued");
+        await waitForAcknowledgement(acknowledgements, `growth:${index + 1}:1`, readProcess);
+        if (index === 0) await waitForAcknowledgement(acknowledgements, "queued:queued", readProcess);
         assert.equal(settled, false, "workflow settled before release");
         await writeFile(probe.paths.release, "");
       }
@@ -102,10 +103,16 @@ for (const engine of ["claude", "codex"] as const) {
   });
 }
 
-async function waitForAcknowledgement(file: string, marker: string): Promise<void> {
+async function waitForAcknowledgement(file: string, marker: string, reader: Promise<ProcessResult>): Promise<void> {
   const deadline = Date.now() + 120_000;
   while (!(await readFile(file, "utf8")).split("\n").includes(marker)) {
     assert.ok(Date.now() < deadline, `independent reader never acknowledged ${marker}`);
-    await delay(100);
+    await Promise.race([
+      delay(100),
+      reader.then((result) => {
+        assert.equal(result.code, 0, result.stderr);
+        assert.fail(`independent reader exited before acknowledging ${marker}`);
+      })
+    ]);
   }
 }

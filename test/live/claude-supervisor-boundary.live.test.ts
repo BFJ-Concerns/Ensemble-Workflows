@@ -62,7 +62,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     assert.equal(await daemonPid(env), null, "the private config directory already had a daemon");
     const run1 = launchInBox(boxes[0]!, slice, env, heldProbePrompt(first));
     runs.push(run1);
-    const seen = await watchRoster(env, 120_000);
+    const seen = await watchRoster(env, 120_000, undefined, () => run1.settled);
     observations.firstRegistration = seen;
     assert.ok(seen.registered !== null, "the worker never registered in the owned roster");
     assert.ok(seen.pid !== null, "the roster never named the worker's pid");
@@ -98,7 +98,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     // exercises the supervisor, not just its status endpoint.
     const run2 = launchInBox(boxes[1]!, slice, env, heldProbePrompt(sibling));
     runs.push(run2);
-    const seen2 = await watchRoster(env, 120_000, seen.registered.sessionId);
+    const seen2 = await watchRoster(env, 120_000, seen.registered.sessionId, () => run2.settled);
     observations.siblingRegistration = seen2;
     assert.ok(seen2.pid !== null, "the sibling worker's pid was never named");
     assert.notEqual(seen2.pid, seen.pid, "the roster returned the first worker as its sibling");
@@ -140,7 +140,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     // Stop proof-owned boxes before their private supervisor. A failed
     // observation must not leave a launcher or polling probe behind.
     await Promise.all(boxes.map((box) => execFileAsync("systemctl", ["--user", "stop", box]).catch(() => undefined)));
-    await Promise.all(runs.map((run) => run.result));
+    observations.runResults = await Promise.all(runs.map((run) => run.result));
     if ((await daemonPid(env)) !== null) {
       await execFileAsync("claude", ["daemon", "stop", "--any"], { env });
     }
@@ -177,13 +177,14 @@ test("a session the owned supervisor restarts under a new pid is placed again at
     projectsDir: path.join(configDir, "projects"),
     scopes
   });
+  const probe: HeldProbe = { paths: probePaths(root, "replacement"), evidence: { kind: "cgroup" }, token: `REPLACEMENT_${randomUUID()}` };
   const observations: Record<string, unknown> = { slice, operatorDaemonBefore: operatorDaemon };
   let handle: ClaudeSessionHandle | null = null;
 
   try {
     assert.equal(await daemonPid(env), null, "the private config directory already had a daemon");
     handle = await controlPlane.dispatch({
-      prompt: "Reply with exactly the word done and nothing else.",
+      prompt: heldProbePrompt(probe),
       name: `ensemble-replacement-${process.pid}`,
       cwd: root,
       model: claudeModel
@@ -225,6 +226,7 @@ test("a session the owned supervisor restarts under a new pid is placed again at
     assert.equal(daemonAfter, daemon, "re-placing a restarted worker changed its supervisor");
     assert.ok(afterPoll.endsWith(`/${first.unit}`), `the new process is not in the session's scope after the poll: ${afterPoll}`);
   } finally {
+    await writeFile(probe.paths.release, "");
     if (handle !== null) {
       await controlPlane.stop(handle);
     }
@@ -290,10 +292,10 @@ interface RosterWatch {
 }
 
 /** Poll the owned roster until an ensemble worker registers and its pid is named: when each happened, and what the pid names. */
-async function watchRoster(env: NodeJS.ProcessEnv, timeoutMs: number, ignoreSessionId?: string): Promise<RosterWatch> {
+async function watchRoster(env: NodeJS.ProcessEnv, timeoutMs: number, ignoreSessionId?: string, ended?: () => boolean): Promise<RosterWatch> {
   const started = Date.now();
   const watch: RosterWatch = { registered: null, pid: null, pidAtMs: null, processIdentity: null };
-  while (Date.now() - started < timeoutMs) {
+  while (Date.now() - started < timeoutMs && !ended?.()) {
     // The daemon is started by the launcher, never by this watcher: the roster is read only once the daemon exists.
     if ((await daemonPid(env)) !== null) {
       const { rows } = await roster(env);

@@ -34,6 +34,8 @@ for (const engine of ["claude", "codex"] as const) {
       assert.equal(commit.code, 0, commit.stderr);
       const acknowledgements = path.join(directory, "observed");
       const releaseFile = path.join(directory, "finish");
+      const unplaceable = path.join(directory, "not-a-repository");
+      await mkdir(unplaceable);
       await writeFile(acknowledgements, "");
       const workflow = path.join(directory, "workflow.mjs");
       const model = engine === "codex" ? liveCodexModel : undefined;
@@ -50,6 +52,7 @@ for (const engine of ["claude", "codex"] as const) {
         const held = session({ ...options, label: "held" });
         try { await held.send(${JSON.stringify(prompts[2])}); await held.send(${JSON.stringify(prompts[3])}); }
         finally { await held.close(); }
+        ${placementFailureStep(options, prompts[0]!, unplaceable)}
         const fs = require("node:fs");
         while (!fs.existsSync(${JSON.stringify(releaseFile)})) await new Promise(resolve => setTimeout(resolve, 10));
         return "complete";
@@ -57,7 +60,8 @@ for (const engine of ["claude", "codex"] as const) {
       const spec = path.join(directory, "spec.json");
       await writeFile(spec, JSON.stringify({ bundle, workflow, cwd: repo, releaseFile, acknowledgements, timeoutMs: 1_100_000,
         workers: [1, 2, 3, 4].map((id) => ({ id, state: "done", requestedModel: model ?? null,
-          requestedEffort: "medium", live: true, queued: id === 2, worktree: id === 1, growth: true }))
+          requestedEffort: "medium", live: true, queued: id === 2, worktree: id === 1, growth: true })).concat([{ id: 5, state: "failed", requestedModel: model ?? null,
+          requestedEffort: "medium", live: false, queued: false, worktree: false, growth: false }])
       }));
       // Do not relocate XDG_DATA_HOME: Claude's supervisor can outlive a run.
       reader = runNode([consumer, spec], {
@@ -84,6 +88,8 @@ for (const engine of ["claude", "codex"] as const) {
       const dataHome = process.env.XDG_DATA_HOME ?? path.join(process.env.HOME!, ".local", "share");
       assert.equal(path.dirname(report.announcement.status_path), path.join(dataHome, "ensemble", "status"));
       assert.equal(report.snapshot.totals.done, 4);
+      assert.equal(report.snapshot.totals.failed, 1);
+      assert.deepEqual(report.workers.find(([id]: [number]) => id === 5)[1].latest.failure, placementFailure(unplaceable));
       const held = report.workers.filter(([id]: [number]) => id === 3 || id === 4);
       assert.equal(held.length, 2);
       if (engine === "claude") assert.equal(held[0][1].latest.transcript, held[1][1].latest.transcript);
@@ -94,6 +100,57 @@ for (const engine of ["claude", "codex"] as const) {
       await rm(directory, { recursive: true, force: true });
     }
   });
+}
+
+// Placement fails after admission, before either engine is contacted. This
+// exercises the same failure step as the native workflows without credentials.
+for (const engine of ["claude", "codex"] as const) {
+  test(`${engine} placement failure is retained with its harness kind and message`, { timeout: 35_000 }, async () => {
+    const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-status-placement-");
+    try {
+      const repo = path.join(directory, "not-a-repository");
+      await mkdir(repo);
+      const releaseFile = path.join(directory, "finish");
+      const workflow = path.join(directory, "workflow.mjs");
+      const options = { engine, effort: "medium", maxAttempts: 1 };
+      const prompt = heldProbePrompt({ paths: probePaths(directory, "unused"),
+        evidence: { kind: "marker", content: "unused" }, token: "unused" });
+      await writeFile(workflow, `
+        export const meta = { name: "status-placement-failure" };
+        ${placementFailureStep(options, prompt, repo)}
+        const fs = require("node:fs");
+        while (!fs.existsSync(${JSON.stringify(releaseFile)})) await new Promise(resolve => setTimeout(resolve, 10));
+        return "complete";
+      `);
+      const spec = path.join(directory, "spec.json");
+      await writeFile(spec, JSON.stringify({ bundle, workflow, cwd: repo, releaseFile, timeoutMs: 20_000,
+        workers: [{ id: 1, state: "failed", requestedModel: null, requestedEffort: "medium",
+          resolvedModel: null, resolvedEffort: null, transcript: null, spent: null, failure: placementFailure(repo) }]
+      }));
+      const result = await runNode([consumer, spec], {
+        ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records"),
+        XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data")
+      }, 30_000);
+      assert.equal(result.code, 0, result.stderr);
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.snapshot.totals.failed, 1);
+      assert.equal(report.snapshot.totals.done, 0);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+}
+
+function placementFailure(cwd: string) {
+  return { kind: "WorktreePlacementRejectedError",
+    message: `isolation:'worktree' requires cwd to be inside a git repository: ${cwd}` };
+}
+
+function placementFailureStep(options: object, prompt: string, cwd: string): string {
+  return `try {
+    await agent(${JSON.stringify(prompt)}, { ...${JSON.stringify(options)}, label: "placement-failure",
+      cwd: ${JSON.stringify(cwd)}, isolation: "worktree" });
+  } catch (error) {
+    if (error.name !== "WorktreePlacementRejectedError") throw error;
+  }`;
 }
 
 async function rejectEarly(reader: Promise<ProcessResult>): Promise<never> {

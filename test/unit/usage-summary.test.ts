@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { addUsageSummary, subtractUsage, summariseUsage } from "../../src/usage-summary.js";
+import { tokenUsageEventFromParams } from "../../src/budget.js";
 
 import type { TokenUsageBreakdown, TokenUsageEvent } from "../../src/types.js";
 
@@ -55,6 +56,26 @@ test("codex reported reasoning zero survives as zero", () => {
   assert.equal(summary?.reasoningOutputTokens, 0);
   assert.equal(summary?.outputTokens, 5);
   assert.equal(summary?.totalTokens, 25);
+});
+
+test("Codex cache writes in the native event become a separable summary", () => {
+  const reported = tokenUsageEventFromParams({
+    threadId: "thread",
+    turnId: "turn",
+    tokenUsage: {
+      last: { cachedInputTokens: 8, cacheWriteInputTokens: 0, inputTokens: 20, outputTokens: 5, totalTokens: 25 },
+      total: { cachedInputTokens: 8, cacheWriteInputTokens: 0, inputTokens: 20, outputTokens: 5, totalTokens: 25 }
+    }
+  });
+  assert.ok(reported);
+  assert.equal(reported.last.cacheCreationInputTokens, 0);
+  const summary = summariseUsage("codex", [reported]);
+  assert.equal(summary?.cacheReadTokens, 8);
+  assert.equal(summary?.cacheCreationTokens, 0);
+  const unknown = summariseUsage("codex", [event({ cachedInputTokens: 2, inputTokens: 4, outputTokens: 1, totalTokens: 5 })]);
+  assert.ok(summary && unknown);
+  assert.equal(addUsageSummary(summary, unknown).cacheCreationTokens, undefined);
+  assert.equal(addUsageSummary(unknown, summary).cacheReadTokens, undefined);
 });
 
 test("claude spend keeps reasoning unknowable (null) and splits cache where reported", () => {

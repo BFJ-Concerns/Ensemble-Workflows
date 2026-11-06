@@ -261,9 +261,9 @@ export function turnComplete(entries: TranscriptEntry[], fromIndex = 0): boolean
  *
  * A `message.id` already seen before `fromIndex` belongs to an earlier turn
  * of the same session and is never counted again, so a held session's later
- * turn attributes only the calls it made. Claude does not report a separate
- * reasoning measurement, so the optional field stays absent and thinking
- * rides `outputTokens`. Returns all-zero when no assistant usage is present.
+ * turn attributes only the calls it made. A reasoning figure is separable
+ * only when every counted call reports `output_tokens_details.thinking_tokens`.
+ * Returns all-zero when no assistant usage is present.
  */
 export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsageBreakdown {
   const start = Math.max(0, fromIndex);
@@ -279,6 +279,8 @@ export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsag
   let outputTokens = 0;
   let cacheRead = 0;
   let cacheCreation = 0;
+  let reasoning = 0;
+  let reasoningSeparable = true;
   let sawUsage = false;
 
   for (let index = start; index < entries.length; index += 1) {
@@ -302,6 +304,12 @@ export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsag
     outputTokens += numeric(usage.output_tokens);
     cacheRead += numeric(usage.cache_read_input_tokens);
     cacheCreation += numeric(usage.cache_creation_input_tokens);
+    const thinkingTokens = asRecord(usage.output_tokens_details)?.thinking_tokens;
+    if (typeof thinkingTokens === "number" && Number.isFinite(thinkingTokens)) {
+      reasoning += thinkingTokens;
+    } else {
+      reasoningSeparable = false;
+    }
   }
 
   if (!sawUsage) {
@@ -319,6 +327,7 @@ export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsag
     cacheCreationInputTokens: cacheCreation,
     inputTokens,
     outputTokens,
+    ...(reasoningSeparable ? { reasoningOutputTokens: reasoning } : {}),
     totalTokens: inputTokens + cachedInputTokens + outputTokens
   };
 }

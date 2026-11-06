@@ -79,6 +79,7 @@ function breakdownFromUnknown(value: unknown): TokenUsageEvent["last"] | null {
   const inputTokens = numericField(value, "inputTokens");
   const outputTokens = numericField(value, "outputTokens");
   const reasoningOutputTokens = optionalNumericField(value, "reasoningOutputTokens");
+  const cacheCreationInputTokens = optionalNumericField(value, "cacheWriteInputTokens");
   const totalTokens = numericField(value, "totalTokens");
 
   if (
@@ -86,6 +87,7 @@ function breakdownFromUnknown(value: unknown): TokenUsageEvent["last"] | null {
     inputTokens === null ||
     outputTokens === null ||
     reasoningOutputTokens === null ||
+    cacheCreationInputTokens === null ||
     totalTokens === null
   ) {
     return null;
@@ -96,6 +98,7 @@ function breakdownFromUnknown(value: unknown): TokenUsageEvent["last"] | null {
     inputTokens,
     outputTokens,
     ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
+    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
     totalTokens
   };
 }

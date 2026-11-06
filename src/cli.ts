@@ -373,6 +373,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     progress = (runtime as { progress?: RunProgress }).progress;
 
     const runRecordDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordDir.value;
+    const statusDir = options.statusDir !== undefined ? options.statusDir : ambientSettings.statusDir.value;
     recordingEnabled = runRecordDir !== null && runRecordDir.length > 0;
     const runtimeRunId = progress?.runId ?? "unknown-run";
     const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
@@ -410,13 +411,19 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         cliFlags: cliFlags(invocation),
         ...(callerIdentity !== undefined ? { callerIdentity } : {}),
         concurrency: recordConcurrency(ambientSettings, progress),
-        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
+        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs, ambientSettings, {
+          runRecordDir,
+          statusDir,
+          callerIdentity,
+          runRecordDirOverridden: options.runRecordDir !== undefined,
+          statusDirOverridden: options.statusDir !== undefined,
+          callerIdentityLayer: invocation.callerIdentity !== undefined ? "flag" : callerIdentity !== undefined ? "env" : null
+        })
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
     }
 
-    const statusDir = options.statusDir !== undefined ? options.statusDir : ambientSettings.statusDir.value;
     if (progress !== undefined && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
         progress,
@@ -973,7 +980,16 @@ function recordConcurrency(
  */
 function recordEffectiveSettings(
   invocation: ParsedInvocation,
-  injectedTimeoutMs: number | undefined
+  injectedTimeoutMs: number | undefined,
+  ambient: AmbientSettings,
+  actual: {
+    runRecordDir: string | null;
+    statusDir: string | null;
+    callerIdentity: string | undefined;
+    runRecordDirOverridden: boolean;
+    statusDirOverridden: boolean;
+    callerIdentityLayer: "flag" | "env" | null;
+  }
 ): EffectiveRunSettingsRecord {
   const budgetCeilings: EffectiveRunSettingsRecord["budgetCeilings"] = {};
   for (const engine of ["codex", "claude", "opencode"] as const) {
@@ -984,7 +1000,22 @@ function recordEffectiveSettings(
   const timeoutMs = invocation.timeoutMs ?? injectedTimeoutMs ?? null;
   return {
     budgetCeilings,
-    runTimeoutMs: { value: timeoutMs, layer: invocation.timeoutMs !== undefined ? "flag" : "default" }
+    runTimeoutMs: { value: timeoutMs, layer: invocation.timeoutMs !== undefined ? "flag" : "default" },
+    runRecordEnabled: actual.runRecordDirOverridden
+      ? { value: actual.runRecordDir !== null, layer: "default" }
+      : ambient.runRecordEnabled,
+    runRecordDir: actual.runRecordDirOverridden
+      ? { value: actual.runRecordDir, layer: "default" }
+      : ambient.runRecordStoreDir,
+    statusEnabled: actual.statusDirOverridden
+      ? { value: actual.statusDir !== null, layer: "default" }
+      : ambient.statusEnabled,
+    statusDir: actual.statusDirOverridden
+      ? { value: actual.statusDir, layer: "default" }
+      : ambient.statusDir,
+    callerIdentity: actual.callerIdentityLayer === null || actual.callerIdentity === undefined
+      ? null
+      : { value: actual.callerIdentity, layer: actual.callerIdentityLayer }
   };
 }
 

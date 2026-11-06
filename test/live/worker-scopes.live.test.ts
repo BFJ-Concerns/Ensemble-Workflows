@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import { promisify } from "node:util";
+
+import { classifySupervisorTransition, selectClaudeExecutable, supervisorLifecycle, type SupervisorIdentity } from "./claude-proof-support.js";
 
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { ClaudeCliControlPlane, type ClaudeSessionHandle } from "../../src/claude-control-plane.js";
@@ -17,6 +19,12 @@ const exec = promisify(execFile);
 const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const live = process.env.ENSEMBLE_LIVE === "1";
 const claudeModel = process.env.ENSEMBLE_LIVE_CLAUDE_MODEL ?? "haiku";
+let claude: Awaited<ReturnType<typeof selectClaudeExecutable>>;
+before(async () => {
+  if (live) claude = await selectClaudeExecutable(path.join(homedir(), ".local/bin/claude"), tmpdir());
+});
+after(async () => { await claude?.dispose(); });
+
 type Grouping = "worker" | "run";
 interface Scenario {
   name: string;
@@ -67,15 +75,15 @@ for (const scenario of scenarios) {
     }));
     const sibling: HeldProbe = { paths: probePaths(root, "outside-sibling"), evidence: { kind: "cgroup" }, token: `SIBLING_${randomUUID()}` };
     const units = new Set<string>();
-    const observations: Record<string, unknown> = {};
+    const observations: Record<string, unknown> = { claudeExecutable: claude.executable };
     let run: ReturnType<typeof launch> | undefined;
     let supervisor: number | null = null;
-    let supervisorIdentity: Awaited<ReturnType<typeof knownProcess>> | undefined;
+    let supervisorState: Awaited<ReturnType<typeof supervisorSnapshot>> | undefined;
     let siblingScopes: SystemdWorkerScopes | undefined;
     let siblingPlane: ClaudeCliControlPlane | undefined;
     let siblingHandle: ClaudeSessionHandle | undefined;
     const env: NodeJS.ProcessEnv = {
-      ...process.env, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SANDBOXED: "1",
+      ...claude.env, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SANDBOXED: "1",
       XDG_CONFIG_HOME: xdg, ENSEMBLE_CONCURRENCY_CLAUDE: "2", ENSEMBLE_CONCURRENCY_CODEX: "2", ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records"),
       ENSEMBLE_STATUS_DIR: path.join(root, "status")
     };
@@ -92,7 +100,7 @@ for (const scenario of scenarios) {
         ...(scenario.config ? { worker_scope: scenario.config } : {}),
         worker_environment: {
           ...machineEnvironment,
-          claude: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: config }
+          claude: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: config, PATH: claude.env.PATH! }
         }
       }), { mode: 0o600 });
       assert.equal((await daemonStatus(env)).pid, null, "the private config directory already had a daemon");
@@ -117,9 +125,9 @@ for (const scenario of scenarios) {
       const firstPaths = await observe(probes, run, engines, env, slice, box, scenario.fallback === true, units);
       observations.first = firstPaths;
       if (engines.includes("claude") && !scenario.fallback) {
-        const status = await daemonStatus(env);
-        observations.supervisorStartStatus = status;
-        supervisor = status.pid;
+        supervisorState = await supervisorSnapshot(env);
+        observations.supervisorStartStatus = supervisorState;
+        supervisor = supervisorState.identity.pid;
         assert.ok(supervisor !== null, "the launcher did not start the private supervisor");
         observations.supervisorBeforeSibling = await knownProcess(supervisor);
         observations.lifecycleBeforeSibling = await supervisorLifecycle(config);
@@ -129,7 +137,8 @@ for (const scenario of scenarios) {
         siblingScopes = new SystemdWorkerScopes({ slice: parent, label: `sibling-${id}` });
         siblingPlane = new ClaudeCliControlPlane({
           scopes: siblingScopes,
-          workerEnv: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: config },
+          claudeBin: claude.executable,
+          workerEnv: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: config, PATH: claude.env.PATH! },
           projectsDir: path.join(config, "projects")
         });
         siblingHandle = await siblingPlane.dispatch({
@@ -138,16 +147,13 @@ for (const scenario of scenarios) {
         await waitForPath(sibling.paths.ready, 420_000);
         const siblingGroup = (await readFile(sibling.paths.evidence, "utf8")).trim().slice(3);
         assert.equal(containingSlice(`0::${siblingGroup}`), parent, "the sibling is inside the tested run's slice");
-        const afterSibling = await daemonStatus(env);
+        const afterSibling = await supervisorSnapshot(env);
         observations.supervisorAfterSibling = afterSibling;
         observations.originalSupervisorAfterSibling = await knownProcess(supervisor);
-        observations.lifecycleAfterSibling = await supervisorLifecycle(config);
-        assert.equal(afterSibling.pid, supervisor, "starting the outside sibling replaced the supervisor");
-        supervisorIdentity = await knownProcess(supervisor);
-        assert.ok(supervisorIdentity.startTicks !== null, "the supervisor has no readable process identity");
-        assert.ok(supervisorIdentity.cgroup !== null);
-        assert.equal(containingSlice(supervisorIdentity.cgroup), parent, "the supervisor is inside the tested run's slice");
-        observations.supervisorBeforeTeardown = { pid: supervisor, ...supervisorIdentity };
+        observations.afterSiblingTransition = assertSupervisorTransition(supervisorState, afterSibling, "starting the outside sibling");
+        supervisorState = afterSibling;
+        assert.equal(containingSlice(supervisorState.identity.cgroup!), parent, "the supervisor is inside the tested run's slice");
+        observations.supervisorBeforeTeardown = supervisorState;
         observations.outsideSibling = { sessionId: siblingHandle.sessionId, cgroup: siblingGroup };
         assert.equal(run.settled, false, "launcher settled before supervisor observation");
       }
@@ -175,13 +181,12 @@ for (const scenario of scenarios) {
       }
       for (const unit of units) await waitInactive(unit);
       if (supervisor !== null) {
-        const after = await daemonStatus(env);
+        const after = await supervisorSnapshot(env);
         observations.supervisorAfterTeardown = after;
-        const processAfterTeardown = await knownProcess(supervisor);
-        observations.supervisorProcessAfterTeardown = processAfterTeardown;
-        assert.equal(after.pid, supervisor, "worker teardown replaced or stopped the private supervisor");
-        assert.deepEqual(processAfterTeardown, supervisorIdentity, "worker teardown changed the supervisor's process identity or cgroup");
-        const { stdout } = await exec("claude", ["agents", "--json"], { env, maxBuffer: 32 * 1024 * 1024 });
+        observations.afterTeardownTransition = assertSupervisorTransition(supervisorState!, after, "worker teardown");
+        supervisorState = after;
+        assert.equal(containingSlice(after.identity.cgroup!), parent, "the supervisor moved into the tested run's slice");
+        const { stdout } = await exec(claude.executable, ["agents", "--json"], { env, maxBuffer: 32 * 1024 * 1024 });
         const rows = JSON.parse(stdout) as { sessionId?: string; pid?: number }[];
         assert.ok(Array.isArray(rows), "the surviving supervisor cannot serve its roster");
         const siblingRow = rows.find((row) => row.sessionId === siblingHandle!.sessionId);
@@ -189,11 +194,11 @@ for (const scenario of scenarios) {
         const siblingGroup = (await readFile(`/proc/${siblingRow.pid}/cgroup`, "utf8")).trim().slice(3);
         assert.equal(containingSlice(`0::${siblingGroup}`), parent, "the outside sibling moved into the tested run");
         assert.equal((await siblingPlane!.poll(siblingHandle!)).state, "working", "worker teardown settled the outside sibling");
-        const afterRoster = await daemonStatus(env);
+        const afterRoster = await supervisorSnapshot(env);
         observations.supervisorAfterRoster = afterRoster;
-        observations.supervisorProcessAfterRoster = await knownProcess(supervisor);
-        assert.equal(afterRoster.pid, supervisor, "roster access replaced the private supervisor");
-        assert.deepEqual(await knownProcess(supervisor), supervisorIdentity, "roster access changed the supervisor's identity");
+        observations.afterRosterTransition = assertSupervisorTransition(supervisorState, afterRoster, "roster access");
+        supervisorState = afterRoster;
+        assert.equal(containingSlice(afterRoster.identity.cgroup!), parent, "the supervisor moved into the tested run's slice");
       }
     } finally {
       // Capture before releasing held workers or stopping proof-owned units:
@@ -202,39 +207,18 @@ for (const scenario of scenarios) {
         observations.supervisorBeforeCleanup = await daemonStatus(env);
         observations.originalSupervisorBeforeCleanup = await knownProcess(supervisor);
         observations.lifecycleBeforeCleanup = await supervisorLifecycle(config);
+        observations.upgradeRestarts = (observations.lifecycleBeforeCleanup as Record<string, string>[]).filter(row => row.event === "shutdown" && row.cause === "upgrade");
       }
       await Promise.all([...probes, ...follow, sibling].map((probe) => writeFile(probe.paths.release, "")));
       await exec("systemctl", ["--user", "stop", box, slice, ...units]).catch(() => undefined);
       if (run) observations.result = await run.result;
       if (siblingPlane && siblingHandle) await siblingPlane.stop(siblingHandle);
       if (siblingScopes) await siblingScopes.close();
-      await exec("claude", ["daemon", "stop", "--any"], { env }).catch(() => undefined);
+      await exec(claude.executable, ["daemon", "stop", "--any"], { env }).catch(() => undefined);
       await exec("systemctl", ["--user", "stop", slice, parent]).catch(() => undefined);
       t.diagnostic(JSON.stringify(observations));
       await rm(root, { recursive: true, force: true });
     }
-  });
-}
-
-/** Only lifecycle fields, never raw daemon messages that might contain private data. */
-async function supervisorLifecycle(config: string): Promise<Record<string, string>[]> {
-  let text: string;
-  try {
-    text = await readFile(path.join(config, "daemon.log"), "utf8");
-  } catch (error) {
-    return [{ event: "log-unavailable", code: (error as NodeJS.ErrnoException).code ?? "unknown" }];
-  }
-  return text.split("\n").flatMap<Record<string, string>>((line) => {
-    const at = /^\[([^\]]+)\]/.exec(line)?.[1] ?? "unknown";
-    const start = /daemon start .*version=([\w.-]+) pid=(\d+)/.exec(line);
-    if (start) return [{ at, event: "start", version: start[1]!, pid: start[2]! }];
-    const competing = /another daemon is already running \(pid=(\d+), version=([\w.-]+)/.exec(line);
-    if (competing) return [{ at, event: "competing-start", pid: competing[1]!, version: competing[2]! }];
-    const end = /shutting down \(cause=([\w_-]+), uptime=(\d+)s, leases=(\d+), live_workers=(\d+)/.exec(line);
-    if (end) return [{ at, event: "shutdown", cause: end[1]!, uptime: end[2]!, leases: end[3]!, liveWorkers: end[4]! }];
-    const settled = /bg settled ([\w-]+) \(([\w-]+)\)/.exec(line);
-    if (settled) return [{ at, event: "settled", worker: settled[1]!, outcome: settled[2]! }];
-    return [];
   });
 }
 
@@ -272,7 +256,7 @@ async function observe(probes: HeldProbe[], run: ReturnType<typeof launch>, engi
     assert.equal(await property(unit, "ActiveState"), "active");
   }
   if (engines.includes("claude")) {
-    const { stdout } = await exec("claude", ["agents", "--json"], { env, maxBuffer: 32 * 1024 * 1024 });
+    const { stdout } = await exec(claude.executable, ["agents", "--json"], { env, maxBuffer: 32 * 1024 * 1024 });
     const rows = JSON.parse(stdout) as { pid?: number; kind?: string }[];
     const memberships = await Promise.all(rows.filter((row) => row.kind === "background" && typeof row.pid === "number").map(async (row) => ({ pid: row.pid!, group: (await readFile(`/proc/${row.pid}/cgroup`, "utf8")).trim().slice(3) })));
     assert.ok(memberships.length >= engines.filter((engine) => engine === "claude").length, "roster is missing concurrent Claude workers");
@@ -336,7 +320,7 @@ function launch(args: string[], env: NodeJS.ProcessEnv): { settled: boolean; res
 async function daemonStatus(env: NodeJS.ProcessEnv): Promise<{ pid: number | null; code: number | string; stdout: string; stderr: string }> {
   let result: { code: number | string; stdout: string; stderr: string };
   try {
-    const { stdout, stderr } = await exec("claude", ["daemon", "status"], { env });
+    const { stdout, stderr } = await exec(claude.executable, ["daemon", "status"], { env });
     result = { code: 0, stdout, stderr };
   } catch (error) {
     const failed = error as Error & { code?: number | string; stdout?: string; stderr?: string };
@@ -353,4 +337,26 @@ async function knownProcess(pid: number): Promise<{ startTicks: string | null; c
     readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null)
   ]);
   return { startTicks, cgroup };
+}
+
+async function supervisorSnapshot(env: NodeJS.ProcessEnv): Promise<{ identity: SupervisorIdentity; lifecycle: Record<string, string>[] }> {
+  const pid = (await daemonStatus(env)).pid;
+  const lifecycle = await supervisorLifecycle(env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"));
+  const identity: SupervisorIdentity = {
+    pid,
+    startTicks: pid === null ? null : await readProcessStartTicks("/proc", pid),
+    cgroup: pid === null ? null : await readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null),
+    version: lifecycle.findLast(row => row.event === "start" && row.pid === String(pid))?.version ?? ""
+  };
+  return { identity, lifecycle };
+}
+
+function assertSupervisorTransition(
+  before: Awaited<ReturnType<typeof supervisorSnapshot>>,
+  after: Awaited<ReturnType<typeof supervisorSnapshot>>,
+  context: string
+): string {
+  const transition = classifySupervisorTransition(before.identity, after.identity, before.lifecycle, after.lifecycle);
+  assert.notEqual(transition, "unexplained", `${context}: supervisor stopped, moved or changed without a recorded upgrade: ${JSON.stringify({ before, after })}`);
+  return transition;
 }

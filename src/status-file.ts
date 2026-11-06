@@ -233,6 +233,9 @@ export class StatusFileWriter {
     try {
       await this.#writeAtomic(this.#progress.snapshot());
     } catch (error) {
+      if (this.#published && isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
       this.#reportError(error);
     }
   }

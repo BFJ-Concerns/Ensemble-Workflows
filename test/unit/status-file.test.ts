@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -321,4 +321,33 @@ test("automatic status directory creation failures are reported without rejectin
   assert.equal(await writer.ready(), false);
   assert.match(String(errors[0]), /creation refused/);
   await writer.close();
+});
+
+test("a removed published status directory stays quiet and can resume publication", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-status-removed-"));
+  const dir = path.join(root, ".claude");
+  await mkdir(dir);
+  const errors: unknown[] = [];
+  const progress = newProgress();
+  const writer = new StatusFileWriter({ progress, dir, onError: (error) => errors.push(error) });
+  try {
+    assert.equal(await writer.ready(), true);
+    await rm(dir, { recursive: true });
+    for (const phase of ["first", "second", "third"]) {
+      progress.setPhase(phase);
+      await writer.ready();
+    }
+    assert.deepEqual(errors, [], "a removed published directory must not flood stderr");
+    assert.equal(await exists(dir), false, "publication must not recreate a removed namespace");
+    await mkdir(dir);
+    progress.setPhase("resumed");
+    await writer.ready();
+    assert.equal(JSON.parse(await readFile(writer.path, "utf8")).currentPhase, "resumed");
+    await rm(dir, { recursive: true });
+    await writer.close();
+    assert.deepEqual(errors, [], "close must also tolerate a removed published directory");
+  } finally {
+    await writer.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

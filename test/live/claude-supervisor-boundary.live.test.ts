@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { ClaudeCliControlPlane, type ClaudeSessionHandle } from "../../src/claude-control-plane.js";
 import { SystemdWorkerScopes, containingSlice, parentSlice } from "../../src/worker-scopes.js";
 
@@ -14,6 +15,7 @@ import { heldProbePrompt, probePaths, waitForPath, type HeldProbe } from "./held
 
 const execFileAsync = promisify(execFile);
 const isLive = process.env.ENSEMBLE_LIVE === "1";
+const claudeModel = process.env.ENSEMBLE_LIVE_CLAUDE_MODEL ?? "haiku";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 /**
@@ -30,8 +32,18 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
   // Onboarding and bypass consent belong only to this proof's private daemon.
   await writeFile(path.join(configDir, ".claude.json"), `${JSON.stringify({ hasCompletedOnboarding: true })}\n`, { mode: 0o600 });
   await writeFile(path.join(configDir, "settings.json"), `${JSON.stringify({ skipDangerousModePermissionPrompt: true })}\n`, { mode: 0o600 });
+  const machineEnvironment = resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment;
+  const xdg = path.join(root, "config");
+  await mkdir(path.join(xdg, "ensemble"), { recursive: true });
+  await writeFile(path.join(xdg, "ensemble", "config.json"), JSON.stringify({
+    schema_version: 1,
+    worker_environment: { ...machineEnvironment, claude: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: configDir } }
+  }), { mode: 0o600 });
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    XDG_CONFIG_HOME: xdg,
+    ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records"),
+    ENSEMBLE_STATUS_DIR: path.join(root, "status"),
     CLAUDE_CONFIG_DIR: configDir,
     CLAUDE_CODE_SANDBOXED: "1",
     // Keep this placement journey in worker mode regardless of ambient run tuning.
@@ -161,7 +173,7 @@ test("a session the owned supervisor restarts under a new pid is placed again at
   const scopes = new SystemdWorkerScopes({ slice, label: `live-replacement-${process.pid}` });
   // The control plane's own `claude` commands run under the owned configuration; transcripts land under it too.
   const controlPlane = new ClaudeCliControlPlane({
-    workerEnv: { CLAUDE_CONFIG_DIR: configDir },
+    workerEnv: { ...resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment.claude, CLAUDE_CONFIG_DIR: configDir },
     projectsDir: path.join(configDir, "projects"),
     scopes
   });
@@ -174,7 +186,7 @@ test("a session the owned supervisor restarts under a new pid is placed again at
       prompt: "Reply with exactly the word done and nothing else.",
       name: `ensemble-replacement-${process.pid}`,
       cwd: root,
-      model: "haiku"
+      model: claudeModel
     });
     const first = controlPlane.placementOf(handle);
     assert.ok(first !== null && first.kind === "placed", `the session was not placed at dispatch: ${JSON.stringify(first)}`);
@@ -245,7 +257,7 @@ function launchInBox(unit: string, slice: string | null, env: NodeJS.ProcessEnv,
       bundledCliPath,
       "agent",
       "--engine=claude",
-      "--model=haiku",
+      `--model=${claudeModel}`,
       prompt
     ],
     { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] }

@@ -296,3 +296,29 @@ test("a throwing error reporter cannot take the writer down", async () => {
   await writer.close();
   assert.ok(reports >= 1);
 });
+
+test("automatic status directories publish independent files and clean up", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-status-auto-"));
+  const dir = path.join(root, "nested", "status");
+  const first = new StatusFileWriter({ progress: newProgress("first"), dir, createDirectory: true });
+  const second = new StatusFileWriter({ progress: newProgress("second"), dir, createDirectory: true });
+  assert.equal(await first.ready(), true);
+  assert.equal(await second.ready(), true);
+  await first.close();
+  await assert.rejects(access(first.path));
+  assert.equal(JSON.parse(await readFile(second.path, "utf8")).runId, "second");
+  await second.close();
+  assert.deepEqual(await readdir(dir), []);
+});
+
+test("automatic status directory creation failures are reported without rejecting", async () => {
+  const errors: unknown[] = [];
+  const writer = new StatusFileWriter({
+    progress: newProgress(), dir: "unused", createDirectory: true,
+    fileOperations: { mkdir: async () => { throw new Error("creation refused"); } },
+    onError: (error) => errors.push(error)
+  });
+  assert.equal(await writer.ready(), false);
+  assert.match(String(errors[0]), /creation refused/);
+  await writer.close();
+});

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -64,6 +64,10 @@ for (const engine of ["claude", "codex"] as const) {
         // Growth after the reader's first open proves a scrolling live file.
         await waitForAcknowledgement(acknowledgements, `growth:${index + 1}:1`, readProcess);
         if (index === 0) await waitForAcknowledgement(acknowledgements, "queued:queued", readProcess);
+        // Claude can append session bookkeeping after the captured turn ends.
+        // Retain every byte observed while the probe is held, then release it.
+        await appendFile(acknowledgements, `seal:${index + 1}:1\n`);
+        await waitForAcknowledgement(acknowledgements, `sealed:${index + 1}:1`, readProcess);
         assert.equal(settled, false, "workflow settled before release");
         await writeFile(probe.paths.release, "");
       }

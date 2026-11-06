@@ -31,6 +31,7 @@ async function readJson(file) {
 
 for (;;) {
   assert.ok(Date.now() < deadline, "archive did not settle before the consumer deadline");
+  const controls = acknowledgements === undefined ? [] : (await readFile(acknowledgements, "utf8")).split("\n");
   const entries = await readdir(store, { recursive: true });
   const manifests = entries.filter((entry) => path.basename(entry) === "manifest.json");
   for (const relative of manifests) {
@@ -59,6 +60,10 @@ for (;;) {
       };
       observation.attempts.set(current.attempt, attempt);
       assert.equal(attempt.started_at, current.started_at, "start time changed during an attempt");
+      if (controls.includes(`seal:${agent.id}:${current.attempt}`)) {
+        await acknowledge(`sealed:${agent.id}:${current.attempt}`);
+        continue;
+      }
       if (current.transcript !== null) {
         const transcript = path.isAbsolute(current.transcript) ? current.transcript : path.join(archive, current.transcript);
         if (!path.isAbsolute(current.transcript)) {
@@ -103,7 +108,8 @@ for (;;) {
           const reference = agent.transcripts.find((candidate) => candidate.attempt === attempt.attempt);
           assert.ok(reference, "engine-owned live transcript was not archived");
           const bytes = await readFile(path.join(archive, reference.path));
-          assert.ok(bytes.subarray(0, attempt.lastContent.length).equals(attempt.lastContent), "archive lost engine-owned transcript bytes");
+          assert.ok(bytes.subarray(0, attempt.lastContent.length).equals(attempt.lastContent),
+            `archive lost engine-owned transcript bytes: agent=${agent.id} attempt=${attempt.attempt} captured=${bytes.length} observed=${attempt.lastContent.length} commonPrefix=${bytes.subarray(0, Math.min(bytes.length, attempt.lastContent.length)).equals(attempt.lastContent.subarray(0, Math.min(bytes.length, attempt.lastContent.length)))}`);
         }
         if (attempt.transcript !== null && !path.isAbsolute(attempt.transcript)) {
           assert.ok(agent.transcripts.some((reference) => reference.path === attempt.transcript && reference.attempt === attempt.attempt));

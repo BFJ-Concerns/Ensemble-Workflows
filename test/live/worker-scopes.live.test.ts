@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test, { after, before } from "node:test";
 import { promisify } from "node:util";
 
-import { assertSupervisorTransition, daemonStatus, selectClaudeExecutable, supervisorLifecycle, supervisorSnapshot } from "./claude-proof-support.js";
+import { assertFixedClaudeVersion, daemonStatus, selectClaudeExecutable, supervisorLifecycle, supervisorSnapshot } from "./claude-proof-support.js";
 
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { ClaudeCliControlPlane, type ClaudeSessionHandle } from "../../src/claude-control-plane.js";
@@ -75,7 +75,7 @@ for (const scenario of scenarios) {
     }));
     const sibling: HeldProbe = { paths: probePaths(root, "outside-sibling"), evidence: { kind: "cgroup" }, token: `SIBLING_${randomUUID()}` };
     const units = new Set<string>();
-    const observations: Record<string, unknown> = { claudeExecutable: claude.executable };
+    const observations: Record<string, unknown> = { claudeExecutable: claude.executable, selectedClaudeVersion: claude.version };
     let run: ReturnType<typeof launch> | undefined;
     let supervisor: number | null = null;
     let supervisorState: Awaited<ReturnType<typeof supervisorSnapshot>> | undefined;
@@ -84,7 +84,7 @@ for (const scenario of scenarios) {
     let siblingHandle: ClaudeSessionHandle | undefined;
     const env: NodeJS.ProcessEnv = {
       ...claude.env, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SANDBOXED: "1",
-      XDG_CONFIG_HOME: xdg, ENSEMBLE_CONCURRENCY_CLAUDE: "2", ENSEMBLE_CONCURRENCY_CODEX: "2", ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records"),
+      XDG_CONFIG_HOME: xdg, ENSEMBLE_RUN_RECORD: "on", ENSEMBLE_CONCURRENCY_CLAUDE: "2", ENSEMBLE_CONCURRENCY_CODEX: "2", ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records"),
       ENSEMBLE_STATUS_DIR: path.join(root, "status")
     };
     delete env.ENSEMBLE_WORKER_SCOPE;
@@ -129,6 +129,8 @@ for (const scenario of scenarios) {
         observations.supervisorStartStatus = supervisorState;
         supervisor = supervisorState.identity.pid;
         assert.ok(supervisor !== null, "the launcher did not start the private supervisor");
+        assert.equal(supervisorState.selectedVersion, claude.version);
+        assertFixedClaudeVersion(supervisorState, supervisorState, "private supervisor startup");
         observations.supervisorBeforeSibling = await knownProcess(supervisor);
         observations.lifecycleBeforeSibling = await supervisorLifecycle(config);
         // An on-demand supervisor intentionally exits after its last client
@@ -150,12 +152,18 @@ for (const scenario of scenarios) {
         const afterSibling = await supervisorSnapshot(claude.executable, env);
         observations.supervisorAfterSibling = afterSibling;
         observations.originalSupervisorAfterSibling = await knownProcess(supervisor);
-        observations.afterSiblingTransition = assertSupervisorTransition(supervisorState, afterSibling, "starting the outside sibling");
+        observations.afterSiblingTransition = assertFixedClaudeVersion(supervisorState, afterSibling, "starting the outside sibling");
         supervisorState = afterSibling;
         assert.equal(containingSlice(supervisorState.identity.cgroup!), parent, "the supervisor is inside the tested run's slice");
         observations.supervisorBeforeTeardown = supervisorState;
         observations.outsideSibling = { sessionId: siblingHandle.sessionId, cgroup: siblingGroup };
         assert.equal(run.settled, false, "launcher settled before supervisor observation");
+      }
+      if (engines.includes("claude") && scenario.fallback) {
+        const fallbackSupervisor = await supervisorSnapshot(claude.executable, env);
+        observations.fallbackSupervisor = fallbackSupervisor;
+        assert.equal(fallbackSupervisor.selectedVersion, claude.version);
+        assertFixedClaudeVersion(fallbackSupervisor, fallbackSupervisor, "fallback supervisor startup");
       }
       if (scenario.direct === undefined) assert.equal(new Set(firstPaths).size, scenario.expected === "run" ? 1 : 3);
       if (scenario.interrupt) {
@@ -179,11 +187,27 @@ for (const scenario of scenarios) {
         assert.equal(result.code, 0, JSON.stringify(result));
         for (const probe of [...probes, ...(scenario.followUp ? follow : [])]) assert.ok(result.stdout.includes(probe.token), JSON.stringify(result));
       }
+      const recordStore = path.join(root, "records");
+      const manifests = (await readdir(recordStore, { recursive: true })).filter(entry => path.basename(entry) === "manifest.json");
+      assert.equal(manifests.length, 1, "the launcher must write one real run manifest");
+      const manifest = JSON.parse(await readFile(path.join(recordStore, manifests[0]!), "utf8")) as {
+        schema_version: number;
+        worker_scope: { value: Grouping; layer: string };
+        cli_flags: { workerScope?: Grouping };
+      };
+      assert.equal(manifest.schema_version, 4);
+      assert.deepEqual(manifest.worker_scope, {
+        value: scenario.expected,
+        layer: scenario.flag ? "flag" : scenario.environment ? "env" : scenario.config ? "config-file" : "default"
+      });
+      if (scenario.flag) assert.equal(manifest.cli_flags.workerScope, scenario.flag);
+      else assert.equal(Object.hasOwn(manifest.cli_flags, "workerScope"), false);
+      observations.manifestSettings = { schema_version: manifest.schema_version, worker_scope: manifest.worker_scope, cli_flags: manifest.cli_flags };
       for (const unit of units) await waitInactive(unit);
       if (supervisor !== null) {
         const after = await supervisorSnapshot(claude.executable, env);
         observations.supervisorAfterTeardown = after;
-        observations.afterTeardownTransition = assertSupervisorTransition(supervisorState!, after, "worker teardown");
+        observations.afterTeardownTransition = assertFixedClaudeVersion(supervisorState!, after, "worker teardown");
         supervisorState = after;
         assert.equal(containingSlice(after.identity.cgroup!), parent, "the supervisor moved into the tested run's slice");
         const { stdout } = await exec(claude.executable, ["agents", "--json"], { env, maxBuffer: 32 * 1024 * 1024 });
@@ -196,7 +220,7 @@ for (const scenario of scenarios) {
         assert.equal((await siblingPlane!.poll(siblingHandle!)).state, "working", "worker teardown settled the outside sibling");
         const afterRoster = await supervisorSnapshot(claude.executable, env);
         observations.supervisorAfterRoster = afterRoster;
-        observations.afterRosterTransition = assertSupervisorTransition(supervisorState, afterRoster, "roster access");
+        observations.afterRosterTransition = assertFixedClaudeVersion(supervisorState, afterRoster, "roster access");
         supervisorState = afterRoster;
         assert.equal(containingSlice(afterRoster.identity.cgroup!), parent, "the supervisor moved into the tested run's slice");
       }

@@ -17775,7 +17775,7 @@ var ClaudeCliControlPlane = class {
               const outcome = await this.#place(registered, pid);
               if (outcome.kind !== "refused") break;
             }
-            if (pid === null && dispatch.result !== null || Date.now() >= settled) break;
+            if (Date.now() >= settled) break;
             await delay(100);
             pid = (await this.#findByName(options.name))?.pid ?? null;
           }

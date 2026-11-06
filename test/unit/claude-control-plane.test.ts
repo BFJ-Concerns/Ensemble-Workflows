@@ -31,7 +31,7 @@ test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing i
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { writeFile } from "node:fs/promises";
+        import { readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           const chunks = [];
@@ -41,6 +41,10 @@ test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing i
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // Registration acknowledges consumed input, not merely a process
+          // whose asynchronous prompt capture has not completed yet.
+          try { JSON.parse(await readFile(${JSON.stringify(argvPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "large-1",
             sessionId: ${JSON.stringify(sessionId)},

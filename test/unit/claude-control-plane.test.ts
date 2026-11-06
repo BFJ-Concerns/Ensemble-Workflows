@@ -803,7 +803,7 @@ test("steer returns false when either tmux delivery step fails", async (context)
         });
         const steered = await controlPlane.steer(
           { id: "steer-1", sessionId, name: "steer-probe", cwd: dir },
-          "x".repeat(1_000)
+          "x\t\r\n😀\r".repeat(100)
         );
 
         assert.equal(steered.delivered, false);
@@ -1115,7 +1115,8 @@ test("valveSlices encodes exact UTF-16 key records and cuts only between bounded
     "\u001b[0;0;66;1;0;1_\u001b[0;0;10;1;0;1_"
   ]);
   // Exercise variable-width decimal units and surrogate pairs at batch edges.
-  const message = "Aé€😀\n\n".repeat(2_000);
+  const message = "Aé€😀\t\r\n\r".repeat(2_000);
+  const expected = "Aé€😀    \n\n".repeat(2_000);
   const slices = valveSlices(message);
   assert.ok(slices.length > 1);
   for (const [index, slice] of slices.entries()) {
@@ -1129,7 +1130,30 @@ test("valveSlices encodes exact UTF-16 key records and cuts only between bounded
       assert.ok(slice.length + nextRecord.length > VALVE_SLICE_BYTES, "batches fill up to the next whole record");
     }
   }
-  assert.equal(decodeValveRecords(slices.join("")), message);
+  assert.equal(decodeValveRecords(slices.join("")), expected);
+});
+
+test("valveSlices converts tabs and carriage returns before batching complete records", () => {
+  for (const [message, expected] of [
+    ["\t", "    "],
+    ["a\rb", "a\nb"],
+    ["a\r\nb", "a\nb"],
+    ["é\t😀\r中\r\n\t\r", "é    😀\n中\n    \n"]
+  ] as const) {
+    assert.equal(decodeValveRecords(valveSlices(message).join("")), expected);
+  }
+
+  // An ASCII record is 15 bytes: leave room for two of a tab's four spaces.
+  const prefix = "A".repeat(Math.floor(VALVE_SLICE_BYTES / 15) - 2);
+  const tabSlices = valveSlices(prefix + "\t😀\r\nB\rC");
+  assert.equal(decodeValveRecords(tabSlices[0]!), prefix + "  ");
+  assert.equal(decodeValveRecords(tabSlices.slice(1).join("")), "  😀\nB\nC");
+
+  // A CRLF at a full batch edge still encodes just one line break.
+  const fullPrefix = "A".repeat(Math.floor(VALVE_SLICE_BYTES / 15));
+  const crlfSlices = valveSlices(fullPrefix + "\r\n\tZ");
+  assert.equal(decodeValveRecords(crlfSlices[0]!), fullPrefix);
+  assert.equal(decodeValveRecords(crlfSlices.slice(1).join("")), "\n    Z");
 });
 
 function decodeValveRecords(wire: string): string {
@@ -1185,13 +1209,15 @@ test("a follow-up turn larger than one argv element reaches the valve whole, in 
     // Well past Linux's 128 KiB single-argument cap: a diff-carrying follow-up
     // of the size that a one-argument send fails on with `spawn E2BIG`.
     const message = "diff --git a/src/wide.ts b/src/wide.ts\n" + "+  const value = \"é\";\n".repeat(12_000);
+    const controls = "\t😀\ré\r\n中\t\r";
+    const expected = message + "    😀\né\n中    \n";
     assert.ok(Buffer.byteLength(message, "utf8") > 256 * 1024);
 
     assert.deepEqual(await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, ""), { delivered: true });
     assert.equal(await readFile(sendKeysPath, "utf8"), '["Enter"]\n');
     await writeFile(sendKeysPath, "");
 
-    const steered = await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, message);
+    const steered = await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, message + controls);
     assert.deepEqual(steered, { delivered: true });
 
     const sends = (await readFile(sendKeysPath, "utf8"))
@@ -1203,7 +1229,8 @@ test("a follow-up turn larger than one argv element reaches the valve whole, in 
     for (const slice of literal) {
       assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
     }
-    assert.equal(decodeValveRecords(literal.join("")), message);
+    assert.equal(decodeValveRecords(literal.join("")), expected);
+    assert.equal(sends.filter((send) => send[0] !== "-l").length, 1);
     assert.ok(sends.slice(0, -1).every((send) => send[0] === "-l" && send[1] === "--"));
     assert.deepEqual(sends.at(-1), ["Enter"], "the submit keystroke follows the last slice");
   } finally {

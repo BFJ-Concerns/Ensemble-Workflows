@@ -807,10 +807,12 @@ function refused(step: string, result: ExecResult): ValveDelivery {
 /**
  * Split a valve message into `send-keys -l` arguments of at most
  * `VALVE_SLICE_BYTES` bytes each, encoding each UTF-16 unit as a complete Win32
- * terminal key record. No record is torn across two sends. Exported for the delivery tests; an
+ * terminal key record. Tabs become four spaces; CR and CRLF become LF.
+ * No record is torn across two sends. Exported for the delivery tests; an
  * encoded message within the bound is one slice, and an empty message is none.
  */
 export function valveSlices(message: string): string[] {
+  message = message.replace(/\r\n?/g, "\n").replaceAll("\t", "    ");
   const slices: string[] = [];
   let current = "";
   let currentBytes = 0;

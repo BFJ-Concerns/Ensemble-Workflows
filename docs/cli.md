@@ -194,6 +194,9 @@ Logs and diagnostics go to stderr. These lines are written there:
   registration window and on later roster polls; repeated identical refusals
   are quiet. `scope placement recovered in <unit>` reports a successful retry.
   Dispatch remains best-effort; see [worker scope placement](configuration.md#worker_environment).
+- `[claude] worker scope watch failed; retrying: <reason>` — an unexpected
+  background roster-watch error. The watch continues across idle turns and
+  retries while Ensemble owns a Claude session.
 - `[teardown] …` — the script returned while a worker it started was still
   running, or tried to end the process after returning.
 

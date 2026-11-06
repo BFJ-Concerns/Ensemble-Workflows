@@ -211,7 +211,7 @@ export interface ClaudeCliControlPlaneOptions {
    * that process by `pid` shortly after the session registers; the moment
    * it does, the process and its live descendants are placed in a scope
    * named for the dispatch or shared by the run, according to `workerScope`.
-   * A session restarted under a new pid is placed again at the next poll.
+   * A run-owned roster watch re-places restarted sessions even between turns.
    * Refusals are retried within the registration settle window and on later
    * polls, even at the same pid; refusal and recovery emit runtime notices.
    * Placement remains best-effort (`placementOf`): refusal does not fail dispatch.
@@ -229,6 +229,8 @@ export interface ClaudeCliControlPlaneOptions {
   workerScope?: WorkerScopeGrouping;
   /** How long after registration to wait for a pid and successful placement before leaving retries to the next poll. */
   placementSettleMs?: number;
+  /** Control-plane roster-watch cadence; defaults to 1,000 ms. */
+  placementWatchIntervalMs?: number;
   /** Placement refusal and recovery notices, delivered through the runtime event channel. */
   onEvent?: (event: RuntimeEvent) => void;
 }
@@ -258,9 +260,15 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #scopes: WorkerScopes;
   #workerScope: WorkerScopeGrouping;
   #placementSettleMs: number;
+  #placementWatchIntervalMs: number;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   /** Last placement attempt per session: refused attempts remain eligible at the same pid. */
   #placements = new Map<string, { pid: number; outcome: ScopePlacement }>();
+  /** Session ownership lasts through idle gaps, independently of turn polling. */
+  #watchedSessions = new Map<string, ClaudeSessionHandle>();
+  #placementTimer: NodeJS.Timeout | null = null;
+  #placementSweep: Promise<void> | null = null;
+  #placing = new Map<string, Promise<ScopePlacement>>();
   #valveCounter = 0;
   /**
    * Where each valve's socket directory is made: where tmux keeps its own
@@ -313,6 +321,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
     this.#placementSettleMs = options.placementSettleMs ?? 10_000;
+    this.#placementWatchIntervalMs = options.placementWatchIntervalMs ?? 1_000;
+    if (!Number.isInteger(this.#placementWatchIntervalMs) || this.#placementWatchIntervalMs < 1 || this.#placementWatchIntervalMs > 2_147_483_647) {
+      throw new RangeError("placementWatchIntervalMs must be an integer from 1 to 2147483647");
+    }
     this.#onEvent = options.onEvent;
   }
 
@@ -431,6 +443,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         // would risk the daemon observing a mid-session removal of the
         // very variables the file exists to hold.
         this.#settingsDirs.set(registered.sessionId, settingsDir);
+        if (!(this.#scopes instanceof NoWorkerScopes)) {
+          this.#watchedSessions.set(registered.sessionId, registered);
+          this.#schedulePlacementWatch();
+        }
       }
     }
     if (registered === null) {
@@ -684,7 +700,18 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * is recorded, never thrown.
    */
   async #place(handle: ClaudeSessionHandle, pid: number): Promise<ScopePlacement> {
+    const pending = (this.#placing.get(handle.sessionId) ?? Promise.resolve()).then(() => this.#placeInTurn(handle, pid));
+    this.#placing.set(handle.sessionId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.#placing.get(handle.sessionId) === pending) this.#placing.delete(handle.sessionId);
+    }
+  }
+
+  async #placeInTurn(handle: ClaudeSessionHandle, pid: number): Promise<ScopePlacement> {
     const previous = this.#placements.get(handle.sessionId);
+    if (previous?.pid === pid && previous.outcome.kind !== "refused") return previous.outcome;
     const outcome = await this.#scopes.place(this.#workerScope === "run" ? RUN_SCOPE_GROUP : handle.name, await processTree(pid, this.#procDir));
     this.#placements.set(handle.sessionId, { pid, outcome });
     // Report a changed refusal once, and its recovery. Repeated polls still
@@ -706,7 +733,45 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return outcome;
   }
 
+  /** One roster read serves every owned session, including those between turns. */
+  #schedulePlacementWatch(): void {
+    if (this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
+    this.#placementTimer = setTimeout(() => {
+      this.#placementTimer = null;
+      this.#placementSweep = this.#refreshPlacements().catch((error: unknown) => {
+        this.#onEvent?.({
+          method: "claude/workerScopeWatchError",
+          params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
+          receivedAt: Date.now()
+        });
+      }).finally(() => {
+        this.#placementSweep = null;
+        this.#schedulePlacementWatch();
+      });
+    }, this.#placementWatchIntervalMs);
+    this.#placementTimer.unref();
+  }
+
+  async #refreshPlacements(): Promise<void> {
+    const roster = await this.#roster();
+    // An unavailable roster is not evidence that an owned session ended.
+    if (!roster.ok) return;
+    for (const handle of this.#watchedSessions.values()) {
+      const row = roster.rows.find((entry) => matchesHandle(entry, handle));
+      if (typeof row?.pid === "number") await this.#place(handle, row.pid);
+    }
+  }
+
   async stop(handle: ClaudeSessionHandle): Promise<void> {
+    this.#watchedSessions.delete(handle.sessionId);
+    if (this.#watchedSessions.size === 0 && this.#placementTimer !== null) {
+      clearTimeout(this.#placementTimer);
+      this.#placementTimer = null;
+    }
+    // A roster read or placement already in flight must finish before teardown
+    // removes session state or the registry closes its shared scope manager.
+    await this.#placementSweep;
+    await this.#placing.get(handle.sessionId);
     // Best-effort teardown; `stop`/`rm` can mishandle an already-exited session,
     // so failures are swallowed rather than allowed to mask the real result.
     await this.#run(this.#claudeBin, ["stop", handle.id]);

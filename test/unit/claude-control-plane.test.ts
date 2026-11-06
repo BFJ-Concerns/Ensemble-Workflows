@@ -1508,6 +1508,8 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
       projectsDir: dir,
       dispatchTimeoutMs: 60_000,
       placementSettleMs: 60_000,
+      // This witness controls turn polling; the idle-watch witness is separate.
+      placementWatchIntervalMs: 600_000,
       workerScope,
       scopes
     });
@@ -1598,7 +1600,7 @@ test("refused Claude placement retries during registration and at the same polle
       }
     };
     const events: RuntimeEvent[] = [];
-    plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir, scopes, placementSettleMs: 60_000, onEvent: (event) => events.push(event) });
+    plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir, scopes, placementSettleMs: 60_000, placementWatchIntervalMs: 600_000, onEvent: (event) => events.push(event) });
     dispatching = plane.dispatch({ prompt: "hello", name, cwd: dir });
     assert.equal(await Promise.race([dispatching.then(() => "dispatch settled"), retried.then(() => "placement retried")]), "placement retried",
       "dispatch treated the first refused placement as final");
@@ -1636,6 +1638,51 @@ test("refused Claude placement retries during registration and at the same polle
   }
 });
 
+
+test("owned idle sessions re-place replacement PIDs without turn polling", async () => {
+  for (const workerScope of ["worker", "run"] as const) {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-idle-placement-"));
+    const first = spawn("sleep", ["infinity"], { stdio: "ignore" });
+    const replacement = spawn("sleep", ["infinity"], { stdio: "ignore" });
+    const slice = containingSlice(await readFile("/proc/self/cgroup", "utf8"));
+    const manager = new SystemdWorkerScopes({ slice, label: `idle-${process.pid}-${path.basename(dir)}` });
+    let plane: ClaudeCliControlPlane | undefined;
+    let handle: Awaited<ReturnType<ClaudeCliControlPlane["dispatch"]>> | undefined;
+    try {
+      const stub = path.join(dir, "claude.mjs");
+      const pidFile = path.join(dir, "pid");
+      await writeFile(pidFile, String(first.pid));
+      await writeFile(stub, `#!/usr/bin/env node
+        import { readFile } from "node:fs/promises";
+        if (process.argv[2] === "--bg") { for await (const chunk of process.stdin) void chunk; }
+        if (process.argv[2] === "agents") {
+          const pid = Number(await readFile(${JSON.stringify(pidFile)}, "utf8"));
+          process.stdout.write(JSON.stringify([{id:"idle-session", sessionId:"idle-session", name:"idle-worker", kind:"background", cwd:${JSON.stringify(dir)}, pid, status:"idle", state:"done"}]));
+        }
+      `);
+      await chmod(stub, 0o755);
+      plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir, scopes: manager, workerScope });
+      handle = await plane.dispatch({ prompt: "hello", name: "idle-worker", cwd: dir });
+      const unit = manager.unitFor(workerScope === "run" ? "run" : "idle-worker");
+      assert.ok((await readFile(`/proc/${first.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`));
+      assert.ok(!(await readFile(`/proc/${replacement.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`));
+      await writeFile(pidFile, String(replacement.pid));
+      // No poll(), steer() or turn runs here. Only the owned background watch
+      // can discover the new roster PID and move this actual process.
+      await waitUntil(async () => {
+        const group = await readFile(`/proc/${replacement.pid}/cgroup`, "utf8");
+        const placement = plane!.placementOf(handle!);
+        return group.trim().endsWith(`/${unit}`) && placement?.kind === "placed" && placement.pids.includes(replacement.pid!);
+      }, "the idle-session watch to place the replacement process", 60_000);
+      assert.ok((await readFile(`/proc/${replacement.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`), "idle replacement stayed outside its worker scope");
+    } finally {
+      if (plane && handle) await plane.stop(handle);
+      await manager.close();
+      first.kill("SIGKILL"); replacement.kill("SIGKILL");
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
 
 test("unavailable scope placement returns a PID-less completed registration without further roster reads", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-no-scope-registration-"));

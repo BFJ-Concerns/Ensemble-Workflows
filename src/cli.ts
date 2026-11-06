@@ -433,6 +433,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     }
 
     runtime.onEvent((event) => {
+      if (event.method === "claude/workerScopeWatchError") {
+        stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
+        return;
+      }
       if (event.method === "codex/workerScopePlacement") {
         if (event.params.kind === "refused") {
           const pid = typeof event.params.pid === "number" ? event.params.pid : "?";

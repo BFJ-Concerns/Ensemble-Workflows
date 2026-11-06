@@ -174,7 +174,12 @@ overrides the file; `--worker-scope worker|run` overrides both.
 The daemon forks each Claude session in its own cgroup, and the roster
 (`claude agents --json`) names that process by `pid` shortly after registration.
 Ensemble moves the process and its descendants when the pid appears, and
-moves a session the daemon restarts under a new pid at the next poll. Codex
+moves a session the daemon restarts under a new pid through a run-owned roster
+watch, including while the session is idle between turns or after its last
+turn. One roster read serves all owned Claude sessions on each watch cycle;
+the watch ends when their sessions stop. Turn polling also checks placement.
+Unexpected watch failures produce a bounded stderr notice and are retried.
+Codex
 placement is attempted before the app-server's protocol handshake. Placement
 is best-effort: without a reachable user manager workers run where they
 started; manager refusals do not fail dispatch. Claude placement refusals are

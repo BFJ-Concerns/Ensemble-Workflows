@@ -8,8 +8,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
-import { ClaudeCliControlPlane, type ClaudeSessionHandle } from "../../src/claude-control-plane.js";
-import { SystemdWorkerScopes, containingSlice, parentSlice } from "../../src/worker-scopes.js";
+import { containingSlice, parentSlice } from "../../src/worker-scopes.js";
 
 import { heldProbePrompt, probePaths, waitForPath, type HeldProbe } from "./held-worker-probes.js";
 
@@ -27,29 +26,7 @@ const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensem
  */
 test("the built launcher preserves an owned supervisor and sibling while moving workers", { skip: !isLive, timeout: 900_000 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "ensemble-supervisor-boundary-"));
-  const configDir = path.join(root, "claude-config");
-  await mkdir(configDir, { mode: 0o700 });
-  // Onboarding and bypass consent belong only to this proof's private daemon.
-  await writeFile(path.join(configDir, ".claude.json"), `${JSON.stringify({ hasCompletedOnboarding: true })}\n`, { mode: 0o600 });
-  await writeFile(path.join(configDir, "settings.json"), `${JSON.stringify({ skipDangerousModePermissionPrompt: true })}\n`, { mode: 0o600 });
-  const machineEnvironment = resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment;
-  const xdg = path.join(root, "config");
-  await mkdir(path.join(root, "status"));
-  await mkdir(path.join(xdg, "ensemble"), { recursive: true });
-  await writeFile(path.join(xdg, "ensemble", "config.json"), JSON.stringify({
-    schema_version: 1,
-    worker_environment: { ...machineEnvironment, claude: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: configDir } }
-  }), { mode: 0o600 });
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    XDG_CONFIG_HOME: xdg,
-    ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records"),
-    ENSEMBLE_STATUS_DIR: path.join(root, "status"),
-    CLAUDE_CONFIG_DIR: configDir,
-    CLAUDE_CODE_SANDBOXED: "1",
-    // Keep this placement journey in worker mode regardless of ambient run tuning.
-    ENSEMBLE_WORKER_SCOPE: "worker"
-  };
+  const env = await ownedSupervisorEnvironment(root);
   const first: HeldProbe = { paths: probePaths(root, "first"), evidence: { kind: "cgroup" }, token: `FIRST_${randomUUID()}` };
   const sibling: HeldProbe = { paths: probePaths(root, "sibling"), evidence: { kind: "cgroup" }, token: `SIBLING_${randomUUID()}` };
   const ownCgroup = cgroupPath(await readFile("/proc/self/cgroup", "utf8"));
@@ -152,89 +129,66 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
   }
 });
 
-/**
- * Replacement, measured on an owned supervisor through the control plane
- * that places sessions. `claude respawn <id>` makes the supervisor restart a
- * session: the row keeps its id and session id and names a new process,
- * forked in the supervisor's own cgroup; the control plane's next poll must
- * place that process in the session's scope. The control plane rather than
- * the built launcher drives this leg because a respawn interrupts the
- * session's turn and leaves it idle, so a launcher run could not carry a
- * respawned worker to completion.
- */
-test("a session the owned supervisor restarts under a new pid is placed again at the next poll", { skip: !isLive, timeout: 300_000 }, async (t) => {
+/** A held session remains owned after its last turn, so its replacement must
+ * move without a new send() or a test calling a control-plane poll. */
+test("the built launcher re-places an idle held session after respawn without another turn", { skip: !isLive, timeout: 600_000 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "ensemble-supervisor-replacement-"));
-  const configDir = path.join(root, "claude-config");
-  await mkdir(configDir, { mode: 0o700 });
-  await writeFile(path.join(configDir, ".claude.json"), `${JSON.stringify({ hasCompletedOnboarding: true })}\n`, { mode: 0o600 });
-  await writeFile(path.join(configDir, "settings.json"), `${JSON.stringify({ skipDangerousModePermissionPrompt: true })}\n`, { mode: 0o600 });
-  const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_SANDBOXED: "1" };
+  const env = await ownedSupervisorEnvironment(root);
   const slice = containingSlice(await readFile("/proc/self/cgroup", "utf8"));
   const operatorDaemon = await daemonPid(process.env);
-  const scopes = new SystemdWorkerScopes({ slice, label: `live-replacement-${process.pid}` });
-  // The control plane's own `claude` commands run under the owned configuration; transcripts land under it too.
-  const controlPlane = new ClaudeCliControlPlane({
-    workerEnv: { ...resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment.claude, CLAUDE_CONFIG_DIR: configDir },
-    projectsDir: path.join(configDir, "projects"),
-    scopes
-  });
   const probe: HeldProbe = { paths: probePaths(root, "replacement"), evidence: { kind: "cgroup" }, token: `REPLACEMENT_${randomUUID()}` };
+  const idle = path.join(root, "idle");
+  const close = path.join(root, "close");
+  const workflow = path.join(root, "workflow.js");
+  const box = `ensemble-live-idle-${process.pid}.scope`;
   const observations: Record<string, unknown> = { slice, operatorDaemonBefore: operatorDaemon };
-  let handle: ClaudeSessionHandle | null = null;
-
+  let run: ReturnType<typeof launchCliInBox> | undefined;
   try {
+    await writeFile(workflow, `import { access, writeFile } from "node:fs/promises";
+      export const meta = { name: "idle-session-replacement" };
+      const worker = session(${JSON.stringify({engine:"claude",model:claudeModel,cwd:root,maxAttempts:1,timeoutMs:420_000})});
+      try {
+        const reply = await worker.send(${JSON.stringify(heldProbePrompt(probe))});
+        await writeFile(${JSON.stringify(idle)}, "idle");
+        while (!(await access(${JSON.stringify(close)}).then(() => true, () => false))) await new Promise(resolve => setTimeout(resolve, 50));
+        return reply;
+      } finally { await worker.close(); }
+    `);
     assert.equal(await daemonPid(env), null, "the private config directory already had a daemon");
-    handle = await controlPlane.dispatch({
-      prompt: heldProbePrompt(probe),
-      name: `ensemble-replacement-${process.pid}`,
-      cwd: root,
-      model: claudeModel
-    });
-    const first = controlPlane.placementOf(handle);
-    assert.ok(first !== null && first.kind === "placed", `the session was not placed at dispatch: ${JSON.stringify(first)}`);
-    const firstPid = first.pids[0]!;
-    const firstCgroup = cgroupPath(await readFile(`/proc/${firstPid}/cgroup`, "utf8"));
-    observations.first = { id: handle.id, sessionId: handle.sessionId, pid: firstPid, unit: first.unit, cgroup: firstCgroup };
-    assert.ok(firstCgroup.endsWith(`/${first.unit}`), `the session's process is not in its scope: ${firstCgroup}`);
-    const daemon = await daemonPid(env);
-    observations.ownedDaemon = daemon;
-    assert.ok(daemon !== null, "the control plane's claude commands did not start the owned daemon");
-
-    // The supervisor restarts the session: the same row, a new process.
-    await execFileAsync("claude", ["respawn", handle.id], { env });
-    const replaced = await waitForRow(env, handle.sessionId, (row) => typeof row.pid === "number" && row.pid !== firstPid, 30_000);
-    assert.ok(replaced !== null && typeof replaced.pid === "number", "the roster never named a new pid for the restarted session");
-    const replacedPid = replaced.pid;
-    assert.equal(replaced.id, handle.id, "the restarted session changed its id");
-    const beforePoll = cgroupPath(await readFile(`/proc/${replacedPid}/cgroup`, "utf8"));
-    observations.replacement = { pid: replacedPid, cgroupBeforePoll: beforePoll, firstPidLive: processLives(firstPid) };
-    assert.ok(
-      !beforePoll.endsWith(`/${first.unit}`),
-      `the supervisor started the new process already inside the worker scope, so re-placement has nothing to show: ${beforePoll}`
-    );
-
-    const status = await controlPlane.poll(handle);
-    assert.equal(status.present, true, "the restarted session is absent from the roster");
-    const again = controlPlane.placementOf(handle);
-    assert.ok(
-      again !== null && again.kind === "placed" && again.pids.includes(replacedPid),
-      `the new pid was not placed at the poll: ${JSON.stringify(again)}`
-    );
-    assert.equal(again.unit, first.unit, "the restarted session was placed in a different scope");
-    const afterPoll = cgroupPath(await readFile(`/proc/${replacedPid}/cgroup`, "utf8"));
-    const daemonAfter = await daemonPid(env);
-    observations.replacement = { ...(observations.replacement as object), cgroupAfterPoll: afterPoll, daemonAfter };
-    assert.equal(daemonAfter, daemon, "re-placing a restarted worker changed its supervisor");
-    assert.ok(afterPoll.endsWith(`/${first.unit}`), `the new process is not in the session's scope after the poll: ${afterPoll}`);
-  } finally {
+    run = launchCliInBox(box, slice, env, [workflow]);
+    await waitForPath(probe.paths.ready, 420_000);
+    const initialGroup = cgroupPath(await readFile(probe.paths.evidence, "utf8"));
+    const seen = await watchRoster(env, 120_000, undefined, () => run!.settled);
+    assert.ok(seen.registered !== null && seen.pid !== null, "the owned session never registered a process");
+    assert.ok(initialGroup.endsWith(".scope") && /\/ensemble-\d+-/.test(initialGroup), "worker shell was not placed");
     await writeFile(probe.paths.release, "");
-    if (handle !== null) {
-      await controlPlane.stop(handle);
-    }
-    await scopes.close();
-    await execFileAsync("claude", ["daemon", "stop", "--any"], { env }).catch((error: Error) => {
-      observations.ownedDaemonStop = error.message.slice(0, 200);
-    });
+    await waitForPath(idle, 420_000);
+    const first = await waitForRow(env, seen.registered.sessionId, row => row.state === "idle" || row.status === "idle" || row.state === "done", 60_000);
+    assert.ok(first && typeof first.pid === "number", "the completed turn did not leave an owned idle session");
+    assert.equal(typeof first.id, "string", "the owned idle session has no native identifier");
+    observations.first = { sessionId: first.sessionId, pid: first.pid, cgroup: initialGroup };
+    assert.equal(run.settled, false, "the launcher ended instead of holding the idle session");
+    // A native respawn, rather than killing a process: killed sessions leave
+    // the roster on supported Claude versions and do not supply a replacement.
+    await execFileAsync("claude", ["respawn", first.id as string], { env });
+    const replaced = await waitForRow(env, seen.registered.sessionId, row => typeof row.pid === "number" && row.pid !== first.pid, 60_000);
+    assert.ok(replaced && typeof replaced.pid === "number", "the supervisor never supplied a replacement PID");
+    observations.replacement = { pid: replaced.pid, cgroupInitiallyObserved: cgroupPath(await readFile(`/proc/${replaced.pid}/cgroup`, "utf8")) };
+    // Only OS observation here: the launcher owns the watch. No poll(),
+    // control-plane instance or second worker turn can perform the move.
+    const after = await waitForCgroup(replaced.pid, group => group === initialGroup, 60_000);
+    assert.equal(after, initialGroup, "idle replacement stayed outside its worker scope without another turn");
+    observations.replacement = { ...(observations.replacement as object), cgroupAfterWatch: after };
+    assert.equal(run.settled, false, "the launcher ended during idle replacement observation");
+    await writeFile(close, "");
+    const result = await run.result; observations.result = result;
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(result.stdout.includes(probe.token), "the launcher lost the completed first turn");
+  } finally {
+    await writeFile(probe.paths.release, ""); await writeFile(close, "");
+    await execFileAsync("systemctl", ["--user", "stop", box]).catch(() => undefined);
+    if (run) observations.result = await run.result;
+    await execFileAsync("claude", ["daemon", "stop", "--any"], { env }).catch((error: Error) => { observations.ownedDaemonStop = error.message.slice(0, 200); });
     observations.operatorDaemonAfter = await daemonPid(process.env);
     t.diagnostic(JSON.stringify(observations));
     await rm(root, { recursive: true, force: true });
@@ -242,7 +196,37 @@ test("a session the owned supervisor restarts under a new pid is placed again at
   }
 });
 
-function launchInBox(unit: string, slice: string | null, env: NodeJS.ProcessEnv, prompt: string): {
+async function ownedSupervisorEnvironment(root: string): Promise<NodeJS.ProcessEnv> {
+  const configDir = path.join(root, "claude-config");
+  await mkdir(configDir, { mode: 0o700 });
+  // Onboarding and bypass consent belong only to this proof's private daemon.
+  await writeFile(path.join(configDir, ".claude.json"), `${JSON.stringify({ hasCompletedOnboarding: true })}\n`, { mode: 0o600 });
+  await writeFile(path.join(configDir, "settings.json"), `${JSON.stringify({ skipDangerousModePermissionPrompt: true })}\n`, { mode: 0o600 });
+  const machineEnvironment = resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment;
+  const xdg = path.join(root, "config");
+  await mkdir(path.join(root, "status"));
+  await mkdir(path.join(xdg, "ensemble"), { recursive: true });
+  await writeFile(path.join(xdg, "ensemble", "config.json"), JSON.stringify({
+    schema_version: 1,
+    worker_environment: { ...machineEnvironment, claude: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: configDir } }
+  }), { mode: 0o600 });
+  return {
+    ...process.env,
+    XDG_CONFIG_HOME: xdg,
+    ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records"),
+    ENSEMBLE_STATUS_DIR: path.join(root, "status"),
+    CLAUDE_CONFIG_DIR: configDir,
+    CLAUDE_CODE_SANDBOXED: "1",
+    // Keep this placement journey in worker mode regardless of ambient run tuning.
+    ENSEMBLE_WORKER_SCOPE: "worker"
+  };
+}
+
+function launchInBox(unit: string, slice: string | null, env: NodeJS.ProcessEnv, prompt: string): ReturnType<typeof launchCliInBox> {
+  return launchCliInBox(unit, slice, env, ["agent", "--engine=claude", `--model=${claudeModel}`, prompt]);
+}
+
+function launchCliInBox(unit: string, slice: string | null, env: NodeJS.ProcessEnv, args: string[]): {
   settled: boolean;
   result: Promise<{ code: number | null; stdout: string; stderr: string }>;
 } {
@@ -258,10 +242,7 @@ function launchInBox(unit: string, slice: string | null, env: NodeJS.ProcessEnv,
       "--",
       process.execPath,
       bundledCliPath,
-      "agent",
-      "--engine=claude",
-      `--model=${claudeModel}`,
-      prompt
+      ...args
     ],
     { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] }
   );
@@ -346,21 +327,14 @@ async function waitForRow(env: NodeJS.ProcessEnv, sessionId: string, accept: (ro
   return null;
 }
 
-function processLives(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 interface RosterRow {
   id?: unknown;
   kind?: unknown;
   name?: unknown;
   sessionId?: unknown;
   pid?: unknown;
+  status?: unknown;
+  state?: unknown;
 }
 
 async function roster(env: NodeJS.ProcessEnv): Promise<{ ok: boolean; rows: RosterRow[] }> {

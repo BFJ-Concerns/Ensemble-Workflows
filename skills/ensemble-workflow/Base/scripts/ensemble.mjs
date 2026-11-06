@@ -17697,9 +17697,15 @@ var ClaudeCliControlPlane = class {
   #scopes;
   #workerScope;
   #placementSettleMs;
+  #placementWatchIntervalMs;
   #onEvent;
   /** Last placement attempt per session: refused attempts remain eligible at the same pid. */
   #placements = /* @__PURE__ */ new Map();
+  /** Session ownership lasts through idle gaps, independently of turn polling. */
+  #watchedSessions = /* @__PURE__ */ new Map();
+  #placementTimer = null;
+  #placementSweep = null;
+  #placing = /* @__PURE__ */ new Map();
   #valveCounter = 0;
   /**
    * Where each valve's socket directory is made: where tmux keeps its own
@@ -17737,6 +17743,10 @@ var ClaudeCliControlPlane = class {
     this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
     this.#placementSettleMs = options.placementSettleMs ?? 1e4;
+    this.#placementWatchIntervalMs = options.placementWatchIntervalMs ?? 1e3;
+    if (!Number.isInteger(this.#placementWatchIntervalMs) || this.#placementWatchIntervalMs < 1 || this.#placementWatchIntervalMs > 2147483647) {
+      throw new RangeError("placementWatchIntervalMs must be an integer from 1 to 2147483647");
+    }
     this.#onEvent = options.onEvent;
   }
   /** How the session's process was last placed, or null before the roster has named a pid for it. */
@@ -17801,6 +17811,10 @@ var ClaudeCliControlPlane = class {
         await this.#removeSettingsDir(settingsDir);
       } else {
         this.#settingsDirs.set(registered.sessionId, settingsDir);
+        if (!(this.#scopes instanceof NoWorkerScopes)) {
+          this.#watchedSessions.set(registered.sessionId, registered);
+          this.#schedulePlacementWatch();
+        }
       }
     }
     if (registered === null) {
@@ -17977,7 +17991,17 @@ var ClaudeCliControlPlane = class {
    * is recorded, never thrown.
    */
   async #place(handle, pid) {
+    const pending = (this.#placing.get(handle.sessionId) ?? Promise.resolve()).then(() => this.#placeInTurn(handle, pid));
+    this.#placing.set(handle.sessionId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.#placing.get(handle.sessionId) === pending) this.#placing.delete(handle.sessionId);
+    }
+  }
+  async #placeInTurn(handle, pid) {
     const previous = this.#placements.get(handle.sessionId);
+    if (previous?.pid === pid && previous.outcome.kind !== "refused") return previous.outcome;
     const outcome = await this.#scopes.place(this.#workerScope === "run" ? RUN_SCOPE_GROUP : handle.name, await processTree(pid, this.#procDir));
     this.#placements.set(handle.sessionId, { pid, outcome });
     const changedRefusal = outcome.kind === "refused" && (previous?.pid !== pid || previous.outcome.kind !== "refused" || previous.outcome.reason !== outcome.reason);
@@ -17998,7 +18022,40 @@ var ClaudeCliControlPlane = class {
     }
     return outcome;
   }
+  /** One roster read serves every owned session, including those between turns. */
+  #schedulePlacementWatch() {
+    if (this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
+    this.#placementTimer = setTimeout(() => {
+      this.#placementTimer = null;
+      this.#placementSweep = this.#refreshPlacements().catch((error) => {
+        this.#onEvent?.({
+          method: "claude/workerScopeWatchError",
+          params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
+          receivedAt: Date.now()
+        });
+      }).finally(() => {
+        this.#placementSweep = null;
+        this.#schedulePlacementWatch();
+      });
+    }, this.#placementWatchIntervalMs);
+    this.#placementTimer.unref();
+  }
+  async #refreshPlacements() {
+    const roster = await this.#roster();
+    if (!roster.ok) return;
+    for (const handle of this.#watchedSessions.values()) {
+      const row = roster.rows.find((entry) => matchesHandle(entry, handle));
+      if (typeof row?.pid === "number") await this.#place(handle, row.pid);
+    }
+  }
   async stop(handle) {
+    this.#watchedSessions.delete(handle.sessionId);
+    if (this.#watchedSessions.size === 0 && this.#placementTimer !== null) {
+      clearTimeout(this.#placementTimer);
+      this.#placementTimer = null;
+    }
+    await this.#placementSweep;
+    await this.#placing.get(handle.sessionId);
     await this.#run(this.#claudeBin, ["stop", handle.id]);
     this.#placements.delete(handle.sessionId);
     await this.#reapTaggedDescendants(handle.name);
@@ -31240,6 +31297,11 @@ async function runEnsembleCli(argv, options = {}) {
       });
     }
     runtime.onEvent((event) => {
+      if (event.method === "claude/workerScopeWatchError") {
+        stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
+`);
+        return;
+      }
       if (event.method === "codex/workerScopePlacement") {
         if (event.params.kind === "refused") {
           const pid = typeof event.params.pid === "number" ? event.params.pid : "?";

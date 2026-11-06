@@ -28,7 +28,7 @@ concurrency caps with the layer that supplied each (`flag`, `env`,
 | Concurrency cap | `codex` 12, `claude` 12, `opencode` 2 workers at once |
 | Agent ceiling (all engines together) | Unbounded |
 | Durable run record | On, stored under `$XDG_DATA_HOME/ensemble/` (normally `~/.local/share/ensemble/`) |
-| Live status file | On when the run's working directory contains a `.claude/` directory; written there |
+| Live status file | On; uses an existing `.claude/` directory, otherwise the Ensemble data home |
 | Token budget per engine | Unbounded (set per run with `--budget`) |
 | Whole-run timeout | None (set per run with `--timeout`) |
 
@@ -204,7 +204,18 @@ recording. Disable recording with
 `ENSEMBLE_RUN_RECORD=off` or `run_record.enabled: false`.
 
 The live status file defaults to the `.claude/` directory under the run's
-working directory, and is written only when that directory already exists.
+working directory when that directory exists. Otherwise it uses
+`$XDG_DATA_HOME/ensemble/status` (normally
+`~/.local/share/ensemble/status`), creating the directory automatically.
+This location is independent of archive-directory overrides. Each run publishes
+`ensemble.<run-uuid>.local.json`; concurrent runs have separate files.
+The CLI announces the exact path on stderr as
+`[status-file] {"run_id":…,"status_path":…}` after the first successful write.
+Read that file while the run is active; normal shutdown removes it. Startup
+removes leftovers only when owner evidence proves their process has gone.
+Creation or publication failures produce a `[status]` diagnostic without
+stopping the run or announcing an unpublished path. Disable publication with
+`ENSEMBLE_STATUS=off` or `status.enabled: false`.
 While status is on, a status directory set by `ENSEMBLE_STATUS_DIR` or
 `status.dir` must already exist; otherwise the run stops with an error naming
 it.

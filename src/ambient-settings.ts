@@ -515,23 +515,20 @@ function resolveStatus(
     env.ENSEMBLE_STATUS_DIR,
     "ENSEMBLE_STATUS_DIR",
     config?.status?.dir,
-    path.join(cwd, ".claude")
+    isDirectory(path.join(cwd, ".claude"))
+      ? path.join(cwd, ".claude")
+      : path.join(dataHome(env), "ensemble", "status")
   );
   if (isDirectory(directory.value)) {
     return directory;
   }
   if (directory.layer !== "default") {
-    // An explicitly configured layer fails loud on malformation. A
-    // named directory that does not exist would otherwise publish nothing
-    // at exit 0 — the operator asked for observability and silently got
-    // none. Only the *default* location (`<cwd>/.claude`) opts out by
-    // absence: its existence is the publication opt-in.
     throw new AmbientConfigError(
       `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} ` +
         `(from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
     );
   }
-  return { value: null, layer: directory.layer };
+  return directory;
 }
 
 function resolveEnabled(

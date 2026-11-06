@@ -150,7 +150,10 @@ launcher — a launcher in `agents-run1.slice` launches into `agents.slice`, one
 in `agents.slice` or `app.slice` into the user manager's root — so a daemon
 one of them starts sits outside the box the launcher's slice draws. The
 process keeps its streams, environment, working directory and exit status.
-Without a reachable user manager the process is launched directly.
+Without a reachable user manager the process is launched directly. A reachable manager
+that refuses the control-command scope fails that command; Ensemble does not
+retry inside the launcher's box, where it could start the shared supervisor.
+The best-effort worker placement below concerns adoption of existing processes.
 
 When `CLAUDE_CONFIG_DIR` has a non-empty value in the launcher's environment,
 Ensemble looks for Claude session transcripts under

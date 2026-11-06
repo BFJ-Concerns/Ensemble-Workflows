@@ -4040,3 +4040,27 @@ test("CLI renders Claude placement refusal and recovery notices without control-
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test("CLI renders Codex app-server placement refusals as bounded notices", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-cli-codex-placement-"));
+  const stderr = new CaptureStream();
+  try {
+    const engine = new FixedResponseEngine("codex", "done");
+    const original = engine.createInvocation.bind(engine);
+    let runtime: EnsembleRuntime;
+    engine.createInvocation = (prompt, options) => {
+      const invocation = original(prompt, options);
+      return { async runAttempt(context) {
+        runtime.handleEngineEvent("codex", { method: "codex/workerScopePlacement", params: { kind: "refused", pid: 123, reason: "manager\nrefused" }, receivedAt: Date.now() });
+        return invocation.runAttempt(context);
+      } };
+    };
+    const code = await runEnsembleCli(["agent", "--engine=codex", "--model=test", "hello"], {
+      cwd: dir, stdout: new CaptureStream(), stderr, runRecordDir: null,
+      createRuntime: async (options) => { runtime = fixedEngineRuntime(engine, 1, options); return runtime; }
+    });
+    assert.equal(code, 0, stderr.text());
+    assert.match(stderr.text(), /\[codex\] app-server \(pid 123\) scope placement refused: manager refused\n/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

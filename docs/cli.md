@@ -61,7 +61,7 @@ a script argument spelled like a run option, put `--` before the script path:
 | `--timeout ms` | Whole-run deadline, at most 2147483647. Distinct from an `agent()` call's own `timeoutMs` |
 | `--strip capability` | Remove a tool-surface capability (`skills` or `agents`) from every worker in the run; an opencode worker refuses any strip (see [Permissions](workflow-scripts.md#permissions-and-strip)). Repeatable |
 | `--caller-identity <identity>` | Opaque identity of the invoking session, recorded in the run record. Overrides `ENSEMBLE_CALLER_IDENTITY` |
-| `--worker-scope worker|run` | Systemd scope grouping for Claude and Codex; overrides environment and configuration (see [Configuration](configuration.md)) |
+| `--worker-scope worker\|run` | Systemd scope grouping for Claude and Codex; overrides environment and configuration (see [Configuration](configuration.md)) |
 | `--hold-scope <scope>` | Scope for decision holds raised during the run. Overrides `ENSEMBLE_HOLD_SCOPE` |
 
 Only `--budget`, `--concurrency`, and `--strip` may be repeated; every other
@@ -186,6 +186,9 @@ Logs and diagnostics go to stderr. These lines are written there:
   fallback entry answered for a refused target.
 - `[<engine>] agent <id> (<label>) fallback chain not consulted — …` — a
   failure the classifier did not recognise, so the declared chain was not used.
+- `[codex] app-server (pid <pid>) scope placement refused: <reason>` — the
+  app-server could not be moved; its threads still dispatch, with the refusal
+  also available through `codex/workerScopePlacement` runtime events.
 - `[claude] worker <name> (pid <pid>) scope placement refused; retrying: <reason>`
   — the worker could not be moved into its scope. Ensemble retries within the
   registration window and on later roster polls; repeated identical refusals

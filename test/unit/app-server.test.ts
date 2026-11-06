@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import type { RuntimeEvent } from "../../src/types.js";
 import { SystemdWorkerScopes, createWorkerScopes, type WorkerScopes } from "../../src/worker-scopes.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -2177,7 +2179,7 @@ test("runtime forwards run grouping to the real Codex process", async () => {
     assert.match(unit ?? "", /^ensemble-.*-run.scope$/, "the runtime's grouping did not reach the app-server");
     const launcher = (await readFile("/proc/self/cgroup", "utf8")).trim().split("/");
     const userManager = launcher.findIndex((part) => /^user@\d+\.service$/.test(part));
-    const slice = launcher.slice(userManager + 1).filter((part) => part.endsWith(".slice")).at(-1);
+    const slice = userManager < 0 ? undefined : launcher.slice(userManager + 1).filter((part) => part.endsWith(".slice")).at(-1);
     if (slice !== undefined) assert.ok(cgroup.split("/").includes(slice));
   } finally {
     await runtime.close();
@@ -2237,5 +2239,30 @@ test("live transcript events stay ordered across concurrent threads and successi
     assert.deepEqual(next, result.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)));
   } finally {
     await transport.close();
+  }
+});
+
+
+test("Codex placement refusal is observable while its app-server remains usable", async () => {
+  const codexBin = await fakeCodexTurnServer();
+  const events: RuntimeEvent[] = [];
+  const scopes: WorkerScopes = {
+    slice: null,
+    async place() { return { kind: "refused", reason: "controlled scope refusal" }; },
+    async launch(file, args, options) { return spawn(file, [...args], options); },
+    async close() {}
+  };
+  let transport: CodexAppServerTransport | undefined;
+  try {
+    transport = await CodexAppServerTransport.start({ ...defaultTransportOptions(codexBin), scopes, onEvent: (event) => events.push(event) });
+    const thread = await transport.openThread({});
+    assert.equal((await transport.runTurn(thread, "hello", {})).text, "hello");
+    const notice = events.find((event) => event.method === "codex/workerScopePlacement");
+    assert.equal(notice?.params.kind, "refused", "the app-server discarded the placement outcome");
+    assert.equal(notice?.params.reason, "controlled scope refusal");
+    assert.equal(typeof notice?.params.pid, "number");
+  } finally {
+    await transport?.close();
+    await rm(path.dirname(codexBin), { recursive: true, force: true });
   }
 });

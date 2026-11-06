@@ -3082,3 +3082,31 @@ async function waitForFile(file: string): Promise<void> {
   }
   throw new Error(`file never appeared: ${file}`);
 }
+
+
+test("the built launcher archives worker grouping with its winning setting layer", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-scope-provenance-"));
+  try {
+    const script = path.join(root, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "scope-provenance" }; return "done";');
+    for (const entry of [
+      { name: "default", file: undefined, env: undefined, flag: undefined, value: "worker", layer: "default" },
+      { name: "file", file: "run", env: undefined, flag: undefined, value: "run", layer: "config-file" },
+      { name: "env", file: "run", env: "worker", flag: undefined, value: "worker", layer: "env" },
+      { name: "flag", file: "worker", env: "worker", flag: "run", value: "run", layer: "flag" }
+    ]) {
+      const dir = path.join(root, entry.name);
+      const xdg = path.join(dir, "config");
+      const store = path.join(dir, "records");
+      await mkdir(path.join(xdg, "ensemble"), { recursive: true });
+      await writeFile(path.join(xdg, "ensemble", "config.json"), JSON.stringify({ schema_version: 1, ...(entry.file ? { worker_scope: entry.file } : {}) }));
+      const result = await runNode([bundledCliPath, ...(entry.flag ? [`--worker-scope=${entry.flag}`] : []), script], {
+        XDG_CONFIG_HOME: xdg, ENSEMBLE_WORKER_SCOPE: entry.env, ENSEMBLE_RUN_RECORD_DIR: store
+      }, 120_000);
+      assert.equal(result.code, 0, result.stderr);
+      const manifest = JSON.parse(await readFile(await findOnlyFile(store, "manifest.json"), "utf8"));
+      assert.deepEqual(manifest.worker_scope, { value: entry.value, layer: entry.layer }, `grouping provenance lost for ${entry.name}`);
+      assert.equal(manifest.cli_flags.workerScope, entry.flag);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

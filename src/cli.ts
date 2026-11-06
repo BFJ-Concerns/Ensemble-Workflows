@@ -414,6 +414,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         cliFlags: cliFlags(invocation),
         ...(callerIdentity !== undefined ? { callerIdentity } : {}),
         concurrency: recordConcurrency(ambientSettings, progress),
+        workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
@@ -432,6 +433,13 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     }
 
     runtime.onEvent((event) => {
+      if (event.method === "codex/workerScopePlacement") {
+        if (event.params.kind === "refused") {
+          const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
+          stderr.write(`[codex] app-server (pid ${pid}) scope placement refused: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
+        }
+        return;
+      }
       if (event.method === "claude/workerScopePlacement") {
         const name = boundedEvidence(String(event.params.name ?? "unknown"));
         const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
@@ -923,6 +931,7 @@ function singleAgentWorkflowSource(invocation: ParsedAgentInvocation): string {
 }
 
 function cliFlags(invocation: ParsedInvocation): {
+  workerScope?: WorkerScopeGrouping;
   budget?: Record<string, number | null>;
   agentCeiling?: number | null;
   concurrency?: Record<string, number>;
@@ -933,6 +942,7 @@ function cliFlags(invocation: ParsedInvocation): {
   return {
     ...(invocation.budgetCeilings !== undefined ? { budget: invocation.budgetCeilings } : {}),
     ...(invocation.agentCeiling !== undefined ? { agentCeiling: invocation.agentCeiling } : {}),
+    ...(invocation.workerScope !== undefined ? { workerScope: invocation.workerScope } : {}),
     ...(invocation.concurrencyCaps !== undefined ? { concurrency: invocation.concurrencyCaps } : {}),
     ...(invocation.timeoutMs !== undefined ? { timeoutMs: invocation.timeoutMs } : {}),
     ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),

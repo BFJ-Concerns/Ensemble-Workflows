@@ -309,7 +309,15 @@ export class CodexAppServerTransport implements RuntimeTransport {
     const transport = new CodexAppServerTransport(options);
     try {
       if (transport.#process.pid !== undefined && options.scopes !== undefined) {
-        await options.scopes.place(options.scopeGroup ?? "codex", [transport.#process.pid]);
+        const pid = transport.#process.pid;
+        const outcome = await options.scopes.place(options.scopeGroup ?? "codex", [pid]);
+        if (outcome.kind !== "placed") {
+          options.onEvent?.({
+            method: "codex/workerScopePlacement",
+            params: { pid, kind: outcome.kind, ...(outcome.kind === "refused" ? { reason: outcome.reason } : {}) },
+            receivedAt: Date.now()
+          });
+        }
       }
       await transport.#handshake(options.clientName, options.clientVersion);
     } catch (error) {

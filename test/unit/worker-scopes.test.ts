@@ -240,7 +240,8 @@ test("createWorkerScopes discovers the launcher's slice where the user manager a
   // user manager's service in this process's own cgroup path, or null when
   // the process sits directly in the user manager (init.scope and the like).
   const segments = (await readFile("/proc/self/cgroup", "utf8")).trim().slice("0::".length).split("/");
-  const below = segments.slice(segments.findIndex((segment) => /^user@\d+\.service$/.test(segment)) + 1);
+  const managerIndex = segments.findIndex((segment) => /^user@\d+\.service$/.test(segment));
+  const below = managerIndex < 0 ? [] : segments.slice(managerIndex + 1);
   const expected = below.filter((segment) => segment.endsWith(".slice")).at(-1) ?? null;
   assert.equal(scopes.slice, expected);
 });

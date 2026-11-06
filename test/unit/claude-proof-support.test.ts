@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { classifySupervisorTransition, selectClaudeExecutable, supervisorLifecycle, type SupervisorIdentity } from "../live/claude-proof-support.js";
+import { assertFixedClaudeVersion, classifyClaudeVersion, classifySupervisorTransition, selectClaudeExecutable, supervisorSnapshot, supervisorLifecycle, type SupervisorIdentity } from "../live/claude-proof-support.js";
 
 const exec = promisify(execFile);
 const before: SupervisorIdentity = { pid: 101, startTicks: "123", cgroup: "0::/old", version: "2.1.318" };
@@ -27,8 +27,8 @@ test("selected Claude executable and command resolution survive installation sym
     const old = path.join(root, "claude-2.1.318");
     const next = path.join(root, "claude-2.1.319");
     const installed = path.join(root, "claude");
-    for (const [file, value] of [[old, "old"], [next, "new"]]) {
-      await writeFile(file!, `#!/bin/sh\nprintf '${value}'\n`);
+    for (const [file, value] of [[old, "2.1.318"], [next, "2.1.319"]]) {
+      await writeFile(file!, `#!/bin/sh\nprintf '${value} (Claude Code)\n'\n`);
       await chmod(file!, 0o755);
     }
     await symlink(old, installed);
@@ -37,10 +37,11 @@ test("selected Claude executable and command resolution survive installation sym
       await rm(installed);
       await symlink(next, installed);
       assert.equal(selected.executable, old);
-      assert.equal((await exec(selected.executable)).stdout, "old");
-      assert.equal((await exec("claude", [], { env: selected.env })).stdout, "old");
+      assert.equal(selected.version, "2.1.318");
+      assert.equal((await exec(selected.executable)).stdout, "2.1.318 (Claude Code)\n");
+      assert.equal((await exec("claude", [], { env: selected.env })).stdout, "2.1.318 (Claude Code)\n");
       assert.equal(await readlink(installed), next);
-      assert.equal((await exec(installed)).stdout, "new");
+      assert.equal((await exec(installed)).stdout, "2.1.319 (Claude Code)\n");
     } finally {
       await selected.dispose();
     }
@@ -127,6 +128,62 @@ test("competing startup records do not hide the observed supervisor's upgrade", 
       await writeFile(file, prefix + shutdown("idle") + start(after));
       assert.equal(classifySupervisorTransition(before, after, baseline, await supervisorLifecycle(root)), "unexplained",
         "a competing startup excused a non-upgrade replacement");
+    }
+  });
+});
+
+test("fixed-version evidence rejects mismatched and unavailable native versions", () => {
+  const snapshot = (selectedVersion: string | null, identity = before) => ({
+    selectedVersion, identity, versionEvidence: classifyClaudeVersion(selectedVersion, identity.version),
+    lifecycle: [{ event: "start", pid: String(identity.pid), version: identity.version }], offset: 0
+  });
+  const matching = snapshot(before.version);
+  assert.equal(assertFixedClaudeVersion(matching, matching, "matching"), "unchanged");
+  for (const selected of [after.version, null, ""]) {
+    const state = snapshot(selected);
+    assert.equal(state.versionEvidence, selected ? "mismatched" : "unavailable");
+    assert.throws(() => assertFixedClaudeVersion(state, state, "native evidence"), /fixed-version proof/);
+  }
+  const unavailable = snapshot(before.version, { ...before, version: "" });
+  assert.equal(unavailable.versionEvidence, "unavailable");
+  assert.throws(() => assertFixedClaudeVersion(unavailable, unavailable, "missing"), /fixed-version proof/);
+  assert.throws(() => assertFixedClaudeVersion(matching, snapshot(before.version, { ...before, cgroup: "moved" }), "moved"),
+    /without a recorded upgrade/);
+  const upgraded = { ...snapshot(before.version, after), lifecycle: [
+    ...matching.lifecycle, { event: "shutdown", cause: "upgrade" },
+    { event: "start", pid: String(after.pid), version: after.version }
+  ] };
+  assert.equal(classifySupervisorTransition(before, after, matching.lifecycle, upgraded.lifecycle), "upgrade");
+  assert.throws(() => assertFixedClaudeVersion(matching, upgraded, "upgrade"), /fixed-version proof/);
+  assert.throws(() => assertFixedClaudeVersion(matching, snapshot(after.version), "selection changed"), /fixed-version proof/);
+});
+
+test("snapshots distinguish selected CLI from the observed supervisor version", async () => {
+  await fixture(async root => {
+    const executable = path.join(root, "claude");
+    for (const version of ["2.1.318", "2.1.319", "unknown"]) {
+      await writeFile(executable, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '${version} (Claude Code)\n'
+else
+  printf 'pid: ${process.pid}\n'
+fi
+`);
+      await chmod(executable, 0o755);
+      await writeFile(path.join(root, "daemon.log"), start({ ...before, pid: process.pid }));
+      const snapshot = await supervisorSnapshot(executable, { ...process.env, CLAUDE_CONFIG_DIR: root }, "current");
+      assert.equal(snapshot.selectedVersion, version === "unknown" ? null : version);
+      assert.equal(snapshot.identity.version, before.version);
+      assert.equal(snapshot.versionEvidence, version === "unknown" ? "unavailable" : version === before.version ? "matching" : "mismatched");
+    }
+    await rm(path.join(root, "daemon.log"));
+    assert.equal((await supervisorSnapshot(executable, { ...process.env, CLAUDE_CONFIG_DIR: root })).versionEvidence, "unavailable");
+    await writeFile(executable, "#!/bin/sh\nexit 1\n");
+    const selected = await selectClaudeExecutable(executable, root);
+    try {
+      assert.equal(selected.version, null);
+    } finally {
+      await selected.dispose();
     }
   });
 });

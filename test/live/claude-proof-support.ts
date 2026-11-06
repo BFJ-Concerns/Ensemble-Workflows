@@ -12,6 +12,7 @@ const exec = promisify(execFile);
 /** Resolve once; the caller owns the private directory until the proof finishes. */
 export async function selectClaudeExecutable(executable: string, temporaryRoot: string, env: NodeJS.ProcessEnv = process.env): Promise<{
   executable: string;
+  version: string | null;
   env: NodeJS.ProcessEnv;
   dispose: () => Promise<void>;
 }> {
@@ -26,9 +27,27 @@ export async function selectClaudeExecutable(executable: string, temporaryRoot: 
   }
   return {
     executable: selected,
+    version: await claudeVersion(selected, env),
     env: { ...env, PATH: [directory, env.PATH].filter(Boolean).join(path.delimiter) },
     dispose: () => rm(directory, { recursive: true, force: true })
   };
+}
+
+/** A failed or unrecognised version response is unavailable evidence. */
+async function claudeVersion(executable: string, env: NodeJS.ProcessEnv): Promise<string | null> {
+  try {
+    const { stdout } = await exec(executable, ["--version"], { env });
+    return /^(\d+\.\d+\.\d+(?:-[\w.-]+)?)(?: \(Claude Code\))?\s*$/.exec(stdout)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export type ClaudeVersionEvidence = "matching" | "mismatched" | "unavailable";
+
+export function classifyClaudeVersion(selected: string | null, observed: string | null): ClaudeVersionEvidence {
+  if (!selected || !observed) return "unavailable";
+  return selected === observed ? "matching" : "mismatched";
 }
 
 /** Only lifecycle fields, never raw daemon messages that might contain private data. */
@@ -106,7 +125,7 @@ export async function daemonPid(executable: string, env: NodeJS.ProcessEnv): Pro
   return status.code === 0 ? status.pid : null;
 }
 
-export async function supervisorSnapshot(executable: string, env: NodeJS.ProcessEnv, startAt: number | "current" = 0): Promise<{ identity: SupervisorIdentity; lifecycle: Record<string, string>[]; offset: number }> {
+export async function supervisorSnapshot(executable: string, env: NodeJS.ProcessEnv, startAt: number | "current" = 0): Promise<{ selectedVersion: string | null; versionEvidence: ClaudeVersionEvidence; identity: SupervisorIdentity; lifecycle: Record<string, string>[]; offset: number }> {
   const pid = await daemonPid(executable, env);
   const all = await supervisorLifecycle(env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"));
   // The operator's log spans unrelated sessions. Retain the serving daemon's
@@ -119,7 +138,8 @@ export async function supervisorSnapshot(executable: string, env: NodeJS.Process
     cgroup: pid === null ? null : await readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null),
     version: lifecycle.findLast(row => row.event === "start" && row.pid === String(pid))?.version ?? ""
   };
-  return { identity, lifecycle, offset };
+  const selectedVersion = await claudeVersion(executable, env);
+  return { selectedVersion, versionEvidence: classifyClaudeVersion(selectedVersion, identity.version), identity, lifecycle, offset };
 }
 
 export function assertSupervisorTransition(
@@ -129,5 +149,20 @@ export function assertSupervisorTransition(
 ): string {
   const transition = classifySupervisorTransition(before.identity, after.identity, before.lifecycle, after.lifecycle);
   assert.notEqual(transition, "unexplained", `${context}: supervisor stopped, moved or changed without a recorded upgrade: ${JSON.stringify({ before, after })}`);
+  return transition;
+}
+
+
+/** Fixed-version proof requires matching versions as well as valid lifecycle evidence. */
+export function assertFixedClaudeVersion(
+  before: Awaited<ReturnType<typeof supervisorSnapshot>>,
+  after: Awaited<ReturnType<typeof supervisorSnapshot>>,
+  context: string
+): string {
+  const transition = assertSupervisorTransition(before, after, context);
+  assert.ok(before.selectedVersion && before.selectedVersion === after.selectedVersion &&
+    classifyClaudeVersion(before.selectedVersion, before.identity.version) === "matching" &&
+    classifyClaudeVersion(after.selectedVersion, after.identity.version) === "matching",
+  `${context}: fixed-version proof lacks matching selected CLI and native supervisor versions: ${JSON.stringify({ before, after })}`);
   return transition;
 }

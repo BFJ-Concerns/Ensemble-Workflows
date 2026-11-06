@@ -6,7 +6,12 @@ import type { AgentWaitSnapshot, EngineName } from "./types.js";
 const MAX_AGENTS_IN_SNAPSHOT = 64;
 
 /** A worker's lifecycle state as the progress model sees it. */
-export type AgentState = "queued" | "running";
+export type AgentState = "queued" | "running" | "done" | "failed";
+
+export interface AgentFailure {
+  kind: string;
+  message: string;
+}
 
 /** The minimal budget surface the progress model reads when serialising. */
 export interface BudgetView {
@@ -16,6 +21,17 @@ export interface BudgetView {
 }
 
 export interface LiveAgentSnapshot {
+  requestedModel: string | null;
+  requestedEffort: string | null;
+  resolvedModel: string | null;
+  resolvedEffort: string | null;
+  transcript: string | null;
+  worktree: string | null;
+  spent: number | null;
+  lastEvidenceAtMs: number | null;
+  finishedAtMs: number | null;
+  failure: AgentFailure | null;
+
   id: number;
   engine: EngineName;
   label: string | null;
@@ -75,6 +91,7 @@ export interface ProgressSnapshot {
   schema: 2;
   runId: string;
   pid: number;
+  archiveDir: string | null;
   workflow: string | null;
   state: "running" | "finished";
   startedAt: number;
@@ -98,6 +115,17 @@ export interface RunProgressOptions {
 }
 
 interface AgentRecord {
+  requestedModel: string | null;
+  requestedEffort: string | null;
+  resolvedModel: string | null;
+  resolvedEffort: string | null;
+  transcript: string | null;
+  worktree: string | null;
+  spent: number | null;
+  lastEvidenceAtMs: number | null;
+  finishedAtMs: number | null;
+  failure: AgentFailure | null;
+
   id: number;
   engine: EngineName;
   label: string | null;
@@ -136,6 +164,8 @@ export class RunProgress {
   #now: () => number;
   #pid: number;
 
+  #archiveDir: string | null = null;
+  #finished = new Map<number, AgentRecord>();
   #workflow: string | null = null;
   #currentPhase: string | null = null;
   #state: "running" | "finished" = "running";
@@ -183,6 +213,45 @@ export class RunProgress {
     this.#touch();
   }
 
+  setArchiveDir(path: string | null): void {
+    this.#archiveDir = path;
+    this.#touch();
+  }
+
+  /** Publishes only observed identity; served values must not echo the request. */
+  noteAgentIdentity(id: number, identity: Partial<Pick<LiveAgentSnapshot,
+    "requestedModel" | "requestedEffort" | "resolvedModel" | "resolvedEffort">>): void {
+    const record = this.#live.get(id);
+    if (record === undefined) return;
+    Object.assign(record, identity);
+    this.#touch();
+  }
+
+  noteAgentTranscript(id: number, path: string | null): void {
+    const record = this.#live.get(id);
+    if (record === undefined) return;
+    record.transcript = path;
+    this.#touch();
+  }
+
+  noteAgentWorktree(id: number, path: string | null): void {
+    const record = this.#live.get(id);
+    if (record === undefined) return;
+    record.worktree = path;
+    this.#touch();
+  }
+
+  /** Cumulative worker tokens across attempts and targets; null means unobserved. */
+  noteAgentSpend(id: number, spent: number | null): void {
+    const record = this.#live.get(id);
+    if (record === undefined || record.spent === spent) return;
+    if (spent !== null && (!Number.isFinite(spent) || spent < 0)) {
+      throw new RangeError("Worker spend must be finite and non-negative");
+    }
+    record.spent = spent;
+    this.#touch();
+  }
+
   setWorkflow(name: string | null): void {
     this.#workflow = name;
     this.#touch();
@@ -201,6 +270,10 @@ export class RunProgress {
     const id = (this.#nextAgentId += 1);
     this.#live.set(id, {
       id,
+      requestedModel: null, requestedEffort: null,
+      resolvedModel: null, resolvedEffort: null,
+      transcript: null, worktree: null, spent: null,
+      lastEvidenceAtMs: null, finishedAtMs: null, failure: null,
       engine: input.engine,
       label: input.label,
       phase: input.phase ?? this.#currentPhase,
@@ -237,6 +310,10 @@ export class RunProgress {
     record.state = "queued";
     record.startedAt = null;
     record.firstEvidenceAt = null;
+    record.lastEvidenceAtMs = null;
+    record.resolvedModel = null;
+    record.resolvedEffort = null;
+    record.transcript = null;
     record.waitingOn = null;
     this.#counters(engine).queued += 1;
     this.#touch();
@@ -258,15 +335,17 @@ export class RunProgress {
 
   /**
    * Records the first observed sign of worker output for a live agent.
-   * Idempotent — the earliest observation wins — so engines may report on
-   * every attempt without the consumer losing the original timestamp.
+   * Each observation advances the last-output stamp; the first stamp stays fixed
+   * across retries on the same target.
    */
   noteAgentEvidence(id: number): void {
     const record = this.#live.get(id);
-    if (record === undefined || record.firstEvidenceAt !== null) {
+    if (record === undefined || record.state !== "running") {
       return;
     }
-    record.firstEvidenceAt = this.#now();
+    const now = this.#now();
+    record.firstEvidenceAt ??= now;
+    record.lastEvidenceAtMs = now;
     this.#touch();
   }
 
@@ -296,7 +375,7 @@ export class RunProgress {
   }
 
   /** Retires a worker, tallying it as done or failed and freeing its slot. */
-  settleAgent(id: number, outcome: "done" | "failed"): void {
+  settleAgent(id: number, outcome: "done" | "failed", failure: AgentFailure | null = null): void {
     const record = this.#live.get(id);
     if (record === undefined) {
       return;
@@ -312,6 +391,15 @@ export class RunProgress {
       counters.done += 1;
     } else {
       counters.failed += 1;
+    }
+    record.state = outcome;
+    record.finishedAtMs = this.#now();
+    record.failure = outcome === "failed" && failure !== null ? { ...failure } : null;
+    record.waitingOn = null;
+    this.#finished.set(id, record);
+    if (this.#finished.size > MAX_AGENTS_IN_SNAPSHOT) {
+      const oldest = this.#finished.keys().next().value;
+      if (oldest !== undefined) this.#finished.delete(oldest);
     }
     this.#touch();
   }
@@ -378,6 +466,7 @@ export class RunProgress {
       schema: 2,
       runId: this.runId,
       pid: this.#pid,
+      archiveDir: this.#archiveDir,
       workflow: this.#workflow,
       state: this.#state,
       startedAt: this.#startedAt,
@@ -392,11 +481,21 @@ export class RunProgress {
   }
 
   #liveAgents(): LiveAgentSnapshot[] {
-    const records = [...this.#live.values()];
+    const records = [...this.#live.values(), ...this.#finished.values()];
     // Running agents first, then the queued tail, capped for file size. The
     // counts are never lost — `totals`/`engines` carry the full tally.
-    records.sort((a, b) => rank(a.state) - rank(b.state) || a.id - b.id);
+    records.sort((a, b) => rank(a.state) - rank(b.state) || (rank(a.state) === 2 ? b.id - a.id : a.id - b.id));
     return records.slice(0, MAX_AGENTS_IN_SNAPSHOT).map((record) => ({
+      requestedModel: record.requestedModel,
+      requestedEffort: record.requestedEffort,
+      resolvedModel: record.resolvedModel,
+      resolvedEffort: record.resolvedEffort,
+      transcript: record.transcript,
+      worktree: record.worktree,
+      spent: record.spent,
+      lastEvidenceAtMs: record.lastEvidenceAtMs,
+      finishedAtMs: record.finishedAtMs,
+      failure: record.failure === null ? null : { ...record.failure },
       id: record.id,
       engine: record.engine,
       label: record.label,
@@ -428,5 +527,5 @@ export class RunProgress {
 }
 
 function rank(state: AgentState): number {
-  return state === "running" ? 0 : 1;
+  return state === "running" ? 0 : state === "queued" ? 1 : 2;
 }

@@ -22706,6 +22706,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.#openCalls.delete(call);
     });
     call.outward = outward;
+    if (this.#closed) {
+      void outward.catch(() => void 0);
+    }
     return outward;
   }
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
@@ -23748,7 +23751,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   #runSettlementCause(error, dispatch = "in-flight") {
     const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
-    if (this.#closed && (error instanceof EngineShutdownError || error instanceof TurnTimeoutError || substrate instanceof AppServerExitedError)) {
+    if (this.#closed && (isRunEnding(error) || error instanceof EngineShutdownError || error instanceof TurnTimeoutError || substrate instanceof AppServerExitedError)) {
       return this.#closeCause(dispatch);
     }
     return null;

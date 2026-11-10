@@ -26,6 +26,7 @@ import {
   FallbackTargetRejectedError,
   firstDeltaMsOf,
   HoldRejectedError,
+  isRunEnding,
   markRunEnding,
   MissingEngineError,
   MultiTurnUnsupportedError,
@@ -662,6 +663,9 @@ export class EnsembleRuntime {
       this.#openCalls.delete(call);
     });
     call.outward = outward;
+    if (this.#closed) {
+      void outward.catch(() => undefined);
+    }
     return outward;
   }
 
@@ -2020,7 +2024,11 @@ export class EnsembleRuntime {
     // latch is read through it, so a leg torn down mid-open settles as the
     // run's ending and not as the substrate refusing.
     const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
-    if (this.#closed && (error instanceof EngineShutdownError || error instanceof TurnTimeoutError || substrate instanceof AppServerExitedError)) {
+    if (
+      this.#closed &&
+      (isRunEnding(error) || error instanceof EngineShutdownError ||
+        error instanceof TurnTimeoutError || substrate instanceof AppServerExitedError)
+    ) {
       return this.#closeCause(dispatch);
     }
     return null;

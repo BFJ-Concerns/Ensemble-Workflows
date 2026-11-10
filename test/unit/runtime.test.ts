@@ -2210,7 +2210,9 @@ test("a worker inherits the current phase unless its call declares another", asy
   const { runtime, records } = chainRuntime([new ChainEngine("codex", [answers("before"), answers("one"), answers("two"), answers("override")])], 1);
   await runtime.agent("before", { engine: "codex" });
   runtime.notePhase("First response");
-  await runtime.agent("one", { engine: "codex" });
+  assert.deepEqual(await runtime.agent("one", { engine: "codex", identity: true }), {
+    label: null, phase: "First response", output: "one", failure: null
+  });
   await runtime.agent("two", { engine: "codex" });
   await runtime.agent("override", { engine: "codex", phase: "Review" });
   const phases = records.filter((record) => record.status === "complete").map((record) => record.phase);
@@ -5236,5 +5238,63 @@ test("a worker failure settled before shutdown keeps its account through invocat
         await worker.catch(() => undefined);
       }
     }
+  }
+});
+
+
+test("a held turn interrupted while placement opens has the run-ending record and tally", async () => {
+  let markOpening: (() => void) | undefined;
+  let releasePlacement: (() => void) | undefined;
+  const opening = new Promise<void>((resolve) => { markOpening = resolve; });
+  const placementGate = new Promise<void>((resolve) => { releasePlacement = resolve; });
+  const worktreeManager = new FakeWorktreeManager(false);
+  const create = worktreeManager.create.bind(worktreeManager);
+  worktreeManager.create = async (cwd) => {
+    markOpening?.();
+    await placementGate;
+    return create(cwd);
+  };
+  const transport = new FakeTransport([]);
+  const runtime = new EnsembleRuntime({ transport, worktreeManager, defaultMaxAttempts: 1 });
+  const session = runtime.createWorkerSession({ engine: "codex", isolation: "worktree", label: "held" });
+  const sent = session.send("work");
+  sent.catch(() => undefined);
+  try {
+    await opening;
+    const closing = runtime.close("interrupted");
+    releasePlacement?.();
+    await closing;
+    await assert.rejects(sent, isRunEnding);
+    const record = runtime.lastAgentRecord()!;
+    assert.equal(record.status, "interrupted");
+    assert.equal(record.terminationCause?.kind, "run-interrupted");
+    assert.deepEqual(record.attempts, []);
+    assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 1, unsettled: 0 });
+    assert.deepEqual(runtime.unfinishedLegs(), [{ id: record.id, label: "held", disposition: "cut-short" }]);
+    assert.equal(transport.openedThreads.length, 0);
+    assert.equal(worktreeManager.finished.length, 1);
+  } finally {
+    releasePlacement?.();
+    await runtime.close();
+    await sent.catch(() => undefined);
+  }
+});
+
+test("unawaited combinators registered after runtime close have handled run-ending rejections", async () => {
+  const runtime = new EnsembleRuntime({ transport: new FakeTransport([]), defaultMaxAttempts: 1 });
+  const hooks = createWorkflowHooks({ runtime, args: [], log: () => {}, workflow: async () => null });
+  const unhandled: unknown[] = [];
+  const listener = (error: unknown): void => { unhandled.push(error); };
+  process.on("unhandledRejection", listener);
+  try {
+    await runtime.close("interrupted");
+    void hooks.parallel([() => runtime.agent("work", { engine: "codex" })]);
+    void hooks.pipeline(["item"], () => runtime.agent("work", { engine: "codex" }));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+    await assert.rejects(hooks.parallel([() => runtime.agent("work", { engine: "codex" })]), isRunEnding);
+  } finally {
+    process.off("unhandledRejection", listener);
+    await runtime.close();
   }
 });

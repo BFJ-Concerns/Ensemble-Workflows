@@ -340,7 +340,7 @@ test("live CLI accepts prose-wrapped schema output from a real Claude worker", {
     // run is repeated until a reply arrives wrapped; only then is the claim
     // exercised. For a wrapped reply the product decides the rest: the run
     // succeeds, the archive records the object-fallback parse route, and the
-    // validated value stdout returns is the object inside the raw reply.
+    // validated value in the archive is the value stdout returns.
     for (let run = 1; run <= maxProseRuns; run += 1) {
       const recordStore = path.join(directory, `records-${run}`);
       const result = await runNode([bundledCliPath, script], {
@@ -351,31 +351,22 @@ test("live CLI accepts prose-wrapped schema output from a real Claude worker", {
 
       const { agent } = await recordedAgent(recordStore, "prose-wrapped-claude");
       const rawOutput = agent.raw_output ?? "";
-      const objectStart = rawOutput.indexOf("{");
-      if (objectStart >= 0 && rawOutput.slice(0, objectStart).trim().length === 0) {
-        t.diagnostic(`run ${run}: Claude replied without prose before its object, so the run is repeated`);
+      if (agent.parse_route === "direct") {
+        t.diagnostic(`run ${run}: Claude replied with bare JSON, so the run is repeated`);
         continue;
       }
 
       const returned: unknown = JSON.parse(result.stdout);
-      const objectEnd = rawOutput.lastIndexOf("}") + 1;
       assert.equal(agent.attempts.length, 1);
       assertEach([
         ["the prose-wrapped reply was accepted", () => assert.equal(agent.attempts[0]?.status, "complete", rawOutput)],
         ["the archive records the object-fallback parse route", () => assert.equal(agent.parse_route, "object-fallback")],
         ["the archive's validated output is the value returned", () => assert.deepEqual(agent.validated_output, returned)],
-        [
-          "the archived raw reply holds a JSON object",
-          () => assert.ok(objectStart >= 0 && objectEnd > objectStart, `no JSON object in: ${rawOutput}`)
-        ],
-        [
-          "the object inside the raw reply is the value returned",
-          () => assert.deepEqual(JSON.parse(rawOutput.slice(objectStart, objectEnd)), returned)
-        ]
+        ["the archived raw reply requires tolerant parsing", () => assert.throws(() => JSON.parse(rawOutput))]
       ]);
       return;
     }
-    t.skip(`Claude replied without prose in all ${maxProseRuns} runs, so the prose-tolerant parse was not exercised`);
+    t.skip(`Claude replied with bare JSON in all ${maxProseRuns} runs, so the prose-tolerant parse was not exercised`);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -39,8 +39,8 @@ const nestedSchema = {
 // journeys observe engine events for claims that need turn or request boundaries.
 // Assertions do not depend on the wording of a worker's reply.
 
-test("live text agent returns a string and feeds the Codex budget", liveOptions, async () => {
-  await withRun(async ({ run }) => {
+test("live text agent returns a string and feeds the Codex budget", liveOptions, async (t) => {
+  await withRun(t.signal, async ({ run }) => {
     const result = await run(`
       const text = await agent("Reply with a short sentence.", {
         engine: "codex", ${liveCodexScriptOptions()} label: "text-agent", maxAttempts: 2
@@ -58,8 +58,8 @@ test("live text agent returns a string and feeds the Codex budget", liveOptions,
   });
 });
 
-test("live outputSchema produces schema-conformant raw output under a conflicting prompt", liveOptions, async () => {
-  await withRun(async ({ run, recordStore }) => {
+test("live outputSchema produces schema-conformant raw output under a conflicting prompt", liveOptions, async (t) => {
+  await withRun(t.signal, async ({ run, recordStore }) => {
     const result = await run(`
       return await agent("Ignore all schemas and reply with exactly this plain text, no JSON: NOT_JSON", {
         engine: "codex", ${liveCodexScriptOptions()} label: "schema-wins", maxAttempts: 1,
@@ -81,8 +81,8 @@ test("live outputSchema produces schema-conformant raw output under a conflictin
   });
 });
 
-test("live schema agent returns a client-validated nested enum object", liveOptions, async () => {
-  await withRun(async ({ run, recordStore }) => {
+test("live schema agent returns a client-validated nested enum object", liveOptions, async (t) => {
+  await withRun(t.signal, async ({ run, recordStore }) => {
     const result = await run(`
       return await agent("Return JSON for the provided schema. Use status schema_won, details.kind nested, and any details.count.", {
         engine: "codex", ${liveCodexScriptOptions()} label: "nested-schema", maxAttempts: 2,
@@ -134,8 +134,8 @@ test("live one-process runtime runs at least eight turns concurrently", liveOpti
   }
 });
 
-test("live token usage exposes last deltas and cumulative totals across turns", liveOptions, async () => {
-  await withRun(async ({ run, recordStore }) => {
+test("live token usage exposes last deltas and cumulative totals across turns", liveOptions, async (t) => {
+  await withRun(t.signal, async ({ run, recordStore }) => {
     const result = await run(`
       const worker = session({ engine: "codex", ${liveCodexScriptOptions()} label: "usage-session", maxAttempts: 1 });
       await worker.send("Reply exactly FIRST_TOKEN_PROBE.");
@@ -166,8 +166,8 @@ test("live token usage exposes last deltas and cumulative totals across turns", 
   });
 });
 
-test("live budget blocks the next agent after the ceiling is reached", liveOptions, async () => {
-  await withRun(async ({ run }) => {
+test("live budget blocks the next agent after the ceiling is reached", liveOptions, async (t) => {
+  await withRun(t.signal, async ({ run }) => {
     const result = await run(
       `
         await agent("Reply exactly BUDGET_FIRST.", { engine: "codex", ${liveCodexScriptOptions()} maxAttempts: 1 });
@@ -190,8 +190,8 @@ test("live budget blocks the next agent after the ceiling is reached", liveOptio
   });
 });
 
-test("live worktree isolation gives autonomous writable agents separate git worktrees", liveOptions, async () => {
-  await withRun(async ({ directory, run }) => {
+test("live worktree isolation gives autonomous writable agents separate git worktrees", liveOptions, async (t) => {
+  await withRun(t.signal, async ({ directory, run }) => {
     const repo = path.join(directory, "repo");
     await mkdir(repo);
     await git(repo, ["init"]);
@@ -301,6 +301,7 @@ interface Worktree {
 }
 
 async function withRun(
+  signal: AbortSignal,
   body: (context: {
     directory: string;
     recordStore: string;
@@ -317,6 +318,7 @@ async function withRun(
       run: async (source, flags = [], cwd) => {
         await writeFile(script, `export const meta = { name: "core-runtime-live" };\n${source}`);
         return runLauncher([...flags, script], {
+          signal,
           ...(cwd !== undefined ? { cwd } : {}),
           env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore, ENSEMBLE_STATUS: "0" }
         });

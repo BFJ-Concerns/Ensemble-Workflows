@@ -25,7 +25,7 @@ const engines: Array<{ name: string; scriptOptions: string }> = [
 test(
   "live per-call cwd places Codex, Claude, and opencode workers in the same requested directory",
   { skip: !isLive, timeout: 900_000 },
-  async () => {
+  async (t) => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-uniform-cwd-"));
     const markerDir = path.join(directory, "target");
     const recordStore = path.join(directory, "records");
@@ -50,6 +50,8 @@ test(
           "\nreturn null;"
       );
       const result = await runLauncher([script], {
+        signal: t.signal,
+        timeoutMs: 840_000,
         env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore, ENSEMBLE_STATUS: "0" }
       });
       assert.equal(result.code, 0, result.stderr);
@@ -77,7 +79,7 @@ test(
 test(
   "live worktree placement preserves a branch carrying each engine's commit",
   { skip: !isLive, timeout: 1_200_000 },
-  async () => {
+  async (t) => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-uniform-worktree-"));
     const repo = path.join(directory, "repo");
     const script = path.join(directory, "workflow.js");
@@ -105,6 +107,8 @@ test(
           "\nreturn placed;"
       );
       const result = await runLauncher([script], {
+        signal: t.signal,
+        timeoutMs: 840_000,
         cwd: repo,
         env: { ...process.env, ENSEMBLE_RUN_RECORD: "0", ENSEMBLE_STATUS: "0" }
       });

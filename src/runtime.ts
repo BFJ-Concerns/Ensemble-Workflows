@@ -787,10 +787,11 @@ export class EnsembleRuntime {
     // option: no engine invocation, no progress entry, no run record.
     this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
+    const phase = options.phase ?? this.progress.snapshot().currentPhase;
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
-      phase: options.phase ?? null
+      phase
     });
     if (engine.name === "claude" && options.model === undefined) {
       // Unpinned Claude burns the ambient default model silently; make it visible.
@@ -800,7 +801,7 @@ export class EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, stripRoutes);
     const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     // Dispatch-time record: persisted in-progress before the engine is
@@ -988,10 +989,11 @@ export class EnsembleRuntime {
       // buys no exemption from the ceiling.
       this.budget.assertCanStart(engine.name);
       const queuedAt = Date.now();
+      const phase = options.phase ?? this.progress.snapshot().currentPhase;
       const agentId = this.progress.queueAgent({
         engine: engine.name,
         label: options.label ?? null,
-        phase: options.phase ?? null
+        phase
       });
       if (engine.name === "claude" && options.model === undefined && state.turnCount === 0) {
         this.#emitEvent({
@@ -1013,7 +1015,7 @@ export class EnsembleRuntime {
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
         ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
         ...(options.label !== undefined ? { label: options.label } : {}),
-        ...(options.phase !== undefined ? { phase: options.phase } : {}),
+        ...(phase !== null ? { phase } : {}),
         ...(turn.schema !== undefined ? { schema: turn.schema } : {}),
         ...(options.strip !== undefined ? { strip: options.strip } : {})
       };

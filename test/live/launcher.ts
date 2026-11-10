@@ -15,10 +15,11 @@ export interface LauncherResult {
 /** Runs the bundled launcher with `args`, collecting stdout, stderr and the exit code as a caller would. */
 export function runLauncher(
   args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; signal: AbortSignal; timeoutMs?: number }
 ): Promise<LauncherResult> {
+  options.signal.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [bundledCliPath, ...args], {
+    const child = spawn(process.execPath, [bundledCliPath, "--timeout", String(options.timeoutMs ?? 360_000), ...args], {
       cwd: options.cwd ?? process.cwd(),
       env: options.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"]
@@ -29,8 +30,31 @@ export function runLauncher(
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => (stdout += chunk));
     child.stderr.on("data", (chunk: string) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, stdout, stderr }));
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const abort = (): void => {
+      // Allow the CLI to cancel its workers and publish terminal records first.
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+    };
+    const cleanup = (): void => {
+      options.signal.removeEventListener("abort", abort);
+      clearTimeout(killTimer);
+    };
+    options.signal.addEventListener("abort", abort, { once: true });
+    // Cover cancellation between the pre-spawn check and listener registration.
+    if (options.signal.aborted) abort();
+    child.once("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+    child.once("close", (code) => {
+      cleanup();
+      if (options.signal.aborted) {
+        reject(options.signal.reason);
+      } else {
+        resolve({ code, stdout, stderr });
+      }
+    });
   });
 }
 

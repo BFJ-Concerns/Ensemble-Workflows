@@ -5,7 +5,6 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { claudeCacheTtlToMs } from "../../src/claude-engine.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import {
   ClaudeDispatchError,
@@ -315,15 +314,6 @@ test("a statically declared out-of-domain effort fails before the body runs", ()
   assert.doesNotThrow(() => validateEngineDefaults("claude", { effort: "xhigh" }));
   assert.doesNotThrow(() => validateEngineDefaults("codex", { effort: "xhigh" }));
   assert.doesNotThrow(() => validateEngineDefaults("claude", {}));
-});
-
-test("claudeCacheTtlToMs parses the settings value formats and refuses the rest", () => {
-  assert.equal(claudeCacheTtlToMs("1h"), 3_600_000);
-  assert.equal(claudeCacheTtlToMs("5m"), 300_000);
-  assert.equal(claudeCacheTtlToMs("30s"), 30_000);
-  assert.equal(claudeCacheTtlToMs("90"), 90_000);
-  assert.equal(claudeCacheTtlToMs("soon"), null);
-  assert.equal(claudeCacheTtlToMs("0m"), null);
 });
 
 test("Claude rejects an out-of-domain effort before any worker spawns", async () => {
@@ -1901,4 +1891,134 @@ test("a dispatch the daemon took but never registered degrades to a failed turn 
     },
     { registrationTimeout: "dispatched session 'w' in /fake/scratch did not register within 30000ms" }
   );
+});
+
+test("Claude reports a readable transcript after an initially absent path", async () => {
+  await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
+    const lookup = controlPlane.transcriptPath.bind(controlPlane);
+    let reads = 0;
+    controlPlane.transcriptPath = async () => ++reads === 1 ? null : lookup();
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const invocation = adapter.createInvocation("go", {});
+    const paths: string[] = [];
+    const result = await invocation.runAttempt({
+      attempt: 1,
+      onTranscriptPath: (file) => {
+        paths.push(file);
+        throw new Error("observer failed");
+      }
+    });
+    assert.equal(result.text, "ok");
+    assert.ok(reads >= 2);
+    assert.ok(paths.length > 0, "transcript discovery must notify the observer after an initially absent path");
+    assert.equal(await readFile(paths[0]!, "utf8"), result.transcripts![0]!.content);
+    await invocation.close?.();
+  });
+});
+
+test("Claude reports its transcript for every held-session turn and correction", async () => {
+  await withControlPlane([
+    { assistant: { text: "first" } },
+    { assistant: { text: "second" } },
+    { assistant: { text: "corrected" } }
+  ], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const session = adapter.createSession({});
+    const paths: string[][] = [[], [], []];
+    try {
+      const first = session.beginTurn("first", {});
+      assert.equal((await first.runAttempt({ attempt: 1, onTranscriptPath: (file) => paths[0]!.push(file) })).text, "first");
+      const second = session.beginTurn("second", {});
+      assert.equal((await second.runAttempt({ attempt: 1, onTranscriptPath: (file) => paths[1]!.push(file) })).text, "second");
+      assert.equal((await second.runAttempt({
+        attempt: 2, previousFailure: { kind: "validation", message: "correct it" },
+        onTranscriptPath: (file) => paths[2]!.push(file)
+      })).text, "corrected");
+      for (const captured of paths) {
+        assert.ok(captured.length > 0, "each held turn and correction must publish its transcript path");
+        assert.ok(captured.every((file) => file === paths[0]![0]));
+      }
+    } finally {
+      await session.close();
+    }
+  });
+});
+
+
+test("Claude observes changed assistant output, served identity and usage without counting unchanged polls", async () => {
+  await withControlPlane([{ busyPolls: 2, assistant: {
+    text: "observed", model: "claude-served", effort: "high", input: 10, output: 4
+  } }], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const invocation = adapter.createInvocation("go", {});
+    let outputs = 0;
+    const identities: unknown[] = [];
+    let spent = 0;
+    const result = await invocation.runAttempt({
+      attempt: 1,
+      onOutput: () => { outputs += 1; },
+      onIdentity: (identity) => { identities.push(identity); },
+      onUsage: (event) => { spent += event.last.totalTokens; }
+    });
+    assert.equal(outputs, 1, "unchanged polls must not advance the last-output stamp");
+    assert.ok(identities.some((identity) => JSON.stringify(identity) === JSON.stringify({
+      resolvedModel: "claude-served", resolvedEffort: "high"
+    })));
+    assert.equal(spent, result.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0));
+    assert.ok(spent > 0);
+    await invocation.close?.();
+  });
+});
+
+
+test("Claude continues reporting new assistant rows after the first output", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-output-growth-"));
+  try {
+    const controlPlane = new SplitRowsControlPlane(dir);
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const invocation = adapter.createInvocation("go", {});
+    const observedAt: number[] = [];
+    try {
+      await invocation.runAttempt({ attempt: 1, onOutput: () => { observedAt.push(controlPlane.pollCount); } });
+      assert.ok(observedAt.length >= 2, "each newly appended assistant batch must remain visible");
+      assert.equal(observedAt.at(-1), 3);
+    } finally { await invocation.close?.(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+
+test("a failed in-session correction retains the served identity in status and archive", async () => {
+  await withControlPlane([{ assistant: { text: "not json", model: "claude-observed", effort: "high" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 2 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+    try {
+      assert.equal(await runtime.agent("decide", { engine: "claude", schema: okSchema }), null);
+      assert.equal(controlPlane.dispatchCount, 1);
+      assert.equal(controlPlane.steerCount, 1);
+      const agent = runtime.progress.snapshot().agents[0]!;
+      assert.equal(agent.resolvedModel, "claude-observed");
+      assert.equal(agent.resolvedEffort, "high");
+      assert.equal(records.at(-1)?.resolvedModel, "claude-observed");
+      assert.equal(records.at(-1)?.resolvedEffort, "high");
+      assert.equal(records.at(-1)?.attempts[1]?.rawOutput, null);
+    } finally { await runtime.close(); }
+  }, { steerSucceeds: false });
+});
+
+test("a held Claude turn retains observed identity before new assistant output", async () => {
+  await withControlPlane([
+    { assistant: { text: "first", model: "claude-held", effort: "high" } },
+    { busyPolls: 2 }
+  ], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const held = adapter.createSession({});
+    try {
+      await held.beginTurn("first", {}).runAttempt({ attempt: 1 });
+      const observed: Array<{ resolvedModel: string | null; resolvedEffort: string | null }> = [];
+      await held.beginTurn("second", {}).runAttempt({ attempt: 1, onIdentity: (identity) => observed.push(identity) });
+      assert.ok(observed.length > 0, "the held turn must expose its identity while waiting");
+      assert.ok(observed.every((identity) => identity.resolvedModel === "claude-held" && identity.resolvedEffort === "high"));
+    } finally { await held.close(); await adapter.close(); }
+  });
 });

@@ -618,7 +618,10 @@ function positionAt(source: string, offset: number): { line: number; column: num
   let lineStart = 0;
   const end = Math.min(offset, source.length);
   for (let index = 0; index < end; index += 1) {
-    if (source[index] === "\n") {
+    if (/[\r\n\u2028\u2029]/.test(source[index]!)) {
+      if (source[index] === "\r" && source[index + 1] === "\n" && index + 1 < end) {
+        index += 1;
+      }
       line += 1;
       lineStart = index + 1;
     }
@@ -787,8 +790,8 @@ function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, fi
   const pointsPastBody =
     wrappedPosition !== null &&
     (wrappedPosition.line > bodyEnd.line ||
-      (wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column));
-  const earlyClose = pointsPastBody ? prematureWrapperClose(wrappedSource, bodyEndOffset, origin) : null;
+      (wrappedPosition.line === bodyEnd.line && wrappedPosition.column >= bodyEnd.column));
+  const earlyClose = prematureWrapperClose(wrappedSource, bodyEndOffset, origin);
   const authorPosition =
     earlyClose ??
     (pointsPastBody
@@ -800,7 +803,7 @@ function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, fi
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
 
-  const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
+  const sourceLine = workflow.source.split(/\r\n|[\r\n\u2028\u2029]/)[authorPosition.line - 1] ?? "";
   const start = Math.max(0, authorPosition.column - 1 - 72);
   const end = Math.min(sourceLine.length, start + 96);
   const prefix = start > 0 ? "…" : "";
@@ -826,16 +829,20 @@ function prematureWrapperClose(
   origin: WorkflowModuleOrigin
 ): { line: number; column: number } | null {
   try {
-    const program = acorn.parse(wrappedSource.slice(0, bodyEndOffset), { ecmaVersion: "latest", sourceType: "module" });
-    const declaration = program.body[0];
+    // Parse only the wrapper expression: trailing author code can itself be
+    // invalid at module scope after an extra brace closes the function.
+    const expression = acorn.parseExpressionAt(wrappedSource, "export default ".length, {
+      ecmaVersion: "latest",
+      sourceType: "module"
+    });
     if (
-      declaration?.type !== "ExportDefaultDeclaration" ||
-      declaration.declaration.type !== "ArrowFunctionExpression" ||
-      declaration.declaration.body.type !== "BlockStatement"
+      expression.type !== "ArrowFunctionExpression" ||
+      expression.body.type !== "BlockStatement" ||
+      expression.body.end > bodyEndOffset
     ) {
       return null;
     }
-    const closingBrace = positionAt(wrappedSource, declaration.declaration.body.end - 1);
+    const closingBrace = positionAt(wrappedSource, expression.body.end - 1);
     return authorPositionOf(origin, closingBrace.line, closingBrace.column);
   } catch {
     // Acorn is only helping describe a rejection V8 has already made.

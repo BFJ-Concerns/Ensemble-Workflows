@@ -7999,7 +7999,7 @@ var require_acorn = __commonJS({
       Parser3.parse = function parse5(input, options) {
         return new this(options, input).parse();
       };
-      Parser3.parseExpressionAt = function parseExpressionAt3(input, pos, options) {
+      Parser3.parseExpressionAt = function parseExpressionAt4(input, pos, options) {
         var parser = new this(options, input, pos);
         parser.nextToken();
         return parser.parseExpression();
@@ -13104,7 +13104,7 @@ var require_acorn = __commonJS({
       function parse4(input, options) {
         return Parser3.parse(input, options);
       }
-      function parseExpressionAt2(input, pos, options) {
+      function parseExpressionAt3(input, pos, options) {
         return Parser3.parseExpressionAt(input, pos, options);
       }
       function tokenizer2(input, options) {
@@ -13127,7 +13127,7 @@ var require_acorn = __commonJS({
       exports2.lineBreakG = lineBreakG2;
       exports2.nonASCIIwhitespace = nonASCIIwhitespace2;
       exports2.parse = parse4;
-      exports2.parseExpressionAt = parseExpressionAt2;
+      exports2.parseExpressionAt = parseExpressionAt3;
       exports2.tokContexts = types2;
       exports2.tokTypes = types$12;
       exports2.tokenizer = tokenizer2;
@@ -30253,6 +30253,9 @@ Parser.acorn = {
 function parse3(input, options) {
   return Parser.parse(input, options);
 }
+function parseExpressionAt2(input, pos, options) {
+  return Parser.parseExpressionAt(input, pos, options);
+}
 
 // src/script-runner.ts
 var import_acorn_globals = __toESM(require_acorn_globals(), 1);
@@ -30755,7 +30758,10 @@ function positionAt(source, offset2) {
   let lineStart = 0;
   const end = Math.min(offset2, source.length);
   for (let index = 0; index < end; index += 1) {
-    if (source[index] === "\n") {
+    if (/[\r\n\u2028\u2029]/.test(source[index])) {
+      if (source[index] === "\r" && source[index + 1] === "\n" && index + 1 < end) {
+        index += 1;
+      }
       line += 1;
       lineStart = index + 1;
     }
@@ -30861,13 +30867,13 @@ function workflowSyntaxError(error, workflow, filename) {
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
   const bodyEndOffset = wrappedSource.length - WORKFLOW_WRAPPER_SUFFIX.length;
   const bodyEnd = positionAt(wrappedSource, bodyEndOffset);
-  const pointsPastBody = wrappedPosition !== null && (wrappedPosition.line > bodyEnd.line || wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column);
-  const earlyClose = pointsPastBody ? prematureWrapperClose(wrappedSource, bodyEndOffset, origin) : null;
+  const pointsPastBody = wrappedPosition !== null && (wrappedPosition.line > bodyEnd.line || wrappedPosition.line === bodyEnd.line && wrappedPosition.column >= bodyEnd.column);
+  const earlyClose = prematureWrapperClose(wrappedSource, bodyEndOffset, origin);
   const authorPosition = earlyClose ?? (pointsPastBody ? positionAt(workflow.source, workflow.source.trimEnd().length) : wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column));
   if (authorPosition === null) {
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
-  const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
+  const sourceLine = workflow.source.split(/\r\n|[\r\n\u2028\u2029]/)[authorPosition.line - 1] ?? "";
   const start = Math.max(0, authorPosition.column - 1 - 72);
   const end = Math.min(sourceLine.length, start + 96);
   const prefix = start > 0 ? "\u2026" : "";
@@ -30884,12 +30890,14 @@ function workflowSyntaxError(error, workflow, filename) {
 }
 function prematureWrapperClose(wrappedSource, bodyEndOffset, origin) {
   try {
-    const program = parse3(wrappedSource.slice(0, bodyEndOffset), { ecmaVersion: "latest", sourceType: "module" });
-    const declaration = program.body[0];
-    if (declaration?.type !== "ExportDefaultDeclaration" || declaration.declaration.type !== "ArrowFunctionExpression" || declaration.declaration.body.type !== "BlockStatement") {
+    const expression = parseExpressionAt2(wrappedSource, "export default ".length, {
+      ecmaVersion: "latest",
+      sourceType: "module"
+    });
+    if (expression.type !== "ArrowFunctionExpression" || expression.body.type !== "BlockStatement" || expression.body.end > bodyEndOffset) {
       return null;
     }
-    const closingBrace = positionAt(wrappedSource, declaration.declaration.body.end - 1);
+    const closingBrace = positionAt(wrappedSource, expression.body.end - 1);
     return authorPositionOf(origin, closingBrace.line, closingBrace.column);
   } catch {
     return null;

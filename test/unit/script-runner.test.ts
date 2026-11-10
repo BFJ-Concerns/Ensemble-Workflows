@@ -1668,6 +1668,41 @@ test("an extra closing brace is identified at the author's token", async () => {
   );
 });
 
+test("an extra closing brace before more body code names the brace", async () => {
+  for (const trailing of ["return 2;", "const next = 2;", "const broken = ;"]) {
+    const filename = "/workflow/extra-brace-before-code.js";
+    const source = `export const meta = { name: 'extra-brace' };\nif (true) { log('ok'); }\n}\n${trailing}\n`;
+    await assert.rejects(
+      runWorkflowScript({ filename, runtime, log: () => {}, source }),
+      (error: unknown) => {
+        assert.ok(error instanceof WorkflowScriptError);
+        assert.equal(error.message, `Syntax error in ${filename}:3:1: Unexpected closing '}' in workflow body\n  }\n  ^`);
+        return true;
+      }
+    );
+  }
+});
+
+test("syntax diagnostics use JavaScript line terminators for positions and excerpts", async () => {
+  for (const separator of ["\r", "\r\n", "\u2028", "\u2029"]) {
+    for (const unfinished of [true, false]) {
+      const filename = "/workflow/line-terminators.js";
+      const source = ["export const meta = { name: 'line-terminators' };", "const seed = 1;", unfinished ? "return (" : "const broken = ;", ""].join(separator);
+      await assert.rejects(
+        runWorkflowScript({ filename, runtime, log: () => {}, source }),
+        (error: unknown) => {
+          assert.ok(error instanceof WorkflowScriptError);
+          const column = unfinished ? 9 : 16;
+          assert.ok(error.message.startsWith(`Syntax error in ${filename}:3:${column}: `), error.message);
+          assert.ok(error.message.includes(`\n  ${unfinished ? "return (" : "const broken = ;"}\n`), error.message);
+          assert.ok(error.message.endsWith(`\n  ${" ".repeat(column - 1)}^`), error.message);
+          return true;
+        }
+      );
+    }
+  }
+});
+
 test("a syntax error near the end of a long source line keeps the caret near its token", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-syntax-long-line-"));
   const scriptPath = path.join(directory, "workflow.js");

@@ -12,6 +12,12 @@ import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type { ClaudeControlPlane } from "../../src/claude-control-plane.js";
 
+// Placement and settings use the same delivery stub as the control-plane
+// fixtures; native editor delivery has separate transport coverage.
+class DeliveryStubControlPlane extends ClaudeCliControlPlane {
+  override async steer() { return { submitted: true as const }; }
+}
+
 test("Claude dispatch selects in-place editing per session without rewriting project settings", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "claude-placement-settings-"));
   let plane: ClaudeCliControlPlane | undefined;
@@ -39,12 +45,13 @@ test("Claude dispatch selects in-place editing per session without rewriting pro
         catch { process.stdout.write('[]'); process.exit(0); }
         process.stdout.write(JSON.stringify([{
           id: 'placed', sessionId: 'placed-session', name: 'placed-worker',
-          kind: 'background', cwd: ${JSON.stringify(dir)}, status: 'idle', state: 'done'
+          kind: 'background', pid: process.pid, cwd: ${JSON.stringify(dir)}, status: 'idle', state: 'done'
         }]));
       }
     `, { mode: 0o755 });
-    plane = new ClaudeCliControlPlane({ claudeBin: bin, workerEnv: { PLACEMENT_TEST: "declared" }, holdScope: null });
+    plane = new DeliveryStubControlPlane({ claudeBin: bin, workerEnv: { PLACEMENT_TEST: "declared" }, holdScope: null });
     handle = await plane.dispatch({ prompt: "fixture", name: "placed-worker", cwd: dir, permissionDenyRules: ["Skill"] });
+    assert.equal(handle.launchFailure, undefined);
     assert.deepEqual(JSON.parse(await readFile(observed, "utf8")), {
       cwd: dir, worktree: { bgIsolation: "none" }, deny: ["Skill"], declared: "declared"
     });
@@ -79,12 +86,21 @@ for (const outcome of ["complete", "refused"] as const) {
     const dir = await mkdtemp(path.join(tmpdir(), "claude-placement-archive-"));
     const transcript = path.join(dir, "session.jsonl");
     const tree = { path: path.join(dir, "native-tree"), branch: "native-branch" };
-    const handle = { id: "owned", sessionId: "owned-session", name: "owned", cwd: dir };
+    const launchDiagnostics = { claudeLaunch: { failure: "attachment outcome uncertain", cleanupConfirmed: false } };
+    const handle = { id: "owned", sessionId: "owned-session", name: "owned", cwd: dir,
+      launchFailure: { message: "attachment outcome uncertain", diagnostics: launchDiagnostics } };
     const plane: ClaudeControlPlane = {
-      dispatch: async () => handle,
+      dispatch: async (options) => {
+        // Record the actual submission, including the engine preamble, as
+        // the native transcript does before its worktree and assistant rows.
+        const rows = (await readFile(transcript, "utf8")).split("\n");
+        rows[0] = JSON.stringify({ type: "user", message: { content: options.prompt } });
+        await writeFile(transcript, rows.join("\n"));
+        return handle;
+      },
       poll: async () => ({ status: "idle", state: "done", present: true }),
       transcriptPath: async () => transcript,
-      steer: async () => ({ delivered: false, reason: "unused" }),
+      steer: async () => ({ submitted: false, reason: "unused" }),
       stop: async () => {},
       tmuxAvailable: async () => false
     };
@@ -94,6 +110,7 @@ for (const outcome of ["complete", "refused"] as const) {
     });
     try {
       await writeFile(transcript, [
+        { type: "user", message: { content: "fixture" } },
         { type: "worktree-state", worktreeSession: { worktreePath: tree.path, worktreeBranch: tree.branch } },
         { type: "worktree-state", worktreeSession: null },
         { type: "assistant", ...(outcome === "refused" ? { isApiErrorMessage: true, apiErrorStatus: 429, error: "rate_limit" } : {}),
@@ -112,6 +129,7 @@ for (const outcome of ["complete", "refused"] as const) {
       assert.equal(record.resolved_cwd, dir);
       assert.equal(record.worktree, null);
       assert.deepEqual(record.attempts[0].diagnostics.worktrees, [tree]);
+      assert.deepEqual(record.attempts[0].diagnostics.claudeLaunch, launchDiagnostics.claudeLaunch);
       if (outcome === "refused") {
         assert.deepEqual(record.attempts[0].diagnostics.apiError, { status: 429, code: "rate_limit" });
       }

@@ -6,11 +6,9 @@ import test from "node:test";
 
 import { parseTranscriptText } from "../../src/claude-transcript.js";
 import {
-  PASTE_PROMOTION_UTF16_UNITS,
   TYPED_FOLLOW_UP_SKILL,
   TYPED_FOLLOW_UP_UNICODE_LINE,
   followUpArrival,
-  followUpWhitespace,
   installTypedFollowUpSkill,
   typedFollowUpArguments,
   typedFollowUpPrompt
@@ -28,34 +26,20 @@ const sentArguments = typedFollowUpArguments(marker);
 
 test("the follow-up prompt opens with the slash line and is long, multi-line, mixed-script typed text", () => {
   assert.ok(prompt.startsWith(`/${TYPED_FOLLOW_UP_SKILL.name} ${marker} `));
-  assert.ok(prompt.length > PASTE_PROMOTION_UTF16_UNITS, `only ${prompt.length} UTF-16 units: a single event this short is never a paste`);
+  assert.ok(prompt.length > 800, `only ${prompt.length} UTF-16 units: a single event this short is never a paste`);
   assert.ok(Buffer.byteLength(prompt, "utf8") > 3_000, "the turn should run to several kilobytes");
   assert.equal(prompt.split("\n").length, 20);
   assert.ok(prompt.endsWith(TYPED_FOLLOW_UP_UNICODE_LINE));
   // A delivery that splits on code points or bytes instead of UTF-16 units is
   // caught by the astral character: one code point, two units.
   assert.ok([...TYPED_FOLLOW_UP_UNICODE_LINE].some((character) => character.length === 2));
-  // The base fixture stays printable/LF; whitespace variants exercise controls.
+  // The fixture stays printable/LF.
   const controls = [...prompt].filter((character) => {
     const code = character.codePointAt(0) ?? 0;
     return (code < 32 && code !== 10) || (code >= 127 && code < 160);
   });
   assert.deepEqual(controls, []);
   assert.equal(prompt, prompt.trimEnd());
-});
-
-test("followUpWhitespace varies transport whitespace with independent space and LF expectations", () => {
-  assert.deepEqual(followUpWhitespace("A\nB\nC\nD\n\n😀\né"), {
-    input: "A\nB\rC\r\n\tD\n\r\t😀\r\n\té",
-    expected: "A\nB\nC\n    D\n\n    😀\n    é"
-  });
-  const variant = followUpWhitespace(prompt);
-  assert.ok(variant.input.startsWith(`/${TYPED_FOLLOW_UP_SKILL.name} ${marker} `));
-  assert.ok(variant.input.includes("\t"));
-  assert.ok(variant.input.includes("\r\n"));
-  assert.match(variant.input, /\r(?!\n)/);
-  assert.equal(variant.expected.split("\n").length, 20);
-  assert.ok(variant.expected.endsWith("    " + TYPED_FOLLOW_UP_UNICODE_LINE));
 });
 
 test("installTypedFollowUpSkill writes the skill where Claude Code reads a project's skills", async () => {
@@ -101,6 +85,13 @@ test("followUpArrival reads a typed slash command, its exact arguments and its e
     exact: true,
     expanded: true
   });
+});
+
+test("followUpArrival reads an argument-free slash command without inventing a space", () => {
+  const entries = parseTranscriptText(user(`<command-message>${TYPED_FOLLOW_UP_SKILL.name}</command-message>\n<command-name>/${TYPED_FOLLOW_UP_SKILL.name}</command-name>`));
+  const arrival = followUpArrival(entries, 0, `/${TYPED_FOLLOW_UP_SKILL.name}`);
+  assert.equal(arrival.kind, "command");
+  assert.equal(arrival.kind === "command" && arrival.exact, true);
 });
 
 test("followUpArrival reports a command whose arguments lost a character as inexact", () => {

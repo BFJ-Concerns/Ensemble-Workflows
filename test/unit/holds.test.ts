@@ -98,7 +98,7 @@ test("a stale nonce and an unlisted verdict are rejected — the hold keeps wait
     const decision = holds.raise({ content: "which route?", verdicts: ["a", "b"] });
     const record = await publishedHold(dir);
 
-    await writeFile(record.decision_path, JSON.stringify({ nonce: "not-the-nonce", verdict: "a" }));
+    await writeFile(record.decision_path, JSON.stringify({ nonce: "not-the-nonce", verdict: "a", answered_by: "stale-writer" }));
     await waitForEvent(events, "hold/answerRejected");
     // The hold is still open and answerable: the rejected file was consumed.
     assert.equal((await enumerateHolds(dir)).holds.length, 1);
@@ -111,7 +111,7 @@ test("a stale nonce and an unlisted verdict are rejected — the hold keeps wait
       attempted_verdict_state: "submitted"
     });
 
-    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "c" }));
+    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "c", answered_by: 17 }));
     await waitForEvent(events, "hold/answerRejected", 2);
     await assertRepublishedRejection(dir, {
       reason: "invalid-verdict",
@@ -136,6 +136,10 @@ test("a stale nonce and an unlisted verdict are rejected — the hold keeps wait
     assert.deepEqual(
       events.filter((event) => event.method === "hold/answerRejected").map((event) => event.params.attemptedVerdict),
       ["a", "c", null]
+    );
+    assert.deepEqual(
+      events.filter((event) => event.method === "hold/answerRejected").map((event) => event.params.answeredBy),
+      ["stale-writer", null, null]
     );
   });
 });
@@ -191,7 +195,7 @@ test("a rejected hold remains waiting and reaches the runtime archive", async ()
       );
       const record = await publishedHold(dir);
 
-      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "no" }));
+      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "no", answered_by: "outside-decider" }));
       await waitForArchiveHoldEvent(writer.archiveDir, "answer-rejected");
 
       // The rejection is consumed, but it is not a decision: the caller is
@@ -209,6 +213,11 @@ test("a rejected hold remains waiting and reaches the runtime archive", async ()
           { event: "answer-rejected", reason: "invalid-verdict", attempted_verdict: "no" }
         ]
       );
+
+      const archived = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+        hold_events: Array<{ event: string; answered_by: string | null }>;
+      };
+      assert.equal(archived.hold_events.find((event) => event.event === "answer-rejected")?.answered_by, "outside-decider");
 
       await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "yes" }));
       assert.deepEqual(await decision, { verdict: "yes", note: null });

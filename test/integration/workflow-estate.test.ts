@@ -29,7 +29,7 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
-function withoutSentinelAnnouncement(stderr: string): string {
+function withoutLocationAnnouncements(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
   const matches = stderr.match(announcement) ?? [];
   assert.equal(matches.length, 1, `expected exactly one completion-sentinel announcement, got:\n${stderr}`);
@@ -37,7 +37,15 @@ function withoutSentinelAnnouncement(stderr: string): string {
   const runRecordAnnouncement = /^\[run-record-archive\] .+\n/gm;
   const runRecordMatches = withoutSentinel.match(runRecordAnnouncement) ?? [];
   assert.ok(runRecordMatches.length <= 1, `expected at most one run-record announcement, got:\n${stderr}`);
-  return withoutSentinel.replace(runRecordAnnouncement, "");
+  const statusAnnouncement = /^\[status-file\] .+\n/gm;
+  const statusMatches = stderr.match(statusAnnouncement) ?? [];
+  assert.ok(statusMatches.length <= 1, `expected at most one status announcement, got:\n${stderr}`);
+  for (const line of statusMatches) {
+    const location = JSON.parse(line.slice("[status-file] ".length));
+    assert.equal(typeof location.run_id, "string");
+    assert.equal(typeof location.status_path, "string");
+  }
+  return withoutSentinel.replace(runRecordAnnouncement, "").replace(statusAnnouncement, "");
 }
 
 class CaptureStream extends Writable {
@@ -350,7 +358,7 @@ test("CLI workflow fans out, compiles, logs to stderr, and emits result JSON on 
   );
 
   assert.equal(exitCode, 0, stderr);
-  assert.equal(withoutSentinelAnnouncement(stderr), "[phase] collect\n[phase] compile\n");
+  assert.equal(withoutLocationAnnouncements(stderr), "[phase] collect\n[phase] compile\n");
   const result = JSON.parse(stdout) as {
     args: string[];
     findings: Array<{ topic: string; confidence: number }>;
@@ -999,7 +1007,7 @@ test("Codex schema-subset rejection is distinct from ordinary schema validation 
   // pre-generation line.
   assert.equal(unsupported.exitCode, 0, unsupported.stderr);
   assert.equal(unsupported.stdout, "null\n");
-  const unsupportedDiagnostic = withoutSentinelAnnouncement(unsupported.stderr);
+  const unsupportedDiagnostic = withoutLocationAnnouncements(unsupported.stderr);
   assert.match(unsupportedDiagnostic, /\[codex\] agent 1 failed after 1 attempt — Codex rejected outputSchema before generation/);
   assert.match(unsupportedDiagnostic, /Codex rejected outputSchema before generation/);
   assert.match(unsupportedDiagnostic, /Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude' or 'opencode'/);
@@ -1034,7 +1042,7 @@ test("Codex schema-subset rejection is distinct from ordinary schema validation 
   assert.deepEqual(JSON.parse(ordinaryValidation.stdout), { verdict: null });
   // An exhausted schema call is announced the same way, under its own kind.
   assert.equal(
-    withoutSentinelAnnouncement(ordinaryValidation.stderr),
+    withoutLocationAnnouncements(ordinaryValidation.stderr),
     "[codex] agent 1 failed after 1 attempt — schema-validation: " +
       '[{"instancePath":"/answer","schemaPath":"#/properties/answer/enum","keyword":"enum","params":{"allowedValues":["yes"]},"message":"must be equal to one of the allowed values"}]\n'
   );

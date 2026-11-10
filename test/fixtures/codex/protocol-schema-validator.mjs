@@ -1,4 +1,5 @@
-import Ajv from "ajv";
+import { Ajv2019 } from "ajv/dist/2019.js";
+import draft7 from "ajv/dist/refs/json-schema-draft-07.json" with { type: "json" };
 import { Buffer } from "node:buffer";
 import {
   appendFileSync,
@@ -45,7 +46,11 @@ if (removeOnExit) {
   process.once("exit", () => rmSync(schemaDirectory, { recursive: true, force: true }));
 }
 
-const ajv = new Ajv({ allErrors: true, strict: false, logger: false });
+// The generated draft-07 schemas use composition. The 2019 compiler also
+// supports draft-07 and can close the complete object after its variants
+// have evaluated, rather than rejecting properties declared by a sibling.
+const ajv = new Ajv2019({ allErrors: true, strict: false, logger: false });
+ajv.addMetaSchema(draft7);
 const validators = new Map();
 const validationCapture = process.env.ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE;
 
@@ -271,21 +276,28 @@ function notificationIdentity(payload) {
   };
 }
 
-function closeDeclaredObjects(value) {
+function closeDeclaredObjects(value, inComposition = false) {
   if (Array.isArray(value)) {
     for (const entry of value) {
-      closeDeclaredObjects(entry);
+      closeDeclaredObjects(entry, inComposition);
     }
     return;
   }
   if (value === null || typeof value !== "object") {
     return;
   }
-  if (value.type === "object" && value.properties !== undefined && value.additionalProperties === undefined) {
-    value.additionalProperties = false;
+  const composed = ["oneOf", "anyOf", "allOf"].some((keyword) => Array.isArray(value[keyword]));
+  if (!inComposition && value.additionalProperties === undefined) {
+    if (composed) {
+      value.unevaluatedProperties = false;
+    } else if (value.type === "object" && value.properties !== undefined) {
+      value.additionalProperties = false;
+    }
   }
-  for (const child of Object.values(value)) {
-    closeDeclaredObjects(child);
+  // Applicator branches describe the same instance as their parent. Close
+  // that instance once, at the parent; nested properties remain independent.
+  for (const [keyword, child] of Object.entries(value)) {
+    closeDeclaredObjects(child, ["oneOf", "anyOf", "allOf"].includes(keyword));
   }
 }
 

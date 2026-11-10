@@ -1,3 +1,4 @@
+import { waitForCondition } from "../wait-for-condition.js";
 import assert from "node:assert/strict";
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
@@ -15,8 +16,39 @@ import {
   valveSlices
 } from "../../src/claude-control-plane.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "../../src/errors.js";
+import { SystemdWorkerScopes, containingSlice, type ScopePlacement, type WorkerScopes } from "../../src/worker-scopes.js";
+import type { RuntimeEvent } from "../../src/types.js";
 import { writeProcStat } from "../fixtures/proc-stat.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
+
+test("transcript discovery follows the configured Claude directory and explicit overrides", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "claude-transcript-config-"));
+  const inherited = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    const config = path.join(dir, "inherited");
+    const declared = path.join(dir, "declared");
+    const explicit = path.join(dir, "explicit-projects");
+    const handle = { id: "private", sessionId: "private-session", name: "private", cwd: dir };
+    const locations = [path.join(config, "projects"), path.join(declared, "projects"), explicit];
+    for (const location of locations) {
+      await mkdir(path.join(location, "project"), { recursive: true });
+      // Discovery tests only file location; native content belongs to live proof.
+      await writeFile(path.join(location, "project", `${handle.sessionId}.jsonl`), "");
+    }
+    process.env.CLAUDE_CONFIG_DIR = config;
+    for (const [controlPlane, location] of [
+      [new ClaudeCliControlPlane(), locations[0]],
+      [new ClaudeCliControlPlane({ workerEnv: { CLAUDE_CONFIG_DIR: declared } }), locations[1]],
+      [new ClaudeCliControlPlane({ projectsDir: explicit, workerEnv: { CLAUDE_CONFIG_DIR: declared } }), explicit]
+    ] as const) {
+      assert.equal(await controlPlane.transcriptPath(handle), path.join(location!, "project", `${handle.sessionId}.jsonl`));
+    }
+  } finally {
+    if (inherited === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = inherited;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing it on argv", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
@@ -29,7 +61,7 @@ test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing i
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { writeFile } from "node:fs/promises";
+        import { readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           const chunks = [];
@@ -39,6 +71,10 @@ test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing i
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // Registration acknowledges consumed input, not merely a process
+          // whose asynchronous prompt capture has not completed yet.
+          try { JSON.parse(await readFile(${JSON.stringify(argvPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "large-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -87,7 +123,7 @@ test("a declared worker environment reaches the dispatched claude child, above i
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { writeFile } from "node:fs/promises";
+        import { readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           await writeFile(${JSON.stringify(envPath)}, JSON.stringify({
@@ -97,6 +133,9 @@ test("a declared worker environment reaches the dispatched claude child, above i
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // Registration acknowledges the completed child observation.
+          try { JSON.parse(await readFile(${JSON.stringify(envPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "env-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -159,7 +198,7 @@ test("the run's own environment-layer settings are withheld from every claude ch
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { copyFile, writeFile } from "node:fs/promises";
+        import { copyFile, readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           await writeFile(${JSON.stringify(envPath)}, JSON.stringify({
@@ -174,6 +213,9 @@ test("the run's own environment-layer settings are withheld from every claude ch
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // The final capture acknowledges that every observed artefact is complete.
+          try { JSON.parse(await readFile(${JSON.stringify(settingsCopyPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "run-scoped-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -188,6 +230,10 @@ test("the run's own environment-layer settings are withheld from every claude ch
       `
     );
     await chmod(stubPath, 0o755);
+    // Force roster reads before capture and with an incomplete artefact.
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+    await writeFile(settingsCopyPath, '{"env":');
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
 
     const saved = Object.fromEntries(
       ["ENSEMBLE_RUN_RECORD_DIR", "ENSEMBLE_RUN_RECORD", "ENSEMBLE_STATUS_DIR", "ENSEMBLE_CONCURRENCY_CLAUDE", "ENSEMBLE_HOLD_SCOPE", "ENSEMBLE_TEST_INHERITED"].map(
@@ -253,7 +299,7 @@ test("the settings file carries the run's resolved hold scope: an explicit scope
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { copyFile } from "node:fs/promises";
+        import { copyFile, readFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           const name = args[args.indexOf("--name") + 1];
@@ -264,6 +310,9 @@ test("the settings file carries the run's resolved hold scope: an explicit scope
           // The stub registers whichever dispatch asked last: one session
           // name per control plane below, so each dispatch finds its own.
           const name = process.env.ENSEMBLE_TEST_ROSTER_NAME;
+          // The final capture acknowledges that every observed artefact is complete.
+          try { JSON.parse(await readFile(${JSON.stringify(dir)} + "/settings-" + name + ".json", "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "hold-scope-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -284,6 +333,10 @@ test("the settings file carries the run's resolved hold scope: an explicit scope
     process.env.ENSEMBLE_HOLD_SCOPE = "lead-session-42";
     const settingsFor = async (name: string, holdScope: string | null | undefined): Promise<Record<string, unknown>> => {
       process.env.ENSEMBLE_TEST_ROSTER_NAME = name;
+      // Force roster reads before capture and with an incomplete artefact.
+      assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+      await writeFile(path.join(dir, `settings-${name}.json`), '{"env":');
+      assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
       const controlPlane = new ClaudeCliControlPlane({
         claudeBin: stubPath,
         projectsDir: dir,
@@ -424,7 +477,7 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { copyFile, writeFile } from "node:fs/promises";
+        import { copyFile, readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
@@ -437,6 +490,9 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // The final capture acknowledges that every observed artefact is complete.
+          try { JSON.parse(await readFile(${JSON.stringify(settingsCopyPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "settings-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -451,6 +507,10 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
       `
     );
     await chmod(stubPath, 0o755);
+    // Force roster reads before capture and with an incomplete artefact.
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+    await writeFile(settingsCopyPath, '{"env":');
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
 
     const declared = { ANTHROPIC_BASE_URL: "https://declared.example", ANTHROPIC_AUTH_TOKEN: "sentinel-token" };
     const controlPlane = new ClaudeCliControlPlane({
@@ -496,7 +556,7 @@ test("a requested cache TTL joins the settings env block, and a machine declarat
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { copyFile, writeFile } from "node:fs/promises";
+        import { copyFile, readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           const flag = args.indexOf("--settings");
@@ -506,6 +566,9 @@ test("a requested cache TTL joins the settings env block, and a machine declarat
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // The final capture acknowledges that every observed artefact is complete.
+          try { JSON.parse(await readFile(${JSON.stringify(settingsCopyPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "cache-ttl-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -520,6 +583,10 @@ test("a requested cache TTL joins the settings env block, and a machine declarat
       `
     );
     await chmod(stubPath, 0o755);
+    // Force roster reads before capture and with an incomplete artefact.
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+    await writeFile(settingsCopyPath, '{"env":');
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
 
     // The operator's word outranks the harness default: a machine-declared
     // value for the TTL variable must survive the dispatch's own request.
@@ -748,12 +815,13 @@ const TMUX_STUB_COMMAND = `
 `;
 
 test("steer returns false when either tmux delivery step fails", async (context) => {
-  for (const failedStep of ["literal", "enter"] as const) {
+  for (const failedStep of ["literal", "later batch", "enter"] as const) {
     await context.test(failedStep, async () => {
       const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
       try {
         const claudeStub = path.join(dir, "claude-stub.mjs");
         const tmuxStub = path.join(dir, "tmux-stub.mjs");
+        const callsPath = path.join(dir, "calls.jsonl");
         const sessionId = "00000000-0000-4000-8000-000000000002";
         await writeFile(
           claudeStub,
@@ -775,11 +843,16 @@ test("steer returns false when either tmux delivery step fails", async (context)
         await writeFile(
           tmuxStub,
           `#!/usr/bin/env node
+            import { appendFileSync, readFileSync } from "node:fs";
             ${TMUX_STUB_COMMAND}
+            appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+            const calls = readFileSync(${JSON.stringify(callsPath)}, "utf8").trim().split("\\n");
             const literal = command[0] === "send-keys" && command.includes("-l");
             const enter = command[0] === "send-keys" && command.at(-1) === "Enter";
             if ((${JSON.stringify(failedStep)} === "literal" && literal) ||
+                (${JSON.stringify(failedStep)} === "later batch" && literal && calls.length === 3) ||
                 (${JSON.stringify(failedStep)} === "enter" && enter)) {
+              process.stderr.write("delivery refused");
               process.exit(1);
             }
           `
@@ -797,10 +870,21 @@ test("steer returns false when either tmux delivery step fails", async (context)
         });
         const steered = await controlPlane.steer(
           { id: "steer-1", sessionId, name: "steer-probe", cwd: dir },
-          "continue"
+          "x\t\r\n😀\r".repeat(100)
         );
 
         assert.equal(steered.delivered, false);
+        if (!steered.delivered) {
+          assert.match(steered.reason, /delivery refused/);
+          assert.match(steered.reason, failedStep === "enter" ? /submit/ : failedStep === "literal" ? /slice 1 of/ : /slice 2 of/);
+        }
+        const calls = (await readFile(callsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
+        assert.equal(calls.at(-1)?.at(-1), "kill-server");
+        assert.equal(calls.filter((call) => call.includes("Enter")).length, failedStep === "enter" ? 1 : 0);
+        assert.equal(calls.filter((call) => call.includes("-l")).length, failedStep === "literal" ? 1 : 2);
+        const socket = calls[0]?.[1];
+        assert.ok(socket);
+        await assert.rejects(stat(path.dirname(socket)), { code: "ENOENT" });
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
@@ -840,6 +924,9 @@ test("every launched claude child sees the workspace declared sandboxed, above a
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // The final capture acknowledges that every observed artefact is complete.
+          try { JSON.parse(await readFile(${JSON.stringify(dir)} + "/observed-" + probe + ".json", "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "sandboxed-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -857,6 +944,12 @@ test("every launched claude child sees the workspace declared sandboxed, above a
 
     const observe = async (name: string, workerEnv: Record<string, string>) => {
       process.env.ENSEMBLE_TEST_ROSTER_NAME = name;
+      // Force roster reads before capture and with an incomplete artefact.
+      assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+      await writeFile(path.join(dir, `observed-${name}.json`), '{"env":');
+      assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+      // Keep direct fixture probes out of the control-plane child observations.
+      await rm(path.join(dir, `children-${name}.jsonl`));
       const controlPlane = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000, workerEnv });
       const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
       await controlPlane.stop(handle);
@@ -1065,7 +1158,7 @@ esac
     assert.deepEqual(steered, { delivered: true });
 
     assert.equal(await readFile(path.join(dir, "attach-env"), "utf8"), "declared-gateway-token\n1\n");
-    assert.equal(await readFile(path.join(dir, "attach-input"), "utf8"), "continue\n");
+    assert.equal(await readFile(path.join(dir, "attach-input"), "utf8"), valveSlices("continue").join("") + "\n");
     assert.deepEqual(await readdir(tmuxRoot), [], "the valve left a socket directory behind, or used the default tmux server");
     // The server is forked from the client that started it and keeps that
     // client's argv, which names the stub; it exits once killed, though not
@@ -1090,21 +1183,59 @@ esac
   }
 });
 
-test("valveSlices cuts a message into bounded, code-point-whole send-keys arguments that rejoin exactly", () => {
+test("valveSlices encodes exact UTF-16 key records and cuts only between bounded whole records", () => {
   assert.deepEqual(valveSlices(""), []);
-  assert.deepEqual(valveSlices("continue"), ["continue"]);
-
-  // Three-byte characters never divide the bound evenly, so every cut lands
-  // mid-character on a byte slicer; the newline keeps the fixture line-shaped.
-  const message = "€\n".repeat(60_000);
+  assert.deepEqual(valveSlices("Aé😀\n\nB\n"), [
+    "\u001b[0;0;65;1;0;1_\u001b[0;0;233;1;0;1_\u001b[0;0;55357;1;0;1_" +
+    "\u001b[0;0;56832;1;0;1_\u001b[0;0;10;1;0;1_\u001b[0;0;10;1;0;1_" +
+    "\u001b[0;0;66;1;0;1_\u001b[0;0;10;1;0;1_"
+  ]);
+  // Exercise variable-width decimal units and surrogate pairs at batch edges.
+  const message = "Aé€😀\t\r\n\r".repeat(2_000);
+  const expected = "Aé€😀    \n\n".repeat(2_000);
   const slices = valveSlices(message);
   assert.ok(slices.length > 1);
-  for (const slice of slices) {
+  for (const [index, slice] of slices.entries()) {
     assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
-    assert.equal(Buffer.from(slice, "utf8").toString("utf8"), slice, "a slice is whole UTF-8, never a torn character");
+    // eslint-disable-next-line no-control-regex -- terminal records start with ESC.
+    const records = slice.match(/\u001b\[0;0;\d+;1;0;1_/g) ?? [];
+    assert.equal(records.join(""), slice, "every batch contains only complete records");
+    // eslint-disable-next-line no-control-regex -- terminal records start with ESC.
+    const nextRecord = slices[index + 1]?.match(/^\u001b\[0;0;\d+;1;0;1_/u)?.[0];
+    if (nextRecord !== undefined) {
+      assert.ok(slice.length + nextRecord.length > VALVE_SLICE_BYTES, "batches fill up to the next whole record");
+    }
   }
-  assert.equal(slices.join(""), message);
+  assert.equal(decodeValveRecords(slices.join("")), expected);
 });
+
+test("valveSlices converts tabs and carriage returns before batching complete records", () => {
+  for (const [message, expected] of [
+    ["\t", "    "],
+    ["a\rb", "a\nb"],
+    ["a\r\nb", "a\nb"],
+    ["é\t😀\r中\r\n\t\r", "é    😀\n中\n    \n"]
+  ] as const) {
+    assert.equal(decodeValveRecords(valveSlices(message).join("")), expected);
+  }
+
+  // An ASCII record is 15 bytes: leave room for two of a tab's four spaces.
+  const prefix = "A".repeat(Math.floor(VALVE_SLICE_BYTES / 15) - 2);
+  const tabSlices = valveSlices(prefix + "\t😀\r\nB\rC");
+  assert.equal(decodeValveRecords(tabSlices[0]!), prefix + "  ");
+  assert.equal(decodeValveRecords(tabSlices.slice(1).join("")), "  😀\nB\nC");
+
+  // A CRLF at a full batch edge still encodes just one line break.
+  const fullPrefix = "A".repeat(Math.floor(VALVE_SLICE_BYTES / 15));
+  const crlfSlices = valveSlices(fullPrefix + "\r\n\tZ");
+  assert.equal(decodeValveRecords(crlfSlices[0]!), fullPrefix);
+  assert.equal(decodeValveRecords(crlfSlices.slice(1).join("")), "\n    Z");
+});
+
+function decodeValveRecords(wire: string): string {
+  // eslint-disable-next-line no-control-regex -- decode the explicit ESC record delimiter.
+  return wire.replace(/\u001b\[0;0;(\d+);1;0;1_/g, (_, unit: string) => String.fromCharCode(Number(unit)));
+}
 
 test("a follow-up turn larger than one argv element reaches the valve whole, in order, before its submit keystroke", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-large-"));
@@ -1154,21 +1285,29 @@ test("a follow-up turn larger than one argv element reaches the valve whole, in 
     // Well past Linux's 128 KiB single-argument cap: a diff-carrying follow-up
     // of the size that a one-argument send fails on with `spawn E2BIG`.
     const message = "diff --git a/src/wide.ts b/src/wide.ts\n" + "+  const value = \"é\";\n".repeat(12_000);
+    const controls = "\t😀\ré\r\n中\t\r";
+    const expected = message + "    😀\né\n中    \n";
     assert.ok(Buffer.byteLength(message, "utf8") > 256 * 1024);
 
-    const steered = await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, message);
+    assert.deepEqual(await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, ""), { delivered: true });
+    assert.equal(await readFile(sendKeysPath, "utf8"), '["Enter"]\n');
+    await writeFile(sendKeysPath, "");
+
+    const steered = await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, message + controls);
     assert.deepEqual(steered, { delivered: true });
 
     const sends = (await readFile(sendKeysPath, "utf8"))
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as string[]);
-    const literal = sends.filter((send) => send[0] === "-l").map((send) => send[1] ?? "");
+    const literal = sends.filter((send) => send[0] === "-l").map((send) => send[2] ?? "");
     assert.ok(literal.length > 1, "the message took more than one literal send");
     for (const slice of literal) {
       assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
     }
-    assert.equal(literal.join(""), message);
+    assert.equal(decodeValveRecords(literal.join("")), expected);
+    assert.equal(sends.filter((send) => send[0] !== "-l").length, 1);
+    assert.ok(sends.slice(0, -1).every((send) => send[0] === "-l" && send[1] === "--"));
     assert.deepEqual(sends.at(-1), ["Enter"], "the submit keystroke follows the last slice");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1203,7 +1342,7 @@ test("a dispatch Claude Code refuses is a ClaudeDispatchError naming the directo
         assert.ok(error instanceof ClaudeDispatchError);
         // The operator reads the directory, sees the lift was declared, and
         // gets Claude Code's words whole — the remedy is in the environment.
-        assert.match(error.message, new RegExp(`refused to dispatch worker 'refused-probe' in ${dir.replaceAll(".", "\\.")}`));
+        assert.match(error.message, new RegExp(`dispatch command failed for worker 'refused-probe' in ${dir.replaceAll(".", "\\.")}`));
         assert.match(error.message, new RegExp(`declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}`));
         // Engine-controlled text on a one-line operator surface: flattened,
         // control-stripped, bounded — so the run's failure is one clean line.
@@ -1265,6 +1404,13 @@ async function processesNaming(text: string): Promise<number[]> {
   return pids;
 }
 
+function fileExists(file: string): Promise<boolean> {
+  return access(file).then(
+    () => true,
+    () => false
+  );
+}
+
 function restoreEnv(name: string, saved: string | undefined): void {
   if (saved === undefined) {
     delete process.env[name];
@@ -1272,3 +1418,378 @@ function restoreEnv(name: string, saved: string | undefined): void {
     process.env[name] = saved;
   }
 }
+
+test("every claude process the control plane starts is launched through the scope manager", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
+  try {
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const sessionId = "00000000-0000-4000-8000-00000000000a";
+    const name = "scoped-launch-probe";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          for await (const chunk of process.stdin) void chunk;
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "scoped-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    // A manager that records what it is asked to launch and then launches it
+    // itself: the control plane must never reach spawn directly, since the
+    // manager is what keeps a supervisor these commands may start outside
+    // the launcher's box.
+    const launched: { file: string; args: string[]; env: NodeJS.ProcessEnv | undefined }[] = [];
+    const scopes: WorkerScopes = {
+      slice: null,
+      async place() {
+        return { kind: "unavailable" as const };
+      },
+      async launch(file, args, options) {
+        launched.push({ file, args: [...args], env: options.env });
+        return spawn(file, [...args], options);
+      },
+      async close() {}
+    };
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: stubPath,
+      projectsDir: dir,
+      dispatchTimeoutMs: 1_000,
+      scopes
+    });
+    const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+    await controlPlane.stop(handle);
+
+    const commands = launched.filter((entry) => entry.file === stubPath).map((entry) => entry.args.slice(0, 2).join(" "));
+    assert.ok(commands.includes("--bg --name"), `dispatch was not launched through the scope manager: ${JSON.stringify(commands)}`);
+    assert.ok(commands.includes("agents --json"), `roster query was not launched through the scope manager: ${JSON.stringify(commands)}`);
+    assert.ok(commands.includes("stop scoped-1"), `stop was not launched through the scope manager: ${JSON.stringify(commands)}`);
+    assert.ok(commands.includes("rm scoped-1"), `rm was not launched through the scope manager: ${JSON.stringify(commands)}`);
+    // The narrowed environment the control plane composes is what the manager launches with.
+    for (const entry of launched) {
+      assert.equal(entry.env?.[SANDBOXED_WORKSPACE_VARIABLE], "1");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a session is placed while `claude --bg` still runs, once the roster names its pid, and placed again when the pid changes", async () => {
+  await sessionPlacement("worker");
+});
+
+test("run grouping places the first and replacement Claude PIDs in the shared run group", async () => {
+  await sessionPlacement("run");
+});
+
+async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
+  const first = spawn("sleep", ["300"], { stdio: "ignore" });
+  const replacement = spawn("sleep", ["300"], { stdio: "ignore" });
+  let background: ReturnType<typeof spawn> | undefined;
+  try {
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const releasePath = path.join(dir, "release-bg");
+    const bgExitedPath = path.join(dir, "bg-exited");
+    const queriesPath = path.join(dir, "roster-queries");
+    const replacementPath = path.join(dir, "replacement-pid");
+    const settingsPathFile = path.join(dir, "settings-path");
+    const lateSettingsPath = path.join(dir, "late-settings.json");
+    const sessionId = "00000000-0000-4000-8000-00000000000b";
+    const name = "placement-probe";
+    const group = workerScope === "run" ? "run" : name;
+    // `claude --bg` holds until the test releases it, as the real command
+    // outlives the session's registration by seconds. The roster counts its
+    // queries and answers the first two without a pid — the row registers
+    // before the supervisor reports its process — then names the first
+    // process, until a replacement pid is named. Count-based, not timed: the
+    // control plane necessarily sees the row without a pid before it can see
+    // one with it, however quickly or slowly it polls. Every bound below is
+    // a ceiling on a hang, never a deadline the product must meet: the
+    // fixture runs real subprocesses and files for each roster read, and a
+    // busy machine is given minutes before anything is judged. The hold's
+    // own ceiling fails the command rather than returning as if released.
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        import { access, readFile, writeFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        const exists = (file) => access(file).then(() => true, () => false);
+        if (args[0] === "--bg") {
+          for await (const chunk of process.stdin) void chunk;
+          const settingsPath = args[args.indexOf("--settings") + 1];
+          await writeFile(${JSON.stringify(settingsPathFile)}, settingsPath);
+          const deadline = Date.now() + 120_000;
+          while (!(await exists(${JSON.stringify(releasePath)}))) {
+            if (Date.now() >= deadline) {
+              await writeFile(${JSON.stringify(bgExitedPath)}, "not released within 120 s");
+              process.stderr.write("held claude --bg: not released within 120 s\\n");
+              process.exit(1);
+            }
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          // Read only after dispatch has returned and the test releases us.
+          const settings = await readFile(settingsPath, "utf8").then(
+            (text) => ({ settings: JSON.parse(text) }),
+            (error) => ({ error: error.code })
+          );
+          await writeFile(${JSON.stringify(lateSettingsPath)}, JSON.stringify(settings));
+          await writeFile(${JSON.stringify(bgExitedPath)}, "");
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          const queries = Number(await readFile(${JSON.stringify(queriesPath)}, "utf8").catch(() => "0")) + 1;
+          await writeFile(${JSON.stringify(queriesPath)}, String(queries));
+          const replacement = await readFile(${JSON.stringify(replacementPath)}, "utf8").then((text) => Number(text.trim())).catch(() => null);
+          const pid = replacement ?? (queries > 2 ? ${first.pid} : null);
+          process.stdout.write(JSON.stringify([{
+            id: "placed-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working",
+            ...(pid === null ? {} : { pid })
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    const placed: { group: string; pids: number[]; bgStillRunning: boolean; rosterQueries: number }[] = [];
+    const scopes: WorkerScopes = {
+      slice: "agents.slice",
+      async place(group, pids): Promise<ScopePlacement> {
+        placed.push({
+          group,
+          pids: [...pids],
+          bgStillRunning: !(await fileExists(bgExitedPath)),
+          rosterQueries: Number(await readFile(queriesPath, "utf8"))
+        });
+        return { kind: "placed", unit: `ensemble-test-${group}.scope`, pids };
+      },
+      async launch(file, args, options) {
+        const child = spawn(file, [...args], options);
+        if (args[0] === "--bg") background = child;
+        return child;
+      },
+      async close() {}
+    };
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: stubPath,
+      projectsDir: dir,
+      dispatchTimeoutMs: 60_000,
+      placementSettleMs: 60_000,
+      // This witness controls turn polling; the idle-watch witness is separate.
+      placementWatchIntervalMs: 600_000,
+      workerScope,
+      scopes
+    });
+    const dispatching = controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+    // Placed before `claude --bg` is released: the roster was read while the
+    // command still ran, and read again until it named the pid.
+    await waitForCondition(() => placed.length > 0, "the session to be placed while `claude --bg` was still running", 90_000, 25);
+    assert.equal(placed[0]!.bgStillRunning, true, "the session was placed only after `claude --bg` returned");
+    assert.ok(placed[0]!.rosterQueries >= 3, `the roster was read ${placed[0]!.rosterQueries} time(s) before placement; the two pid-less answers were never seen`);
+    const handle = await dispatching;
+    assert.equal(await fileExists(bgExitedPath), false, "dispatch waited for the held background command");
+    await waitForCondition(() => fileExists(settingsPathFile), "the background command to publish its settings path", 60_000, 25);
+    const settingsPath = await readFile(settingsPathFile, "utf8");
+    assert.equal(await fileExists(settingsPath), true, "registration removed the live session's settings");
+    await writeFile(releasePath, "");
+    await waitForCondition(() => fileExists(bgExitedPath), "`claude --bg` to return once released", 60_000, 25);
+    assert.equal(await readFile(bgExitedPath, "utf8"), "", "`claude --bg` returned on its own ceiling, not on release");
+    const lateSettings = JSON.parse(await readFile(lateSettingsPath, "utf8")) as { error?: string; settings?: { env: Record<string, string> } };
+    assert.equal(lateSettings.error, undefined, "the background command lost settings after early registration");
+    assert.equal(lateSettings.settings?.env[WORKER_MARKER_VARIABLE], name);
+    assert.equal(await fileExists(settingsPath), true, "background-command completion removed the live session's settings");
+
+    assert.deepEqual(
+      placed.map(({ group, pids }) => ({ group, pids })),
+      [{ group, pids: [first.pid] }],
+      "the session was not placed once its pid was named"
+    );
+    assert.deepEqual(controlPlane.placementOf(handle), { kind: "placed", unit: `ensemble-test-${group}.scope`, pids: [first.pid] });
+
+    // The same pid again places nothing more; a new pid is placed again.
+    await controlPlane.poll(handle);
+    assert.equal(placed.length, 1);
+    await writeFile(replacementPath, `${replacement.pid}\n`);
+    const status = await controlPlane.poll(handle);
+    assert.equal(status.present, true);
+    assert.deepEqual(placed.at(-1)?.pids, [replacement.pid], "the replacement pid was not placed");
+    assert.equal(placed.length, 2);
+    assert.equal(placed.at(-1)?.group, group);
+    await controlPlane.stop(handle);
+    assert.equal(await fileExists(settingsPath), false, "stopping the session retained its settings");
+  } finally {
+    background?.kill("SIGKILL");
+    first.kill("SIGKILL");
+    replacement.kill("SIGKILL");
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+
+test("refused Claude placement retries during registration and at the same polled pid, reporting refusal and recovery", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-refused-placement-"));
+  const first = spawn("sleep", ["infinity"], { stdio: "ignore" });
+  const replacement = spawn("sleep", ["infinity"], { stdio: "ignore" });
+  const slice = containingSlice(await readFile("/proc/self/cgroup", "utf8"));
+  const manager = new SystemdWorkerScopes({ slice, label: `retry-${process.pid}` });
+  let releaseMove!: () => void;
+  const released = new Promise<void>((resolve) => { releaseMove = resolve; });
+  let thirdAttempt!: () => void;
+  const retried = new Promise<void>((resolve) => { thirdAttempt = resolve; });
+  let calls = 0;
+  let dispatching: ReturnType<ClaudeCliControlPlane["dispatch"]> | undefined;
+  let plane: ClaudeCliControlPlane | undefined;
+  try {
+    const stub = path.join(dir, "claude.mjs");
+    const replacementPath = path.join(dir, "replacement");
+    const name = "retry-probe";
+    await writeFile(stub, `#!/usr/bin/env node
+      import { readFile } from "node:fs/promises";
+      if (process.argv[2] === "--bg") {
+        for await (const chunk of process.stdin) void chunk;
+      } else if (process.argv[2] === "agents") {
+        const pid = await readFile(${JSON.stringify(replacementPath)}, "utf8").then(Number).catch(() => ${first.pid});
+        process.stdout.write(JSON.stringify([{ id: "retry-1", sessionId: "retry-session", name: ${JSON.stringify(name)}, kind: "background", cwd: ${JSON.stringify(dir)}, pid, status: "busy", state: "working" }]));
+      }
+    `);
+    await chmod(stub, 0o755);
+    const scopes: WorkerScopes = {
+      slice,
+      launch: async (file, args, options) => spawn(file, [...args], options),
+      close: manager.close.bind(manager),
+      async place(group, pids) {
+        calls += 1;
+        // Supply only the transient refusal. Recovery is an actual move by
+        // systemd, checked against the live processes' kernel cgroup files.
+        if (calls <= 2 || calls === 4) return { kind: "refused", reason: "controlled manager refusal" };
+        if (calls === 3) { thirdAttempt(); await released; }
+        return manager.place(group, pids);
+      }
+    };
+    const events: RuntimeEvent[] = [];
+    plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir, scopes, placementSettleMs: 60_000, placementWatchIntervalMs: 600_000, onEvent: (event) => events.push(event) });
+    dispatching = plane.dispatch({ prompt: "hello", name, cwd: dir });
+    assert.equal(await Promise.race([dispatching.then(() => "dispatch settled"), retried.then(() => "placement retried")]), "placement retried",
+      "dispatch treated the first refused placement as final");
+    assert.equal(events.length, 1, "identical refusals repeated the notice");
+    assert.equal(events[0]?.method, "claude/workerScopePlacement");
+    assert.equal(events[0]?.params.reason, "controlled manager refusal");
+    const unit = manager.unitFor(name);
+    assert.ok(!(await readFile(`/proc/${first.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`));
+    releaseMove();
+    const handle = await dispatching;
+    assert.ok((await readFile(`/proc/${first.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`), "registration retry left the process outside its worker scope");
+    await plane.poll(handle);
+    assert.equal(calls, 3, "a successfully placed pid was moved again");
+
+    await writeFile(replacementPath, String(replacement.pid));
+    await plane.poll(handle);
+    assert.equal(plane.placementOf(handle)?.kind, "refused");
+    assert.ok(!(await readFile(`/proc/${replacement.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`));
+    await plane.poll(handle);
+    assert.ok((await readFile(`/proc/${replacement.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`), "same-pid poll did not recover refused placement");
+    assert.deepEqual(events.map((event) => event.params.kind), ["refused", "placed", "refused", "placed"]);
+    assert.equal(events.at(-1)?.params.unit, unit);
+    assert.equal(events.at(-1)?.params.pid, replacement.pid);
+    assert.equal(events.at(-1)?.params.sessionId, handle.sessionId);
+    await plane.poll(handle);
+    assert.equal(calls, 5);
+  } finally {
+    releaseMove();
+    const handle = await dispatching?.catch(() => undefined);
+    if (handle) await plane?.stop(handle);
+    first.kill("SIGKILL");
+    replacement.kill("SIGKILL");
+    await manager.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("owned idle sessions re-place replacement PIDs without turn polling", async () => {
+  for (const workerScope of ["worker", "run"] as const) {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-idle-placement-"));
+    const first = spawn("sleep", ["infinity"], { stdio: "ignore" });
+    const replacement = spawn("sleep", ["infinity"], { stdio: "ignore" });
+    const slice = containingSlice(await readFile("/proc/self/cgroup", "utf8"));
+    const manager = new SystemdWorkerScopes({ slice, label: `idle-${process.pid}-${path.basename(dir)}` });
+    let plane: ClaudeCliControlPlane | undefined;
+    let handle: Awaited<ReturnType<ClaudeCliControlPlane["dispatch"]>> | undefined;
+    try {
+      const stub = path.join(dir, "claude.mjs");
+      const pidFile = path.join(dir, "pid");
+      await writeFile(pidFile, String(first.pid));
+      await writeFile(stub, `#!/usr/bin/env node
+        import { readFile } from "node:fs/promises";
+        if (process.argv[2] === "--bg") { for await (const chunk of process.stdin) void chunk; }
+        if (process.argv[2] === "agents") {
+          const pid = Number(await readFile(${JSON.stringify(pidFile)}, "utf8"));
+          process.stdout.write(JSON.stringify([{id:"idle-session", sessionId:"idle-session", name:"idle-worker", kind:"background", cwd:${JSON.stringify(dir)}, pid, status:"idle", state:"done"}]));
+        }
+      `);
+      await chmod(stub, 0o755);
+      plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir, scopes: manager, workerScope });
+      handle = await plane.dispatch({ prompt: "hello", name: "idle-worker", cwd: dir });
+      const unit = manager.unitFor(workerScope === "run" ? "run" : "idle-worker");
+      assert.ok((await readFile(`/proc/${first.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`));
+      assert.ok(!(await readFile(`/proc/${replacement.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`));
+      await writeFile(pidFile, String(replacement.pid));
+      // No poll(), steer() or turn runs here. Only the owned background watch
+      // can discover the new roster PID and move this actual process.
+      await waitForCondition(async () => {
+        const group = await readFile(`/proc/${replacement.pid}/cgroup`, "utf8");
+        const placement = plane!.placementOf(handle!);
+        return group.trim().endsWith(`/${unit}`) && placement?.kind === "placed" && placement.pids.includes(replacement.pid!);
+      }, "the idle-session watch to place the replacement process", 60_000, 25);
+      assert.ok((await readFile(`/proc/${replacement.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`), "idle replacement stayed outside its worker scope");
+    } finally {
+      if (plane && handle) await plane.stop(handle);
+      await manager.close();
+      first.kill("SIGKILL"); replacement.kill("SIGKILL");
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("unavailable scope placement returns a PID-less completed registration without further roster reads", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-no-scope-registration-"));
+  try {
+    const queries = path.join(dir, "queries");
+    const stub = path.join(dir, "claude.mjs");
+    await writeFile(stub, `#!/usr/bin/env node
+      import { readFile, writeFile } from "node:fs/promises";
+      if (process.argv[2] === "--bg") { for await (const chunk of process.stdin) void chunk; }
+      if (process.argv[2] === "agents") {
+        const count = Number(await readFile(${JSON.stringify(queries)}, "utf8").catch(() => "0")) + 1;
+        await writeFile(${JSON.stringify(queries)}, String(count));
+        process.stdout.write(JSON.stringify([{kind:"background", name:"no-scope", id:"no-scope", sessionId:"no-scope-session", status:"done", state:"idle", ...(count > 1 ? {pid:process.pid} : {})}]));
+      }
+    `);
+    await chmod(stub, 0o755);
+    const plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir });
+    const handle = await plane.dispatch({ prompt: "hello", name: "no-scope", cwd: dir });
+    assert.equal(await readFile(queries, "utf8"), "1", "a no-op placement manager still waited for a PID");
+    await plane.stop(handle);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

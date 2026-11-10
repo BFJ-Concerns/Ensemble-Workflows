@@ -148,8 +148,11 @@ async function dispatch() {
 
 async function roster() {
   const state = await readState();
-  state.polls = (state.polls ?? 0) + 1;
-  await writeState(state);
+  // Roster reads can overlap dispatch. Keep readiness separate so a stale
+  // empty snapshot cannot overwrite a session that dispatch just published.
+  if (state.sessions.length > 0) {
+    await writeFile(`${statePath}.polled`, "");
+  }
   process.stdout.write(`${JSON.stringify(state.sessions)}\n`);
 }
 

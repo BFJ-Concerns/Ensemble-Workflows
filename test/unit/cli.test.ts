@@ -54,7 +54,7 @@ class InterruptOnSentinelAnnouncementStream extends CaptureStream {
   }
 }
 
-function withoutSentinelAnnouncement(stderr: string): string {
+function withoutLocationAnnouncements(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
   const matches = stderr.match(announcement) ?? [];
   assert.equal(matches.length, 1, `expected exactly one completion-sentinel announcement, got:\n${stderr}`);
@@ -62,7 +62,9 @@ function withoutSentinelAnnouncement(stderr: string): string {
   const runRecordAnnouncement = /^\[run-record-archive\] .+\n/gm;
   const runRecordMatches = withoutSentinel.match(runRecordAnnouncement) ?? [];
   assert.equal(runRecordMatches.length, 1, `expected exactly one run-record announcement, got:\n${stderr}`);
-  return withoutSentinel.replace(runRecordAnnouncement, "");
+  const statusAnnouncement = /^\[status-file\] .+\n/gm;
+  assert.equal((stderr.match(statusAnnouncement) ?? []).length, 1);
+  return withoutSentinel.replace(runRecordAnnouncement, "").replace(statusAnnouncement, "");
 }
 
 function announcedRunRecord(stderr: string): { run_id: string; archive_path: string } {
@@ -1661,6 +1663,7 @@ test("CLI wires per-engine concurrency caps into the runtime scheduler", async (
     stdout,
     stderr,
     runRecordDir: null,
+    statusDir: null,
     createRuntime: async (options) => {
       const runtimeOption = options ?? {};
       runtimeOptions.push(runtimeOption);
@@ -2370,13 +2373,13 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
       "Run options (before the script path):\n" +
       "  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N\n" +
       "  --agent-ceiling N|null  --timeout ms  --strip capability\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run\n" +
       "Agent options (after agent, before the prompt):\n" +
       "  --model <model>  --effort <effort>  --label <label>  --phase <phase>\n" +
       "  --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'\n" +
       "  --max-attempts N  --task <identity>  --strip capability  --budget engine=N\n" +
       "  --agent-ceiling N|null  --concurrency engine=N  --timeout ms\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run\n" +
       "The prompt is the one positional argument, or stdin when omitted.\n" +
       "Run `ensemble --help` for orientation; each subcommand answers --help.\n"
   );
@@ -2834,7 +2837,7 @@ test("CLI removes the live status snapshot after a run", async () => {
   assert.deepEqual((await readdir(statusDir)).filter(isStatusFileName), []);
 });
 
-test("CLI leaves a missing status namespace absent and silent", async () => {
+test("CLI reports a missing explicit status namespace without creating it", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-status-off-"));
   const statusDir = path.join(directory, "missing-status");
   const script = path.join(directory, "workflow.js");
@@ -2863,7 +2866,8 @@ test("CLI leaves a missing status namespace absent and silent", async () => {
   });
 
   assert.equal(exitCode, 0);
-  assert.equal(stderr.text(), "");
+  assert.match(stderr.text(), /\[status\] failed to write progress snapshot:/);
+  assert.doesNotMatch(stderr.text(), /\[status-file\]/);
   await assert.rejects(access(statusDir));
 });
 
@@ -3272,7 +3276,7 @@ test("CLI logs the resolved Codex default and stays quiet when the model is pinn
   });
   assert.equal(unpinnedExit, 0);
   assert.equal(
-    withoutSentinelAnnouncement(unpinnedStderr.text()),
+    withoutLocationAnnouncements(unpinnedStderr.text()),
     "[codex] agent 1 (loose) runs unpinned — resolved ambient default: gpt-resolved-default (high effort)\n"
   );
 
@@ -3284,7 +3288,7 @@ test("CLI logs the resolved Codex default and stays quiet when the model is pinn
     createRuntime: makeRuntime
   });
   assert.equal(pinnedExit, 0);
-  assert.doesNotMatch(withoutSentinelAnnouncement(pinnedStderr.text()), /resolved ambient default/);
+  assert.doesNotMatch(withoutLocationAnnouncements(pinnedStderr.text()), /resolved ambient default/);
 });
 
 test("a missing workflow script path is a rejected invocation: exit 2, one clean line, no run", async () => {
@@ -3471,8 +3475,9 @@ test("a workflow's failed worker is announced on stderr under its engine tag, wi
     cwd: directory,
     stdout,
     stderr,
-    // Recording off and no store: the notice is the whole of stderr.
+    // Disable publication so the worker notice is the whole of stderr.
     runRecordDir: null,
+    statusDir: null,
     createRuntime: async () => fixedEngineRuntime(new FixedResponseEngine("codex", ""), 2)
   });
 
@@ -3554,8 +3559,9 @@ async function runChainScript(
     cwd: directory,
     stdout,
     stderr,
-    // Recording off and no store: the notices are the whole of stderr.
+    // Disable publication so the worker notices are the whole of stderr.
     runRecordDir: null,
+    statusDir: null,
     createRuntime: async () => new EnsembleRuntime({ engines: new EngineRegistry(engines), defaultMaxAttempts })
   });
   return { exitCode, stdout: stdout.text(), stderr: stderr.text() };
@@ -3970,4 +3976,137 @@ test("ensemble holds answer writes the decision, reports what the raiser did wit
     holds.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+for (const claudeEntry of ["absent", "directory", "file"]) {
+test(`CLI publishes and announces automatic status before execution with .claude ${claudeEntry}`, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-auto-status-"));
+  try {
+    const script = path.join(directory, "workflow.js");
+    if (claudeEntry === "directory") await mkdir(path.join(directory, ".claude"));
+    if (claudeEntry === "file") await writeFile(path.join(directory, ".claude"), "file");
+    const statusDir = path.join(directory, "data", "ensemble", "status");
+    await writeFile(script, `
+      export const meta = { name: "automatic-status" };
+      const { readdir, readFile } = require("node:fs/promises");
+      const dir = ${JSON.stringify(statusDir)};
+      const files = await readdir(dir);
+      if (files.length !== 1) throw new Error("status missing before execution");
+      const snapshot = JSON.parse(await readFile(dir + "/" + files[0], "utf8"));
+      if (!snapshot.runId) throw new Error("invalid initial status");
+      log("workflow-started");
+      return "ok";
+    `);
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory, stdout: new CaptureStream(), stderr,
+      env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
+      runRecordDir: null,
+      createRuntime: async () => new EnsembleRuntime({ engines: new EngineRegistry([new ScheduledTextEngine("codex", 1)]), defaultMaxAttempts: 1 })
+    });
+    assert.equal(exitCode, 0, stderr.text());
+    const line = stderr.text().split("\n").find((entry) => entry.startsWith("[status-file] "));
+    assert.ok(line);
+    assert.ok(stderr.text().indexOf(line) < stderr.text().indexOf("workflow-started"));
+    const announcement = JSON.parse(line.slice("[status-file] ".length)) as { run_id: string; status_path: string };
+    assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${announcement.run_id}.local.json`));
+    await assert.rejects(access(announcement.status_path));
+    assert.deepEqual(await readdir(path.dirname(announcement.status_path)), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+}
+
+test("both CLI forms deliver worker scope grouping and reject invalid flags", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worker-scope-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, 'export const meta = { name: "scope-settings" }; return "done";');
+  try {
+    for (const invocation of [[script], ["agent", "--engine", "codex", "hello"]]) {
+      for (const flag of [["--worker-scope", "run"], ["--worker-scope=worker"]]) {
+        const seen: RuntimeOptions[] = [];
+        const stderr = new CaptureStream();
+        const args = invocation[0] === "agent" ? ["agent", ...flag, ...invocation.slice(1)] : [...flag, ...invocation];
+        const code = await runEnsembleCli(args, {
+          cwd: directory, env: { XDG_CONFIG_HOME: directory, ENSEMBLE_WORKER_SCOPE: "run" },
+          stdout: new CaptureStream(), stderr, runRecordDir: null,
+          createRuntime: async (options) => { seen.push(options ?? {}); return fakeRuntime(); }
+        });
+        assert.equal(code, 0, stderr.text());
+        assert.equal(seen[0]?.workerScope, flag.length === 2 ? "run" : "worker");
+      }
+      const args = invocation[0] === "agent" ? ["agent", "--worker-scope=invalid", ...invocation.slice(1)] : ["--worker-scope=invalid", ...invocation];
+      const stderr = new CaptureStream();
+      const code = await runEnsembleCli(args, { cwd: directory, stdout: new CaptureStream(), stderr, runRecordDir: null,
+        createRuntime: async () => { assert.fail("invalid grouping started a runtime"); } });
+      assert.equal(code, 2);
+      assert.match(stderr.text(), /--worker-scope.*worker or run/);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("CLI renders Claude placement refusal and recovery notices without control-line injection", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-placement-notice-"));
+  const stderr = new CaptureStream();
+  try {
+    const engine = new FixedResponseEngine("claude", "done");
+    const original = engine.createInvocation.bind(engine);
+    let runtime: EnsembleRuntime;
+    engine.createInvocation = (prompt, options) => {
+      const invocation = original(prompt, options);
+      return {
+        async runAttempt(context) {
+          // Renderer inputs, not placement proof: the control-plane test
+          // supplies the real process/manager evidence for these notices.
+          for (const params of [
+            { kind: "refused", reason: "manager\nrefused\u001b[31m", name: "probe\nworker", pid: 123 },
+            { kind: "placed", unit: "ensemble-recovered.scope", name: "probe worker", pid: 123 }
+          ]) runtime.handleEngineEvent("claude", { method: "claude/workerScopePlacement", params, receivedAt: Date.now() });
+          return invocation.runAttempt(context);
+        }
+      };
+    };
+    const exitCode = await runEnsembleCli(["agent", "--engine=claude", "--model=opus", "hello"], {
+      cwd: directory, stdout: new CaptureStream(), stderr, runRecordDir: null,
+      createRuntime: async (options) => { runtime = fixedEngineRuntime(engine, 1, options); return runtime; }
+    });
+    assert.equal(exitCode, 0, stderr.text());
+    const lines = stderr.text().split("\n").filter((line) => line.includes("scope placement"));
+    assert.deepEqual(lines, [
+      "[claude] worker probe worker (pid 123) scope placement refused; retrying: manager refused",
+      "[claude] worker probe worker (pid 123) scope placement recovered in ensemble-recovered.scope"
+    ]);
+    assert.equal(stderr.text().includes("\u001b"), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("CLI renders Codex app-server placement refusals as bounded notices", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-cli-codex-placement-"));
+  const stderr = new CaptureStream();
+  try {
+    const engine = new FixedResponseEngine("codex", "done");
+    const original = engine.createInvocation.bind(engine);
+    let runtime: EnsembleRuntime;
+    engine.createInvocation = (prompt, options) => {
+      const invocation = original(prompt, options);
+      return { async runAttempt(context) {
+        runtime.handleEngineEvent("codex", { method: "codex/workerScopePlacement", params: { kind: "refused", pid: 123, reason: "manager\nrefused" }, receivedAt: Date.now() });
+        return invocation.runAttempt(context);
+      } };
+    };
+    const code = await runEnsembleCli(["agent", "--engine=codex", "--model=test", "hello"], {
+      cwd: dir, stdout: new CaptureStream(), stderr, runRecordDir: null,
+      createRuntime: async (options) => { runtime = fixedEngineRuntime(engine, 1, options); return runtime; }
+    });
+    assert.equal(code, 0, stderr.text());
+    assert.match(stderr.text(), /\[codex\] app-server \(pid 123\) scope placement refused: manager refused\n/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

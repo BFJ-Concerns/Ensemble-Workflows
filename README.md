@@ -178,17 +178,21 @@ see [CLI](docs/cli.md).
 
 Ensemble runs Codex and Claude workers without any configuration. An optional
 file at `~/.config/ensemble/config.json` sets concurrency caps, a run-wide
-agent ceiling, where run records and status files go, extra environment
-variables for workers, and the models opencode may use. `ENSEMBLE_*`
-environment variables override the caps, the ceiling, and the run record and
-status settings. See [Configuration](docs/configuration.md).
+agent ceiling, worker scope grouping (`worker_scope`), where run records and
+status files go, extra environment variables for workers, and the models
+opencode may use. `ENSEMBLE_*` environment variables override the caps, the
+ceiling, and the run record and status settings; `ENSEMBLE_WORKER_SCOPE`
+overrides scope grouping. `--worker-scope worker|run` overrides both.
+See [Configuration](docs/configuration.md).
 
 ## Run records and live status
 
-While a run is active it writes a small JSON status file — phase, per-engine
-counts and token spend, live workers, open holds — by default to `.claude/` in
-its working directory, when that directory exists. By default every run also
-leaves an archive under `~/.local/share/ensemble/runs/` holding the workflow
+While a run is active it writes a JSON status file — phase, per-engine counts
+and token spend, every queued, running and finished worker, open holds — by
+default under `$XDG_DATA_HOME/ensemble/status/` (normally
+`~/.local/share/ensemble/status/`). The CLI announces the exact path on stderr
+before workflow execution; workers stay listed until the run ends. By default
+every run also leaves an archive under `~/.local/share/ensemble/runs/` holding the workflow
 source and arguments, each agent's prompt, attempts, outputs, transcripts,
 and token usage, and a manifest with integrity hashes. A completion sentinel
 file tells a supervising process when, and how, the run ended. See

@@ -997,6 +997,24 @@ for (const mode of ["attach", "C-g", "Enter", "editor-missing", "missing", "noti
   });
 }
 
+test("a missing transcript baseline refuses delivery before opening an attachment", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-no-baseline-"));
+  try {
+    const stub = await installValveStubs(dir);
+    await rm(stub.transcript);
+    const control = new ClaudeCliControlPlane({
+      claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0
+    });
+    const result = await control.steer(stub.handle, "new input");
+    assert.equal(result.delivered, false);
+    if (!result.delivered) assert.match(result.reason, /not attempted.*no transcript baseline/);
+    const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
+      .map(line => JSON.parse(line) as { argv: string[] });
+    assert.deepEqual(calls.map(call => call.argv.at(-1)), ["kill-server"]);
+    await assert.rejects(access(path.dirname(calls[0]!.argv[1]!)));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("a background notification between attach and receipt does not acknowledge or corrupt delivery", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-notification-"));
   try {

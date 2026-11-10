@@ -18333,7 +18333,10 @@ var ClaudeCliControlPlane = class {
     const server = ["-S", path11.join(socketDir, "tmux.sock")];
     try {
       const transcriptPath = await this.transcriptPath(handle);
-      const before = transcriptPath === null ? [] : parseTranscriptText(await readFile7(transcriptPath, "utf8"));
+      if (transcriptPath === null) {
+        return { delivered: false, reason: "follow-up delivery not attempted: no transcript baseline is available" };
+      }
+      const before = parseTranscriptText(await readFile7(transcriptPath, "utf8"));
       const payload = path11.join(socketDir, "prompt.txt");
       const editor = path11.join(socketDir, "editor.cjs");
       const copied = path11.join(socketDir, "copied");
@@ -18376,8 +18379,7 @@ var ClaudeCliControlPlane = class {
       if (!submitted.ok) return refused("tmux send-keys (submit)", submitted);
       const receiptDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
       for (; ; ) {
-        const file = transcriptPath ?? await this.transcriptPath(handle);
-        const entries = file === null ? [] : parseTranscriptText(await readFile7(file, "utf8"));
+        const entries = parseTranscriptText(await readFile7(transcriptPath, "utf8"));
         for (const entry of entries.slice(before.length)) {
           const text = submittedUserText(entry);
           if (text === null) continue;

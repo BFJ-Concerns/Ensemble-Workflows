@@ -652,7 +652,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
     try {
       const transcriptPath = await this.transcriptPath(handle);
-      const before = transcriptPath === null ? [] : parseTranscriptText(await readFile(transcriptPath, "utf8"));
+      if (transcriptPath === null) {
+        return { delivered: false, reason: "follow-up delivery not attempted: no transcript baseline is available" };
+      }
+      const before = parseTranscriptText(await readFile(transcriptPath, "utf8"));
       const payload = path.join(socketDir, "prompt.txt");
       const editor = path.join(socketDir, "editor.cjs");
       const copied = path.join(socketDir, "copied");
@@ -693,8 +696,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
       const receiptDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
       for (;;) {
-        const file = transcriptPath ?? await this.transcriptPath(handle);
-        const entries = file === null ? [] : parseTranscriptText(await readFile(file, "utf8"));
+        const entries = parseTranscriptText(await readFile(transcriptPath, "utf8"));
         for (const entry of entries.slice(before.length)) {
           const text = submittedUserText(entry);
           if (text === null) continue;

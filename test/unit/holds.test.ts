@@ -571,7 +571,7 @@ test("a raise carries the run's identity card, and the archive's answered event 
         workflow: "release-gate",
         phase: "review",
         archive_path: writer.archiveDir,
-        totals: { active: 3, queued: 1, done: 4, failed: 2 }
+        totals: { active: 3, queued: 1, done: 4, failed: 2, cutShort: 0, unsettled: 0 }
       });
       assert.equal(record.poll_interval_ms, 5);
       const outcome = await answerHold({ dir, holdId: record.hold_id, verdict: "yes", note: "ship it", answeredBy: "lead-7" });

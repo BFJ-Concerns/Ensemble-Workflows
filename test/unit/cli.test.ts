@@ -2515,17 +2515,29 @@ test("blank prompt refusals name the absolute launcher from another directory", 
   }
 });
 
-test("unknown agent options preserve apostrophes and spaces in the bundled launcher hint", () => {
+test("unknown agent option hints round-trip the complete prompt through a POSIX shell", () => {
   const launcher = fileURLToPath(new URL("../../../skills/ensemble-workflow/Base/scripts/ensemble.mjs", import.meta.url));
-  for (const prompt of ["--don't stop", "--it's", "--say 'hello'. Keep going"]) {
+  for (const prompt of [
+    "--don't stop", "--it's", "--say 'hello'. Keep going", "--set x=1 please", "--unknown=value=twice",
+    '--cost is $HOME today', '--literal `printf expanded`', '--literal $(printf expanded)',
+    '--quotes "double" and \\backslash', "--line one\nline two", "--it's $HOME=1 `printf expanded`"
+  ]) {
     const result = spawnSync(process.execPath, [launcher, "agent", "--engine", "codex", prompt], {
       encoding: "utf8",
       env: hermeticEstateEnvironment()
     });
     assert.equal(result.status, 2);
     assert.equal(result.stdout, "");
-    assert.equal(result.stderr,
-      `Unknown option ${JSON.stringify(prompt)}. For a dash-leading prompt, put it after --, as in: -- ${JSON.stringify(prompt)}\n`);
+    const prefix = `Unknown option ${JSON.stringify(prompt)}. For a dash-leading prompt, put it after --, as in: `;
+    assert.ok(result.stderr.startsWith(prefix), result.stderr);
+    const example = result.stderr.slice(prefix.length).replace(/\n$/, "");
+    const pasted = spawnSync("/bin/sh", ["-c", `set -- ${example}; printf '%s\\0' "$@"`], {
+      encoding: "utf8",
+      env: { ...hermeticEstateEnvironment(), HOME: "/expanded-home" }
+    });
+    assert.equal(pasted.status, 0, pasted.stderr);
+    assert.equal(pasted.stderr, "");
+    assert.equal(pasted.stdout, `--\0${prompt}\0`, prompt);
   }
 });
 
@@ -2536,10 +2548,10 @@ test("CLI entrypoint keeps every exit-2 path on stderr", () => {
     {
       argv: ["agent", "--unknown", "prompt"],
       stderr:
-        'Unknown option "--unknown". For a dash-leading prompt, put it after --, as in: -- "--unknown"\n'
+        "Unknown option \"--unknown\". For a dash-leading prompt, put it after --, as in: -- '--unknown'\n"
     },
     { argv: ["agent", "--modle", "some-model", "prompt"], stderr: 'Unknown option "--modle". Did you mean "--model"?\n' },
-    { argv: ["agent", "--modle=some-model", "prompt"], stderr: 'Unknown option "--modle". Did you mean "--model"?\n' },
+    { argv: ["agent", "--modle=some-model", "prompt"], stderr: 'Unknown option "--modle=some-model". Did you mean "--model"?\n' },
     { argv: ["--timeout"], stderr: "Option --timeout expects a value\n" },
     // The compiled entrypoint is named by its absolute invocation path.
     { argv: ["workflows", "extra"], stderr: `Usage: node ${entrypointPath} workflows\n` },

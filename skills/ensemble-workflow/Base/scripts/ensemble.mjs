@@ -32854,7 +32854,7 @@ function unknownAgentOption(argv) {
       tokens: true
     });
     const unknown = tokens.find((token) => token.kind === "option" && !Object.hasOwn(AGENT_INVOCATION_OPTIONS, token.name));
-    return unknown?.kind === "option" ? unknown.rawName : void 0;
+    return unknown?.kind === "option" ? argv[unknown.index] : void 0;
   } catch {
     return void 0;
   }
@@ -32866,7 +32866,7 @@ function unknownAgentOptionMessage(option) {
   if (best !== void 0 && (candidates[1] === void 0 || best.distance < candidates[1].distance)) {
     return `Unknown option ${JSON.stringify(option)}. Did you mean ${JSON.stringify(best.flag)}?`;
   }
-  return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${JSON.stringify(option)}`;
+  return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${quoteShellArgument(option)}`;
 }
 function optionDistance(left, right) {
   let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
@@ -33284,8 +33284,11 @@ function programNameFor(scriptPath) {
     return DEFAULT_PROGRAM_NAME;
   }
   const absolutePath = path14.resolve(scriptPath);
-  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : `'${absolutePath.replaceAll("'", `'"'"'`)}'`;
+  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : quoteShellArgument(absolutePath);
   return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
+}
+function quoteShellArgument(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 var USAGE_WIDTH = 80;
 var USAGE_LEAD = "Usage: ";

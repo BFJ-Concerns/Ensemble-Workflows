@@ -1433,7 +1433,7 @@ function unknownAgentOption(argv: string[]): string | undefined {
       tokens: true
     });
     const unknown = tokens.find((token) => token.kind === "option" && !Object.hasOwn(AGENT_INVOCATION_OPTIONS, token.name));
-    return unknown?.kind === "option" ? unknown.rawName : undefined;
+    return unknown?.kind === "option" ? argv[unknown.index] : undefined;
   } catch {
     // A later malformed option must not replace the original diagnostic.
     return undefined;
@@ -1451,7 +1451,7 @@ function unknownAgentOptionMessage(option: string): string {
   if (best !== undefined && (candidates[1] === undefined || best.distance < candidates[1].distance)) {
     return `Unknown option ${JSON.stringify(option)}. Did you mean ${JSON.stringify(best.flag)}?`;
   }
-  return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${JSON.stringify(option)}`;
+  return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${quoteShellArgument(option)}`;
 }
 
 function optionDistance(left: string, right: string): number {
@@ -1992,8 +1992,13 @@ export function programNameFor(scriptPath: string | undefined): string {
   const absolutePath = path.resolve(scriptPath);
   const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath)
     ? absolutePath
-    : `'${absolutePath.replaceAll("'", "'\"'\"'")}'`;
+    : quoteShellArgument(absolutePath);
   return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
+}
+
+/** A single literal argument in a POSIX shell, including embedded apostrophes. */
+function quoteShellArgument(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 /** Usage wraps at tokens; the absolute launcher path may exceed the width. */

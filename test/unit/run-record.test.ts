@@ -648,6 +648,68 @@ test("each agent record carries its usage in the declared vocabulary, or the rea
   assert.deepEqual((await agentJson("000003")).usage, { unavailable: "no-attempt-ran" });
 });
 
+test("unmetered cut-short turns and refused substrates name why usage was not observed", async () => {
+  const cwd = await gitRepo("ensemble-record-usage-causes-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-usage-causes-store-"));
+  try {
+    const writer = await RunRecordWriter.start({
+      storeDir: store, cwd, runUuid: "usage-causes",
+      workflowPath: path.join(cwd, "workflow.js"), workflowSource: "return true;",
+      args: [], cliFlags: { jsonArgs: false }
+    });
+    let id = 0;
+    const archive = async (record: RuntimeAgentRecord) => {
+      await writer.recordAgent(record);
+      return JSON.parse(await readFile(path.join(
+        writer.archiveDir, "agents", String(record.id).padStart(6, "0"), "agent.json"
+      ), "utf8")) as { usage: { summary?: { totalTokens: number }; unavailable?: string }; transcripts: Array<{ path: string }> };
+    };
+    for (const engine of ["codex", "claude", "opencode"] as const) {
+      for (const status of ["interrupted", "timed-out"] as const) {
+        const record = agentRecord(++id, engine, null, 0);
+        record.status = status;
+        const attempt = record.attempts[0]!;
+        attempt.status = "failed";
+        attempt.failure = { kind: `run-${status}`, message: "run ended during generation" };
+        attempt.tokenUsageEvents = [];
+        attempt.rawOutput = "partial response";
+        attempt.transcripts[0]!.partial = true;
+        const saved = await archive(record);
+        assert.deepEqual(saved.usage, { unavailable: `worker-${status}` }, `${engine}/${status}`);
+        assert.equal(saved.transcripts.length, 1, "a retained partial transcript does not imply usage was reported");
+
+        // A terminal status never discards a measurement the engine did report,
+        // including an explicit zero-token report.
+        const measured = agentRecord(++id, engine, null, 0);
+        measured.status = status;
+        assert.equal((await archive(measured)).usage.summary?.totalTokens, 0);
+      }
+    }
+    for (const [engine, kind] of [
+      ["claude", "ClaudeDispatchError"], ["codex", "CodexSubstrateRefusedError"]
+    ] as const) {
+      const record = agentRecord(++id, engine, null, 0);
+      record.status = "failed";
+      const attempt = record.attempts[0]!;
+      attempt.status = "failed";
+      attempt.failure = { kind, message: "substrate refused before a worker existed" };
+      attempt.tokenUsageEvents = [];
+      attempt.transcripts = [];
+      assert.deepEqual((await archive(record)).usage, { unavailable: "substrate-never-started" });
+
+      // A later refusal cannot erase an earlier attempt that did run.
+      record.id = ++id;
+      const earlier = structuredClone(attempt);
+      earlier.failure = { kind: "Error", message: "worker failed after starting" };
+      record.attempts = [earlier, { ...attempt, attempt: 2 }];
+      assert.deepEqual((await archive(record)).usage, { unavailable: "engine-reported-no-usage" });
+    }
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
 test("a dispatch-time record says unsettled, not no-attempt-ran, before and after an unclean death", async () => {
   // The killed-run journey as the archive sees it: the dispatch-time write
   // lands while the attempt is running, the launcher dies by SIGKILL, and

@@ -9,9 +9,9 @@ import { execFileSync, spawn } from "node:child_process";
 
 import {
   ClaudeCliControlPlane,
-  SANDBOXED_WORKSPACE_VARIABLE,
   WORKER_MARKER_VARIABLE
 } from "../../src/claude-control-plane.js";
+import { SANDBOXED_WORKSPACE_VARIABLE } from "../../src/engine-environment.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError, failedTurnResultOf } from "../../src/errors.js";
 import { SystemdWorkerScopes, containingSlice, type ScopePlacement, type WorkerScopes } from "../../src/worker-scopes.js";
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
@@ -632,7 +632,7 @@ test("permission deny rules join the per-dispatch settings file beside the env b
       prompt: "hello",
       name,
       cwd: dir,
-      permissionDenyRules: ["Skill", "Task", "Agent", "ListAgents", "SendMessage"]
+      permissionDenyRules: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow"]
     });
 
     const dispatchArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
@@ -641,7 +641,7 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     assert.deepEqual(JSON.parse(await readFile(dispatchArgv[flagIndex + 1]!, "utf8")), {
       worktree: { bgIsolation: "none" },
       env: { [WORKER_MARKER_VARIABLE]: name },
-      permissions: { deny: ["Skill", "Task", "Agent", "ListAgents", "SendMessage"] }
+      permissions: { deny: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow"] }
     });
   } finally {
     await rm(dir, { recursive: true, force: true });

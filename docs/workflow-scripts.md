@@ -304,7 +304,10 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   never settles, the call fails before the worker spawns rather than run
   unstripped.
 - **Claude** applies deny rules for `Skill`, and for `Task`, `Agent`,
-  `ListAgents`, and `SendMessage`, through the per-dispatch settings file.
+  `ListAgents`, `SendMessage`, and `Workflow`, through the per-dispatch
+  settings file. `Workflow` is included because its scripts can spawn agents.
+  The agent record names the configured deny rules; it does not claim a
+  runtime measurement of the worker’s tool inventory.
 - **opencode** rejects any strip before the worker spawns.
 
 Each agent record lists the requested strips and how each was enforced.
@@ -372,7 +375,34 @@ cannot pass silently:
 - Errors raised before a worker exists: an invalid option, a placement that
   could not be opened, an engine refusing the dispatch itself
   (`ClaudeDispatchError`, `CodexSubstrateRefusedError`), a strip that cannot
-  be enforced, or a budget refusal.
+  be enforced, or a budget refusal. Before an engine's first attempt in a
+  run, the runtime also checks that it can use the directories that engine
+  needs, resolved from the environment that engine is launched with:
+  Codex's `CODEX_HOME` (else `$HOME/.codex`); Claude's `CLAUDE_CONFIG_DIR`
+  (else `$HOME/.claude`), global configuration and daemon sockets; and
+  opencode's data, configuration, state and cache homes under the matching
+  `XDG_*_HOME` variables, plus its temporary directory. Claude's dispatch
+  settings scratch files use the launcher's `TMPDIR` (then `TMP`, `TEMP`,
+  `/tmp`), and reply valve sockets use its `TMUX_TMPDIR` (else `/tmp`),
+  independently of worker overrides. Claude's own scratch files use
+  `CLAUDE_CODE_TMPDIR` or its temporary directory, under `claude-<uid>`.
+  Relative `CLAUDE_CONFIG_DIR` values resolve from the launcher's working
+  directory so dispatch and roster commands share one home.
+  Claude's daemon sockets use `/tmp/cc-daemon-<uid>/<config hash>` on Linux,
+  independently of `TMPDIR`. Other relative worker paths resolve from the
+  worker's actual directory, including a per-agent `cwd` or isolated
+  worktree; Codex homes resolve from the shared app-server's run base.
+  Each distinct resolved resource set is checked once per run, before its
+  first attempt, so a new placement with different relative homes is checked
+  separately. Unused engines are not checked. A denied
+  resource refuses dispatches needing that resource with
+  `ResourcePreflightRefusedError`, naming the directory, the setting it came
+  from and the error. Evidence identifying a Codex sandbox adds its name and
+  the `danger-full-access` mode that lifts it; without such evidence the
+  refusal says that no caller sandbox was identified. These checks exercise
+  current access and cannot guarantee later writes will succeed. A probe
+  that cannot finish its own cleanup raises a substrate refusal with the
+  cause retained; that failed check is not cached as a resource verdict.
 - The run's own ending — an interrupt or a whole-run timeout — which throws
   through any call it cut short, and through `parallel()` and `pipeline()`
   around it.
@@ -507,7 +537,9 @@ engine's own diagnostic:
   retries (`responseTooManyFailedAttempts`) on a 429 or 5xx, or an app-server
   that died or never started; a Claude API refusal carrying a 429, 503, or 529, a dispatch
   Claude Code refused, a dispatch the daemon never registered, or a session
-  that never showed life. Only this class advances a fallback chain.
+  that never showed life; on any engine, a directory the engine needs that
+  the launching process cannot use (`preflight.resource-denied`). Only this
+  class advances a fallback chain.
 - **output** — the worker answered badly: empty, unparseable, or off-schema.
 - **unclassified** — anything else, including a deadline, a Codex schema
   rejection, and a client error about a bad model name. A diagnostic that no
@@ -539,10 +571,10 @@ rejects, such as for an unknown model, is the attempt's own failure.
 ### Claude background tasks
 
 A Claude worker's answer is its final reply, never an interim one. Claude Code
-can move a long command or a Monitor into the background and let the model
-end its turn with a "waiting" message, then wake the session when the task
-ends. Ensemble does not collect that interim reply: it waits for the reply
-that follows the task's delivered notification. A Monitor stays outstanding
+can run a long command, a Monitor or a native `Workflow` task in the
+background and let the model end its turn with a "waiting" message, then wake
+the session when the task ends. Ensemble does not collect that interim reply:
+it waits for the reply that follows the task's delivered notification. A Monitor stays outstanding
 until its own ending (expired, timed out, or stopped) or the end of its
 watched source is delivered and answered. For a task the model stops with
 `TaskStop`, the successful `TaskStop` result stands in for the notification.
@@ -574,7 +606,12 @@ A call checks its engine's token ceiling (`--budget`) when it is dispatched,
 before it joins the concurrency queue, and again when a fallback step moves it
 to another engine. Once spend reaches the
 ceiling, a call that has not yet been dispatched throws a budget-exhausted
-error; a ceiling of 0 admits no call and says so. A call that started under
+error; a ceiling of 0 admits no dispatch and says so. The refusal names the
+dispatch, fallback dispatch (with its agent id), or numbered session turn it
+blocked. A session's first `send()` is `session turn 1`, even when admission
+refuses it before the worker opens; a refused send does not advance the turn
+number. Earlier targets or session turns may already have run and caused
+side effects. A call that started under
 the ceiling runs its full retry bound even if concurrent spend crosses the
 ceiling, so turns already running can together overshoot it.
 
@@ -616,7 +653,10 @@ await builder.close();
 - **Identified turns:** `identity: true` at creation makes every `send()`
   resolve `{ label, phase, output, failure }`. `failure` is `null` for a
   successful answer, including a valid JSON `null`; a failed turn carries
-  its recorded failure message. The option cannot vary per turn.
+  its recorded failure message. A budget refusal retains the explicit session
+  phase, or the current `phase()` title at `send()` when no phase was set,
+  without creating a queued worker or an agent record. The option cannot vary
+  per turn.
 - **Turns are sequential:** calling `send()` while a previous send is
   unsettled throws, as does `send()` after `close()` or after the run ends.
 - **Concurrency and budget are per turn:** a turn holds its engine slot from

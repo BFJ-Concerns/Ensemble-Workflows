@@ -38,11 +38,11 @@ export class TokenBudget implements Budget {
     return Math.max(0, ceiling - this.spent(engine));
   }
 
-  assertCanStart(engine: EngineName): void {
+  assertCanStart(engine: EngineName, admission = "dispatch"): void {
     const ceiling = this.ceilings[engine] ?? null;
     const spent = this.spent(engine);
     if (ceiling !== null && spent >= ceiling) {
-      throw new BudgetExceededError(engine, ceiling, spent);
+      throw new BudgetExceededError(engine, ceiling, spent, admission);
     }
   }
 

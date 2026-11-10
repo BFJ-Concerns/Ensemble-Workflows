@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 
 import { RunRecordWriter } from "../../src/run-record.js";
 
 test("the archived Claude version probe withholds run settings and preserves other environment", async (t) => {
-  const scratch = await mkdtemp("/mnt/ai-data/scratch/ensemble-version-env-");
+  const scratch = await mkdtemp(path.join(tmpdir(), "ensemble-version-env-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const bin = path.join(scratch, "bin");
   await mkdir(bin);

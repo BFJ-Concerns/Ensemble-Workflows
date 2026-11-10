@@ -660,7 +660,7 @@ test("an opencode adapter with no declared models names where to declare them", 
 });
 
 test("empty opencode registries name the config resolved for custom, unset and empty XDG homes", async () => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-model-source-");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-model-source-"));
   try {
     for (const xdgHome of [path.join(directory, "custom config"), undefined, ""]) {
       const env: NodeJS.ProcessEnv = { ...process.env, HOME: directory };

@@ -494,16 +494,22 @@ await builder.close();
 - **Records:** each turn is its own agent record with a
   `session: { id, turn }` field. A session using `isolation: "worktree"` works
   in one worktree for its whole life, finalised when the session closes.
-- **Claude follow-ups need tmux:** follow-up turns are typed into the held
-  session through tmux as individual terminal key records, batched without
-  splitting a record. Follow-ups stay typed even when the reader pauses,
-  so a leading `/skill` line expands. Unicode and LF line breaks are preserved;
-  tabs become four spaces and CR or CRLF line endings become LF, matching
-  Claude Code's paste-handler conversions. The turn is submitted once, after
-  all records arrive. Each injection uses a private tmux server that loads
-  no tmux configuration and does not appear among your own sessions. Without
-  tmux, a follow-up or correction fails with a `claude-valve-error` naming
-  the tmux step that failed, rather than silently starting a fresh worker.
+- **Claude follow-ups need tmux:** a private attach client loads the complete
+  UTF-8 message through Claude Code's external prompt editor, then submits it
+  once. The payload stays in a private file, avoiding command-line size and
+  per-character input limits. It arrives as ordinary typed text, so a leading
+  `/skill` line expands. Ensemble overrides `VISUAL` and `EDITOR` only for
+  that attach client and removes its files and tmux server after delivery.
+  It loads no tmux configuration and does not appear among your own sessions.
+  Delivery requires a new native user row equal to the message sent (or the
+  matching command name and arguments for a slash command). Roster activity
+  and model output do not prove delivery. Missing or differing text fails with
+  `claude-valve-error`, including UTF-8 lengths and SHA-256 digests for a
+  mismatch. Ensemble applies no whitespace conversion: if Claude's normal
+  editor/submission handling trims or transforms the text, equality fails.
+  Model context limits still apply after successful delivery; a subsequent
+  context rejection retains the model's diagnostic on the failed attempt.
+  Without tmux, follow-ups and corrections fail rather than starting a fresh worker.
 
 ## Holds
 

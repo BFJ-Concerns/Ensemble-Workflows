@@ -18,6 +18,8 @@ import type { TokenUsageBreakdown } from "./types.js";
 /** One JSONL line. We model only the fields we read; everything else is ignored. */
 export interface TranscriptEntry {
   type?: string;
+  isMeta?: boolean;
+  isCompactSummary?: boolean;
   message?: TranscriptMessage;
   /**
    * Claude Code's record of a queued prompt absorbed into a turn already
@@ -71,6 +73,23 @@ interface TranscriptMessage {
   content?: unknown;
   usage?: unknown;
   stop_reason?: unknown;
+}
+
+/**
+ * The operator's submitted text, excluding tool results and synthetic rows.
+ * Claude records an expanded slash command as command-name/command-args;
+ * reconstruct that submission so its arguments receive the same equality
+ * check as plain text. Ordinary submissions remain unwrapped strings.
+ */
+export function submittedUserText(entry: TranscriptEntry): string | null {
+  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary) return null;
+  const content = entry.message?.content;
+  if (typeof content !== "string") return null;
+  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
+  if (command === null) return content;
+  const name = command[1] ?? "";
+  const args = command[2] ?? "";
+  return args === "" ? name : `${name} ${args}`;
 }
 
 /** Parse a whole transcript file's text into entries, skipping blank/garbled lines. */

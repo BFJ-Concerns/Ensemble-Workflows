@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname, tmpdir } from "node:os";
 import path from "node:path";
 
 import { withoutRunScopedVariables } from "./ambient-settings.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js";
+import { parseTranscriptText, submittedUserText } from "./claude-transcript.js";
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
@@ -202,6 +204,8 @@ export interface ClaudeCliControlPlaneOptions {
   valveAttachSettleMs?: number;
   valveSubmitSettleMs?: number;
   valveKillSettleMs?: number;
+  /** Bound for each editor-copy and transcript-receipt wait; defaults to 30 seconds. */
+  valveDeliveryTimeoutMs?: number;
   /**
    * Places each dispatched session in a worker scope and launches every
    * `claude` and `tmux` process this control plane starts.
@@ -243,9 +247,9 @@ interface ExecResult {
 
 /**
  * The real control plane: drives `claude` and `tmux` as child processes. The
- * valve sequence (attach in a disposable tmux server, settle, type literally,
- * submit, kill) is retry-safe because the daemon owns the session, so a
- * botched injection costs a retry, never a worker.
+ * reply valve loads a private UTF-8 file through the attached prompt editor,
+ * submits once, and proves delivery against the native user row before
+ * closing its private tmux server. The daemon owns the held session.
  */
 export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #claudeBin: string;
@@ -257,6 +261,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveAttachSettleMs: number;
   #valveSubmitSettleMs: number;
   #valveKillSettleMs: number;
+  #valveDeliveryTimeoutMs: number;
   #scopes: WorkerScopes;
   #workerScope: WorkerScopeGrouping;
   #placementSettleMs: number;
@@ -312,8 +317,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
     this.#procDir = options.procDir ?? "/proc";
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
-    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1_000;
-    this.#valveKillSettleMs = options.valveKillSettleMs ?? 2_000;
+    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 0;
+    this.#valveKillSettleMs = options.valveKillSettleMs ?? 0;
+    this.#valveDeliveryTimeoutMs = options.valveDeliveryTimeoutMs ?? 30_000;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
     this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
@@ -645,42 +651,68 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     const server = ["-S", path.join(socketDir, "tmux.sock")];
 
     try {
-      const created = await this.#run(this.#tmuxBin, [
-        ...server,
-        "-f",
-        "/dev/null",
-        "new-session",
-        "-d",
-        "-s",
-        valve,
-        `${this.#claudeBin} attach ${handle.id}`
-      ]);
-      if (!created.ok) {
-        return refused("tmux new-session", created);
-      }
+      const transcriptPath = await this.transcriptPath(handle);
+      const before = transcriptPath === null ? [] : parseTranscriptText(await readFile(transcriptPath, "utf8"));
+      const payload = path.join(socketDir, "prompt.txt");
+      const editor = path.join(socketDir, "editor.cjs");
+      const copied = path.join(socketDir, "copied");
+      await writeFile(payload, message, { mode: 0o600 });
+      // The helper takes only Claude's editor filename on argv. All payload
+      // bytes remain in private files, independent of argv and tmux caps.
+      await writeFile(editor, `#!${process.execPath}
+        const fs = require("node:fs");
+        fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
+        fs.writeFileSync(${JSON.stringify(copied)}, "complete", { mode: 0o600 });
+      `, { mode: 0o700 });
+      const editorCommand = editor;
+      const created = await this.#launch(this.#tmuxBin, [
+        ...server, "-f", "/dev/null", "new-session", "-d", "-s", valve,
+        `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
+      ], null, undefined, { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand });
+      if (!created.ok) return refused("tmux new-session", created);
 
-      // The TUI needs a beat to attach and take focus before input lands.
       await delay(this.#valveAttachSettleMs);
-      // Complete Win32 terminal key records stay typed even when the reader
-      // falls behind and coalesces input. Bound each literal send and never
-      // split a record; submit follows the final batch as its own keystroke.
-      const slices = valveSlices(message);
-      for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", "--", slice]);
-        if (!typed.ok) {
-          return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
+      const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
+      if (!opened.ok) return refused("tmux send-keys (editor)", opened);
+      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
+      for (;;) {
+        try {
+          await access(copied);
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
+        if (Date.now() >= copyDeadline) {
+          return { delivered: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
+        }
+        await delay(50);
       }
       await delay(this.#valveSubmitSettleMs);
       const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
-      if (!submitted.ok) {
-        return refused("tmux send-keys (submit)", submitted);
+      if (!submitted.ok) return refused("tmux send-keys (submit)", submitted);
+
+      const receiptDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
+      for (;;) {
+        const file = transcriptPath ?? await this.transcriptPath(handle);
+        const entries = file === null ? [] : parseTranscriptText(await readFile(file, "utf8"));
+        for (const entry of entries.slice(before.length)) {
+          const text = submittedUserText(entry);
+          if (text === null) continue;
+          if (text !== message && entry.message?.content !== message) {
+            return { delivered: false, reason: `follow-up delivery mismatch: expected ${textIdentity(message)}; received ${textIdentity(text)}` };
+          }
+          await delay(this.#valveKillSettleMs);
+          return { delivered: true };
+        }
+        if (Date.now() >= receiptDeadline) {
+          return { delivered: false, reason: `follow-up delivery missing: no matching user turn within ${this.#valveDeliveryTimeoutMs}ms (expected ${textIdentity(message)})` };
+        }
+        await delay(50);
       }
-      await delay(this.#valveKillSettleMs);
-      return { delivered: true };
+    } catch (error) {
+      return { delivered: false, reason: `reply valve failed: ${boundedEvidence(error instanceof Error ? error.message : String(error))}` };
     } finally {
-      // The server is this valve's alone, so ending it ends the pane too.
-      // tmux leaves its socket file behind; the directory takes it.
+      // The server and all editor files belong to this delivery alone.
       await this.#run(this.#tmuxBin, [...server, "kill-server"]);
       await rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -912,10 +944,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * exit status read as the verdict. `input` is streamed to stdin and the
    * stream then closed; null closes it at once.
    */
-  async #launch(file: string, args: string[], input: string | null, cwd?: string): Promise<ExecResult> {
+  async #launch(file: string, args: string[], input: string | null, cwd?: string, env = this.#env): Promise<ExecResult> {
     const child = await this.#scopes.launch(file, args, {
       ...(cwd !== undefined ? { cwd } : {}),
-      env: this.#env,
+      env,
       stdio: ["pipe", "pipe", "pipe"]
     });
     return new Promise<ExecResult>((resolve) => {
@@ -978,50 +1010,18 @@ function normaliseState(state: unknown): ClaudeSessionState {
   return "unknown";
 }
 
-/**
- * Largest byte length of one `send-keys -l` argument. Two caps bound it: Linux
- * rejects a single argv element over 128 KiB (`spawn E2BIG`), and tmux's client
- * refuses any one command over its 16 KiB message size ("command too long",
- * measured on tmux 3.7c: 16000 bytes accepted, 20000 refused). This sits well
- * beneath both, so a valve message of any size reaches the pane as an ordered
- * sequence of literal sends.
- */
-export const VALVE_SLICE_BYTES = 8 * 1024;
-
 /** A refused valve step, named with the bounded text tmux gave for it. */
 function refused(step: string, result: ExecResult): ValveDelivery {
   const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
   return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
 }
 
-/**
- * Split a valve message into `send-keys -l` arguments of at most
- * `VALVE_SLICE_BYTES` bytes each, encoding each UTF-16 unit as a complete Win32
- * terminal key record. Tabs become four spaces; CR and CRLF become LF.
- * No record is torn across two sends. Exported for the delivery tests; an
- * encoded message within the bound is one slice, and an empty message is none.
- */
-export function valveSlices(message: string): string[] {
-  message = message.replace(/\r\n?/g, "\n").replaceAll("\t", "    ");
-  const slices: string[] = [];
-  let current = "";
-  let currentBytes = 0;
-  for (let index = 0; index < message.length; index += 1) {
-    // Vk;Sc;Unicode;KeyDown;ControlKeyState;RepeatCount, all ASCII.
-    const character = `\u001b[0;0;${message.charCodeAt(index)};1;0;1_`;
-    const characterBytes = character.length;
-    if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
-      slices.push(current);
-      current = "";
-      currentBytes = 0;
-    }
-    current += character;
-    currentBytes += characterBytes;
-  }
-  if (current !== "") {
-    slices.push(current);
-  }
-  return slices;
+function shellQuote(value: string): string {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
+}
+
+function textIdentity(text: string): string {
+  return `${Buffer.byteLength(text, "utf8")} UTF-8 bytes, sha256 ${createHash("sha256").update(text).digest("hex")}`;
 }
 
 function delay(ms: number): Promise<void> {

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  submittedUserText,
   effortSince,
   finalAssistantText,
   outstandingBackgroundTasks,
@@ -634,4 +635,17 @@ test("apiErrorSince reads the synthetic reply's structured refusal, and nothing 
     })
   );
   assert.equal(apiErrorSince(answered), null);
+});
+
+
+test("submittedUserText reads native typed turns and reconstructs expanded slash arguments", () => {
+  const message = "é😀\n- data\n/slash inside";
+  assert.equal(submittedUserText({ type: "user", message: { content: message } }), message);
+  assert.equal(submittedUserText({ type: "user", message: { content: `<command-message>check</command-message>\n<command-name>/check</command-name>\n<command-args>${message}</command-args>` } }), `/check ${message}`);
+  assert.equal(submittedUserText({ type: "user", message: { content: "<command-message>check</command-message>\n<command-name>/check</command-name>\n<command-args></command-args>" } }), "/check");
+  assert.equal(submittedUserText({ type: "user", message: { content: "<command-message>check</command-message>\n<command-name>/check</command-name>" } }), "/check");
+  assert.equal(submittedUserText({ type: "assistant", message: { content: message } }), null);
+  assert.equal(submittedUserText({ type: "user", isMeta: true, message: { content: message } }), null);
+  assert.equal(submittedUserText({ type: "user", isCompactSummary: true, message: { content: message } }), null);
+  assert.equal(submittedUserText({ type: "user", message: { content: [{ type: "tool_result", content: message }] } }), null);
 });

@@ -11,9 +11,7 @@ import {
   CLAUDE_CACHE_TTL_VARIABLE,
   ClaudeCliControlPlane,
   SANDBOXED_WORKSPACE_VARIABLE,
-  VALVE_SLICE_BYTES,
-  WORKER_MARKER_VARIABLE,
-  valveSlices
+  WORKER_MARKER_VARIABLE
 } from "../../src/claude-control-plane.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "../../src/errors.js";
 import { SystemdWorkerScopes, containingSlice, type ScopePlacement, type WorkerScopes } from "../../src/worker-scopes.js";
@@ -814,83 +812,6 @@ const TMUX_STUB_COMMAND = `
   while (command[0] === "-S" || command[0] === "-f") command.splice(0, 2);
 `;
 
-test("steer returns false when either tmux delivery step fails", async (context) => {
-  for (const failedStep of ["literal", "later batch", "enter"] as const) {
-    await context.test(failedStep, async () => {
-      const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
-      try {
-        const claudeStub = path.join(dir, "claude-stub.mjs");
-        const tmuxStub = path.join(dir, "tmux-stub.mjs");
-        const callsPath = path.join(dir, "calls.jsonl");
-        const sessionId = "00000000-0000-4000-8000-000000000002";
-        await writeFile(
-          claudeStub,
-          `#!/usr/bin/env node
-            const args = process.argv.slice(2);
-            if (args[0] === "agents" && args[1] === "--json") {
-              process.stdout.write(JSON.stringify([{
-                id: "steer-1",
-                sessionId: ${JSON.stringify(sessionId)},
-                name: "steer-probe",
-                kind: "background",
-                cwd: ${JSON.stringify(dir)},
-                status: "idle",
-                state: "blocked"
-              }]));
-            }
-          `
-        );
-        await writeFile(
-          tmuxStub,
-          `#!/usr/bin/env node
-            import { appendFileSync, readFileSync } from "node:fs";
-            ${TMUX_STUB_COMMAND}
-            appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
-            const calls = readFileSync(${JSON.stringify(callsPath)}, "utf8").trim().split("\\n");
-            const literal = command[0] === "send-keys" && command.includes("-l");
-            const enter = command[0] === "send-keys" && command.at(-1) === "Enter";
-            if ((${JSON.stringify(failedStep)} === "literal" && literal) ||
-                (${JSON.stringify(failedStep)} === "later batch" && literal && calls.length === 3) ||
-                (${JSON.stringify(failedStep)} === "enter" && enter)) {
-              process.stderr.write("delivery refused");
-              process.exit(1);
-            }
-          `
-        );
-        await chmod(claudeStub, 0o755);
-        await chmod(tmuxStub, 0o755);
-
-        const controlPlane = new ClaudeCliControlPlane({
-          claudeBin: claudeStub,
-          tmuxBin: tmuxStub,
-          projectsDir: dir,
-          valveAttachSettleMs: 0,
-          valveSubmitSettleMs: 0,
-          valveKillSettleMs: 0
-        });
-        const steered = await controlPlane.steer(
-          { id: "steer-1", sessionId, name: "steer-probe", cwd: dir },
-          "x\t\r\n😀\r".repeat(100)
-        );
-
-        assert.equal(steered.delivered, false);
-        if (!steered.delivered) {
-          assert.match(steered.reason, /delivery refused/);
-          assert.match(steered.reason, failedStep === "enter" ? /submit/ : failedStep === "literal" ? /slice 1 of/ : /slice 2 of/);
-        }
-        const calls = (await readFile(callsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
-        assert.equal(calls.at(-1)?.at(-1), "kill-server");
-        assert.equal(calls.filter((call) => call.includes("Enter")).length, failedStep === "enter" ? 1 : 0);
-        assert.equal(calls.filter((call) => call.includes("-l")).length, failedStep === "literal" ? 1 : 2);
-        const socket = calls[0]?.[1];
-        assert.ok(socket);
-        await assert.rejects(stat(path.dirname(socket)), { code: "ENOENT" });
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
-    });
-  }
-});
 
 test("every launched claude child sees the workspace declared sandboxed, above a machine declaration, and the settings file never carries it", async () => {
   // The declaration is what lifts Claude Code's trust gate for a scratch
@@ -996,320 +917,162 @@ test("every launched claude child sees the workspace declared sandboxed, above a
   }
 });
 
-test("the valve's private tmux server starts from the declared environment, and no tmux argument carries a declared value", async () => {
-  // The declared values are gateway credentials, and a process's argv is
-  // readable by every local user: they must reach the attach client only as
-  // the environment its private server starts from.
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-sandboxed-"));
-  try {
-    const claudeStub = path.join(dir, "claude-stub.mjs");
-    const tmuxStub = path.join(dir, "tmux-stub.mjs");
-    const invocationsPath = path.join(dir, "tmux-invocations.jsonl");
-    const sessionId = "00000000-0000-4000-8000-000000000022";
-    // A declared TMUX_TMPDIR is the workers' setting, not the valve's: it
-    // must not steer where the valve's socket goes, which would put a
-    // declared value into every `-S` argument.
-    const declared = {
-      ANTHROPIC_BASE_URL: "https://declared.example",
-      ANTHROPIC_AUTH_TOKEN: "declared-gateway-token",
-      TMUX_TMPDIR: "/declared-tmux-root"
-    };
-    await writeFile(
-      claudeStub,
-      `#!/usr/bin/env node
-        const args = process.argv.slice(2);
-        if (args[0] === "agents" && args[1] === "--json") {
-          process.stdout.write(JSON.stringify([{
-            id: "valve-1",
-            sessionId: ${JSON.stringify(sessionId)},
-            name: "valve-probe",
-            kind: "background",
-            cwd: ${JSON.stringify(dir)},
-            status: "idle",
-            state: "blocked"
-          }]));
-        }
-      `
-    );
-    await writeFile(
-      tmuxStub,
-      `#!/usr/bin/env node
-        import { appendFile } from "node:fs/promises";
-        await appendFile(${JSON.stringify(invocationsPath)}, JSON.stringify({
-          argv: process.argv.slice(2),
-          base: process.env.ANTHROPIC_BASE_URL ?? null,
-          token: process.env.ANTHROPIC_AUTH_TOKEN ?? null,
-          sandboxed: process.env[${JSON.stringify(SANDBOXED_WORKSPACE_VARIABLE)}] ?? null
-        }) + "\\n");
-      `
-    );
-    await chmod(claudeStub, 0o755);
-    await chmod(tmuxStub, 0o755);
-
-    const controlPlane = new ClaudeCliControlPlane({
-      claudeBin: claudeStub,
-      tmuxBin: tmuxStub,
-      projectsDir: dir,
-      workerEnv: declared,
-      valveAttachSettleMs: 0,
-      valveSubmitSettleMs: 0,
-      valveKillSettleMs: 0
-    });
-    const steered = await controlPlane.steer({ id: "valve-1", sessionId, name: "valve-probe", cwd: dir }, "continue");
-    assert.deepEqual(steered, { delivered: true });
-
-    const invocations = (await readFile(invocationsPath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { argv: string[]; base: string | null; token: string | null; sandboxed: string | null });
-    for (const { argv } of invocations) {
-      for (const value of Object.values(declared)) {
-        assert.ok(
-          argv.every((argument) => !argument.includes(value)),
-          `a tmux invocation carried a declared value in argv: ${JSON.stringify(argv)}`
-        );
+/** Real helper execution behind a scripted terminal and native transcript. */
+async function installValveStubs(dir: string, mode = "exact") {
+  const claude = path.join(dir, "claude stub.mjs");
+  const tmux = path.join(dir, "tmux-stub.mjs");
+  const project = path.join(dir, "project");
+  await mkdir(project);
+  const transcript = path.join(project, "valve-session.jsonl");
+  // A matching old row must never acknowledge a new delivery.
+  await writeFile(transcript, JSON.stringify({ type: "user", message: { content: "old" } }) + "\n");
+  const handle = { id: "valve-1", sessionId: "valve-session", name: "valve-probe", cwd: dir };
+  await writeFile(claude, `#!/usr/bin/env node
+    if (process.argv[2] === "agents") process.stdout.write(JSON.stringify([
+      ${JSON.stringify({ ...handle, status: "busy", state: "working", kind: "background" })}
+    ]));
+  `, { mode: 0o755 });
+  await writeFile(tmux, `#!/usr/bin/env node
+    import { appendFileSync, readFileSync, writeFileSync, statSync } from "node:fs";
+    import { execFileSync } from "node:child_process";
+    import path from "node:path";
+    ${TMUX_STUB_COMMAND}
+    const root = path.dirname(process.argv[3]);
+    const state = path.join(root, "test-state.json");
+    const target = path.join(root, "edited.txt");
+    const mode = ${JSON.stringify(mode)};
+    appendFileSync(${JSON.stringify(path.join(dir, "calls.jsonl"))}, JSON.stringify({
+      argv: process.argv.slice(2), env: {
+        base: process.env.ANTHROPIC_BASE_URL, token: process.env.ANTHROPIC_AUTH_TOKEN,
+        sandboxed: process.env.CLAUDE_CODE_SANDBOXED
       }
+    }) + "\\n");
+    const step = command[0] === "new-session" ? "attach" : command.at(-1);
+    if (mode === step) { console.error("delivery refused"); process.exit(1); }
+    if (command[0] === "new-session") {
+      writeFileSync(state, JSON.stringify({ editor: process.env.VISUAL }));
     }
-
-    // One private server for the whole valve: every command names the same
-    // socket, the server starts on no configuration file, and the valve ends
-    // by killing it.
-    const socket = invocations[0]?.argv[1];
-    assert.ok(invocations.every(({ argv }) => argv[0] === "-S" && argv[1] === socket));
-    assert.deepEqual(invocations[0]?.argv.slice(2, 5), ["-f", "/dev/null", "new-session"]);
-    assert.deepEqual(
-      invocations.slice(1).map(({ argv }) => argv[2]),
-      ["send-keys", "send-keys", "kill-server"]
-    );
-
-    // The server's starting environment is what its pane inherits.
-    const started = invocations[0];
-    assert.deepEqual(
-      { base: started?.base, token: started?.token, sandboxed: started?.sandboxed },
-      { base: declared.ANTHROPIC_BASE_URL, token: declared.ANTHROPIC_AUTH_TOKEN, sandboxed: "1" }
-    );
-
-    // tmux leaves its socket file behind on exit; the valve removes it with
-    // its directory.
-    await assert.rejects(access(path.dirname(socket ?? "")));
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("a real tmux valve hands the declared environment and the message to its attach client, and leaves no server behind", async (t) => {
-  try {
-    execFileSync("tmux", ["-V"], { stdio: "ignore" });
-  } catch {
-    t.skip("tmux is not installed");
-    return;
-  }
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-real-"));
-  // The pane runs its command through the server's shell, which tmux takes
-  // from SHELL: a plain sh keeps the attach stub's start well inside the
-  // attach settle, whatever the operator's login shell loads.
-  const savedShell = process.env.SHELL;
-  const savedTmpdir = process.env.TMPDIR;
-  const savedTmuxTmpdir = process.env.TMUX_TMPDIR;
-  process.env.SHELL = "/bin/sh";
-  // tmux keeps its sockets under TMUX_TMPDIR. A short, empty root of the
-  // test's own keeps the valve away from the operator's tmux server and
-  // shows afterwards whether anything — a default server's socket
-  // directory, a valve's leftover one — was made there.
-  const tmuxRoot = await mkdtemp(path.join("/tmp", "ensemble-tmux-root-"));
-  process.env.TMUX_TMPDIR = tmuxRoot;
-  try {
-    const claudeStub = path.join(dir, "claude-stub.sh");
-    const sessionId = "00000000-0000-4000-8000-000000000024";
-    const roster = JSON.stringify([
-      { id: "valve-real-1", sessionId, name: "valve-real-probe", kind: "background", cwd: dir, status: "idle", state: "blocked" }
-    ]);
-    // The attach stub records the two variables it inherited, then echoes
-    // its terminal input to a file, as the real attach client would take it.
-    await writeFile(
-      claudeStub,
-      `#!/bin/sh
-case "$1" in
-  agents) printf '%s' '${roster}' ;;
-  attach)
-    printf '%s\\n%s\\n' "$ANTHROPIC_AUTH_TOKEN" "$${SANDBOXED_WORKSPACE_VARIABLE}" > '${dir}/attach-env.tmp'
-    mv '${dir}/attach-env.tmp' '${dir}/attach-env'
-    exec cat > '${dir}/attach-input'
-    ;;
-esac
-`
-    );
-    await chmod(claudeStub, 0o755);
-    // A temp root deeper than any socket path can be: the valve's socket
-    // lives where tmux keeps its own, so the temp root must not matter.
-    const deepTmpdir = path.join(dir, "t".repeat(120));
-    await mkdir(deepTmpdir);
-    process.env.TMPDIR = deepTmpdir;
-
-    const controlPlane = new ClaudeCliControlPlane({
-      claudeBin: claudeStub,
-      projectsDir: dir,
-      workerEnv: { ANTHROPIC_AUTH_TOKEN: "declared-gateway-token" },
-      valveAttachSettleMs: 1_500,
-      valveSubmitSettleMs: 200,
-      valveKillSettleMs: 1_000
-    });
-    const steered = await controlPlane.steer({ id: "valve-real-1", sessionId, name: "valve-real-probe", cwd: dir }, "continue");
-    assert.deepEqual(steered, { delivered: true });
-
-    assert.equal(await readFile(path.join(dir, "attach-env"), "utf8"), "declared-gateway-token\n1\n");
-    assert.equal(await readFile(path.join(dir, "attach-input"), "utf8"), valveSlices("continue").join("") + "\n");
-    assert.deepEqual(await readdir(tmuxRoot), [], "the valve left a socket directory behind, or used the default tmux server");
-    // The server is forked from the client that started it and keeps that
-    // client's argv, which names the stub; it exits once killed, though not
-    // necessarily before the kill command returns.
-    const deadline = Date.now() + 5_000;
-    while ((await processesNaming(claudeStub)).length > 0) {
-      assert.ok(Date.now() < deadline, "the valve's tmux server outlived the valve");
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    if (step === "C-g" && mode !== "editor-missing") {
+      const { editor } = JSON.parse(readFileSync(state, "utf8"));
+      const [file, ...args] = editor.split(" ");
+      execFileSync(file, [...args, target]);
+      appendFileSync(${JSON.stringify(path.join(dir, "copied.jsonl"))}, JSON.stringify({
+        text: readFileSync(target, "utf8"), mode: statSync(path.join(root, "prompt.txt")).mode & 0o777,
+        editorMode: statSync(path.join(root, "editor.cjs")).mode & 0o777, root
+      }) + "\\n");
     }
-  } finally {
-    restoreEnv("SHELL", savedShell);
-    restoreEnv("TMPDIR", savedTmpdir);
-    restoreEnv("TMUX_TMPDIR", savedTmuxTmpdir);
-    // Only a valve that used the default server leaves one running here.
-    try {
-      execFileSync("tmux", ["kill-server"], { env: { ...process.env, TMUX_TMPDIR: tmuxRoot }, stdio: "ignore" });
-    } catch {
-      // No server under the test's root: the expected case.
+    if (step === "Enter") {
+      const text = readFileSync(target, "utf8");
+      const row = mode === "missing" ? { type: "assistant", message: { content: "unrelated" } } :
+        { type: "user", message: { content: mode === "mismatch" ? text + "changed" : text } };
+      appendFileSync(${JSON.stringify(transcript)}, JSON.stringify(row) + "\\n");
     }
-    await rm(dir, { recursive: true, force: true });
-    await rm(tmuxRoot, { recursive: true, force: true });
-  }
-});
-
-test("valveSlices encodes exact UTF-16 key records and cuts only between bounded whole records", () => {
-  assert.deepEqual(valveSlices(""), []);
-  assert.deepEqual(valveSlices("Aé😀\n\nB\n"), [
-    "\u001b[0;0;65;1;0;1_\u001b[0;0;233;1;0;1_\u001b[0;0;55357;1;0;1_" +
-    "\u001b[0;0;56832;1;0;1_\u001b[0;0;10;1;0;1_\u001b[0;0;10;1;0;1_" +
-    "\u001b[0;0;66;1;0;1_\u001b[0;0;10;1;0;1_"
-  ]);
-  // Exercise variable-width decimal units and surrogate pairs at batch edges.
-  const message = "Aé€😀\t\r\n\r".repeat(2_000);
-  const expected = "Aé€😀    \n\n".repeat(2_000);
-  const slices = valveSlices(message);
-  assert.ok(slices.length > 1);
-  for (const [index, slice] of slices.entries()) {
-    assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
-    // eslint-disable-next-line no-control-regex -- terminal records start with ESC.
-    const records = slice.match(/\u001b\[0;0;\d+;1;0;1_/g) ?? [];
-    assert.equal(records.join(""), slice, "every batch contains only complete records");
-    // eslint-disable-next-line no-control-regex -- terminal records start with ESC.
-    const nextRecord = slices[index + 1]?.match(/^\u001b\[0;0;\d+;1;0;1_/u)?.[0];
-    if (nextRecord !== undefined) {
-      assert.ok(slice.length + nextRecord.length > VALVE_SLICE_BYTES, "batches fill up to the next whole record");
-    }
-  }
-  assert.equal(decodeValveRecords(slices.join("")), expected);
-});
-
-test("valveSlices converts tabs and carriage returns before batching complete records", () => {
-  for (const [message, expected] of [
-    ["\t", "    "],
-    ["a\rb", "a\nb"],
-    ["a\r\nb", "a\nb"],
-    ["é\t😀\r中\r\n\t\r", "é    😀\n中\n    \n"]
-  ] as const) {
-    assert.equal(decodeValveRecords(valveSlices(message).join("")), expected);
-  }
-
-  // An ASCII record is 15 bytes: leave room for two of a tab's four spaces.
-  const prefix = "A".repeat(Math.floor(VALVE_SLICE_BYTES / 15) - 2);
-  const tabSlices = valveSlices(prefix + "\t😀\r\nB\rC");
-  assert.equal(decodeValveRecords(tabSlices[0]!), prefix + "  ");
-  assert.equal(decodeValveRecords(tabSlices.slice(1).join("")), "  😀\nB\nC");
-
-  // A CRLF at a full batch edge still encodes just one line break.
-  const fullPrefix = "A".repeat(Math.floor(VALVE_SLICE_BYTES / 15));
-  const crlfSlices = valveSlices(fullPrefix + "\r\n\tZ");
-  assert.equal(decodeValveRecords(crlfSlices[0]!), fullPrefix);
-  assert.equal(decodeValveRecords(crlfSlices.slice(1).join("")), "\n    Z");
-});
-
-function decodeValveRecords(wire: string): string {
-  // eslint-disable-next-line no-control-regex -- decode the explicit ESC record delimiter.
-  return wire.replace(/\u001b\[0;0;(\d+);1;0;1_/g, (_, unit: string) => String.fromCharCode(Number(unit)));
+  `, { mode: 0o755 });
+  return { claude, tmux, handle, transcript };
 }
 
-test("a follow-up turn larger than one argv element reaches the valve whole, in order, before its submit keystroke", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-large-"));
+for (const mode of ["attach", "C-g", "Enter", "editor-missing", "missing", "mismatch"] as const) {
+  test(`reply valve reports ${mode} failure and removes its private files`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-failure-"));
+    try {
+      const stub = await installValveStubs(dir, mode);
+      const control = new ClaudeCliControlPlane({
+        claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir,
+        valveAttachSettleMs: 0, valveDeliveryTimeoutMs: 50
+      });
+      const result = await control.steer(stub.handle, "old");
+      assert.equal(result.delivered, false);
+      if (!result.delivered) {
+        assert.match(result.reason, mode === "editor-missing" ? /editor did not finish/ :
+          mode === "missing" ? /delivery missing/ : mode === "mismatch" ? /delivery mismatch.*sha256/ : /delivery refused/);
+      }
+      const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { argv: string[] });
+      assert.equal(calls.at(-1)?.argv.at(-1), "kill-server");
+      await assert.rejects(access(path.dirname(calls[0]!.argv[1]!)));
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+}
+
+test("literal command-record XML is accepted as exact ordinary text", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-literal-"));
   try {
-    const claudeStub = path.join(dir, "claude-stub.mjs");
-    const tmuxStub = path.join(dir, "tmux-stub.mjs");
-    const sendKeysPath = path.join(dir, "send-keys.jsonl");
-    const sessionId = "00000000-0000-4000-8000-000000000023";
-    await writeFile(
-      claudeStub,
-      `#!/usr/bin/env node
-        const args = process.argv.slice(2);
-        if (args[0] === "agents" && args[1] === "--json") {
-          process.stdout.write(JSON.stringify([{
-            id: "valve-2",
-            sessionId: ${JSON.stringify(sessionId)},
-            name: "valve-large-probe",
-            kind: "background",
-            cwd: ${JSON.stringify(dir)},
-            status: "idle",
-            state: "blocked"
-          }]));
-        }
-      `
-    );
-    await writeFile(
-      tmuxStub,
-      `#!/usr/bin/env node
-        import { appendFile } from "node:fs/promises";
-        ${TMUX_STUB_COMMAND}
-        if (command[0] === "send-keys") {
-          await appendFile(${JSON.stringify(sendKeysPath)}, JSON.stringify(command.slice(3)) + "\\n");
-        }
-      `
-    );
-    await chmod(claudeStub, 0o755);
-    await chmod(tmuxStub, 0o755);
-
-    const controlPlane = new ClaudeCliControlPlane({
-      claudeBin: claudeStub,
-      tmuxBin: tmuxStub,
-      projectsDir: dir,
-      valveAttachSettleMs: 0,
-      valveSubmitSettleMs: 0,
-      valveKillSettleMs: 0
+    const stub = await installValveStubs(dir);
+    const control = new ClaudeCliControlPlane({
+      claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0
     });
-    // Well past Linux's 128 KiB single-argument cap: a diff-carrying follow-up
-    // of the size that a one-argument send fails on with `spawn E2BIG`.
-    const message = "diff --git a/src/wide.ts b/src/wide.ts\n" + "+  const value = \"é\";\n".repeat(12_000);
-    const controls = "\t😀\ré\r\n中\t\r";
-    const expected = message + "    😀\né\n中    \n";
-    assert.ok(Buffer.byteLength(message, "utf8") > 256 * 1024);
+    const message = "<command-message>check</command-message>\n<command-name>/check</command-name>\n<command-args>literal fixture</command-args>";
+    assert.deepEqual(await control.steer(stub.handle, message), { delivered: true });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 
-    assert.deepEqual(await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, ""), { delivered: true });
-    assert.equal(await readFile(sendKeysPath, "utf8"), '["Enter"]\n');
-    await writeFile(sendKeysPath, "");
+test("concurrent multi-megabyte follow-ups use private editors, exact receipts and no payload argv", async () => {
+  const dirs = await Promise.all([0, 1].map(() => mkdtemp(path.join(tmpdir(), "ensemble-valve-large-"))));
+  const declared = { ANTHROPIC_BASE_URL: "https://declared.example", ANTHROPIC_AUTH_TOKEN: "declared-token", TMUX_TMPDIR: "/declared-root" };
+  try {
+    const roots = await Promise.all(dirs.map(async (dir, index) => {
+      const stub = await installValveStubs(dir);
+      const control = new ClaudeCliControlPlane({
+        claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, workerEnv: declared,
+        valveAttachSettleMs: 0
+      });
+      const message = `${index}:` + "café £ Ω 中文 😀;\n- data\n/slash inside\n".repeat(60_000) + "end";
+      assert.ok(Buffer.byteLength(message) > 2_000_000);
+      assert.deepEqual(await control.steer(stub.handle, message), { delivered: true });
+      const copied = JSON.parse((await readFile(path.join(dir, "copied.jsonl"), "utf8")).trim()) as { text: string; mode: number; editorMode: number; root: string };
+      assert.equal(copied.text, message);
+      assert.equal(copied.mode, 0o600);
+      assert.equal(copied.editorMode, 0o700);
+      const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { argv: string[]; env: { base: string; token: string; sandboxed: string } });
+      for (const call of calls) {
+        assert.ok(call.argv.every(arg => Buffer.byteLength(arg) < 8192));
+        for (const value of Object.values(declared)) assert.ok(call.argv.every(arg => !arg.includes(value)));
+        assert.equal(call.argv[1], path.join(copied.root, "tmux.sock"));
+      }
+      assert.deepEqual(calls[0]?.env, { base: declared.ANTHROPIC_BASE_URL, token: declared.ANTHROPIC_AUTH_TOKEN, sandboxed: "1" });
+      assert.deepEqual(calls.slice(1).map(call => call.argv.at(-1)), ["C-g", "Enter", "kill-server"]);
+      await assert.rejects(access(copied.root));
+      return copied.root;
+    }));
+    assert.notEqual(roots[0], roots[1]);
+  } finally { await Promise.all(dirs.map(dir => rm(dir, { recursive: true, force: true }))); }
+});
 
-    const steered = await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, message + controls);
-    assert.deepEqual(steered, { delivered: true });
-
-    const sends = (await readFile(sendKeysPath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string[]);
-    const literal = sends.filter((send) => send[0] === "-l").map((send) => send[2] ?? "");
-    assert.ok(literal.length > 1, "the message took more than one literal send");
-    for (const slice of literal) {
-      assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
-    }
-    assert.equal(decodeValveRecords(literal.join("")), expected);
-    assert.equal(sends.filter((send) => send[0] !== "-l").length, 1);
-    assert.ok(sends.slice(0, -1).every((send) => send[0] === "-l" && send[1] === "--"));
-    assert.deepEqual(sends.at(-1), ["Enter"], "the submit keystroke follows the last slice");
+test("a real private tmux server gives its attach client the editor and declared environment", async (t) => {
+  try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); }
+  catch { t.skip("tmux is not installed"); return; }
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-real-"));
+  const savedShell = process.env.SHELL;
+  process.env.SHELL = "/bin/sh";
+  try {
+    const stub = await installValveStubs(dir);
+    await writeFile(stub.claude, `#!/usr/bin/env node
+      import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+      import { execFileSync } from "node:child_process";
+      if (process.argv[2] === "agents") {
+        console.log(JSON.stringify([${JSON.stringify({ ...stub.handle, status: "idle", state: "working", kind: "background" })}]));
+      } else if (process.argv[2] === "attach") {
+        writeFileSync(${JSON.stringify(path.join(dir, "attach-env"))}, JSON.stringify({ token: process.env.ANTHROPIC_AUTH_TOKEN, sandboxed: process.env.CLAUDE_CODE_SANDBOXED }));
+        process.stdin.setRawMode(true);
+        process.stdin.on("data", chunk => {
+          if (chunk.includes(7)) {
+            const [file, ...args] = process.env.VISUAL.split(" ");
+            execFileSync(file, [...args, ${JSON.stringify(path.join(dir, "edited.txt"))}]);
+          }
+          if (chunk.includes(13)) appendFileSync(${JSON.stringify(stub.transcript)}, JSON.stringify({ type: "user", message: { content: readFileSync(${JSON.stringify(path.join(dir, "edited.txt"))}, "utf8") } }) + "\\n");
+        });
+      }
+    `);
+    const control = new ClaudeCliControlPlane({
+      claudeBin: stub.claude, projectsDir: dir,
+      workerEnv: { ANTHROPIC_AUTH_TOKEN: "declared-token" }, valveAttachSettleMs: 1_500
+    });
+    assert.deepEqual(await control.steer(stub.handle, "é😀\nwhole turn"), { delivered: true });
+    assert.deepEqual(JSON.parse(await readFile(path.join(dir, "attach-env"), "utf8")), { token: "declared-token", sandboxed: "1" });
+    await waitForCondition(async () => (await processesNaming(stub.claude)).length === 0, "private attach client survived cleanup");
   } finally {
+    restoreEnv("SHELL", savedShell);
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -24444,11 +24444,13 @@ function targetsTriedOf(record) {
   return advancesOf(record).length + (record.attempts.at(-1)?.chainDecision === "advanced" ? 0 : 1);
 }
 function settledFailureAccount(record) {
-  const attempted = attemptedFailureAccount(record);
-  if (attempted !== null) {
-    return attempted;
+  if (record.attempts.at(-1)?.status === "complete" && record.terminationCause !== null) {
+    return record.terminationCause;
   }
-  return record.terminationCause ?? { kind: "unavailable", message: "the agent failed without a recorded cause" };
+  return attemptedFailureAccount(record) ?? record.terminationCause ?? {
+    kind: "unavailable",
+    message: "the agent failed without a recorded cause"
+  };
 }
 function settledFailureMessage(record) {
   const account = settledFailureAccount(record);

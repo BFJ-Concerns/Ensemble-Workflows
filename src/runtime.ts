@@ -2069,9 +2069,9 @@ export class EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    // Where an attempt ran, its own failure is the engine's account and the
-    // record's home for it; a cause here would only restate that entry, so
-    // null keeps one home for one account and the two can never disagree.
+    // A final failed attempt carries the engine's account. A completed
+    // attempt followed by a close failure needs a separate terminal cause;
+    // an earlier attempt's failure does not explain why this call ended.
     // An agent refused before any attempt was observed — an unknown model
     // rejected at dispatch, a placement that never opened — has no such
     // entry, and leaving this null there publishes a bare `failed` while
@@ -2872,8 +2872,8 @@ function failureFromError(error: unknown): { kind: string; message: string } {
  * The engine's own account of why this agent failed, as the attempts array
  * recorded it: the last attempt that named a failure, or null when no
  * attempt did — either because none ran, or because none observed a fault.
- * This is the record's home for a diagnosed failure; `terminationCause`
- * speaks only where this is silent.
+ * A separate `terminationCause` can explain a later close failure or the
+ * run's ending rather than any failure an attempt observed.
  */
 function attemptedFailureAccount(record: RuntimeAgentRecord): { kind: string; message: string } | null {
   for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
@@ -2978,11 +2978,14 @@ function targetsTriedOf(record: RuntimeAgentRecord): number {
 }
 
 function settledFailureAccount(record: RuntimeAgentRecord): { kind: string; message: string } {
-  const attempted = attemptedFailureAccount(record);
-  if (attempted !== null) {
-    return attempted;
+  // A completed correction can be followed by a close failure. Its own
+  // terminal cause takes precedence over failures from earlier attempts.
+  if (record.attempts.at(-1)?.status === "complete" && record.terminationCause !== null) {
+    return record.terminationCause;
   }
-  return record.terminationCause ?? { kind: "unavailable", message: "the agent failed without a recorded cause" };
+  return attemptedFailureAccount(record) ?? record.terminationCause ?? {
+    kind: "unavailable", message: "the agent failed without a recorded cause"
+  };
 }
 
 /** The one-line rendering of that account an identified envelope's `failure` carries. */

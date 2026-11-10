@@ -4457,10 +4457,16 @@ test("an invocation close failure after a completed correction names the close e
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 2 });
   runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
-  assert.equal(await runtime.agent("correct", { engine: "codex" }), null);
+  const notices = chainNotices(runtime);
+  assert.deepEqual(await runtime.agent("correct", { engine: "codex", identity: true }), {
+    label: null, phase: null, output: null,
+    failure: { message: "Error: invocation close failed" }
+  });
   const settled = records.at(-1)!;
   assert.deepEqual(settled.attempts.map((attempt) => attempt.status), ["failed", "complete"]);
   assert.equal(settled.terminationCause?.message, "invocation close failed");
+  assert.deepEqual(notices.find((notice) => notice.method.endsWith("/agentFailed"))?.params.failure,
+    { kind: "Error", message: "invocation close failed" });
   await runtime.close();
 });
 

@@ -23367,13 +23367,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
         } catch (error) {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
-          throw identifiedFailure(options, error);
+          throw error;
         }
       } finally {
         this.#noteAgentSettled(agentId);
         state.turnCount = turnNumber;
         state.lastTurnEndedAt = this.#now();
       }
+    } catch (error) {
+      throw identifiedFailure(options, error);
     } finally {
       state.inFlight = false;
     }

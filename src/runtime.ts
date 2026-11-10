@@ -1102,13 +1102,17 @@ export class EnsembleRuntime {
           // next turn just as on the successful path.
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
-          throw identifiedFailure(options, error);
+          throw error;
         }
       } finally {
         this.#noteAgentSettled(agentId);
         state.turnCount = turnNumber;
         state.lastTurnEndedAt = this.#now();
       }
+    } catch (error) {
+      // Admission can refuse a turn before it has a record or a worker.
+      // Its rejection still carries the session's opted-in identity.
+      throw identifiedFailure(options, error);
     } finally {
       state.inFlight = false;
     }

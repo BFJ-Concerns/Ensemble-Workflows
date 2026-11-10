@@ -452,6 +452,40 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
   await runtime.close();
 });
 
+test("identified session budget refusals keep their envelope through combinators before and after opening", async () => {
+  for (const opened of [false, true]) {
+    for (const identity of [true, false]) {
+      const transport = new ScriptedTransport([turnResult("first answer")]);
+      const runtime = codexRuntime(transport, { codexBudget: opened ? 100 : 0 });
+      const session = runtime.createWorkerSession({ engine: "codex", identity, label: "held", phase: "build" });
+      try {
+        if (opened) {
+          await session.send("first turn");
+          runtime.budget.record("codex", spendEvent("thread-1", 100));
+        }
+        const recordBefore = runtime.lastAgentRecord();
+        for (const combinator of ["parallel", "pipeline"]) {
+          const send = () => session.send("blocked turn");
+          const result = combinator === "parallel"
+            ? await parallel([send], () => {})
+            : await pipeline(["go"], [send], () => {});
+          const failure = new BudgetExceededError("codex", opened ? 100 : 0, opened ? 100 : 0);
+          assert.deepEqual(result, [identity ? {
+            label: "held", phase: "build", output: null, failure: { message: failure.message }
+          } : null]);
+        }
+        // Direct sends still reject, and admission never opens or records a turn.
+        await assert.rejects(session.send("blocked directly"), BudgetExceededError);
+        assert.equal(transport.openedThreads.length, opened ? 1 : 0);
+        assert.equal(transport.turns.length, opened ? 1 : 0);
+        assert.equal(runtime.lastAgentRecord(), recordBefore);
+      } finally {
+        await runtime.close();
+      }
+    }
+  }
+});
+
 test("turns are strictly sequential: a send during an unsettled turn throws", async () => {
   let releaseTurn: (() => void) | undefined;
   const gate = new Promise<void>((resolve) => {

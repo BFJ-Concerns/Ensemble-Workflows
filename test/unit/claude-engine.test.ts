@@ -25,7 +25,7 @@ import type {
   ClaudeDispatchOptions,
   ClaudeSessionHandle,
   ClaudeSessionStatus,
-  ValveDelivery
+  ValveSubmission
 } from "../../src/claude-control-plane.js";
 
 /**
@@ -81,6 +81,7 @@ class FakeControlPlane implements ClaudeControlPlane {
   #dispatchGate: DispatchGate | undefined;
   #refuseDispatch: string | undefined;
   #registrationTimeout: string | undefined;
+  #openingArrival: (sent: string) => string | null;
   #steered = false;
 
   #sessionSeq = 0;
@@ -104,6 +105,7 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#dispatchGate = options.dispatchGate;
     this.#refuseDispatch = options.refuseDispatch;
     this.#registrationTimeout = options.registrationTimeout;
+    this.#openingArrival = options.openingArrival ?? ((sent) => sent);
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -121,7 +123,12 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#path = path.join(this.#dir, `${sessionId}.jsonl`);
     this.#handle = { id: `fake-${this.#sessionSeq}`, sessionId, name: options.name, cwd: options.cwd };
     this.#present = true;
-    await this.#consume("write");
+    // A new session's transcript opens with its own record of the prompt it
+    // was launched with — the opening's receipt — and then takes the first
+    // scripted turn.
+    const arrived = this.#openingArrival(options.prompt);
+    await writeFile(this.#path, arrived === null ? "" : `${submissionRow(arrived)}\n`);
+    await this.#consume();
     this.#dispatchGate?.arrived();
     await this.#dispatchGate?.release;
     return this.#handle;
@@ -150,17 +157,22 @@ class FakeControlPlane implements ClaudeControlPlane {
     return this.#path;
   }
 
-  async steer(_handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery> {
+  async steer(_handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
     this.steerCount += 1;
     this.steered.push(message);
     this.#steered = true;
     if (!this.#steerSucceeds) {
-      return { delivered: false, reason: "fake valve refused" };
+      return { submitted: false, reason: "fake valve refused" };
     }
     if (this.#steerConsumesTurn) {
-      await this.#consume("append");
+      // The session records what it received as its own user row — the
+      // receipt the engine reads — then takes the next scripted turn.
+      if (this.#path !== null) {
+        await appendFile(this.#path, `${submissionRow(message)}\n`);
+      }
+      await this.#consume();
     }
-    return { delivered: true };
+    return { submitted: true };
   }
 
   async stop(): Promise<void> {
@@ -172,22 +184,21 @@ class FakeControlPlane implements ClaudeControlPlane {
     return this.#tmux;
   }
 
-  // Consume the next scripted turn: set busy/outcome and write/append its
+  // Consume the next scripted turn: set busy/outcome and append its
   // assistant message. A missing turn means "settle complete, produce nothing".
-  async #consume(mode: "write" | "append"): Promise<void> {
+  async #consume(): Promise<void> {
     const turn = this.#turns.shift();
     this.#busyRemaining = turn?.busyPolls ?? 0;
     this.#outcome = turn?.outcome ?? "complete";
-    const line = turn?.assistant !== undefined ? `${assistantLine(turn.assistant, this.#dispatchedEffort)}\n` : "";
-    if (this.#path === null) {
-      return;
-    }
-    if (mode === "write") {
-      await writeFile(this.#path, line);
-    } else if (line.length > 0) {
-      await appendFile(this.#path, line);
+    if (this.#path !== null && turn?.assistant !== undefined) {
+      await appendFile(this.#path, `${assistantLine(turn.assistant, this.#dispatchedEffort)}\n`);
     }
   }
+}
+
+/** The row a session writes for a submission it received: its own record of the text, which the engine reads as the receipt. */
+function submissionRow(text: string): string {
+  return JSON.stringify({ type: "user", message: { role: "user", content: text } });
 }
 
 interface DispatchGate {
@@ -201,6 +212,13 @@ interface FakeControlPlaneOptions {
   refuseDispatch?: string;
   /** When set, `dispatch()` throws a `ClaudeRegistrationTimeoutError`: the daemon took the dispatch but never registered the session. */
   registrationTimeout?: string;
+  /**
+   * How the opening prompt fares on its way into a launched session.
+   * Omitted: the session records it exactly as sent. Otherwise the session
+   * records the text this returns — altered in transit — or, for `null`,
+   * records no submission at all.
+   */
+  openingArrival?: (sent: string) => string | null;
   steerSucceeds?: boolean;
   steerConsumesTurn?: boolean;
   dispatchGate?: DispatchGate;
@@ -1005,6 +1023,23 @@ test("a worker that never shows life fails fast with a distinct recorded failure
   }
 });
 
+test("a newly registered worker that disappears before any transcript keeps the first-life availability diagnosis", async () => {
+  class GoneBeforeLife extends MissingTranscriptControlPlane {
+    override async poll(): Promise<ClaudeSessionStatus> { return { status: "absent", state: "unknown", present: false }; }
+  }
+  const plane = new GoneBeforeLife();
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = makeRuntime(plane, { maxAttempts: 1, turnTimeoutMs: 5_000, firstLifeTimeoutMs: 4_000 });
+  runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); } } as unknown as RunRecordWriter);
+  try {
+    assert.equal(await runtime.agent("decide", { engine: "claude", fallback: [{ engine: "claude", model: "next" }] }), null);
+    const attempts = records.at(-1)?.attempts ?? [];
+    assert.equal(attempts.length, 2);
+    assert.deepEqual(attempts.map(attempt => attempt.failure?.kind), ["claude-first-life-timeout", "claude-first-life-timeout"]);
+    assert.deepEqual(attempts.map(attempt => attempt.chainDecision), ["advanced", "exhausted"]);
+  } finally { await runtime.close(); }
+});
+
 test("a slow worker survives the first-life guard once its transcript appears", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-slow-alive-"));
   try {
@@ -1047,8 +1082,8 @@ class MissingTranscriptControlPlane implements ClaudeControlPlane {
     return null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1072,9 +1107,10 @@ class SlowAliveControlPlane implements ClaudeControlPlane {
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
     this.#present = true;
-    // The persisted user entry proves dispatch reached the worker. Assistant
-    // output may legitimately take much longer and is governed by timeoutMs.
-    await writeFile(this.#path, `${JSON.stringify({ type: "user", message: { role: "user", content: "decide" } })}\n`);
+    // The persisted user entry is the opening's receipt: the prompt reached
+    // the worker as sent. Assistant output may legitimately take much longer
+    // and is governed by timeoutMs.
+    await writeFile(this.#path, `${submissionRow(options.prompt)}\n`);
     return { id: "slow-1", sessionId: "slow-alive", name: options.name, cwd: options.cwd };
   }
 
@@ -1091,8 +1127,8 @@ class SlowAliveControlPlane implements ClaudeControlPlane {
     return this.#present ? this.#path : null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1430,7 +1466,7 @@ class SplitRowsControlPlane implements ClaudeControlPlane {
     const firstCall = { id: "msg_first_call", stop: "tool_use", input: 100, output: 10, cached: 50, creation: 20 };
     await writeFile(
       this.#path,
-      `${assistantLine({ ...firstCall })}\n${assistantLine({ ...firstCall, text: "looking" })}\n`
+      `${submissionRow(options.prompt)}\n${assistantLine({ ...firstCall })}\n${assistantLine({ ...firstCall, text: "looking" })}\n`
     );
     return { id: "split-rows-1", sessionId: "split-rows", name: options.name, cwd: options.cwd };
   }
@@ -1456,8 +1492,8 @@ class SplitRowsControlPlane implements ClaudeControlPlane {
     return this.#present ? this.#path : null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1571,6 +1607,7 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
     this.#present = true;
     const call = { type: "tool_use", id: "toolu_bg", name: "Bash", input: { command: "sleep 45", description: "Wait 45 seconds in background", run_in_background: true } };
     const rows = [
+      submissionRow(options.prompt),
       JSON.stringify({ type: "assistant", message: { role: "assistant", content: [call], stop_reason: "tool_use" } }),
       JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bg", content: "Command running in background with ID: bya9z1l44. You will be notified when it completes." }] } })
     ];
@@ -1645,8 +1682,8 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
     return this.#present ? this.#path : null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1890,6 +1927,117 @@ test("a dispatch the daemon took but never registered degrades to a failed turn 
     },
     { registrationTimeout: "dispatched session 'w' in /fake/scratch did not register within 30000ms" }
   );
+});
+
+// ---------------------------------------------------------------------------
+// An opening prompt is delivered when its receipt verifies, not when the
+// launch returns. These two are the rule for what a failed opening may do
+// next: a session that took something keeps the call on its target, and
+// only a launch that left no session lets the same prompt go to the next
+// entry of the fallback chain. Each reads the control plane's own log —
+// what was launched, on which model, and when a session was stopped.
+// ---------------------------------------------------------------------------
+
+test("an opening the session received altered stays on its target: each session is stopped before the next is launched, and the chain is never consulted", async () => {
+  // Every launch delivers the prompt cut short, as a launch with a size
+  // limit of its own would, so no attempt can verify.
+  const cut = (sent: string): string => sent.slice(0, -1);
+  await withControlPlane(
+    [
+      { assistant: { text: "reply to the cut prompt" } },
+      { assistant: { text: "reply to the cut prompt" } },
+      { assistant: { text: "reply to the cut prompt" } }
+    ],
+    async (controlPlane) => {
+      const order: string[] = [];
+      const launch = controlPlane.dispatch.bind(controlPlane);
+      const stop = controlPlane.stop.bind(controlPlane);
+      controlPlane.dispatch = async (options) => {
+        order.push("launch");
+        return launch(options);
+      };
+      controlPlane.stop = async () => {
+        order.push("stop");
+        return stop();
+      };
+      const runtime = makeRuntime(controlPlane);
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => {
+          records.push(structuredClone(record));
+        }
+      } as unknown as RunRecordWriter);
+      try {
+        // The session answered the cut prompt each time, and no reply is the
+        // call's value: a reply to text nobody sent answers nothing.
+        const result = await runtime.agent("decide", {
+          engine: "claude",
+          fallback: [{ engine: "claude", model: "sonnet" }]
+        });
+        assert.equal(result, null);
+
+        // The discriminating assertions. Every launch is on the call's own
+        // target: the chain entry's model was never launched, because a
+        // session that took something is not an unavailable target.
+        assert.deepEqual(controlPlane.dispatched.map((dispatched) => dispatched.model), [undefined, undefined, undefined]);
+        // And no two sessions ever held the prompt at once: the one that
+        // took the cut copy was stopped before the retry launched another.
+        assert.deepEqual(order, ["launch", "stop", "launch", "stop", "launch", "stop"]);
+
+        // Each attempt is a delivery failure that says so, classed as
+        // neither availability nor output, keeping what the session wrote.
+        const attempts = records.at(-1)?.attempts ?? [];
+        assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind), ["claude-delivery-error", "claude-delivery-error", "claude-delivery-error"]);
+        assert.deepEqual(attempts.map((attempt) => attempt.classification), Array(3).fill({ class: "unclassified", rule: "claude.delivery" }));
+        assert.deepEqual(attempts.map((attempt) => attempt.chainDecision), ["retried-in-place", "retried-in-place", "exhausted"]);
+        assert.deepEqual(attempts.map((attempt) => attempt.rawOutput), Array(3).fill("reply to the cut prompt"));
+        assert.match(
+          attempts[0]?.failure?.message ?? "",
+          /^the opening prompt was submitted, but the session received different text: sent \d+ UTF-8 bytes, sha256 [0-9a-f]{64}; received \d+ UTF-8 bytes, sha256 [0-9a-f]{64}$/
+        );
+      } finally {
+        await runtime.close();
+      }
+    },
+    { openingArrival: cut }
+  );
+});
+
+test("a launch that left no session moves the call to its next chain entry, and that entry's opening is verified like any other", async () => {
+  await withControlPlane([{ assistant: { text: "answer from the chain entry" } }], async (controlPlane) => {
+    const launch = controlPlane.dispatch.bind(controlPlane);
+    let launches = 0;
+    controlPlane.dispatch = async (options) => {
+      launches += 1;
+      if (launches === 1) {
+        // Nothing registered, so no session holds the prompt.
+        throw new ClaudeRegistrationTimeoutError("dispatched session 'w' in /fake/cwd did not register within 30000ms");
+      }
+      return launch(options);
+    };
+    const runtime = makeRuntime(controlPlane);
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => {
+        records.push(structuredClone(record));
+      }
+    } as unknown as RunRecordWriter);
+    try {
+      const result = await runtime.agent("decide", {
+        engine: "claude",
+        fallback: [{ engine: "claude", model: "sonnet" }]
+      });
+      assert.equal(result, "answer from the chain entry");
+      assert.equal(launches, 2);
+      assert.deepEqual(controlPlane.dispatched.map((dispatched) => dispatched.model), ["sonnet"]);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind ?? null), ["claude-registration-timeout", null]);
+      assert.deepEqual(attempts[0]?.classification, { class: "availability", rule: "claude.no-registration" });
+      assert.equal(attempts[0]?.chainDecision, "advanced");
+    } finally {
+      await runtime.close();
+    }
+  });
 });
 
 test("Claude reports a readable transcript after an initially absent path", async () => {

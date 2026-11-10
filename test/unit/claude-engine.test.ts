@@ -949,6 +949,32 @@ test("a blocked worker is recovered with a bounded nudge through the valve", asy
   );
 });
 
+for (const altered of [false, true]) {
+  for (const rejected of [false, true]) {
+    test(`an opening first seen after a blocked poll ${altered ? "rejects altered delivery" : "verifies delivery"} before collecting ${rejected ? "a diagnostic" : "an answer"}`, async () => {
+      await withControlPlane([{
+        outcome: "blocked", assistant: { text: "native reply", ...(rejected ? { model: "<synthetic>", stop: "stop_sequence" } : {}) }
+      }], async (plane) => {
+        const lookup = plane.transcriptPath.bind(plane);
+        let reads = 0;
+        plane.transcriptPath = async () => ++reads === 1 ? null : lookup();
+        const adapter = new ClaudeEngineAdapter({ controlPlane: plane, config: fastConfig });
+        const invocation = adapter.createInvocation("complete opening", {});
+        try {
+          const result = await invocation.runAttempt({ attempt: 1 });
+          if (altered || rejected) {
+            assert.equal(result.attemptFailure?.kind, altered ? "claude-delivery-error" : "claude-worker-diagnostic");
+          } else {
+            assert.equal(result.attemptFailure, undefined);
+            assert.equal(result.text, "native reply");
+          }
+          assert.equal(plane.steerCount, 0);
+        } finally { await invocation.close?.(); await adapter.close(); }
+      }, { openingArrival: sent => altered ? sent.slice(0, -1) : sent });
+    });
+  }
+}
+
 test("blocked recovery never submits against an unreadable transcript boundary", async () => {
   await withControlPlane([{ outcome: "blocked" }], async (plane) => {
     const poll = plane.poll.bind(plane);

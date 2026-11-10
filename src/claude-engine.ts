@@ -883,6 +883,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // user row with the nudge.
         const canNudge = this.#nudges < this.#blockedRecoveryBound && (await this.#controlPlane.tmuxAvailable());
         const latest = await this.#readTranscript(handle, observers);
+        if (!sawLife && opening !== undefined) {
+          await this.#requireReceipt(handle, opening, observers);
+        }
+        sawLife = true;
         if (endsInSyntheticReply(latest.entries, fromIndex) ||
           (turnComplete(latest.entries, fromIndex) && outstandingBackgroundTasks(latest.entries, fromIndex).length === 0)) {
           return latest;

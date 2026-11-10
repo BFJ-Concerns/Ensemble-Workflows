@@ -22011,6 +22011,10 @@ var ClaudeEngineInvocation = class {
       if (status.state === "blocked") {
         const canNudge = this.#nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
         const latest = await this.#readTranscript(handle, observers);
+        if (!sawLife && opening !== void 0) {
+          await this.#requireReceipt(handle, opening, observers);
+        }
+        sawLife = true;
         if (endsInSyntheticReply(latest.entries, fromIndex) || turnComplete(latest.entries, fromIndex) && outstandingBackgroundTasks(latest.entries, fromIndex).length === 0) {
           return latest;
         }

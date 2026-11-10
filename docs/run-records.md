@@ -60,6 +60,15 @@ evidence, in this order:
 A consumer with no proc filesystem to judge from applies rule 2 alone.
 Per-engine spend is never summed: the engines count tokens under different
 rules, and a token on one engine does not cost the same as on another.
+Spend advances when usage evidence arrives, including while a worker is
+running: Codex emits usage notifications, Claude is measured by transcript
+polls, and opencode is measured from its streamed step events. These are
+usage updates, not a token-by-token meter. Engines start at `spent: 0`, and a
+worker's `spent` stays `null` until its own usage is observed. On opencode,
+engine spend advances during execution while worker spend appears at
+settlement. Neither an engine's zero nor a worker's `null` proves that an
+active worker has consumed no tokens. Final attempt usage updates the
+worker's subtotal at settlement.
 
 ### `ensemble.<run-uuid>.local.json` schema
 
@@ -467,6 +476,47 @@ families with their own schema versions (`3` and `3`), described above.
   declared file that was `missing` or a `size-mismatch` at the seal. Empty on
   a whole archive.
 
+### Argument records
+
+The root's `args.json` and each composed child's
+`workflows/<zero-padded-ordinal>/args.json` are descriptive envelopes:
+
+| Field | Root (`run_args`) | Child (`workflow_args`) |
+|---|---|---|
+| `schema_version` | `4` | `4` |
+| `kind` | `"run_args"` | `"workflow_args"` |
+| `value` | For a workflow, a positional string array or the JSON value supplied with `--json-args`; for a direct `agent` invocation, `{ prompt, options }` with the prompt string and parsed agent options | The JSON value passed as the child's arguments to `workflow()` |
+
+Each envelope has a separate `args.canonical.json` alongside it. Hash that
+file's exact UTF-8 bytes to check the corresponding manifest entry's
+`args.sha256`; hashing the envelope includes its metadata and gives a
+different digest. The canonical file contains the arguments alone, using the
+canonical JSON recipe under [Integrity](#integrity), with no trailing newline.
+
+### Result record
+
+`result.json` is written when the run ends through a path the launcher can
+handle. A run killed before it seals can have no result file. Its fields are:
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | `4` |
+| `kind` | `"run_result"` |
+| `status` | `"complete"`, `"failed"`, `"timed-out"`, or `"interrupted"`: the run's outcome, independent of the archive's integrity |
+| `exit_code` | Numeric process exit code: normally `0` on success, `1` on failure or timeout, `130` on SIGINT, or `143` on SIGTERM |
+| `error` | `{ kind, message }` naming the terminal error, or `null` when the run ended cleanly |
+| `value` | The serialised workflow return value (or direct agent result) on success; a partial-result envelope when the body fails, times out or is interrupted |
+
+A partial-result envelope has `partial: true`, `reason` (`"failed"`,
+`"timed-out"`, or `"interrupted"`), `error` (`{ kind, message }`), and
+`completed`: an array of `{ id, engine, label, phase, output }` for workers
+that finished successfully, in completion order. `label` and `phase` can be
+`null`; `output` is the worker's validated value or text. The script's
+unfinished return value cannot be recovered from this envelope. A teardown
+failure after a successful body can leave that body's value in `value` while
+`status`, `exit_code` and `error` report the teardown failure. Use those
+fields to determine the outcome.
+
 ### Agent records
 
 Each agent's record is at `agents/<zero-padded-id>/agent.json`:
@@ -694,6 +744,43 @@ repeat the call's usage, so rows sharing a message id are counted once, and
 every figure is summed across the turn's calls. A held session's later turn
 counts only the calls it made. The engine-native usage events stay on each
 attempt, unmodified.
+
+Each attempt's `token_usage_events` is an array of objects with `threadId`
+and `turnId` (strings), `last` and `total` (token breakdowns), and `raw` (the
+engine payload, or the adapter's derived payload). A breakdown has numeric
+`inputTokens`, `cachedInputTokens`, `outputTokens` and `totalTokens`, plus
+optional numeric `reasoningOutputTokens` and `cacheCreationInputTokens`.
+An absent optional field means the engine did not separate that class.
+These native breakdowns retain each engine's inclusion rules; they are not
+the disjoint summary vocabulary above.
+
+| Engine | `last` and `total` in the archived event | `raw` shape and native mapping |
+|---|---|---|
+| Codex | `last` is the usage increment reported by the notification; `total` is cumulative across the thread, including earlier turns of a held session. There can be several notifications in one attempt. | The `thread/tokenUsage/updated` parameters: `{ threadId, turnId, tokenUsage: { last, total, … }, … }`. Breakdown names match the fields above; input includes cached input, and output includes reasoning when reported. |
+| Claude | A settled attempt normally has one derived event with `last` equal to `total`: usage across that attempt's API calls, excluding usage already accounted for by earlier attempts or held-session turns. If only live observations survive a failed attempt, there can instead be several incremental `last` values with attempt-cumulative `total`. | `{ threadId, turnId, tokenUsage: { last, total } }`. `threadId` is the Claude session id; `turnId` is synthetic (`<session-id>:claude-<counter>`). The transcript's `input_tokens` and `output_tokens` become `inputTokens` and `outputTokens`; `cache_read_input_tokens + cache_creation_input_tokens` becomes `cachedInputTokens`, with creation also in `cacheCreationInputTokens`. `totalTokens` sums input, combined cache and output. No reasoning split is reported. |
+| opencode | At most one derived event, with `last` equal to `total`, aggregated for that attempt. These are attempt totals, not cumulative session totals. | `{ threadId, turnId, model, providerModel, tokenUsage: { last, total }, cost }`. `model` is the configured registry key; `providerModel` is its provider route; `cost` is the reported figure or `null`. `threadId` is the session id (a synthetic id if missing); `turnId` is synthetic (`<session-id>:opencode-<counter>`). Native `input`, `output`, `reasoning` and `cache.read`/`cache.write` map to the corresponding breakdown fields, with cache reads and writes combined. Input, cache, output and reasoning are disjoint. |
+
+To reproduce an attempt's summary, sum its events' `last` breakdowns and
+apply the engine's inclusion rule. For Codex, never sum `total` across
+notifications or agent records: a held thread's later turn includes earlier
+turns in that figure. Alternatively, subtract the previous total for the
+same thread from its latest total, using the thread's total before the turn
+as the baseline. For example, consecutive turns with cumulative totals of
+13,980 and 29,368 tokens account for 13,980 and 15,388 tokens, not 13,980 and
+29,368. Keep thread identities separate when retrying or falling back.
+
+The Claude adapter deduplicates transcript rows by assistant message id
+before aggregating API calls. When a session export is available, the
+opencode adapter uses its assistant-message token snapshots, falling back
+to `info.tokens` if those contain no usable usage. Only when no export is
+available does it use streamed `step_finish` events' `part.tokens`. Across
+those snapshots it takes input/cache once from the last usable snapshot
+and sums output/reasoning increments. A
+snapshot carrying only `total` contributes that figure as unclassified
+spend. In an opencode breakdown, `cacheCreationInputTokens` is the write
+share when reported, and `totalTokens` sums the disjoint classes plus any
+unclassified spend. The opencode adapter fills an omitted native reasoning
+count with `0`.
 
 `cost_rollup` keys spend per engine and per *served* model. An agent whose
 fallback chain crossed engines books each attempt under the engine that ran

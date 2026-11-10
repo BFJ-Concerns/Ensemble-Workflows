@@ -25,6 +25,12 @@ function flushed(stream: NodeJS.WriteStream): Promise<void> {
 }
 
 if (isMain) {
+  // A downstream reader may stop before consuming all output. Keep settling
+  // the run and its records; a closed pipe does not change its outcome.
+  process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EPIPE") throw error;
+  });
+
   const versionError = nodeVersionError();
   if (versionError !== null) {
     process.stderr.write(`${versionError}\n`);

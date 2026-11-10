@@ -327,6 +327,39 @@ test("outstandingBackgroundTasks names a backgrounded command from its start unt
   assert.equal(outstandingBackgroundTasks(foreign).length, 1);
 });
 
+test("outstandingBackgroundTasks holds a native Workflow until its delivered notification is answered", () => {
+  const started = [
+    assistant([toolUse("toolu_wf", "Workflow", { script: "return 'agent-nonce-826'" })], { stop: "tool_use" }),
+    toolResult("toolu_wf", "Workflow launched in background. Task ID: w3f93joxc\nSummary: Harmless probe\nRun ID: wf_example\nYou will be notified when it completes."),
+    assistant([textBlock("The Workflow probe is still running in the background.")])
+  ];
+  const notification = `<task-notification>\n<task-id>w3f93joxc</task-id>\n<tool-use-id>toolu_wf</tool-use-id>\n<status>completed</status>\n<summary>Dynamic workflow "Harmless probe" completed</summary>\n<result>"agent-nonce-826"</result>\n</task-notification>`;
+  const waiting = [{ id: "w3f93joxc", description: "Workflow" }];
+  const read = (rows: string[]) => outstandingBackgroundTasks(parseTranscriptText(rows.join("\n")));
+  assert.deepEqual(read(started), waiting);
+  assert.deepEqual(read([...started, enqueued(notification), assistant([textBlock("Still waiting")])]), waiting);
+  for (const delivery of [deliveredIdle(notification), absorbedMidTurn(notification)]) {
+    assert.deepEqual(read([...started, ...delivery]), waiting, "delivery alone is not the answer");
+    assert.deepEqual(read([...started, ...delivery, assistant([textBlock("agent-nonce-826")])]), []);
+  }
+});
+
+test("a quoted Workflow launch result from another tool does not start a task", () => {
+  const phrase = "Workflow launched in background. Task ID: w3f93joxc";
+  for (const [tool, input, result] of [
+    ["Read", {}, phrase],
+    ["Bash", { run_in_background: true }, phrase],
+    ["Workflow", {}, "Script output quoting: " + phrase]
+  ] as const) {
+    const entries = parseTranscriptText([
+      assistant([toolUse("toolu_quote", tool, input)], { stop: "tool_use" }),
+      toolResult("toolu_quote", result),
+      assistant([textBlock("done")])
+    ].join("\n"));
+    assert.deepEqual(outstandingBackgroundTasks(entries), [], tool);
+  }
+});
+
 test("outstandingBackgroundTasks holds a task whose ending is enqueued but not delivered: the interim reply after the enqueue row is not the answer", () => {
   // Measured 2026-09-29 (a command that exited in ~2 s): the tool result at
   // 15:57:36.225, the enqueue row at 15:57:36.259, the interim reply at

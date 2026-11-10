@@ -37,6 +37,11 @@ visible for their whole lifetime: a later run never overwrites an earlier
 run's view, and a run that ends removes only its own file. A file left by a
 killed run stays until the next run publishing to the same status directory
 starts; its startup sweep removes any file whose writer is provably dead (below).
+Atomic-write temp files carry the writer's pid and process start ticks as
+`<status file>.<pid>.<start-ticks>.<sequence>.tmp`, so the sweep also removes
+leftovers when a pid has been reused. If start ticks cannot be read, the name
+uses `unknown` and the sweep retains the file. Legacy temp names without start
+ticks are removed only when their pid is absent and proc evidence is readable.
 
 Consumers list the directory for `ensemble.*.local.json` and parse each file
 directly; Ensemble provides no rendering command. A reader decides liveness by
@@ -209,14 +214,16 @@ the run ends:
 ```
 
 A supervising process can watch for that file instead of polling the run. The
-path is announced only once its directory exists. If the launcher cannot create
-the directory (a regular file where the store should be, a read-only parent),
-it prints one `[sentinel] no sentinel will be written for this run — …` line
-naming the cause instead, so a supervisor never waits on a path that cannot be
-written. With recording enabled the run then fails to start, with a one-line
-`the durable run record could not start under …` diagnosis; with recording off
-it runs on without a sentinel. A write that fails later is reported as one
-`[sentinel]` line.
+path is announced only once its directory exists. With recording enabled, a
+store the launching process cannot create entries in (a regular file where the
+store should be, a read-only parent) rejects the invocation before the run
+begins: one line naming the store, the setting it came from and the error, exit
+2, nothing on stdout and no sentinel. With recording off the launcher instead
+prints one `[sentinel] no sentinel will be written for this run — …` line
+naming the cause and runs on without a sentinel, so a supervisor never waits on
+a path that cannot be written. A store that becomes unusable after that check
+fails the run with a one-line `the durable run record could not start under …`
+diagnosis. A write that fails later is reported as one `[sentinel]` line.
 
 The sentinel is written on every ending the launcher can handle — success,
 failure, timeout, interruption, a partial result, a script's `process.exit`,
@@ -445,8 +452,12 @@ families with their own schema versions (`3` and `3`), described above.
   an unknown engine, a budget refusal, a whole-run timeout — or `null` when the
   run ended cleanly. Present on both the manifest and `result.json`. A budget
   refusal at a ceiling of 0 reads `Token budget for <engine> is 0, which admits
-  no agent: this agent was not started`; a spent ceiling reads `Token budget
-  exhausted for <engine>: spent N of M tokens`.
+  no dispatch; refused <admission>`; a spent ceiling reads `Token budget
+  exhausted for <engine>: spent N of M tokens; refused <admission>`. The
+  admission names a dispatch, a fallback dispatch with its agent id, or a
+  numbered session turn, starting at `session turn 1` for the first `send()`
+  even before the worker opens. A refused send does not advance that number;
+  refusing it does not imply earlier work never ran.
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. See
   [Token usage and cost](#token-usage-and-cost).
 - `files`: integrity table for archived artefacts, each with `path`, `size`,
@@ -608,7 +619,8 @@ The fields present throughout a record's lifetime are:
   - `worker_exit`: `{ exit_code, signal }` when the worker process died
     rather than returned; `null` otherwise.
   - `background_waits`: the background tasks the worker started and Ensemble
-    waited on, each `{ task_id, description, observed_at, ended_at }`
+    waited on (including Claude native `Workflow` tasks), each
+    `{ task_id, description, observed_at, ended_at }`
     (`ended_at` is `null` where the attempt ended before the task woke the
     session); empty for engines without background tasks.
 - `classification` on a failed attempt: `{ class, rule }`. `class` is

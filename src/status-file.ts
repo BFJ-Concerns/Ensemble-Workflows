@@ -40,8 +40,8 @@ export function isStatusFileName(name: string): boolean {
  * blank the line mid-run; the heartbeat re-stamps well inside that window.
  */
 const DEFAULT_HEARTBEAT_MS = 10_000;
-/** A writer's in-flight temp file: `<status file>.<pid>.<sequence>.tmp`. */
-const STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.[1-9]\d*\.tmp$/;
+/** A writer's temp file: `<status file>.<pid>.<start-ticks|unknown>.<sequence>.tmp`; ticks are absent in legacy names. */
+const STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.(?:(\d+|unknown)\.)?[1-9]\d*\.tmp$/;
 
 export interface StatusFileWriterOptions {
   progress: RunProgress;
@@ -256,12 +256,13 @@ export class StatusFileWriter {
 
   async #writeAtomic(snapshot: ProgressSnapshot): Promise<void> {
     if (!(await this.#initialSweep)) return;
-    // pid + sequence keep a killed writer's leftover temp file attributable
-    // to it, so the next writer's sweep can remove it on evidence.
-    const tmp = `${this.#target}.${process.pid}.${(this.#tmpSeq += 1)}.tmp`;
+    // Start ticks distinguish a killed writer from a later process reusing
+    // its pid. Unknown evidence remains explicitly unjudgeable.
+    const owner = await this.#ownerEvidence;
+    const tmp = `${this.#target}.${owner.pid}.${owner.start_ticks ?? "unknown"}.${(this.#tmpSeq += 1)}.tmp`;
     // The published shape is the progress snapshot plus this process's own
     // liveness evidence, so a snapshot outliving its run is refutable.
-    const published = { ...snapshot, owner: await this.#ownerEvidence };
+    const published = { ...snapshot, owner };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}\n`, "utf8");
     await this.#fileOperations.rename(tmp, this.#target);
     this.#published = true;
@@ -271,7 +272,7 @@ export class StatusFileWriter {
    * The new-writer trigger for what a killed run left behind (the same
    * discipline as the archive reaper): every status file in the directory
    * whose owner is *provably* gone is removed, and a temp file whose writer
-   * pid is dead with it. The judgement is the owner evidence, never age —
+   * identity is refuted with it. The judgement is the owner evidence, never age —
    * a slow run is not an orphan, an unparseable file is not this writer's
    * to destroy, and a file with no evidence is left for its owner.
    */
@@ -294,7 +295,7 @@ export class StatusFileWriter {
         if (
           isStatusFileName(entry.slice(0, -temp[0].length)) &&
           Number.isSafeInteger(ownerPid) &&
-          (await this.#writerGone(ownerPid))
+          (await this.#writerGone(ownerPid, temp[2]))
         ) {
           await this.#unlinkQuietly(file);
         }
@@ -317,11 +318,16 @@ export class StatusFileWriter {
   }
 
   /**
-   * A temp file names only its writer's pid, so the judgement is the proc
-   * filesystem's: the pid absent where this process can read its own stat
-   * is death evidence; an unreadable proc filesystem decides nothing.
+   * New temp files carry the same start identity as snapshots. Legacy names
+   * only support judging an absent pid; unreadable proc evidence never
+   * proves death for either format.
    */
-  async #writerGone(pid: number): Promise<boolean> {
+  async #writerGone(pid: number, startTicks: string | undefined): Promise<boolean> {
+    if (startTicks !== undefined) {
+      return snapshotOwnerGone({
+        host: hostname(), pid, start_ticks: startTicks === "unknown" ? null : startTicks
+      }, this.#procDir);
+    }
     if ((await readProcessStartTicks(this.#procDir, pid)) !== null) {
       return false;
     }

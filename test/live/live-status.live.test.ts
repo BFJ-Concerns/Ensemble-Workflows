@@ -67,11 +67,11 @@ for (const engine of ["claude", "codex"] as const) {
           requestedEffort: "medium", live: true, queued: id === 2, worktree: id === 1, growth: true })).concat([{ id: 5, state: "failed", requestedModel: model ?? null,
           requestedEffort: "medium", live: false, queued: false, worktree: false, growth: false }])
       }));
+      // Keep the machine configuration that routes/authenticates the engines.
       // Do not relocate XDG_DATA_HOME: Claude's supervisor can outlive a run.
       reader = runNode([consumer, spec], {
         ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records"),
-        ENSEMBLE_CONCURRENCY_CODEX: "1", ENSEMBLE_CONCURRENCY_CLAUDE: "1",
-        XDG_CONFIG_HOME: path.join(directory, "config")
+        ENSEMBLE_CONCURRENCY_CODEX: "1", ENSEMBLE_CONCURRENCY_CLAUDE: "1"
       }, 1_110_000);
       for (const [index, probe] of probes.entries()) {
         await waitForReady(probe.paths.ready, reader);

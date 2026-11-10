@@ -18,6 +18,8 @@ import type { TokenUsageBreakdown } from "./types.js";
 /** One JSONL line. We model only the fields we read; everything else is ignored. */
 export interface TranscriptEntry {
   type?: string;
+  /** Served Claude Code version recorded on native transcript entries. */
+  version?: unknown;
   isMeta?: boolean;
   isCompactSummary?: boolean;
   origin?: { kind?: unknown };

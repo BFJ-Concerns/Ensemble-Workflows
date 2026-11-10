@@ -6,7 +6,7 @@ import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
 import { classifyAttemptFailure } from "./failure-classification.js";
 
-import type { DischargedEnforcement } from "./capability-stripping.js";
+import type { DischargedEnforcement, PreparedStrip } from "./capability-stripping.js";
 import { harnessVersion } from "./harness-version.js";
 import {
   assertValidAgentOptions,
@@ -1152,7 +1152,9 @@ export class EnsembleRuntime {
     state.stalenessThresholdMs =
       targetEngine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs;
     const options = state.options;
-    state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
+    if (state.engineSession === null) {
+      state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
+    }
     // Placement is the session's, opened once at its first turn and closed
     // with the session — a worktree session works one tree for its life.
     state.placement ??= await this.#placement.open({
@@ -1170,6 +1172,13 @@ export class EnsembleRuntime {
       await this.#placement.close(placement).catch(() => undefined);
       throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
+    const preparedStrip = state.engineSession === null
+      ? await this.#prepareStripFor(agentRecord, targetEngine, options, state.placement.cwd)
+      : undefined;
+    if (agentRecord.strip !== null) state.stripRoutes = agentRecord.strip.enforcement;
+    if (state.closed || this.#closed) {
+      throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
+    }
     agentRecord.resolvedCwd = state.placement.cwd;
     this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
     agentRecord.isolation = options.isolation ?? null;
@@ -1179,16 +1188,10 @@ export class EnsembleRuntime {
     }
     state.engineSession ??= createSession.call(
       state.engine,
-      this.#engineTurnOptions(
-        {
-          engine: state.engine.name,
-          ...(options.model !== undefined ? { model: options.model } : {}),
-          ...(options.effort !== undefined ? { effort: options.effort } : {}),
-          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-          ...(options.strip !== undefined && options.strip.length > 0 ? { strip: options.strip } : {})
-        },
-        state.placement.cwd
-      )
+      {
+        ...this.#engineTurnOptions(options, state.placement.cwd),
+        ...(preparedStrip !== undefined ? { preparedStrip } : {})
+      }
     );
     const turnInvocation = state.engineSession.beginTurn(prompt, {
       ...(turn.schema !== undefined ? { schema: turn.schema } : {})
@@ -2166,7 +2169,12 @@ export class EnsembleRuntime {
     let completion: AgentExecutionCompletion | undefined;
     const attempts = { target, ledger, chainRemains };
     try {
-      invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd));
+      const preparedStrip = await this.#prepareStripFor(agentRecord, engine, options, placement.cwd);
+      if (this.#closed) throw new EngineShutdownError(engine.name);
+      invocation = engine.createInvocation(prompt, {
+        ...this.#engineTurnOptions(options, placement.cwd),
+        ...(preparedStrip !== undefined ? { preparedStrip } : {})
+      });
       if (options.schema !== undefined) {
         completion = {
           ok: true,
@@ -2622,6 +2630,21 @@ export class EnsembleRuntime {
       )
     );
     return { refused, failure: observed };
+  }
+
+  async #prepareStripFor(
+    record: RuntimeAgentRecord,
+    engine: EngineAdapter,
+    options: Partial<AgentOptions>,
+    cwd: string
+  ): Promise<PreparedStrip | undefined> {
+    if (options.strip === undefined || options.strip.length === 0 || engine.prepareStrip === undefined) return undefined;
+    const prepared = await engine.prepareStrip(options.strip, {
+      cwd,
+      ...(options.model !== undefined ? { model: options.model } : {})
+    });
+    record.strip = { requested: [...options.strip], enforcement: prepared.enforcement };
+    return prepared;
   }
 
   /**

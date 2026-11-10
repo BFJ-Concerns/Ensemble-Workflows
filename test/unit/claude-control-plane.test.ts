@@ -1703,3 +1703,100 @@ test("a launch whose cleanup is refused resolves its owned session with the orig
     await plane.stop(handle);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("a tool-surface probe overrides only its provider URL, carries deny rules and tears down its session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-surface-probe-"));
+  const argvPath = path.join(dir, "argv.json");
+  const stub = path.join(dir, "claude.mjs");
+  const settings: Array<{ env: Record<string, string>; permissions?: { deny: string[] } }> = [];
+  let stopped = 0;
+  await writeFile(stub, `#!/usr/bin/env node
+    import { readFileSync, writeFileSync } from "node:fs";
+    const args = process.argv.slice(2);
+    if (args[0] === "--bg") writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(args));
+    if (args[0] === "agents") {
+      let launch; try { launch = JSON.parse(readFileSync(${JSON.stringify(argvPath)}, "utf8")); } catch {}
+      console.log(JSON.stringify(launch ? [{ id: "surface", sessionId: "surface-session", kind: "background",
+        name: launch[launch.indexOf("--name") + 1], cwd: ${JSON.stringify(dir)}, pid: process.pid, state: "done", status: "idle" }] : []));
+    }
+  `);
+  await chmod(stub, 0o755);
+  class CaptureSubmission extends ClaudeCliControlPlane {
+    override async steer(_handle: unknown, prompt: string) {
+      const args = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+      const file = args[args.indexOf("--settings") + 1]!;
+      const config = JSON.parse(await readFile(file, "utf8")) as typeof settings[number];
+      settings.push(config);
+      if (config.env.ANTHROPIC_BASE_URL?.startsWith("http://127.0.0.1:")) {
+        await fetch(`${config.env.ANTHROPIC_BASE_URL}/v1/messages`, {
+          method: "POST", headers: { "content-type": "application/json", "user-agent": "claude-cli/2.1.fixture" },
+          body: JSON.stringify({ tools: [{ name: "Read" }], messages: [{ role: "user", content: prompt }] })
+        });
+      }
+      return { submitted: true as const };
+    }
+    override async stop(handle: Parameters<ClaudeCliControlPlane["stop"]>[0]) {
+      stopped += 1;
+      await super.stop(handle);
+    }
+  }
+  const plane = new CaptureSubmission({ claudeBin: stub, reapGraceMs: 0, workerEnv: {
+    ANTHROPIC_BASE_URL: "https://worker.invalid", DECLARED_VALUE: "kept",
+    CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0"
+  } });
+  try {
+    const surface = await plane.probeToolSurface({ cwd: dir, permissionDenyRules: ["Agent"], signal: AbortSignal.timeout(10_000) });
+    assert.equal(surface.cliVersion, "2.1.fixture");
+    assert.deepEqual(surface.tools, [{ name: "Read", exposure: "loaded" }]);
+    assert.equal(stopped, 1);
+    assert.equal(settings[0]?.env.DECLARED_VALUE, "kept");
+    assert.deepEqual(settings[0]?.permissions?.deny, ["Agent"]);
+    const handle = await plane.dispatch({ cwd: dir, name: "unstripped", prompt: "ordinary" });
+    await plane.stop(handle);
+    assert.equal(settings[1]?.env.ANTHROPIC_BASE_URL, "https://worker.invalid");
+    assert.equal(settings[1]?.permissions, undefined);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a probe refuses provider switches before launching a session and honours an already aborted signal", async () => {
+  const switched = new ClaudeCliControlPlane({ claudeBin: "must-not-be-launched", workerEnv: { CLAUDE_CODE_USE_BEDROCK: "1" } });
+  const request = { cwd: process.cwd(), permissionDenyRules: [], signal: AbortSignal.timeout(1_000) };
+  await assert.rejects(switched.probeToolSurface(request), /cannot override CLAUDE_CODE_USE_BEDROCK/);
+  await assert.rejects(switched.probeToolSurface({ ...request, signal: AbortSignal.abort(new Error("stopped")) }), /stopped/);
+});
+
+test("cancelling a probe during native launch waits for its handle and removes the late session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-probe-cancel-"));
+  const stub = path.join(dir, "claude.mjs");
+  const started = path.join(dir, "started");
+  const registered = path.join(dir, "registered");
+  const actions = path.join(dir, "actions");
+  await writeFile(stub, `#!/usr/bin/env node
+    import { readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
+    const args = process.argv.slice(2);
+    if (args[0] === "--bg") {
+      writeFileSync(${JSON.stringify(started)}, "");
+      await new Promise(resolve => setTimeout(resolve, 150));
+      writeFileSync(${JSON.stringify(registered)}, JSON.stringify(args));
+    }
+    if (args[0] === "agents") {
+      let launch; try { launch = JSON.parse(readFileSync(${JSON.stringify(registered)}, "utf8")); } catch {}
+      console.log(JSON.stringify(launch ? [{ id: "late", sessionId: "late-session", kind: "background",
+        name: launch[launch.indexOf("--name") + 1], cwd: ${JSON.stringify(dir)}, pid: process.pid, state: "working", status: "busy" }] : []));
+    }
+    if (args[0] === "stop" || args[0] === "rm") appendFileSync(${JSON.stringify(actions)}, args[0] + "\\n");
+    if (args[0] === "rm") rmSync(${JSON.stringify(registered)}, { force: true });
+  `);
+  await chmod(stub, 0o755);
+  const abort = new AbortController();
+  const plane = new DeliveryStubControlPlane({ claudeBin: stub, dispatchTimeoutMs: 2_000, reapGraceMs: 0 });
+  try {
+    const pending = plane.probeToolSurface({ cwd: dir, permissionDenyRules: [], signal: abort.signal });
+    const rejected = assert.rejects(pending, /probe cancelled/);
+    await waitForCondition(async () => access(started).then(() => true, () => false), "the probe launch to start", 5_000);
+    abort.abort(new Error("probe cancelled"));
+    await rejected;
+    assert.match(await readFile(actions, "utf8"), /stop\nrm\n/);
+    await assert.rejects(access(registered), { code: "ENOENT" });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

@@ -17022,7 +17022,7 @@ function findErrorCode(error, code) {
 }
 
 // src/runtime.ts
-import { randomUUID as randomUUID6 } from "node:crypto";
+import { randomUUID as randomUUID7 } from "node:crypto";
 
 // src/agent-placement.ts
 import { stat as stat3 } from "node:fs/promises";
@@ -18057,7 +18057,7 @@ var EngineResourceGate = class {
 };
 
 // src/engines.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID6 } from "node:crypto";
 
 // src/app-server.ts
 import { spawn } from "node:child_process";
@@ -19238,6 +19238,8 @@ function itemTypeFromItem(item) {
 }
 
 // src/claude-control-plane.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { access, mkdtemp as mkdtemp2, readFile as readFile6, readdir as readdir5, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
 import { hostname as hostname3 } from "node:os";
 import path14 from "node:path";
@@ -19310,6 +19312,210 @@ function engineResourceRequirements(engine, declared, cwd, launcher = process.en
 }
 function homeOf(env) {
   return env.HOME !== void 0 && env.HOME.length > 0 ? env.HOME : homedir3();
+}
+
+// src/claude-tool-surface.ts
+function claudeToolSurfaceProbePrompt(nonce) {
+  return `Ensemble tool-surface probe ${nonce}. No answer is needed.`;
+}
+var PROBE_SOURCE = "provider-visible requests of a claude --bg probe session";
+var DEFERRED_LISTING_MARKER = "deferred tools are now available via ToolSearch";
+var USER_AGENT = /^claude-cli\/(\S+)/;
+var TOOL_NAME = /^[A-Za-z0-9_-]+$/;
+function readClaudeToolSurface(requests, nonce) {
+  const exposure = /* @__PURE__ */ new Map();
+  const versions = /* @__PURE__ */ new Set();
+  let read = 0;
+  for (const request of requests) {
+    if (request.method !== "POST" || !/^\/v1\/messages(?:\?|$)/.test(request.path)) continue;
+    const body = request.body;
+    if (typeof body !== "object" || body === null || Array.isArray(body)) continue;
+    const { messages, tools } = body;
+    const texts = stringsWithin(messages);
+    if (!Array.isArray(tools) || !texts.some((text) => text.includes(nonce))) continue;
+    const version2 = USER_AGENT.exec(request.headers["user-agent"] ?? "")?.[1];
+    if (version2 === void 0) {
+      throw new Error(`a probe request carried no claude-cli version in its user agent (${JSON.stringify(request.headers["user-agent"] ?? null)})`);
+    }
+    versions.add(version2);
+    for (const tool of tools) {
+      const name = tool?.name;
+      if (typeof name !== "string" || !TOOL_NAME.test(name)) {
+        throw new Error(`a probe request listed a tool with no readable name: ${JSON.stringify(tool).slice(0, 200)}`);
+      }
+      exposure.set(name, "loaded");
+    }
+    for (const name of texts.flatMap(deferredListing)) {
+      if (!exposure.has(name)) exposure.set(name, "deferred");
+    }
+    read += 1;
+  }
+  if (read === 0) {
+    throw new Error(`no captured Messages request carried the probe nonce and a tools array (${requests.length} requests captured)`);
+  }
+  if (versions.size !== 1) {
+    throw new Error(`the probe's requests named more than one claude-cli version: ${[...versions].join(", ")}`);
+  }
+  return {
+    cliVersion: [...versions][0],
+    source: PROBE_SOURCE,
+    tools: [...exposure].map(([name, how]) => ({ name, exposure: how })).sort((a, b) => a.name.localeCompare(b.name))
+  };
+}
+function stringsWithin(value) {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsWithin);
+  if (typeof value === "object" && value !== null) return Object.values(value).flatMap(stringsWithin);
+  return [];
+}
+function deferredListing(text) {
+  const marker = text.indexOf(DEFERRED_LISTING_MARKER);
+  if (marker === -1) return [];
+  const listStart = text.indexOf(":\n", marker);
+  if (listStart === -1) return [];
+  const names = [];
+  for (const line of text.slice(listStart + 2).split("\n")) {
+    if (!TOOL_NAME.test(line)) break;
+    names.push(line);
+  }
+  return names;
+}
+var CLAUDE_TOOL_CLASSIFICATION = {
+  Agent: "agents",
+  ListAgents: "agents",
+  SendMessage: "agents",
+  Task: "agents",
+  Workflow: "agents",
+  Skill: "skills",
+  AskUserQuestion: "unrelated",
+  Bash: "unrelated",
+  CronCreate: "unrelated",
+  CronDelete: "unrelated",
+  CronList: "unrelated",
+  DeferredToolPlaceholder: "unrelated",
+  Edit: "unrelated",
+  EndConversation: "unrelated",
+  EnterPlanMode: "unrelated",
+  EnterWorktree: "unrelated",
+  ExitPlanMode: "unrelated",
+  ExitWorktree: "unrelated",
+  LSP: "unrelated",
+  Monitor: "unrelated",
+  NotebookEdit: "unrelated",
+  PushNotification: "unrelated",
+  Read: "unrelated",
+  ReportFindings: "unrelated",
+  ScheduleWakeup: "unrelated",
+  TaskCreate: "unrelated",
+  TaskGet: "unrelated",
+  TaskList: "unrelated",
+  TaskStop: "unrelated",
+  TaskUpdate: "unrelated",
+  ToolSearch: "unrelated",
+  WebFetch: "unrelated",
+  WebSearch: "unrelated",
+  Write: "unrelated"
+};
+function classifyClaudeTool(name, classification = CLAUDE_TOOL_CLASSIFICATION) {
+  if (name.startsWith("mcp__")) return "operator";
+  return Object.hasOwn(classification, name) ? classification[name] : "unclassified";
+}
+function deriveClaudeStrip(inventory, strip, classification = CLAUDE_TOOL_CLASSIFICATION) {
+  const classes = { agents: [], skills: [], unrelated: [], operator: [], unclassified: [] };
+  for (const tool of inventory.tools) {
+    classes[classifyClaudeTool(tool.name, classification)].push(tool.name);
+  }
+  const members = Object.entries(classification).filter(([, judged]) => judged !== "unrelated" && strip.includes(judged)).map(([name]) => name);
+  const permissionDenyRules = [.../* @__PURE__ */ new Set([...members, ...strip.length > 0 ? classes.unclassified : []])].sort();
+  return { inventory, strip: [...strip], permissionDenyRules, classes };
+}
+function isPreparedClaudeStrip(prepared) {
+  return prepared?.engine === "claude" && Array.isArray(prepared.permissionDenyRules);
+}
+function confirmClaudeStrip(derived, confirmation) {
+  const refuse = (detail) => {
+    throw new CapabilityStripUnsupportedError("claude", derived.strip.join(", "), detail);
+  };
+  if (confirmation.cliVersion !== derived.inventory.cliVersion) {
+    refuse(`the served Claude Code changed between probes (${derived.inventory.cliVersion}, then ${confirmation.cliVersion})`);
+  }
+  const remaining = new Set(confirmation.tools.map((tool) => tool.name));
+  const leaked = derived.permissionDenyRules.filter((name) => remaining.has(name));
+  if (leaked.length > 0) {
+    refuse(`Claude Code ${confirmation.cliVersion} still offered ${JSON.stringify(leaked)} under permissions.deny`);
+  }
+  const lost = derived.classes.unrelated.filter((name) => !remaining.has(name));
+  if (lost.length > 0) {
+    refuse(`the deny rules also removed ${JSON.stringify(lost)}, which no requested strip covers`);
+  }
+  const enforcement = {};
+  for (const capability of derived.strip) {
+    enforcement[capability] = { route: "config", detail: enforcementDetail(derived, capability, confirmation) };
+  }
+  return {
+    engine: "claude",
+    requested: [...derived.strip],
+    cliVersion: confirmation.cliVersion,
+    permissionDenyRules: [...derived.permissionDenyRules],
+    enforcement
+  };
+}
+function enforcementDetail(derived, capability, confirmation) {
+  const { classes, inventory } = derived;
+  return [
+    `permissions.deny ${JSON.stringify(derived.permissionDenyRules)} in the per-dispatch settings file`,
+    `derived from the ${inventory.tools.length} tools Claude Code ${inventory.cliVersion} offered (${inventory.source})`,
+    `${capability} members offered: ${JSON.stringify(classes[capability])}`,
+    `unclassified and denied: ${JSON.stringify(classes.unclassified)}`,
+    `operator MCP tools left in place: ${JSON.stringify(classes.operator)}`,
+    `a second probe under these rules offered none of them and kept every unrelated tool (${confirmation.tools.length} tools)`
+  ].join("; ");
+}
+
+// src/provider-capture.ts
+import { createServer as createServer2 } from "node:http";
+var CREDENTIAL_HEADERS = /* @__PURE__ */ new Set(["authorization", "proxy-authorization", "cookie", "x-api-key", "api-key"]);
+async function startCaptureProvider() {
+  const captured = [];
+  const server = createServer2((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      const headers = {};
+      for (const [name, value] of Object.entries(request.headers)) {
+        if (value !== void 0 && !CREDENTIAL_HEADERS.has(name)) {
+          headers[name] = Array.isArray(value) ? value.join(", ") : value;
+        }
+      }
+      const text = Buffer.concat(chunks).toString("utf8");
+      let body = text;
+      try {
+        body = JSON.parse(text);
+      } catch {
+      }
+      captured.push({ method: request.method ?? "", path: request.url ?? "", headers, body });
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        type: "error",
+        error: { type: "invalid_request_error", message: "capture provider: intentional stop" }
+      }));
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const { port } = server.address();
+  const origin = `http://127.0.0.1:${port}`;
+  return {
+    origin,
+    baseUrl: `${origin}/v1`,
+    requests: () => captured,
+    close: () => new Promise((resolve, reject) => {
+      server.closeAllConnections();
+      server.close((error) => error === void 0 ? resolve() : reject(error));
+    })
+  };
 }
 
 // src/worker-scopes.ts
@@ -19656,7 +19862,58 @@ var ClaudeCliControlPlane = class {
   placementOf(handle) {
     return this.#placements.get(handle.sessionId)?.outcome ?? null;
   }
+  async probeToolSurface(request) {
+    request.signal.throwIfAborted();
+    for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) {
+      const value = this.#env[key];
+      if (value !== void 0 && value !== "0" && value !== "false" && value !== "") {
+        throw new Error(`tool-surface capture cannot override ${key}`);
+      }
+    }
+    const provider = await startCaptureProvider();
+    const nonce = randomUUID3();
+    let handle;
+    try {
+      handle = await this.#dispatch({
+        prompt: claudeToolSurfaceProbePrompt(nonce),
+        name: `ensemble-tool-surface-${nonce}`,
+        cwd: request.cwd,
+        ...request.model !== void 0 ? { model: request.model } : {},
+        permissionDenyRules: [...request.permissionDenyRules]
+      }, { ANTHROPIC_BASE_URL: provider.origin }, request.signal);
+      if (handle.launchFailure !== void 0) throw new Error(handle.launchFailure.message);
+      let count = 0;
+      let lastCapture = Date.now();
+      for (; ; ) {
+        request.signal.throwIfAborted();
+        const captures = provider.requests();
+        if (captures.length !== count) {
+          count = captures.length;
+          lastCapture = Date.now();
+        }
+        let surface;
+        try {
+          surface = readClaudeToolSurface(captures, nonce);
+        } catch {
+        }
+        if (surface !== void 0 && Date.now() - lastCapture >= 1e3) return surface;
+        const status = await this.poll(handle);
+        if (!status.present || status.state === "done") return readClaudeToolSurface(provider.requests(), nonce);
+        await sleep(100, void 0, { signal: request.signal });
+      }
+    } finally {
+      try {
+        if (handle !== void 0) await this.stop(handle);
+      } finally {
+        await provider.close();
+      }
+    }
+  }
   async dispatch(options) {
+    return this.#dispatch(options);
+  }
+  async #dispatch(options, probeEnv, signal) {
+    signal?.throwIfAborted();
     const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
     if (options.model !== void 0) {
       args.push("--model", options.model);
@@ -19666,7 +19923,7 @@ var ClaudeCliControlPlane = class {
     }
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, probeEnv);
     args.push("--settings", path14.join(settingsDir, "settings.json"));
     let registered = null;
     let candidate = null;
@@ -19675,6 +19932,7 @@ var ClaudeCliControlPlane = class {
     let discarded = false;
     let lastSeen = null;
     try {
+      signal?.throwIfAborted();
       void this.#runWithInput(this.#claudeBin, args, "", options.cwd).then(
         (result) => dispatch.result = result,
         (error) => dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error), exitCode: null, signal: null }
@@ -19688,6 +19946,7 @@ var ClaudeCliControlPlane = class {
         if (candidate !== null) {
           registered = candidate.handle;
           lastSeen = candidate;
+          signal?.throwIfAborted();
           if (candidate.pid !== placementPid) {
             placed = false;
             placementDeadline = null;
@@ -19718,6 +19977,7 @@ var ClaudeCliControlPlane = class {
       if (registered === null || dispatch.result === null) throw new Error("Claude dispatch lost its ready session");
       const handle = registered;
       this.#settingsDirs.set(handle.sessionId, settingsDir);
+      signal?.throwIfAborted();
       const delivery = await this.steer(handle, options.prompt);
       if (!delivery.submitted) {
         throw new ClaudeRegistrationTimeoutError(
@@ -19793,10 +20053,11 @@ var ClaudeCliControlPlane = class {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName, permissionDenyRules) {
+  async #writeWorkerSettings(dispatchName, permissionDenyRules, probeEnv) {
     const env = {
       ...this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {},
       ...this.#workerEnv,
+      ...probeEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
     const settings = {
@@ -20235,7 +20496,7 @@ function delay(ms) {
 }
 
 // src/claude-engine.ts
-import { createHash as createHash4, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash4, randomUUID as randomUUID4 } from "node:crypto";
 
 // src/claude-transcript.ts
 import { readFile as readFile7 } from "node:fs/promises";
@@ -20611,12 +20872,15 @@ function zeroUsage() {
 }
 
 // src/claude-engine.ts
-var CAPABILITY_DENY_RULES = {
-  skills: ["Skill"],
-  agents: ["Task", "Agent", "ListAgents", "SendMessage", "Workflow"]
-};
-function permissionDenyRulesFor(strip) {
-  return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
+function permissionDenyRulesFor(options) {
+  const strip = options.strip ?? [];
+  if (strip.length === 0) return [];
+  const prepared = options.preparedStrip;
+  const covered = isPreparedClaudeStrip(prepared) && strip.every((capability) => prepared.requested.includes(capability));
+  if (!covered) {
+    throw new CapabilityStripUnsupportedError("claude", strip.join(", "), "no live tool-surface preparation reached this dispatch");
+  }
+  return prepared.permissionDenyRules;
 }
 var CLAUDE_NATIVE_EFFORT = {
   minimal: "low",
@@ -20693,6 +20957,7 @@ var ClaudeEngineInvocation = class {
   #closePromise = null;
   #settlement = null;
   #onClose;
+  #onVersion;
   constructor(options) {
     this.#turnPrompt = options.prompt;
     this.#turnSchema = options.options.schema;
@@ -20702,6 +20967,7 @@ var ClaudeEngineInvocation = class {
     this.#controlPlane = options.controlPlane;
     this.#onEvent = options.onEvent;
     this.#onClose = options.onClose;
+    this.#onVersion = options.onVersion;
     const config = options.config ?? {};
     this.#pollIntervalMs = config.pollIntervalMs ?? 2e3;
     this.#receiptTimeoutMs = config.receiptTimeoutMs ?? 3e4;
@@ -20837,7 +21103,7 @@ var ClaudeEngineInvocation = class {
       observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null });
     } catch {
     }
-    const denyRules = permissionDenyRulesFor(this.#options.strip);
+    const denyRules = permissionDenyRulesFor(this.#options);
     const prompt = this.#buildDispatchPrompt(previousFailure);
     const handle = await this.#controlPlane.dispatch({
       prompt,
@@ -21074,6 +21340,8 @@ var ClaudeEngineInvocation = class {
           await this.#requireReceipt(handle, opening, observers);
         }
         sawLife = true;
+        const version2 = transcript.entries.findLast((entry) => typeof entry.version === "string")?.version;
+        if (typeof version2 === "string") this.#onVersion?.(version2);
         this.#reportUsage(handle, transcript.entries, observers);
         try {
           this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
@@ -21445,7 +21713,7 @@ var ClaudeEngineInvocation = class {
   }
   #nextName() {
     dispatchCounter += 1;
-    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID3().slice(0, 8)}`;
+    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID4().slice(0, 8)}`;
   }
 };
 function failedTurnResult(error, evidence, usageEvent) {
@@ -21549,9 +21817,74 @@ function delay2(ms, signal, abortError) {
   });
 }
 
+// src/claude-strip-preparation.ts
+var DEFAULT_TIMEOUT_MS = 9e4;
+var ClaudeStripPreparer = class {
+  #probe;
+  #timeoutMs;
+  #classification;
+  #entries = /* @__PURE__ */ new Map();
+  #abort = new AbortController();
+  constructor(options) {
+    this.#probe = options.probe;
+    this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#classification = options.classification ?? CLAUDE_TOOL_CLASSIFICATION;
+  }
+  prepare(request) {
+    if (this.#abort.signal.aborted) {
+      return Promise.reject(new EngineShutdownError("claude"));
+    }
+    const strip = [...new Set(request.strip)].sort();
+    const key = JSON.stringify([request.cwd, request.model ?? null, strip]);
+    const existing = this.#entries.get(key);
+    if (existing !== void 0) return existing.promise;
+    const entry = { promise: this.#prepare({ ...request, strip }), cliVersion: null };
+    this.#entries.set(key, entry);
+    entry.promise.then(
+      (prepared) => {
+        entry.cliVersion = prepared.cliVersion;
+      },
+      () => {
+        if (this.#entries.get(key) === entry) this.#entries.delete(key);
+      }
+    );
+    return entry.promise;
+  }
+  /** Forget every settled preparation made for a served version other than `cliVersion`. */
+  retainVersion(cliVersion) {
+    for (const [key, entry] of this.#entries) {
+      if (entry.cliVersion !== null && entry.cliVersion !== cliVersion) this.#entries.delete(key);
+    }
+  }
+  close() {
+    this.#abort.abort();
+    this.#entries.clear();
+  }
+  async #prepare(request) {
+    const probe = this.#probe;
+    const capability = request.strip.join(", ");
+    if (probe === void 0) {
+      throw new CapabilityStripUnsupportedError("claude", capability, "this Claude control plane cannot probe the live tool surface");
+    }
+    const signal = AbortSignal.any([this.#abort.signal, AbortSignal.timeout(this.#timeoutMs)]);
+    const base = { cwd: request.cwd, ...request.model !== void 0 ? { model: request.model } : {}, signal };
+    try {
+      const inventory = await probe({ ...base, permissionDenyRules: [] });
+      const derived = deriveClaudeStrip(inventory, request.strip, this.#classification);
+      const confirmation = await probe({ ...base, permissionDenyRules: derived.permissionDenyRules });
+      return confirmClaudeStrip(derived, confirmation);
+    } catch (error) {
+      if (this.#abort.signal.aborted) throw new EngineShutdownError("claude");
+      if (error instanceof CapabilityStripUnsupportedError) throw error;
+      const reason = signal.aborted ? `the live tool surface was not established within ${this.#timeoutMs}ms` : `the live tool surface could not be established: ${error instanceof Error ? error.message : String(error)}`;
+      throw new CapabilityStripUnsupportedError("claude", capability, reason);
+    }
+  }
+};
+
 // src/opencode-engine.ts
 import { spawn as spawn3 } from "node:child_process";
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID5 } from "node:crypto";
 var OpenCodeCliRunner = class {
   #bin;
   #killGraceMs;
@@ -21825,7 +22158,7 @@ var OpenCodeEngineInvocation = class {
    * mistakes it for a real opencode session id.
    */
   #syntheticSessionId() {
-    return `opencode-no-session-${randomUUID4()}`;
+    return `opencode-no-session-${randomUUID5()}`;
   }
   #reportUsage(sessionId, total, cost) {
     const last = subtractUsage(total, this.#reportedUsage);
@@ -22931,19 +23264,18 @@ function codexProgressObservers(context) {
     ...context.onUsage !== void 0 ? { onUsage: context.onUsage } : {}
   };
 }
+var CLAUDE_STRIP_ROUTE = "permissions.deny in the per-dispatch settings file, derived from the served Claude Code's live tool surface";
 var ClaudeEngineAdapter = class {
   name = "claude";
   concurrency;
-  /** The archive names the configured rules, without claiming a tool-inventory measurement. */
+  /**
+   * The route only. Which tools a strip denies is settled per dispatch by
+   * `prepareStrip` from the served Claude Code's live tool surface, and the
+   * record's detail is replaced by that preparation's.
+   */
   capabilities = {
-    skills: {
-      route: "config",
-      detail: `permissions.deny ${JSON.stringify(permissionDenyRulesFor(["skills"]))} in the per-dispatch settings file`
-    },
-    agents: {
-      route: "config",
-      detail: `permissions.deny ${JSON.stringify(permissionDenyRulesFor(["agents"]))} in the per-dispatch settings file`
-    }
+    skills: { route: "config", detail: CLAUDE_STRIP_ROUTE },
+    agents: { route: "config", detail: CLAUDE_STRIP_ROUTE }
   };
   #scheduler;
   #cwd;
@@ -22951,6 +23283,7 @@ var ClaudeEngineAdapter = class {
   #onEvent;
   #config;
   #activeInvocations = /* @__PURE__ */ new Set();
+  #strips;
   #closed = false;
   constructor(options = {}) {
     this.concurrency = options.concurrency ?? defaultClaudeConcurrency();
@@ -22959,9 +23292,16 @@ var ClaudeEngineAdapter = class {
     this.#controlPlane = options.controlPlane ?? new ClaudeCliControlPlane();
     this.#onEvent = options.onEvent;
     this.#config = options.config;
+    this.#strips = new ClaudeStripPreparer({
+      probe: this.#controlPlane.probeToolSurface?.bind(this.#controlPlane),
+      ...options.config?.stripPreparationTimeoutMs !== void 0 ? { timeoutMs: options.config.stripPreparationTimeoutMs } : {}
+    });
   }
   schedule(task) {
     return this.#scheduler.schedule(task);
+  }
+  prepareStrip(strip, context) {
+    return this.#strips.prepare({ strip, ...context });
   }
   createInvocation(prompt, options) {
     if (this.#closed) {
@@ -22975,6 +23315,7 @@ var ClaudeEngineAdapter = class {
       controlPlane: this.#controlPlane,
       ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
       ...this.#config !== void 0 ? { config: this.#config } : {},
+      onVersion: (version2) => this.#strips.retainVersion(version2),
       onClose: (closed) => this.#activeInvocations.delete(closed)
     });
     this.#activeInvocations.add(invocation);
@@ -22993,6 +23334,7 @@ var ClaudeEngineAdapter = class {
       controlPlane: this.#controlPlane,
       ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
       ...this.#config !== void 0 ? { config: this.#config } : {},
+      onVersion: (version2) => this.#strips.retainVersion(version2),
       onClose: (closed) => this.#activeInvocations.delete(closed)
     });
     this.#activeInvocations.add(session);
@@ -23001,6 +23343,7 @@ var ClaudeEngineAdapter = class {
   async close() {
     this.#closed = true;
     this.#scheduler.close(new EngineShutdownError(this.name));
+    this.#strips.close();
     await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
   }
 };
@@ -23092,7 +23435,7 @@ var OpenCodeEngineAdapter = class {
 async function createDefaultEngineRegistry(options) {
   const grouping = parseWorkerScopeGrouping(options.workerScope ?? "worker", "workerScope");
   const ownsScopes = options.workerScopes === void 0;
-  const workerScopes = options.workerScopes ?? await createWorkerScopes({ label: `${process.pid}-${randomUUID5()}` });
+  const workerScopes = options.workerScopes ?? await createWorkerScopes({ label: `${process.pid}-${randomUUID6()}` });
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
@@ -23371,7 +23714,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#strip = options.strip ?? [];
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
-      runId: options.runId ?? randomUUID6(),
+      runId: options.runId ?? randomUUID7(),
       budget: this.budget,
       ...options.now !== void 0 ? { now: options.now } : {}
     });
@@ -23824,7 +24167,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
     state.options = optionsForTarget(state.options, target);
     state.stalenessThresholdMs = targetEngine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs;
     const options = state.options;
-    state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
+    if (state.engineSession === null) {
+      state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
+    }
     state.placement ??= await this.#placement.open({
       ...options.cwd !== void 0 ? { cwd: options.cwd } : {},
       ...options.isolation !== void 0 ? { isolation: options.isolation } : {}
@@ -23833,6 +24178,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const placement = state.placement;
       state.placement = null;
       await this.#placement.close(placement).catch(() => void 0);
+      throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
+    }
+    const preparedStrip = state.engineSession === null ? await this.#prepareStripFor(agentRecord, targetEngine, options, state.placement.cwd) : void 0;
+    if (agentRecord.strip !== null) state.stripRoutes = agentRecord.strip.enforcement;
+    if (state.closed || this.#closed) {
       throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
     agentRecord.resolvedCwd = state.placement.cwd;
@@ -23844,16 +24194,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     state.engineSession ??= createSession.call(
       state.engine,
-      this.#engineTurnOptions(
-        {
-          engine: state.engine.name,
-          ...options.model !== void 0 ? { model: options.model } : {},
-          ...options.effort !== void 0 ? { effort: options.effort } : {},
-          ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
-          ...options.strip !== void 0 && options.strip.length > 0 ? { strip: options.strip } : {}
-        },
-        state.placement.cwd
-      )
+      {
+        ...this.#engineTurnOptions(options, state.placement.cwd),
+        ...preparedStrip !== void 0 ? { preparedStrip } : {}
+      }
     );
     const turnInvocation = state.engineSession.beginTurn(prompt, {
       ...turn.schema !== void 0 ? { schema: turn.schema } : {}
@@ -24608,7 +24952,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let completion;
     const attempts = { target, ledger, chainRemains };
     try {
-      invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd));
+      const preparedStrip = await this.#prepareStripFor(agentRecord, engine, options, placement.cwd);
+      if (this.#closed) throw new EngineShutdownError(engine.name);
+      invocation = engine.createInvocation(prompt, {
+        ...this.#engineTurnOptions(options, placement.cwd),
+        ...preparedStrip !== void 0 ? { preparedStrip } : {}
+      });
       if (options.schema !== void 0) {
         completion = {
           ok: true,
@@ -24969,6 +25318,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
       )
     );
     return { refused: refused2, failure: observed };
+  }
+  async #prepareStripFor(record, engine, options, cwd) {
+    if (options.strip === void 0 || options.strip.length === 0 || engine.prepareStrip === void 0) return void 0;
+    const prepared = await engine.prepareStrip(options.strip, {
+      cwd,
+      ...options.model !== void 0 ? { model: options.model } : {}
+    });
+    record.strip = { requested: [...options.strip], enforcement: prepared.enforcement };
+    return prepared;
   }
   /**
    * The strip enforcement routes the archive records are the *dispatching*

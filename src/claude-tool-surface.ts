@@ -28,9 +28,8 @@ import type { CapturedProviderRequest } from "./provider-capture.js";
  * `ClaudeStripPreparer` runs the sequence once for each working directory,
  * model and strip in a run.
  *
- * Measured on Claude Code 2.1.322 (2026-11-10), with `claude -p` against a
- * capture provider; the `--bg` route is the one Ensemble dispatches, and
- * is unmeasured:
+ * Claude Code 2.1.322's print and background sessions both reach the
+ * capture provider. Its provider-visible surface has these properties:
  * - A Messages request lists the loaded tools in `tools` and announces the
  *   rest by name in a deferred-tools listing inside a message text block
  *   ("The following deferred tools are now available via ToolSearch…:"
@@ -41,8 +40,10 @@ import type { CapturedProviderRequest } from "./provider-capture.js";
  *   and then without it (every tool loaded). The name union matched apart
  *   from those two deferral entries, so the surface is the union over every
  *   request that carries the probe's nonce.
- * - A bare tool name in the operator's `permissions.deny` (`Agent`, in that
- *   estate) was absent from both the tools array and the deferred listing.
+ * - Permission denies remove native tools from the tools array and the
+ *   deferred listing. A provider-side tool can ignore them: `advisor`
+ *   remains offered under its name's deny rule, so confirmation refuses
+ *   rather than claiming the tool was stripped.
  */
 
 /** How a tool reached the model on the probe's requests. */

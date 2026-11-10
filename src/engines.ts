@@ -629,6 +629,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
       controlPlane: this.#controlPlane,
       ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),
       ...(this.#config !== undefined ? { config: this.#config } : {}),
+      onVersion: (version) => this.#strips.retainVersion(version),
       onClose: (closed) => this.#activeInvocations.delete(closed)
     });
     this.#activeInvocations.add(invocation);
@@ -653,6 +654,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
       controlPlane: this.#controlPlane,
       ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),
       ...(this.#config !== undefined ? { config: this.#config } : {}),
+      onVersion: (version) => this.#strips.retainVersion(version),
       onClose: (closed) => this.#activeInvocations.delete(closed)
     });
     this.#activeInvocations.add(session);

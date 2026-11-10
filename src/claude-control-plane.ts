@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
+
 import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
@@ -8,7 +11,8 @@ import { attachFailedTurnResult, ClaudeDispatchError, ClaudeRegistrationTimeoutE
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
-import type { ClaudeToolSurface } from "./claude-tool-surface.js";
+import { claudeToolSurfaceProbePrompt, readClaudeToolSurface, type ClaudeToolSurface } from "./claude-tool-surface.js";
+import { startCaptureProvider } from "./provider-capture.js";
 import type { JsonObject, RuntimeEvent } from "./types.js";
 import { NoWorkerScopes, RUN_SCOPE_GROUP, processTree, type WorkerScopeGrouping, type ScopePlacement, type WorkerScopes } from "./worker-scopes.js";
 
@@ -371,7 +375,58 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return this.#placements.get(handle.sessionId)?.outcome ?? null;
   }
 
+  async probeToolSurface(request: ClaudeToolSurfaceProbeRequest): Promise<ClaudeToolSurface> {
+    request.signal.throwIfAborted();
+    // These provider switches ignore ANTHROPIC_BASE_URL. Refuse rather than
+    // letting an inventory probe reach a hosted provider.
+    for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) {
+      const value = this.#env[key];
+      if (value !== undefined && value !== "0" && value !== "false" && value !== "") {
+        throw new Error(`tool-surface capture cannot override ${key}`);
+      }
+    }
+    const provider = await startCaptureProvider();
+    const nonce = randomUUID();
+    let handle: ClaudeSessionHandle | undefined;
+    try {
+      handle = await this.#dispatch({
+        prompt: claudeToolSurfaceProbePrompt(nonce),
+        name: `ensemble-tool-surface-${nonce}`,
+        cwd: request.cwd,
+        ...(request.model !== undefined ? { model: request.model } : {}),
+        permissionDenyRules: [...request.permissionDenyRules]
+      }, { ANTHROPIC_BASE_URL: provider.origin }, request.signal);
+      if (handle.launchFailure !== undefined) throw new Error(handle.launchFailure.message);
+      let count = 0;
+      let lastCapture = Date.now();
+      for (;;) {
+        request.signal.throwIfAborted();
+        const captures = provider.requests();
+        if (captures.length !== count) {
+          count = captures.length;
+          lastCapture = Date.now();
+        }
+        // Wait for at least one nonce-bearing Messages request. A title or
+        // telemetry request alone cannot establish the worker's surface.
+        let surface: ClaudeToolSurface | undefined;
+        try { surface = readClaudeToolSurface(captures, nonce); } catch { /* Keep waiting for the worker's request. */ }
+        if (surface !== undefined && Date.now() - lastCapture >= 1_000) return surface;
+        const status = await this.poll(handle);
+        if (!status.present || status.state === "done") return readClaudeToolSurface(provider.requests(), nonce);
+        await sleep(100, undefined, { signal: request.signal });
+      }
+    } finally {
+      try { if (handle !== undefined) await this.stop(handle); }
+      finally { await provider.close(); }
+    }
+  }
+
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+    return this.#dispatch(options);
+  }
+
+  async #dispatch(options: ClaudeDispatchOptions, probeEnv?: Record<string, string>, signal?: AbortSignal): Promise<ClaudeSessionHandle> {
+    signal?.throwIfAborted();
     const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
     if (options.model !== undefined) {
       args.push("--model", options.model);
@@ -393,7 +448,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // share the first one's sweep.
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, probeEnv);
     args.push("--settings", path.join(settingsDir, "settings.json"));
     let registered: ClaudeSessionHandle | null = null;
     let candidate: { handle: ClaudeSessionHandle; pid: number | null; row: RosterRow } | null = null;
@@ -402,6 +457,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     let discarded = false;
     let lastSeen: { handle: ClaudeSessionHandle; pid: number | null; row: RosterRow } | null = null;
     try {
+      signal?.throwIfAborted();
       // Start an empty native session. The complete opening rides the same
       // file-backed editor as later turns, avoiding Claude's stdin reader,
       // duplicated dispatch-file payload and cold-spawn argument limit.
@@ -418,6 +474,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         if (candidate !== null) {
           registered = candidate.handle;
           lastSeen = candidate;
+          // Once native launch starts, cancellation waits for a handle it
+          // can tear down. Rejecting before registration would orphan a
+          // background session that the launcher can still create.
+          signal?.throwIfAborted();
           // Placement still starts before the dispatch command returns.
           // A seeded row without a pid is not a running session.
           if (candidate.pid !== placementPid) {
@@ -455,6 +515,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // Register ownership before opening delivery so every failure can use
       // stop()'s complete teardown, including tagged descendants and settings.
       this.#settingsDirs.set(handle.sessionId, settingsDir);
+      signal?.throwIfAborted();
       const delivery = await this.steer(handle, options.prompt);
       if (!delivery.submitted) {
         throw new ClaudeRegistrationTimeoutError(
@@ -526,7 +587,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: readonly string[]): Promise<string> {
+  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: readonly string[], probeEnv?: Record<string, string>): Promise<string> {
     // The ownership tag is harness bookkeeping and always lands last.
     // The hold scope is per-lead coordination state whose contract is
     // inheritance by every nested invocation (`HOLD_SCOPE_ENV`). It is
@@ -539,6 +600,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     const env = {
       ...(this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {}),
       ...this.#workerEnv,
+      ...probeEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
     // The deny block joins the same single-purpose file rather than a second

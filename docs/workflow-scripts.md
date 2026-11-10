@@ -325,7 +325,9 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   release adds it. MCP tools from the operator's configuration are left in
   place. A second probe under the derived rules must show none of the denied
   tools and every unrelated one. If either probe fails, or the check does
-  not hold within 90 seconds, the call fails before the worker spawns. The
+  not hold within 90 seconds, the call fails before the worker spawns.
+  This includes a provider-side tool that remains available under its deny
+  rule: the call refuses rather than dispatching with that tool. The
   result is reused for the rest of the run, for each working directory,
   model and strip, until a worker reports serving a different Claude Code
   version. Unstripped workers are never probed.

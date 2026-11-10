@@ -103,6 +103,8 @@ export interface ClaudeEngineInvocationOptions {
    */
   multiTurn?: boolean;
   onEvent?: (event: RuntimeEvent) => void;
+  /** Invalidate prepared surfaces when native evidence reports a different served CLI. */
+  onVersion?: (version: string) => void;
   config?: ClaudeEngineConfig;
   /** Adapter deregistration: called exactly once, when close() completes. */
   onClose?: (invocation: ClaudeEngineInvocation) => void;
@@ -303,6 +305,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #closePromise: Promise<void> | null = null;
   #settlement: Promise<EngineAttemptResult> | null = null;
   #onClose: ((invocation: ClaudeEngineInvocation) => void) | undefined;
+  #onVersion: ((version: string) => void) | undefined;
 
   constructor(options: ClaudeEngineInvocationOptions) {
     this.#turnPrompt = options.prompt;
@@ -313,6 +316,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#controlPlane = options.controlPlane;
     this.#onEvent = options.onEvent;
     this.#onClose = options.onClose;
+    this.#onVersion = options.onVersion;
 
     const config = options.config ?? {};
     this.#pollIntervalMs = config.pollIntervalMs ?? 2_000;
@@ -794,6 +798,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
           await this.#requireReceipt(handle, opening, observers);
         }
         sawLife = true;
+        const version = transcript.entries.findLast((entry) => typeof entry.version === "string")?.version;
+        if (typeof version === "string") this.#onVersion?.(version);
         this.#reportUsage(handle, transcript.entries, observers);
         try {
           this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;

@@ -56,6 +56,7 @@ interface ScriptedTurn {
    */
   assistant?: {
     text?: string;
+    version?: string;
     stop?: string | null;
     /** The API message id; rows sharing one are one call to the usage reader. */
     id?: string;
@@ -271,6 +272,7 @@ function assistantLine(
     : undefined;
   return JSON.stringify({
     type: "assistant",
+    ...(assistant.version !== undefined ? { version: assistant.version } : {}),
     ...(effort !== null ? { effort } : {}),
     message: {
       role: "assistant",
@@ -684,6 +686,50 @@ test("a Claude strip denies what the live tool surface classifies, unknown built
     } finally {
       await runtime.close();
     }
+  });
+});
+
+test("a held Claude strip prepares once and retains its measured enforcement on later turns", async () => {
+  await withControlPlane([{ assistant: { text: "first" } }, { assistant: { text: "second" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    const session = runtime.createWorkerSession({ engine: "claude", strip: ["agents"] });
+    try {
+      assert.equal(await session.send("first"), "first");
+      const first = structuredClone(runtime.lastAgentRecord()?.strip);
+      assert.equal(await session.send("second"), "second");
+      assert.deepEqual(runtime.lastAgentRecord()?.strip, first);
+      assert.match(first?.enforcement.agents?.detail ?? "", /Claude Code 2\.1\.322-fake/);
+      assert.equal(controlPlane.probed.length, 2);
+      assert.equal(controlPlane.dispatchCount, 1);
+    } finally { await session.close(); await runtime.close(); }
+  });
+});
+
+test("native transcript versions invalidate the Claude surface cache for later dispatches", async () => {
+  await withControlPlane([
+    { assistant: { text: "first", version: "2.1.330" } },
+    { assistant: { text: "second" } }
+  ], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await runtime.agent("first", { engine: "claude", strip: ["agents"] });
+      await runtime.agent("second", { engine: "claude", strip: ["agents"] });
+      assert.equal(controlPlane.probed.length, 4);
+      assert.equal(controlPlane.dispatchCount, 2);
+    } finally { await runtime.close(); }
+  });
+});
+
+test("an unreadable or unenforced Claude surface refuses before the requested worker is dispatched", async () => {
+  await withControlPlane([{ assistant: { text: "should not run" } }], async (controlPlane) => {
+    controlPlane.probeToolSurface = async () => ({
+      cliVersion: "2.1.322", source: "fake provider", tools: [{ name: "advisor", exposure: "loaded" }]
+    });
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await assert.rejects(runtime.agent("restricted", { engine: "claude", strip: ["agents"] }), /still offered.*advisor/);
+      assert.equal(controlPlane.dispatchCount, 0);
+    } finally { await runtime.close(); }
   });
 });
 

@@ -2264,7 +2264,7 @@ test("a successful native turn retains the account of a launch that could not be
   try {
     assert.equal(await runtime.agent("decide", { engine: "claude" }), "answer");
     assert.equal(records.at(-1)?.status, "complete");
-    assert.deepEqual(records.at(-1)?.attempts[0]?.diagnostics, diagnostics);
+    assert.deepEqual(records.at(-1)?.attempts[0]?.diagnostics, { ...diagnostics, worktrees: [] });
   } finally {
     await runtime.close();
     await rm(dir, { recursive: true, force: true });

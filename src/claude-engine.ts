@@ -21,6 +21,7 @@ import {
 import {
   apiErrorSince,
   effortSince,
+  enteredWorktrees,
   endsInSyntheticReply,
   finalAssistantText,
   outstandingBackgroundTasks,
@@ -966,7 +967,6 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     const usageEvent = this.#usageEvent(handle, usage, usage);
     return {
       text,
-      ...(handle.launchFailure === undefined ? {} : { diagnostics: handle.launchFailure.diagnostics }),
       ...(resolvedModel !== null ? { resolvedModel } : {}),
       ...(resolvedEffort !== null ? { resolvedEffort } : {}),
       ...(this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {}),
@@ -975,6 +975,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       firstDeltaMs: null,
       items: {},
       tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      diagnostics: { ...handle.launchFailure?.diagnostics, worktrees: enteredWorktrees(entries) },
       transcripts: [
         {
           filename: "transcript.claude.jsonl",
@@ -1287,7 +1288,11 @@ function failedTurnResult(
     // The refusal's structured account rides the attempt as diagnostics,
     // where the failure classifier reads it: a 429's status and code are
     // the engine's own word, which the diagnostic prose is not.
-    ...(evidence !== null && evidence.apiError !== null ? { diagnostics: { ...failedTurnResultOf(error)?.diagnostics, apiError: evidence.apiError } } : {}),
+    ...(evidence !== null ? { diagnostics: {
+      ...failedTurnResultOf(error)?.diagnostics,
+      ...(evidence.apiError !== null ? { apiError: evidence.apiError } : {}),
+      worktrees: enteredWorktrees(evidence.transcript.entries)
+    } } : {}),
     ...(evidence === null
       ? {}
       : {

@@ -19454,7 +19454,16 @@ var ClaudeCliControlPlane = class {
       ...this.#workerEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
-    const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
+    const settings = {
+      env,
+      // Ensemble owns placement: cwd is the caller's checkout, or the
+      // worktree Ensemble created for isolation. Claude's default background
+      // isolation would move edits into a second, hidden worktree instead.
+      // This per-session setting reaches the daemon without changing the
+      // operator's project or user settings (measured on Claude Code 2.1.321).
+      worktree: { bgIsolation: "none" },
+      ...permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { permissions: { deny: permissionDenyRules } } : {}
+    };
     const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
 `;
     const dir = await mkdtemp(path11.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
@@ -19918,6 +19927,19 @@ function parseTranscriptText(text) {
     }
   }
   return entries;
+}
+function enteredWorktrees(entries) {
+  const worktrees = [];
+  for (const entry of entries) {
+    if (entry.type !== "worktree-state" || entry.worktreeSession === null || typeof entry.worktreeSession !== "object" || Array.isArray(entry.worktreeSession)) continue;
+    const state = entry.worktreeSession;
+    if (typeof state.worktreePath !== "string" || state.worktreePath.length === 0) continue;
+    const branch = typeof state.worktreeBranch === "string" && state.worktreeBranch.length > 0 ? state.worktreeBranch : null;
+    if (!worktrees.some((tree) => tree.path === state.worktreePath && tree.branch === branch)) {
+      worktrees.push({ path: state.worktreePath, branch });
+    }
+  }
+  return worktrees;
 }
 async function readTranscriptFile(path16) {
   let text;
@@ -20835,7 +20857,6 @@ var ClaudeEngineInvocation = class {
     const usageEvent = this.#usageEvent(handle, usage2, usage2);
     return {
       text,
-      ...handle.launchFailure === void 0 ? {} : { diagnostics: handle.launchFailure.diagnostics },
       ...resolvedModel !== null ? { resolvedModel } : {},
       ...resolvedEffort !== null ? { resolvedEffort } : {},
       ...this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {},
@@ -20844,6 +20865,7 @@ var ClaudeEngineInvocation = class {
       firstDeltaMs: null,
       items: {},
       tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      diagnostics: { ...handle.launchFailure?.diagnostics, worktrees: enteredWorktrees(entries) },
       transcripts: [
         {
           filename: "transcript.claude.jsonl",
@@ -21098,7 +21120,11 @@ function failedTurnResult(error, evidence, usageEvent) {
     // The refusal's structured account rides the attempt as diagnostics,
     // where the failure classifier reads it: a 429's status and code are
     // the engine's own word, which the diagnostic prose is not.
-    ...evidence !== null && evidence.apiError !== null ? { diagnostics: { ...failedTurnResultOf(error)?.diagnostics, apiError: evidence.apiError } } : {},
+    ...evidence !== null ? { diagnostics: {
+      ...failedTurnResultOf(error)?.diagnostics,
+      ...evidence.apiError !== null ? { apiError: evidence.apiError } : {},
+      worktrees: enteredWorktrees(evidence.transcript.entries)
+    } } : {},
     ...evidence === null ? {} : {
       transcripts: [
         {

@@ -511,13 +511,9 @@ export class EngineShutdownError extends EnsembleError {
 export class ClaudeWorkerError extends EnsembleError {}
 
 /**
- * `claude --bg` exited non-zero and no session was registered under the
- * dispatch's name: either the isolated launch or Claude Code failed before
- * registration. The message names the directory and declaration and carries
- * command stderr bounded to one line, because the remedy lives in the
- * launch environment — the operator reads it off the run's failure, never
- * off a `null`. A dispatch the daemon accepted but never registered is not
- * a refusal: see `ClaudeRegistrationTimeoutError`.
+ * The background dispatch command failed. A seeded roster entry is not proof
+ * that launch succeeded; the error retains command exit status, output and
+ * any native session evidence before the owned launch is removed.
  */
 export class ClaudeDispatchError extends SubstrateRefusedError {}
 
@@ -546,21 +542,43 @@ export class CodexSubstrateRefusedError extends SubstrateRefusedError {
 
 export class ClaudePollTimeoutError extends ClaudeWorkerError {}
 
-/** The background session registered but never produced a transcript at all. */
+/**
+ * The background session registered but never produced a transcript at all.
+ * With no transcript there is no receipt to read and no turn the session
+ * can have run, so this is a worker that never held its opening prompt, not
+ * a delivery failure (`ClaudeDeliveryError`).
+ */
 export class ClaudeFirstLifeTimeoutError extends ClaudeWorkerError {}
 
 /**
- * The daemon accepted the dispatch (`claude --bg` returned) but no session
- * appeared in the roster within the dispatch bound. Not a refusal: Claude
- * Code did not decline, and a session the roster has not yet surfaced may
- * exist — so this is an operational failure, spent and retried within the
- * attempt bound like a poll deadline, and the dispatch bound is the lever.
+ * The dispatch command returned successfully, but the native session never
+ * acquired a PID or the opening could not be submitted before cleanup. Availability-classed:
+ * a declared fallback may run rather than retrying an unstarted target.
  */
 export class ClaudeRegistrationTimeoutError extends ClaudeWorkerError {}
 
 export class ClaudeBlockedError extends ClaudeWorkerError {}
 
+/**
+ * The reply valve did not submit a message: a step before the submit
+ * keystroke failed, or the valve is unavailable. Nothing reached the
+ * session, so the retry may send the same message again.
+ */
 export class ClaudeValveError extends ClaudeWorkerError {}
+
+/**
+ * A message was submitted to the session — by the valve, or by the launch
+ * that carried its opening prompt — and its receipt did not verify: the
+ * transcript shows the session received different text, or shows no
+ * submission at all within the receipt deadline. Distinct from
+ * `ClaudeValveError` because the session may hold, and may be running, a
+ * turn nobody sent — the retry must account for that turn before it sends
+ * anything, and must never send the message again as though it were new.
+ * Distinct from a failed launch for the same reason: a session exists and
+ * took something, so the failure is never grounds for launching the prompt
+ * on another target.
+ */
+export class ClaudeDeliveryError extends ClaudeWorkerError {}
 
 export class ClaudeTranscriptError extends ClaudeWorkerError {}
 

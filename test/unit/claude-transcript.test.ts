@@ -5,12 +5,14 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  submittedUserText,
   effortSince,
   finalAssistantText,
   outstandingBackgroundTasks,
   parseTranscriptText,
   readTranscript,
   resolvedModelSince,
+  submissionReceipt,
   turnComplete,
   usageSince
 } from "../../src/claude-transcript.js";
@@ -135,6 +137,26 @@ test("effortSince returns the latest served effort in range, or null when no ent
   assert.equal(effortSince(entries, 1), "high");
   assert.equal(effortSince(entries, 2), null);
   assert.equal(effortSince([]), null);
+});
+
+test("submissionReceipt judges the first submission after the mark by equality, and reads nothing before it", () => {
+  const submitted = (content: unknown): string => JSON.stringify({ type: "user", message: { role: "user", content } });
+  const toolResult = submitted([{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }]);
+  const earlier = [submitted("now fix the tests"), assistant([textBlock("done")])];
+  const mark = earlier.length;
+  const read = (rows: string[]) => submissionReceipt(parseTranscriptText([...earlier, ...rows].join("\n")), mark, "now fix the tests");
+
+  // The same text before the mark belongs to an earlier turn: no receipt.
+  assert.deepEqual(read([]), { state: "missing" });
+  // Rows no submission wrote are passed over, on the way to one or to none.
+  assert.deepEqual(read([toolResult, assistant([textBlock("working")])]), { state: "missing" });
+  assert.deepEqual(read([toolResult, submitted("now fix the tests")]), { state: "verified" });
+  // Equality and nothing looser: one trimmed character is a different text,
+  // and the first submission decides even when an exact copy follows it.
+  assert.deepEqual(read([submitted("now fix the tests "), submitted("now fix the tests")]), {
+    state: "differing",
+    received: "now fix the tests "
+  });
 });
 
 test("usageSince counts every figure once per API call and sums across the turn's calls", () => {
@@ -634,4 +656,18 @@ test("apiErrorSince reads the synthetic reply's structured refusal, and nothing 
     })
   );
   assert.equal(apiErrorSince(answered), null);
+});
+
+
+test("submittedUserText reads native typed turns and reconstructs expanded slash arguments", () => {
+  const message = "é😀\n- data\n/slash inside";
+  assert.equal(submittedUserText({ type: "user", message: { content: message } }), message);
+  assert.equal(submittedUserText({ type: "user", message: { content: `<command-message>check</command-message>\n<command-name>/check</command-name>\n<command-args>${message}</command-args>` } }), `/check ${message}`);
+  assert.equal(submittedUserText({ type: "user", message: { content: "<command-message>check</command-message>\n<command-name>/check</command-name>\n<command-args></command-args>" } }), "/check");
+  assert.equal(submittedUserText({ type: "user", message: { content: "<command-message>check</command-message>\n<command-name>/check</command-name>" } }), "/check");
+  assert.equal(submittedUserText({ type: "user", origin: { kind: "task-notification" }, message: { content: commandNotification("bg-123", "completed") } }), null);
+  assert.equal(submittedUserText({ type: "assistant", message: { content: message } }), null);
+  assert.equal(submittedUserText({ type: "user", isMeta: true, message: { content: message } }), null);
+  assert.equal(submittedUserText({ type: "user", isCompactSummary: true, message: { content: message } }), null);
+  assert.equal(submittedUserText({ type: "user", message: { content: [{ type: "tool_result", content: message }] } }), null);
 });

@@ -3985,14 +3985,20 @@ test(`CLI publishes and announces automatic status before execution with .claude
     if (claudeEntry === "directory") await mkdir(path.join(directory, ".claude"));
     if (claudeEntry === "file") await writeFile(path.join(directory, ".claude"), "file");
     const statusDir = path.join(directory, "data", "ensemble", "status");
+    // An atomic update may have a temporary file alongside the published one.
+    // Keep that interleaving present without depending on filesystem timing.
+    const pendingSnapshot = `ensemble.pending.local.json.${process.pid}.1.tmp`;
     await writeFile(script, `
       export const meta = { name: "automatic-status" };
-      const { readdir, readFile } = require("node:fs/promises");
+      const { readdir, readFile, writeFile } = require("node:fs/promises");
       const dir = ${JSON.stringify(statusDir)};
-      const files = await readdir(dir);
+      await writeFile(dir + "/" + ${JSON.stringify(pendingSnapshot)}, "unfinished snapshot");
+      // The final filename is the atomic publication signal; .tmp entries
+      // belong to updates that have not completed their rename yet.
+      const files = (await readdir(dir)).filter((file) => file.startsWith("ensemble.") && file.endsWith(".local.json"));
       if (files.length !== 1) throw new Error("status missing before execution");
       const snapshot = JSON.parse(await readFile(dir + "/" + files[0], "utf8"));
-      if (!snapshot.runId) throw new Error("invalid initial status");
+      if (!snapshot.runId || files[0] !== "ensemble." + snapshot.runId + ".local.json") throw new Error("invalid initial status");
       log("workflow-started");
       return "ok";
     `);
@@ -4010,7 +4016,7 @@ test(`CLI publishes and announces automatic status before execution with .claude
     const announcement = JSON.parse(line.slice("[status-file] ".length)) as { run_id: string; status_path: string };
     assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${announcement.run_id}.local.json`));
     await assert.rejects(access(announcement.status_path));
-    assert.deepEqual(await readdir(path.dirname(announcement.status_path)), []);
+    assert.deepEqual(await readdir(path.dirname(announcement.status_path)), [pendingSnapshot]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

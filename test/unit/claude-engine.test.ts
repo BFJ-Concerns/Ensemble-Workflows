@@ -2306,3 +2306,41 @@ for (const [altered, lateOpening] of [[true, false], [false, false], [false, tru
     } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
   });
 }
+
+for (const shape of ["slow", "monitor"] as const) {
+  test(`a pending nudge keeps the task collection window for ${shape === "slow" ? "background Bash" : "Monitor"} work`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-nudge-window-"));
+    class NudgeWithBackgroundWork extends BackgroundTaskControlPlane {
+      nudge: string | null = null;
+      override async poll(): Promise<ClaudeSessionStatus> {
+        return this.nudge === null ? { status: "idle", state: "blocked", present: true } : super.poll();
+      }
+      override async steer(_handle?: ClaudeSessionHandle, message?: string): Promise<ValveSubmission> {
+        assert.ok(message);
+        this.nudge = message;
+        return { submitted: true };
+      }
+    }
+    const plane = new NudgeWithBackgroundWork(dir, { wakeAtPoll: 3, shape });
+    const runtime = makeRuntime(plane, { maxAttempts: 2, receiptTimeoutMs: 1 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAttemptStart: async (_id: number, attempt: number) => {
+        if (attempt === 2) {
+          const file = await plane.transcriptPath();
+          assert.ok(file && plane.nudge);
+          await appendFile(file, submissionRow(plane.nudge) + "\n" + assistantLine({ text: "Still waiting for background work" }) + "\n");
+        }
+      },
+      recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    try {
+      const held = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await held.send("decide"), '{"ok":true}');
+      assert.ok(plane.pollCount >= (shape === "slow" ? 5 : 10), "the interim reply was collected before background completion");
+      const waits = records.at(-1)?.attempts[1]?.backgroundWaits ?? [];
+      assert.ok(waits.some(wait => wait.taskId === (shape === "slow" ? "bya9z1l44" : "b7zb0kfnb")));
+    } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+}

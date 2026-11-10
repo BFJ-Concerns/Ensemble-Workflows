@@ -405,9 +405,10 @@ In a `session()`, a turn the worker took on altered text runs to its end
 before the attempt fails, with its text kept on the attempt record, so the
 session is between turns when the retry begins. A recovery nudge's matching
 receipt never verifies an altered task prompt; its delivery failure remains
-until the task itself arrives exactly. The retry never sends the
-follow-up a second time as though it were new: a submission that turns out to
-have landed late is collected as the answer, and otherwise the follow-up goes
+until the task itself arrives exactly. Resuming a nudge still waits for the
+task's outstanding background work; an interim reply is not a final answer.
+The retry never sends the follow-up a second time as though it were new: a
+submission that turns out to have landed late is collected as the answer, and otherwise the follow-up goes
 again with a preface telling the worker it replaces the earlier copy. Because
 of that preface a leading `/skill` line is not expanded on the retry.
 

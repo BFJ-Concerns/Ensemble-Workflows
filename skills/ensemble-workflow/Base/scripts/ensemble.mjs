@@ -20297,6 +20297,8 @@ var ClaudeEngineInvocation = class {
   #pending = null;
   /** A task's differing receipt survives any recovery-nudge submission. */
   #taskDeliveryFailure = null;
+  /** Start of the current answer's work; recovery-nudge receipts never move it. */
+  #collectionMark = 0;
   #pollIntervalMs;
   #receiptTimeoutMs;
   #firstLifeTimeoutMs;
@@ -20379,7 +20381,7 @@ var ClaudeEngineInvocation = class {
       if (held !== null) {
         const pending = this.#pending;
         if (pending !== null) {
-          fromIndex = pending.mark;
+          fromIndex = this.#collectionMark;
           const answered = await this.#accountForPending(held, pending, context);
           if (answered !== null) {
             return answered;
@@ -20505,6 +20507,7 @@ var ClaudeEngineInvocation = class {
     }
   }
   async #correctInSession(handle, previousFailure, fromIndex, observers) {
+    this.#collectionMark = fromIndex;
     const message = this.#correctionMessage(previousFailure);
     await this.#deliver(handle, { message, mark: fromIndex, what: "the correction", carriesTurn: false }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
@@ -20539,6 +20542,7 @@ var ClaudeEngineInvocation = class {
       }
       this.#turn = "accepted";
       this.#taskDeliveryFailure = null;
+      this.#collectionMark = submission.mark;
     }
   }
   /**
@@ -20571,7 +20575,7 @@ var ClaudeEngineInvocation = class {
     );
     if (submission.carriesTurn && receipt.state === "differing") this.#taskDeliveryFailure = failure;
     if (receipt.state === "differing" && this.#multiTurn) {
-      await this.#runToCompletion(handle, submission.mark, observers);
+      await this.#runToCompletion(handle, this.#collectionMark, observers);
       this.#pending = null;
     }
     throw failure;
@@ -20623,10 +20627,10 @@ var ClaudeEngineInvocation = class {
         );
       }
     }
-    const transcript = await this.#runToCompletion(handle, pending.mark, observers);
+    const transcript = await this.#runToCompletion(handle, this.#collectionMark, observers);
     this.#pending = null;
     if (receipt.state === "verified" && pending.answersTurn && this.#turn === "verified") {
-      return this.#buildResult(handle, transcript, pending.mark);
+      return this.#buildResult(handle, transcript, this.#collectionMark);
     }
     if (pending.answersTurn && this.#taskDeliveryFailure !== null) throw this.#taskDeliveryFailure;
     throw new ClaudeDeliveryError(
@@ -20972,6 +20976,7 @@ var ClaudeEngineInvocation = class {
     this.#pending = null;
     this.#turn = "unsent";
     this.#taskDeliveryFailure = null;
+    this.#collectionMark = 0;
     if (handle === null) {
       return;
     }

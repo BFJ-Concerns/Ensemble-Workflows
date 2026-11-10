@@ -290,6 +290,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #pending: PendingSubmission | null = null;
   /** A task's differing receipt survives any recovery-nudge submission. */
   #taskDeliveryFailure: ClaudeDeliveryError | null = null;
+  /** Start of the current answer's work; recovery-nudge receipts never move it. */
+  #collectionMark = 0;
 
   #pollIntervalMs: number;
   #receiptTimeoutMs: number;
@@ -386,9 +388,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         const pending = this.#pending;
         if (pending !== null) {
           // An earlier submission is still unaccounted for, and nothing is
-          // sent on top of it. Its mark is this attempt's window while it is
-          // judged, so a turn it started is collected, or fails, as itself.
-          fromIndex = pending.mark;
+          // sent on top of it. Keep the answer's collection window while
+          // judging the receipt, including work started before a nudge.
+          fromIndex = this.#collectionMark;
           const answered = await this.#accountForPending(held, pending, context);
           if (answered !== null) {
             return answered;
@@ -568,6 +570,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     fromIndex: number,
     observers: AttemptObservers
   ): Promise<TurnResult> {
+    this.#collectionMark = fromIndex;
     const message = this.#correctionMessage(previousFailure);
     await this.#deliver(handle, { message, mark: fromIndex, what: "the correction", carriesTurn: false }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
@@ -604,6 +607,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       }
       this.#turn = "accepted";
       this.#taskDeliveryFailure = null;
+      this.#collectionMark = submission.mark;
     }
   }
 
@@ -639,7 +643,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     );
     if (submission.carriesTurn && receipt.state === "differing") this.#taskDeliveryFailure = failure;
     if (receipt.state === "differing" && this.#multiTurn) {
-      await this.#runToCompletion(handle, submission.mark, observers);
+      await this.#runToCompletion(handle, this.#collectionMark, observers);
       this.#pending = null;
     }
     throw failure;
@@ -706,10 +710,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         );
       }
     }
-    const transcript = await this.#runToCompletion(handle, pending.mark, observers);
+    const transcript = await this.#runToCompletion(handle, this.#collectionMark, observers);
     this.#pending = null;
     if (receipt.state === "verified" && pending.answersTurn && this.#turn === "verified") {
-      return this.#buildResult(handle, transcript, pending.mark);
+      return this.#buildResult(handle, transcript, this.#collectionMark);
     }
     if (pending.answersTurn && this.#taskDeliveryFailure !== null) throw this.#taskDeliveryFailure;
     throw new ClaudeDeliveryError(
@@ -1134,6 +1138,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#pending = null;
     this.#turn = "unsent";
     this.#taskDeliveryFailure = null;
+    this.#collectionMark = 0;
     if (handle === null) {
       return;
     }

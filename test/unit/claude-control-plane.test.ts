@@ -586,11 +586,13 @@ test("an undeclared worker environment still dispatches with the ownership tag a
   }
 });
 
-test("permission deny rules join the per-dispatch settings file beside the env block", async () => {
+test("a strip's deny rules and removal variables join the per-dispatch settings file", async () => {
   // Capability stripping rides the same single-purpose file as the
   // worker environment: deny rules union additively across settings layers
   // and beat every allow, so carrying only this dispatch's rules never
-  // touches the operator's own permission configuration.
+  // touches the operator's own permission configuration. A removal
+  // variable lands over the declared worker environment, so a declaration
+  // cannot give a stripped worker the tool back.
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-deny-rules-"));
   try {
     const argvPath = path.join(dir, "dispatch-argv.json");
@@ -626,13 +628,15 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     const controlPlane = new DeliveryStubControlPlane({
       claudeBin: stubPath,
       projectsDir: dir,
-      dispatchTimeoutMs: 1_000
+      dispatchTimeoutMs: 1_000,
+      workerEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "" }
     });
     await controlPlane.dispatch({
       prompt: "hello",
       name,
       cwd: dir,
-      permissionDenyRules: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow"]
+      permissionDenyRules: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow", "advisor"],
+      settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" }
     });
 
     const dispatchArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
@@ -640,8 +644,8 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     assert.notEqual(flagIndex, -1);
     assert.deepEqual(JSON.parse(await readFile(dispatchArgv[flagIndex + 1]!, "utf8")), {
       worktree: { bgIsolation: "none" },
-      env: { [WORKER_MARKER_VARIABLE]: name },
-      permissions: { deny: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow"] }
+      env: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", [WORKER_MARKER_VARIABLE]: name },
+      permissions: { deny: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow", "advisor"] }
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1741,26 +1745,28 @@ test("a tool-surface probe overrides only its provider URL, carries deny rules a
     }
   }
   const plane = new CaptureSubmission({ claudeBin: stub, reapGraceMs: 0, workerEnv: {
-    ANTHROPIC_BASE_URL: "https://worker.invalid", DECLARED_VALUE: "kept",
+    ANTHROPIC_BASE_URL: "https://worker.invalid", DECLARED_VALUE: "kept", CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "0",
     CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0"
   } });
   try {
-    const surface = await plane.probeToolSurface({ cwd: dir, permissionDenyRules: ["Agent"], signal: AbortSignal.timeout(10_000) });
+    const surface = await plane.probeToolSurface({ cwd: dir, permissionDenyRules: ["Agent"], settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" }, signal: AbortSignal.timeout(10_000) });
     assert.equal(surface.cliVersion, "2.1.fixture");
     assert.deepEqual(surface.tools, [{ name: "Read", exposure: "loaded" }]);
     assert.equal(stopped, 1);
     assert.equal(settings[0]?.env.DECLARED_VALUE, "kept");
+    assert.equal(settings[0]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "1");
     assert.deepEqual(settings[0]?.permissions?.deny, ["Agent"]);
     const handle = await plane.dispatch({ cwd: dir, name: "unstripped", prompt: "ordinary" });
     await plane.stop(handle);
     assert.equal(settings[1]?.env.ANTHROPIC_BASE_URL, "https://worker.invalid");
+    assert.equal(settings[1]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "0");
     assert.equal(settings[1]?.permissions, undefined);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("a probe refuses provider switches before launching a session and honours an already aborted signal", async () => {
   const switched = new ClaudeCliControlPlane({ claudeBin: "must-not-be-launched", workerEnv: { CLAUDE_CODE_USE_BEDROCK: "1" } });
-  const request = { cwd: process.cwd(), permissionDenyRules: [], signal: AbortSignal.timeout(1_000) };
+  const request = { cwd: process.cwd(), permissionDenyRules: [], settingsEnv: {}, signal: AbortSignal.timeout(1_000) };
   await assert.rejects(switched.probeToolSurface(request), /cannot override CLAUDE_CODE_USE_BEDROCK/);
   await assert.rejects(switched.probeToolSurface({ ...request, signal: AbortSignal.abort(new Error("stopped")) }), /stopped/);
 });
@@ -1791,7 +1797,7 @@ test("cancelling a probe during native launch waits for its handle and removes t
   const abort = new AbortController();
   const plane = new DeliveryStubControlPlane({ claudeBin: stub, dispatchTimeoutMs: 2_000, reapGraceMs: 0 });
   try {
-    const pending = plane.probeToolSurface({ cwd: dir, permissionDenyRules: [], signal: abort.signal });
+    const pending = plane.probeToolSurface({ cwd: dir, permissionDenyRules: [], settingsEnv: {}, signal: abort.signal });
     const rejected = assert.rejects(pending, /probe cancelled/);
     await waitForCondition(async () => access(started).then(() => true, () => false), "the probe launch to start", 5_000);
     abort.abort(new Error("probe cancelled"));

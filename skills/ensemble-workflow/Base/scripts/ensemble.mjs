@@ -19386,6 +19386,7 @@ var CLAUDE_TOOL_CLASSIFICATION = {
   SendMessage: "agents",
   Task: "agents",
   Workflow: "agents",
+  advisor: "agents",
   Skill: "skills",
   AskUserQuestion: "unrelated",
   Bash: "unrelated",
@@ -19416,6 +19417,9 @@ var CLAUDE_TOOL_CLASSIFICATION = {
   WebSearch: "unrelated",
   Write: "unrelated"
 };
+var CLAUDE_TOOL_REMOVAL_ENV = {
+  advisor: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" }
+};
 function classifyClaudeTool(name, classification = CLAUDE_TOOL_CLASSIFICATION) {
   if (name.startsWith("mcp__")) return "operator";
   return Object.hasOwn(classification, name) ? classification[name] : "unclassified";
@@ -19427,10 +19431,12 @@ function deriveClaudeStrip(inventory, strip, classification = CLAUDE_TOOL_CLASSI
   }
   const members = Object.entries(classification).filter(([, judged]) => judged !== "unrelated" && strip.includes(judged)).map(([name]) => name);
   const permissionDenyRules = [.../* @__PURE__ */ new Set([...members, ...strip.length > 0 ? classes.unclassified : []])].sort();
-  return { inventory, strip: [...strip], permissionDenyRules, classes };
+  const settingsEnv = Object.assign({}, ...permissionDenyRules.map((name) => CLAUDE_TOOL_REMOVAL_ENV[name] ?? {}));
+  return { inventory, strip: [...strip], permissionDenyRules, settingsEnv, classes, classification };
 }
 function isPreparedClaudeStrip(prepared) {
-  return prepared?.engine === "claude" && Array.isArray(prepared.permissionDenyRules);
+  const candidate = prepared;
+  return candidate?.engine === "claude" && Array.isArray(candidate.permissionDenyRules) && typeof candidate.settingsEnv === "object" && candidate.settingsEnv !== null;
 }
 function confirmClaudeStrip(derived, confirmation) {
   const refuse = (detail) => {
@@ -19442,7 +19448,11 @@ function confirmClaudeStrip(derived, confirmation) {
   const remaining = new Set(confirmation.tools.map((tool) => tool.name));
   const leaked = derived.permissionDenyRules.filter((name) => remaining.has(name));
   if (leaked.length > 0) {
-    refuse(`Claude Code ${confirmation.cliVersion} still offered ${JSON.stringify(leaked)} under permissions.deny`);
+    refuse(`Claude Code ${confirmation.cliVersion} still offered ${JSON.stringify(leaked)} under ${settingsDescription(derived)}`);
+  }
+  const unjudged = confirmation.tools.map((tool) => tool.name).filter((name) => classifyClaudeTool(name, derived.classification) === "unclassified");
+  if (unjudged.length > 0) {
+    refuse(`the confirming probe offered unclassified tools the inventory did not show: ${JSON.stringify(unjudged)}`);
   }
   const lost = derived.classes.unrelated.filter((name) => !remaining.has(name));
   if (lost.length > 0) {
@@ -19457,18 +19467,23 @@ function confirmClaudeStrip(derived, confirmation) {
     requested: [...derived.strip],
     cliVersion: confirmation.cliVersion,
     permissionDenyRules: [...derived.permissionDenyRules],
+    settingsEnv: { ...derived.settingsEnv },
     enforcement
   };
+}
+function settingsDescription(derived) {
+  const deny = `permissions.deny ${JSON.stringify(derived.permissionDenyRules)}`;
+  return Object.keys(derived.settingsEnv).length === 0 ? deny : `${deny} and env ${JSON.stringify(derived.settingsEnv)}`;
 }
 function enforcementDetail(derived, capability, confirmation) {
   const { classes, inventory } = derived;
   return [
-    `permissions.deny ${JSON.stringify(derived.permissionDenyRules)} in the per-dispatch settings file`,
+    `${settingsDescription(derived)} in the per-dispatch settings file`,
     `derived from the ${inventory.tools.length} tools Claude Code ${inventory.cliVersion} offered (${inventory.source})`,
     `${capability} members offered: ${JSON.stringify(classes[capability])}`,
     `unclassified and denied: ${JSON.stringify(classes.unclassified)}`,
     `operator MCP tools left in place: ${JSON.stringify(classes.operator)}`,
-    `a second probe under these rules offered none of them and kept every unrelated tool (${confirmation.tools.length} tools)`
+    `a second probe under these settings offered none of them and kept every unrelated tool (${confirmation.tools.length} tools)`
   ].join("; ");
 }
 
@@ -19879,7 +19894,8 @@ var ClaudeCliControlPlane = class {
         name: `ensemble-tool-surface-${nonce}`,
         cwd: request.cwd,
         ...request.model !== void 0 ? { model: request.model } : {},
-        permissionDenyRules: [...request.permissionDenyRules]
+        permissionDenyRules: [...request.permissionDenyRules],
+        settingsEnv: request.settingsEnv
       }, { ANTHROPIC_BASE_URL: provider.origin }, request.signal);
       if (handle.launchFailure !== void 0) throw new Error(handle.launchFailure.message);
       let count = 0;
@@ -19923,7 +19939,7 @@ var ClaudeCliControlPlane = class {
     }
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, probeEnv);
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.settingsEnv, probeEnv);
     args.push("--settings", path14.join(settingsDir, "settings.json"));
     let registered = null;
     let candidate = null;
@@ -20044,7 +20060,8 @@ var ClaudeCliControlPlane = class {
   }
   /**
    * Write the per-dispatch settings file carrying the declared worker
-   * environment plus the dispatch's ownership tag (`WORKER_MARKER_VARIABLE`).
+   * environment, a strip's removal variables over it, and the dispatch's
+   * ownership tag (`WORKER_MARKER_VARIABLE`).
    * Written on every dispatch: the tag is what lets `stop()` reap the
    * worker's surviving descendants, so an untagged worker would be an
    * unowned one. (This supersedes the earlier no-declaration-no-flag
@@ -20053,10 +20070,11 @@ var ClaudeCliControlPlane = class {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName, permissionDenyRules, probeEnv) {
+  async #writeWorkerSettings(dispatchName, permissionDenyRules, stripEnv, probeEnv) {
     const env = {
       ...this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {},
       ...this.#workerEnv,
+      ...stripEnv,
       ...probeEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
@@ -20872,15 +20890,18 @@ function zeroUsage() {
 }
 
 // src/claude-engine.ts
-function permissionDenyRulesFor(options) {
+function stripSettingsFor(options) {
   const strip = options.strip ?? [];
-  if (strip.length === 0) return [];
+  if (strip.length === 0) return {};
   const prepared = options.preparedStrip;
   const covered = isPreparedClaudeStrip(prepared) && strip.every((capability) => prepared.requested.includes(capability));
   if (!covered) {
     throw new CapabilityStripUnsupportedError("claude", strip.join(", "), "no live tool-surface preparation reached this dispatch");
   }
-  return prepared.permissionDenyRules;
+  return {
+    permissionDenyRules: prepared.permissionDenyRules,
+    ...Object.keys(prepared.settingsEnv).length > 0 ? { settingsEnv: prepared.settingsEnv } : {}
+  };
 }
 var CLAUDE_NATIVE_EFFORT = {
   minimal: "low",
@@ -21103,7 +21124,7 @@ var ClaudeEngineInvocation = class {
       observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null });
     } catch {
     }
-    const denyRules = permissionDenyRulesFor(this.#options);
+    const stripSettings = stripSettingsFor(this.#options);
     const prompt = this.#buildDispatchPrompt(previousFailure);
     const handle = await this.#controlPlane.dispatch({
       prompt,
@@ -21111,7 +21132,7 @@ var ClaudeEngineInvocation = class {
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
-      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {}
+      ...stripSettings
     });
     this.#handle = handle;
     const opening = { message: prompt, mark: 0, what: "the opening prompt", carriesTurn: true };
@@ -21869,9 +21890,9 @@ var ClaudeStripPreparer = class {
     const signal = AbortSignal.any([this.#abort.signal, AbortSignal.timeout(this.#timeoutMs)]);
     const base = { cwd: request.cwd, ...request.model !== void 0 ? { model: request.model } : {}, signal };
     try {
-      const inventory = await probe({ ...base, permissionDenyRules: [] });
+      const inventory = await probe({ ...base, permissionDenyRules: [], settingsEnv: {} });
       const derived = deriveClaudeStrip(inventory, request.strip, this.#classification);
-      const confirmation = await probe({ ...base, permissionDenyRules: derived.permissionDenyRules });
+      const confirmation = await probe({ ...base, permissionDenyRules: derived.permissionDenyRules, settingsEnv: derived.settingsEnv });
       return confirmClaudeStrip(derived, confirmation);
     } catch (error) {
       if (this.#abort.signal.aborted) throw new EngineShutdownError("claude");

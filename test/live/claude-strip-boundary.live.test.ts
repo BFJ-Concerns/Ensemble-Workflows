@@ -32,7 +32,7 @@ async function fixture() {
   const provider = await startCaptureProvider();
   const workerEnv = {
     CLAUDE_CONFIG_DIR: config, ANTHROPIC_BASE_URL: provider.origin, ANTHROPIC_API_KEY: key,
-    ANTHROPIC_AUTH_TOKEN: "", CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0"
+    ANTHROPIC_AUTH_TOKEN: "", CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "0", CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0"
   };
   await writeFile(path.join(xdg, "ensemble", "config.json"), JSON.stringify({
     schema_version: 1, worker_environment: { claude: workerEnv }
@@ -81,8 +81,12 @@ test("a stripped Claude worker is offered no agent or skill tool, while unstripp
       const restrictedRecord = records.find(record => record.label === "surface-1");
       assert.ok(restrictedRecord?.strip, result.stderr);
       const details = restrictedRecord.strip.enforcement;
-      const denyMatch = /^permissions.deny (\[[^;]*\]) in /.exec(details.agents!.detail);
+      const denyMatch = /^permissions.deny (\[[^\]]*\])/.exec(details.agents!.detail);
       assert.ok(denyMatch);
+      assert.match(details.agents!.detail, /CLAUDE_CODE_DISABLE_ADVISOR_TOOL.*1/);
+      assert.ok(!stripped.tools.some(tool => tool.name === "advisor"));
+      assert.ok(before.tools.some(tool => tool.name === "advisor"));
+      assert.ok(after.tools.some(tool => tool.name === "advisor"));
       const denies = JSON.parse(denyMatch[1]!) as string[];
       const offered = new Set(stripped.tools.map(tool => tool.name));
       assert.ok(denies.every(name => !offered.has(name)));
@@ -119,8 +123,15 @@ test("a built-in agent tool nobody has classified is denied while unrelated tool
       t.diagnostic(JSON.stringify({ prepared, surfaces }));
       assert.ok(surfaces[0]?.tools.some(tool => tool.name === "ListAgents"), "the control did not expose the stand-in agent tool");
       assert.ok(prepared.permissionDenyRules.includes("ListAgents"));
+      assert.equal(prepared.settingsEnv.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "1");
+      assert.ok(surfaces[0]?.tools.some(tool => tool.name === "advisor"));
+      assert.ok(!surfaces[1]?.tools.some(tool => tool.name === "advisor"));
       assert.ok(!surfaces[1]?.tools.some(tool => tool.name === "ListAgents"));
       for (const name of ["Read", "Bash"]) assert.ok(surfaces[1]?.tools.some(tool => tool.name === name));
       assert.match(prepared.enforcement.agents?.detail ?? "", /unclassified and denied: \[[^\]]*"ListAgents"/);
+      const skills = await preparer.prepare({ strip: ["skills"], cwd: f.root, model: "haiku" });
+      assert.deepEqual(skills.settingsEnv, {});
+      assert.ok(surfaces[3]?.tools.some(tool => tool.name === "advisor"), "skills-only strip removed advisor");
+      assert.ok(!surfaces[3]?.tools.some(tool => tool.name === "Skill"));
     } finally { t.diagnostic(JSON.stringify({ surfaces })); preparer.close(); await f.close(); }
   });

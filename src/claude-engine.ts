@@ -38,7 +38,7 @@ import { subtractUsage } from "./usage-summary.js";
 import { CANONICAL_EFFORT_DOMAIN } from "./engine-option-validation.js";
 
 import type { CanonicalEffort } from "./engine-option-validation.js";
-import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
+import type { ClaudeControlPlane, ClaudeDispatchOptions, ClaudeSessionHandle } from "./claude-control-plane.js";
 import type { SubmissionReceipt, TranscriptApiError, TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
 import type {
   EngineAttemptContext,
@@ -55,19 +55,25 @@ import type {
   BackgroundTaskWait, JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
 
 /**
- * The deny rules a dispatch applies: none unstripped, otherwise exactly the
- * prepared strip's. A stripped dispatch with no Claude preparation for
- * this strip refuses before spawn rather than guess at the tool surface.
+ * The strip settings a dispatch applies: none unstripped, otherwise exactly
+ * the prepared strip's deny rules and removal variables. A stripped dispatch
+ * with no Claude preparation for this strip refuses before spawn rather than
+ * guess at the tool surface.
  */
-export function permissionDenyRulesFor(options: Pick<EngineTurnOptions, "strip" | "preparedStrip">): readonly string[] {
+export function stripSettingsFor(
+  options: Pick<EngineTurnOptions, "strip" | "preparedStrip">
+): Pick<ClaudeDispatchOptions, "permissionDenyRules" | "settingsEnv"> {
   const strip = options.strip ?? [];
-  if (strip.length === 0) return [];
+  if (strip.length === 0) return {};
   const prepared = options.preparedStrip;
   const covered = isPreparedClaudeStrip(prepared) && strip.every((capability) => prepared.requested.includes(capability));
   if (!covered) {
     throw new CapabilityStripUnsupportedError("claude", strip.join(", "), "no live tool-surface preparation reached this dispatch");
   }
-  return prepared.permissionDenyRules;
+  return {
+    permissionDenyRules: prepared.permissionDenyRules,
+    ...(Object.keys(prepared.settingsEnv).length > 0 ? { settingsEnv: prepared.settingsEnv } : {})
+  };
 }
 
 /**
@@ -495,7 +501,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#resolvedEffort = null;
     try { observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null }); }
     catch { /* Observability cannot fail dispatch. */ }
-    const denyRules = permissionDenyRulesFor(this.#options);
+    const stripSettings = stripSettingsFor(this.#options);
     const prompt = this.#buildDispatchPrompt(previousFailure);
     // A rejection here is the launch's word that no session holds the
     // prompt, which is what lets the same prompt go to this target again or
@@ -506,7 +512,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
-      ...(denyRules.length > 0 ? { permissionDenyRules: denyRules } : {})
+      ...stripSettings
     });
     this.#handle = handle;
     // The launch submitted the opening prompt, and like the valve it attests

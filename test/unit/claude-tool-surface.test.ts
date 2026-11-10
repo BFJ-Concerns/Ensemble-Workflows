@@ -66,10 +66,26 @@ test("an unreadable capture throws rather than read as an empty surface", () => 
 test("a strip denies its classified members and every unclassified built-in, never unrelated or operator tools", () => {
   const inventory = surface(["Bash", "ListAgents", "Read", "Skill", "SpawnTeammate", "mcp__x__y"]);
   const agents = deriveClaudeStrip(inventory, ["agents"]);
-  assert.deepEqual(agents.permissionDenyRules, ["Agent", "ListAgents", "SendMessage", "SpawnTeammate", "Task", "Workflow"]);
+  assert.deepEqual(agents.permissionDenyRules, ["Agent", "ListAgents", "SendMessage", "SpawnTeammate", "Task", "Workflow", "advisor"]);
   assert.deepEqual(agents.classes.operator, ["mcp__x__y"]);
   const skills = deriveClaudeStrip(inventory, ["skills"]);
   assert.deepEqual(skills.permissionDenyRules, ["Skill", "SpawnTeammate"]);
+});
+
+test("a denied tool the deny rules do not reach also takes its removal variables, and only under a strip that denies it", () => {
+  const inventory = surface(["Bash", "Skill", "advisor"]);
+  const agents = deriveClaudeStrip(inventory, ["agents"]);
+  assert.ok(agents.permissionDenyRules.includes("advisor"));
+  assert.deepEqual(agents.settingsEnv, { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" });
+  // A skills strip leaves the advisor in place, so it sets nothing.
+  assert.deepEqual(deriveClaudeStrip(inventory, ["skills"]).settingsEnv, {});
+
+  const prepared = confirmClaudeStrip(agents, surface(["Bash", "Skill"]));
+  assert.deepEqual(prepared.settingsEnv, { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" });
+  assert.match(prepared.enforcement.agents?.detail ?? "", /env \{"CLAUDE_CODE_DISABLE_ADVISOR_TOOL":"1"\}/);
+  // A served version that ignores the variable refuses, naming the settings it ran under.
+  assert.throws(() => confirmClaudeStrip(agents, surface(["Bash", "Skill", "advisor"])),
+    /still offered \["advisor"\] under permissions\.deny .* and env \{"CLAUDE_CODE_DISABLE_ADVISOR_TOOL":"1"\}/);
 });
 
 test("confirmation refuses a leaked tool, a lost unrelated tool, or a changed version", () => {
@@ -78,23 +94,35 @@ test("confirmation refuses a leaked tool, a lost unrelated tool, or a changed ve
     error instanceof CapabilityStripUnsupportedError && /still offered \["SpawnTeammate"\]/.test(error.message));
   assert.throws(() => confirmClaudeStrip(derived, surface(["Bash"])), /also removed \["Read"\]/);
   assert.throws(() => confirmClaudeStrip(derived, surface(["Bash", "Read"], "2.1.323")), /changed between probes/);
+  // A built-in that only the confirming probe showed was never judged, so it refuses too.
+  assert.throws(() => confirmClaudeStrip(derived, surface(["Bash", "Read", "SpawnSwarm"])),
+    /unclassified tools the inventory did not show: \["SpawnSwarm"\]/);
   const prepared = confirmClaudeStrip(derived, surface(["Bash", "Read"]));
   assert.deepEqual(prepared.permissionDenyRules, derived.permissionDenyRules);
   assert.equal(prepared.enforcement.agents?.route, "config");
   assert.match(prepared.enforcement.agents?.detail ?? "", /Claude Code 2\.1\.322/);
 });
 
-/** A probe that offers `names` minus the request's denies, counting its calls. */
+/** A probe that offers `names` minus the request's denies, counting its calls. Deny rules do not reach `advisor`; its removal variable does. */
 function countingProbe(names: string[], cliVersion = "2.1.322"): { calls: ClaudeToolSurfaceProbeRequest[]; probe: (request: ClaudeToolSurfaceProbeRequest) => Promise<ClaudeToolSurface> } {
   const calls: ClaudeToolSurfaceProbeRequest[] = [];
   return {
     calls,
     probe: async (request) => {
       calls.push(request);
-      return surface(names.filter((name) => !request.permissionDenyRules.includes(name)), cliVersion);
+      return surface(names.filter((name) => name === "advisor"
+        ? request.settingsEnv.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === undefined
+        : !request.permissionDenyRules.includes(name)), cliVersion);
     }
   };
 }
+
+test("only the confirming probe carries the removal variables, the same ones the prepared strip dispatches", async () => {
+  const { calls, probe } = countingProbe(["Bash", "ListAgents", "advisor"]);
+  const prepared = await new ClaudeStripPreparer({ probe }).prepare({ strip: ["agents"], cwd: "/a" });
+  assert.deepEqual(calls.map((call) => call.settingsEnv), [{}, prepared.settingsEnv]);
+  assert.deepEqual(prepared.settingsEnv, { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" });
+});
 
 test("concurrent dispatches with the same inputs share one preparation; other inputs prepare their own", async () => {
   const { calls, probe } = countingProbe(["Bash", "ListAgents"]);

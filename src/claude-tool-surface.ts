@@ -21,10 +21,11 @@ import type { CapturedProviderRequest } from "./provider-capture.js";
  * because the daemon can predate an update.
  *
  * Preparing a strip takes two probes. An unrestricted probe takes the
- * inventory. The deny rules are derived from it (`deriveClaudeStrip`).
- * A second probe then runs under exactly those rules and confirms what
- * remains (`confirmClaudeStrip`). The agent record's enforcement detail
- * states the version, the source, and what was checked and denied.
+ * inventory. The deny rules are derived from it (`deriveClaudeStrip`),
+ * with the settings `env` variables that remove a tool the rules do not
+ * reach (`CLAUDE_TOOL_REMOVAL_ENV`). A second probe then runs under exactly
+ * those settings and confirms what remains (`confirmClaudeStrip`). The
+ * agent record's enforcement detail states the version, the source, and what was checked and denied.
  * `ClaudeStripPreparer` runs the sequence once for each working directory,
  * model and strip in a run.
  *
@@ -42,8 +43,9 @@ import type { CapturedProviderRequest } from "./provider-capture.js";
  *   request that carries the probe's nonce.
  * - Permission denies remove native tools from the tools array and the
  *   deferred listing. A provider-side tool can ignore them: `advisor`
- *   remains offered under its name's deny rule, so confirmation refuses
- *   rather than claiming the tool was stripped.
+ *   requires `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` as well as its name's
+ *   deny rule. Confirmation refuses if it remains offered under the
+ *   derived settings.
  */
 
 /** How a tool reached the model on the probe's requests. */
@@ -172,6 +174,14 @@ export type ClaudeToolClassification = Readonly<Record<string, StrippableCapabil
  * reaches another agent, and the harness relies on it to settle background
  * work. `Task*` are the task-list tools. The other `unrelated` entries were
  * observed on 2.1.322 and reach no other agent.
+ *
+ * `advisor` is a provider-side tool: the Messages API itself runs it, by
+ * handing the worker's conversation to another model (2.1.322 offered
+ * `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-5-5"}`)
+ * and returning that model's reply. Decided: it belongs to `agents`, because
+ * it puts a second model to work on the worker's task, on a model the script
+ * did not choose, which is the delegation an agents strip exists to remove.
+ * `permissions.deny` does not remove it; `CLAUDE_TOOL_REMOVAL_ENV` does.
  */
 export const CLAUDE_TOOL_CLASSIFICATION: ClaudeToolClassification = {
   Agent: "agents",
@@ -179,6 +189,7 @@ export const CLAUDE_TOOL_CLASSIFICATION: ClaudeToolClassification = {
   SendMessage: "agents",
   Task: "agents",
   Workflow: "agents",
+  advisor: "agents",
   Skill: "skills",
   AskUserQuestion: "unrelated",
   Bash: "unrelated",
@@ -210,6 +221,32 @@ export const CLAUDE_TOOL_CLASSIFICATION: ClaudeToolClassification = {
   Write: "unrelated"
 };
 
+/**
+ * Tools that stay on the surface under their own `permissions.deny` rule,
+ * each with the settings `env` variables that remove it. A provider-side
+ * tool is the known case: the deny rules govern the tools Claude Code runs
+ * itself, and this one the provider runs.
+ *
+ * A stripped dispatch carries the variables of every name its strip denies,
+ * in the per-dispatch settings file's `env` block, alongside the deny rule
+ * that name still takes. The confirming probe carries the same variables,
+ * so the check that nothing denied remains judges this route as well. No
+ * variable is set for an unstripped worker or for the inventory probe.
+ *
+ * `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` was read from the 2.1.322 executable,
+ * whose advisor availability check returns false while it is set; Claude
+ * Code does not document it. It is trusted only as far as each preparation's
+ * confirming probe shows the tool gone: a release that ignores or renames
+ * it makes the strip refuse before the worker spawns, and never dispatches
+ * a worker that still has the tool.
+ *
+ * An entry is how a newly found tool of this kind is removed: add its
+ * variables here, and its classification above.
+ */
+export const CLAUDE_TOOL_REMOVAL_ENV: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  advisor: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" }
+};
+
 export function classifyClaudeTool(name: string, classification: ClaudeToolClassification = CLAUDE_TOOL_CLASSIFICATION): ClaudeToolClass {
   if (name.startsWith("mcp__")) return "operator";
   return Object.hasOwn(classification, name) ? classification[name]! : "unclassified";
@@ -226,8 +263,12 @@ export interface DerivedClaudeStrip {
    * deny and still covers a tool that a later session gains.
    */
   readonly permissionDenyRules: readonly string[];
+  /** The `CLAUDE_TOOL_REMOVAL_ENV` variables of every denied name; empty when no denied name has any. */
+  readonly settingsEnv: Readonly<Record<string, string>>;
   /** The inventory's tools by class. */
   readonly classes: Readonly<Record<ClaudeToolClass, readonly string[]>>;
+  /** The table the inventory was judged by, so the confirmation judges by the same one. */
+  readonly classification: ClaudeToolClassification;
 }
 
 export function deriveClaudeStrip(
@@ -243,33 +284,39 @@ export function deriveClaudeStrip(
     .filter(([, judged]) => judged !== "unrelated" && strip.includes(judged))
     .map(([name]) => name);
   const permissionDenyRules = [...new Set([...members, ...(strip.length > 0 ? classes.unclassified : [])])].sort();
-  return { inventory, strip: [...strip], permissionDenyRules, classes };
+  const settingsEnv = Object.assign({}, ...permissionDenyRules.map((name) => CLAUDE_TOOL_REMOVAL_ENV[name] ?? {})) as Record<string, string>;
+  return { inventory, strip: [...strip], permissionDenyRules, settingsEnv, classes, classification };
 }
 
 /**
- * A strip ready for dispatch on Claude: the deny rules the worker's settings
- * file carries, and the enforcement each capability's record entry states.
- * Both come from the one preparation, so the archive names the rules that
- * were dispatched.
+ * A strip ready for dispatch on Claude: the deny rules and `env` variables
+ * the worker's settings file carries, and the enforcement each capability's
+ * record entry states. All come from the one preparation, so the archive
+ * names the settings that were dispatched.
  */
 export interface PreparedClaudeStrip extends PreparedStrip {
   readonly engine: "claude";
   readonly cliVersion: string;
   readonly permissionDenyRules: readonly string[];
+  readonly settingsEnv: Readonly<Record<string, string>>;
 }
 
 export function isPreparedClaudeStrip(prepared: PreparedStrip | undefined): prepared is PreparedClaudeStrip {
-  return prepared?.engine === "claude" && Array.isArray((prepared as Partial<PreparedClaudeStrip>).permissionDenyRules);
+  const candidate = prepared as Partial<PreparedClaudeStrip> | undefined;
+  return candidate?.engine === "claude" && Array.isArray(candidate.permissionDenyRules) &&
+    typeof candidate.settingsEnv === "object" && candidate.settingsEnv !== null;
 }
 
 /**
- * Judge the second probe, which ran under `derived.permissionDenyRules`,
- * and settle the strip. Its own version must match the inventory's. No
- * denied name may remain on it, whether loaded or deferred. Every
- * `unrelated` tool the inventory showed must remain, since a strip removes
- * nothing it was not asked to. Operator tools are not compared: an MCP
- * server's connection timing varies between sessions. A failed check
- * refuses the worker before it spawns.
+ * Judge the second probe, which ran under `derived.permissionDenyRules` and
+ * `derived.settingsEnv`, and settle the strip. Its own version must match
+ * the inventory's. No denied name may remain on it, whether loaded or
+ * deferred. No unclassified built-in may appear on it either: one the
+ * inventory did not show was never denied, so it would reach the worker
+ * unjudged. Every `unrelated` tool the inventory showed must remain, since a
+ * strip removes nothing it was not asked to. Operator tools are not
+ * compared: an MCP server's connection timing varies between sessions. A
+ * failed check refuses the worker before it spawns.
  */
 export function confirmClaudeStrip(derived: DerivedClaudeStrip, confirmation: ClaudeToolSurface): PreparedClaudeStrip {
   const refuse = (detail: string): never => {
@@ -281,7 +328,13 @@ export function confirmClaudeStrip(derived: DerivedClaudeStrip, confirmation: Cl
   const remaining = new Set(confirmation.tools.map((tool) => tool.name));
   const leaked = derived.permissionDenyRules.filter((name) => remaining.has(name));
   if (leaked.length > 0) {
-    refuse(`Claude Code ${confirmation.cliVersion} still offered ${JSON.stringify(leaked)} under permissions.deny`);
+    refuse(`Claude Code ${confirmation.cliVersion} still offered ${JSON.stringify(leaked)} under ${settingsDescription(derived)}`);
+  }
+  const unjudged = confirmation.tools
+    .map((tool) => tool.name)
+    .filter((name) => classifyClaudeTool(name, derived.classification) === "unclassified");
+  if (unjudged.length > 0) {
+    refuse(`the confirming probe offered unclassified tools the inventory did not show: ${JSON.stringify(unjudged)}`);
   }
   const lost = derived.classes.unrelated.filter((name) => !remaining.has(name));
   if (lost.length > 0) {
@@ -296,18 +349,25 @@ export function confirmClaudeStrip(derived: DerivedClaudeStrip, confirmation: Cl
     requested: [...derived.strip],
     cliVersion: confirmation.cliVersion,
     permissionDenyRules: [...derived.permissionDenyRules],
+    settingsEnv: { ...derived.settingsEnv },
     enforcement
   };
+}
+
+/** The settings a strip's rules travel in, as the record and a refusal name them. */
+function settingsDescription(derived: DerivedClaudeStrip): string {
+  const deny = `permissions.deny ${JSON.stringify(derived.permissionDenyRules)}`;
+  return Object.keys(derived.settingsEnv).length === 0 ? deny : `${deny} and env ${JSON.stringify(derived.settingsEnv)}`;
 }
 
 function enforcementDetail(derived: DerivedClaudeStrip, capability: StrippableCapability, confirmation: ClaudeToolSurface): string {
   const { classes, inventory } = derived;
   return [
-    `permissions.deny ${JSON.stringify(derived.permissionDenyRules)} in the per-dispatch settings file`,
+    `${settingsDescription(derived)} in the per-dispatch settings file`,
     `derived from the ${inventory.tools.length} tools Claude Code ${inventory.cliVersion} offered (${inventory.source})`,
     `${capability} members offered: ${JSON.stringify(classes[capability])}`,
     `unclassified and denied: ${JSON.stringify(classes.unclassified)}`,
     `operator MCP tools left in place: ${JSON.stringify(classes.operator)}`,
-    `a second probe under these rules offered none of them and kept every unrelated tool (${confirmation.tools.length} tools)`
+    `a second probe under these settings offered none of them and kept every unrelated tool (${confirmation.tools.length} tools)`
   ].join("; ");
 }

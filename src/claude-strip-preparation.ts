@@ -114,9 +114,9 @@ export class ClaudeStripPreparer {
     const signal = AbortSignal.any([this.#abort.signal, AbortSignal.timeout(this.#timeoutMs)]);
     const base = { cwd: request.cwd, ...(request.model !== undefined ? { model: request.model } : {}), signal };
     try {
-      const inventory = await probe({ ...base, permissionDenyRules: [] });
+      const inventory = await probe({ ...base, permissionDenyRules: [], settingsEnv: {} });
       const derived = deriveClaudeStrip(inventory, request.strip, this.#classification);
-      const confirmation = await probe({ ...base, permissionDenyRules: derived.permissionDenyRules });
+      const confirmation = await probe({ ...base, permissionDenyRules: derived.permissionDenyRules, settingsEnv: derived.settingsEnv });
       return confirmClaudeStrip(derived, confirmation);
     } catch (error) {
       if (this.#abort.signal.aborted) throw new EngineShutdownError("claude");

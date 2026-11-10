@@ -33261,8 +33261,9 @@ function programNameFor(scriptPath) {
   if (scriptPath === void 0 || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
-  const file = path17.basename(scriptPath);
-  return /\.(?:mjs|cjs|js)$/.test(file) ? `node ${file}` : file;
+  const absolutePath = path17.resolve(scriptPath);
+  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : `'${absolutePath.replaceAll("'", `'"'"'`)}'`;
+  return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
 }
 var USAGE_WIDTH = 80;
 var USAGE_LEAD = "Usage: ";
@@ -33305,7 +33306,7 @@ function usage(program) {
     ["holds", "[--json]", "[--scope <scope> | --all]"],
     ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]
   ];
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  const continuation = " ".repeat(Math.min(USAGE_LEAD.length + program.length + 1, 24));
   const lines = [];
   forms.forEach((tokens, index) => {
     const lead = `${index === 0 ? USAGE_LEAD : " ".repeat(USAGE_LEAD.length)}${program}`;
@@ -33318,13 +33319,13 @@ function usage(program) {
     "Agent options (after agent, before the prompt):",
     ...wrapTokens("  ", AGENT_OPTION_SYNOPSES, "  ", "  "),
     "The prompt is the one positional argument, or stdin when omitted.",
-    `Run \`${program} --help\` for orientation; each subcommand answers --help.`,
+    ...wrapTokens("Run", [`\`${program} --help\``, "for orientation;", "each subcommand answers --help."], "  ", " "),
     ""
   );
   return lines.join("\n");
 }
 function subcommandSynopsis(program, tokens) {
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  const continuation = " ".repeat(Math.min(USAGE_LEAD.length + program.length + 1, 24));
   return `${wrapTokens(`${USAGE_LEAD}${program}`, tokens, continuation, " ").join("\n")}
 `;
 }
@@ -33333,7 +33334,7 @@ function wrapTokens(lead, tokens, indent, separator) {
   let line = lead;
   tokens.forEach((token, index) => {
     const joined = index === 0 ? `${lead}${lead.endsWith(" ") ? "" : " "}${token}` : `${line}${separator}${token}`;
-    if (index > 0 && joined.length > USAGE_WIDTH) {
+    if (joined.length > USAGE_WIDTH && line.trim().length > 0) {
       lines.push(line);
       line = `${indent}${token}`;
     } else {

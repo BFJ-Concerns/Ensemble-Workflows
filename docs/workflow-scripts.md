@@ -180,7 +180,9 @@ workflows` lists them.
 ### `phase()`, `log()`, and `tally()`
 
 `phase(title)` and `log(message)` write to the run log on stderr; `phase()`
-also sets the current phase in the live status file.
+also sets the current run phase. Each agent or session turn captures it when
+it queues, for both the live status file and the archived agent record, unless
+the agent/session has an explicit `phase` option.
 
 `tally(name, value)` records a named number in the run record's manifest,
 beside the usage totals — how many findings a check accepted, or how many fix

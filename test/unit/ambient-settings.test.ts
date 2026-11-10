@@ -114,6 +114,8 @@ test("an absent machine config is silent and resolves built-in defaults", async 
 test("machine config rejects parse errors, unknown keys, invalid values, zero, and schema skew", async () => {
   const cases: Array<{ source: string; pattern: RegExp }> = [
     { source: '{"schema_version":1,', pattern: /parse.*config\.json/i },
+    { source: '{"schema_verison":1,"agent_ceiling":2}', pattern: /schema_verison.*config\.json/ },
+    { source: '{"schema_version":"1"}', pattern: /schema_version "1".*config\.json/ },
     { source: '{"schema_version":1,"maxAgent":2}', pattern: /maxAgent.*config\.json/ },
     { source: '{"schema_version":1,"agent_ceiling":"2"}', pattern: /agent_ceiling.*config\.json/ },
     { source: '{"schema_version":1,"concurrency":{"codex":0}}', pattern: /concurrency\.codex.*config\.json/ },

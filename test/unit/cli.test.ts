@@ -2455,7 +2455,7 @@ test("usage names the program as the caller invoked it and keeps every line with
 });
 
 test("an unregistered opencode call archives and counts no workers", async () => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-registry-refusal-");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-registry-refusal-"));
   const stderr = new CaptureStream();
   const stdout = new CaptureStream();
   try {

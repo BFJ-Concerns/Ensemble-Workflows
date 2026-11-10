@@ -15349,17 +15349,19 @@ function readMachineConfig(configFile) {
   if (!isObject(parsed) || Array.isArray(parsed)) {
     throw fileValueError(configFile, "<root>", "must be a JSON object");
   }
-  if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
-    const newer = typeof parsed.schema_version === "number" && parsed.schema_version > CONFIG_SCHEMA_VERSION;
-    throw new AmbientConfigError(
-      `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}` + (newer ? "; this file was written for a newer Ensemble. Upgrade Ensemble to read it." : "")
+  const newer = typeof parsed.schema_version === "number" && parsed.schema_version > CONFIG_SCHEMA_VERSION;
+  if (!newer) {
+    assertKnownKeys(
+      parsed,
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+      configFile
     );
   }
-  assertKnownKeys(
-    parsed,
-    ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
-    configFile
-  );
+  if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
+    throw new AmbientConfigError(
+      `Unsupported schema_version ${JSON.stringify(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}` + (newer ? "; this file was written for a newer Ensemble. Upgrade Ensemble to read it." : "")
+    );
+  }
   if (parsed.worker_scope !== void 0) {
     parseWorkerScopeGrouping(parsed.worker_scope, `worker_scope in ${configFile}`);
   }

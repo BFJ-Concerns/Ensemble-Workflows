@@ -578,6 +578,18 @@ The fields present throughout a record's lifetime are:
     `observed_failure` keeps the symptom the turn saw (a closed app-server, an
     aborted poll); `null` when the engine's own failure is the cause.
   - `diagnostics` and `token_usage_events` (the engine-native usage events).
+    When pending Claude work spans attempts, each attempt accounts only for
+    growth since the previous attempt's session total, even if its transcript
+    reference repeats earlier API calls. Summing attempts never charges that
+    earlier work twice.
+    A failed Claude launch supplies `diagnostics.claudeLaunch`: `failure`
+    keeps the launch's account, and `cleanupConfirmed` says whether it was
+    safe to reject after teardown. `command` contains the dispatch command's `ok`, `exitCode`, `signal`, `stdout` and
+    `stderr`; `roster` is the last observed native row; `logs` contains the
+    same command-result fields for `claude logs`. Unavailable observations
+    are `null`. Any transcript is retained in the attempt's transcript
+    references. The dispatch command's exit is separate from `worker_exit`,
+    which describes the worker process itself.
   - `app_server_diagnostic`: Codex's own account of the failure,
     `{ code, http_status_code, message, payload }`. `code` is the condition
     Codex named; `http_status_code` is the provider status Codex forwarded

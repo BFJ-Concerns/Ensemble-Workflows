@@ -1,6 +1,6 @@
 import { waitForCondition } from "../wait-for-condition.js";
 import assert from "node:assert/strict";
-import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,15 +10,22 @@ import { execFileSync, spawn } from "node:child_process";
 import {
   ClaudeCliControlPlane,
   SANDBOXED_WORKSPACE_VARIABLE,
-  VALVE_SLICE_BYTES,
-  WORKER_MARKER_VARIABLE,
-  valveSlices
+  WORKER_MARKER_VARIABLE
 } from "../../src/claude-control-plane.js";
-import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "../../src/errors.js";
+import { ClaudeDispatchError, ClaudeRegistrationTimeoutError, failedTurnResultOf } from "../../src/errors.js";
 import { SystemdWorkerScopes, containingSlice, type ScopePlacement, type WorkerScopes } from "../../src/worker-scopes.js";
+import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
+import { EnsembleRuntime } from "../../src/runtime.js";
+import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
 import type { RuntimeEvent } from "../../src/types.js";
 import { writeProcStat } from "../fixtures/proc-stat.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
+
+// These fixtures exercise registration, placement and settings; editor transport
+// is exercised with executable terminal stubs below.
+class DeliveryStubControlPlane extends ClaudeCliControlPlane {
+  override async steer() { return { submitted: true as const }; }
+}
 
 test("transcript discovery follows the configured Claude directory and explicit overrides", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "claude-transcript-config-"));
@@ -36,9 +43,9 @@ test("transcript discovery follows the configured Claude directory and explicit 
     }
     process.env.CLAUDE_CONFIG_DIR = config;
     for (const [controlPlane, location] of [
-      [new ClaudeCliControlPlane(), locations[0]],
-      [new ClaudeCliControlPlane({ workerEnv: { CLAUDE_CONFIG_DIR: declared } }), locations[1]],
-      [new ClaudeCliControlPlane({ projectsDir: explicit, workerEnv: { CLAUDE_CONFIG_DIR: declared } }), explicit]
+      [new DeliveryStubControlPlane(), locations[0]],
+      [new DeliveryStubControlPlane({ workerEnv: { CLAUDE_CONFIG_DIR: declared } }), locations[1]],
+      [new DeliveryStubControlPlane({ projectsDir: explicit, workerEnv: { CLAUDE_CONFIG_DIR: declared } }), explicit]
     ] as const) {
       assert.equal(await controlPlane.transcriptPath(handle), path.join(location!, "project", `${handle.sessionId}.jsonl`));
     }
@@ -49,67 +56,38 @@ test("transcript discovery follows the configured Claude directory and explicit 
   }
 });
 
-test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing it on argv", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
+test("opening delivery loads a multi-megabyte first user turn through the editor with empty dispatch stdin", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-opening-"));
   try {
-    const receivedPath = path.join(dir, "received-prompt.txt");
-    const argvPath = path.join(dir, "dispatch-argv.json");
-    const stubPath = path.join(dir, "claude-stub.mjs");
-    const sessionId = "00000000-0000-4000-8000-000000000001";
-    const name = "large-prompt-probe";
-    await writeFile(
-      stubPath,
-      `#!/usr/bin/env node
-        import { readFile, writeFile } from "node:fs/promises";
-        const args = process.argv.slice(2);
-        if (args[0] === "--bg") {
-          const chunks = [];
-          for await (const chunk of process.stdin) chunks.push(chunk);
-          await writeFile(${JSON.stringify(receivedPath)}, Buffer.concat(chunks));
-          await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
-          process.exit(0);
-        }
-        if (args[0] === "agents" && args[1] === "--json") {
-          // Registration acknowledges consumed input, not merely a process
-          // whose asynchronous prompt capture has not completed yet.
-          try { JSON.parse(await readFile(${JSON.stringify(argvPath)}, "utf8")); }
-          catch { process.stdout.write("[]"); process.exit(0); }
-          process.stdout.write(JSON.stringify([{
-            id: "large-1",
-            sessionId: ${JSON.stringify(sessionId)},
-            name: ${JSON.stringify(name)},
-            kind: "background",
-            cwd: ${JSON.stringify(dir)},
-            status: "busy",
-            state: "working"
-          }]));
-          process.exit(0);
-        }
-        process.exit(0);
-      `
-    );
-    await chmod(stubPath, 0o755);
-
-    // Repeated non-ASCII text catches accidental character/byte conversions as
-    // well as proving the payload is comfortably beyond ordinary argv limits.
-    const prompt = `${"diff --git a/old b/new\n+résumé → exact bytes\n".repeat(60_000)}TAIL\n`;
-    assert.ok(Buffer.byteLength(prompt) > 2 * 1024 * 1024);
-
-    const controlPlane = new ClaudeCliControlPlane({
-      claudeBin: stubPath,
-      projectsDir: dir,
-      dispatchTimeoutMs: 1_000
-    });
-    const handle = await controlPlane.dispatch({ prompt, name, cwd: dir });
-
-    assert.equal(handle.sessionId, sessionId);
-    assert.equal(await readFile(receivedPath, "utf8"), prompt);
-    const dispatchArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
-    assert.ok(!dispatchArgv.includes(prompt));
-    assert.ok(dispatchArgv.every((argument) => Buffer.byteLength(argument) < 1024));
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+    const stub = await installValveStubs(dir);
+    await rm(stub.transcript);
+    await writeFile(stub.claude, `#!/usr/bin/env node
+      import { writeFileSync } from "node:fs";
+      const args = process.argv.slice(2);
+      if (args[0] === "--bg") {
+        const chunks = [];
+        for await (const chunk of process.stdin) chunks.push(chunk);
+        writeFileSync(${JSON.stringify(path.join(dir, "stdin"))}, Buffer.concat(chunks));
+        writeFileSync(${JSON.stringify(path.join(dir, "argv"))}, JSON.stringify(args));
+      }
+      if (args[0] === "agents") console.log(JSON.stringify([
+        { ...${JSON.stringify({ ...stub.handle, kind: "background", status: "idle", state: "done" })}, pid: process.pid }
+      ]));
+    `);
+    const prompt = "café £ Ω 中文 😀;\n".repeat(100_000) + "tail";
+    assert.ok(Buffer.byteLength(prompt) > 2_000_000);
+    const plane = new ClaudeCliControlPlane({ claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0 });
+    const handle = await plane.dispatch({ prompt, name: stub.handle.name, cwd: dir });
+    try {
+      assert.equal(await readFile(path.join(dir, "stdin"), "utf8"), "");
+      const args = JSON.parse(await readFile(path.join(dir, "argv"), "utf8")) as string[];
+      assert.ok(args.every(arg => Buffer.byteLength(arg) < 1024));
+      const entries = (await readFile(stub.transcript, "utf8")).trim().split("\n").map(row => JSON.parse(row) as { type: string; message: { content: string } });
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0]?.type, "user");
+      assert.equal(entries[0]?.message.content, prompt);
+    } finally { await plane.stop(handle); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("a declared worker environment reaches the dispatched claude child, above inheritance", async () => {
@@ -140,6 +118,7 @@ test("a declared worker environment reaches the dispatched claude child, above i
             sessionId: ${JSON.stringify(sessionId)},
             name: ${JSON.stringify(name)},
             kind: "background",
+            pid: process.pid,
             cwd: ${JSON.stringify(dir)},
             status: "busy",
             state: "working"
@@ -159,7 +138,7 @@ test("a declared worker environment reaches the dispatched claude child, above i
     process.env.ANTHROPIC_BASE_URL = "https://inherited.example";
     process.env.ENSEMBLE_TEST_INHERITED = "still-here";
     try {
-      const controlPlane = new ClaudeCliControlPlane({
+      const controlPlane = new DeliveryStubControlPlane({
         claudeBin: stubPath,
         projectsDir: dir,
         dispatchTimeoutMs: 1_000,
@@ -220,6 +199,7 @@ test("the run's own environment-layer settings are withheld from every claude ch
             sessionId: ${JSON.stringify(sessionId)},
             name: ${JSON.stringify(name)},
             kind: "background",
+            pid: process.pid,
             cwd: ${JSON.stringify(dir)},
             status: "busy",
             state: "working"
@@ -246,7 +226,7 @@ test("the run's own environment-layer settings are withheld from every claude ch
     process.env.ENSEMBLE_HOLD_SCOPE = "lead-session-42";
     process.env.ENSEMBLE_TEST_INHERITED = "still-here";
     try {
-      const controlPlane = new ClaudeCliControlPlane({
+      const controlPlane = new DeliveryStubControlPlane({
         claudeBin: stubPath,
         projectsDir: dir,
         dispatchTimeoutMs: 1_000,
@@ -317,6 +297,7 @@ test("the settings file carries the run's resolved hold scope: an explicit scope
             sessionId: ${JSON.stringify(sessionId)},
             name,
             kind: "background",
+            pid: process.pid,
             cwd: ${JSON.stringify(dir)},
             status: "busy",
             state: "working"
@@ -336,7 +317,7 @@ test("the settings file carries the run's resolved hold scope: an explicit scope
       assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
       await writeFile(path.join(dir, `settings-${name}.json`), '{"env":');
       assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
-      const controlPlane = new ClaudeCliControlPlane({
+      const controlPlane = new DeliveryStubControlPlane({
         claudeBin: stubPath,
         projectsDir: dir,
         dispatchTimeoutMs: 1_000,
@@ -398,6 +379,7 @@ test("the first dispatch sweeps settings directories whose owning launcher is pr
             sessionId: ${JSON.stringify(sessionId)},
             name: ${JSON.stringify(name)},
             kind: "background",
+            pid: process.pid,
             cwd: ${JSON.stringify(dir)},
             status: "busy",
             state: "working"
@@ -428,7 +410,7 @@ test("the first dispatch sweeps settings directories whose owning launcher is pr
     const savedTmpdir = process.env.TMPDIR;
     process.env.TMPDIR = tempRoot;
     try {
-      const controlPlane = new ClaudeCliControlPlane({
+      const controlPlane = new DeliveryStubControlPlane({
         claudeBin: stubPath,
         projectsDir: dir,
         dispatchTimeoutMs: 1_000,
@@ -497,6 +479,7 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
             sessionId: ${JSON.stringify(sessionId)},
             name: ${JSON.stringify(name)},
             kind: "background",
+            pid: process.pid,
             cwd: ${JSON.stringify(dir)},
             status: "busy",
             state: "working"
@@ -512,7 +495,7 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
     assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
 
     const declared = { ANTHROPIC_BASE_URL: "https://declared.example", ANTHROPIC_AUTH_TOKEN: "sentinel-token" };
-    const controlPlane = new ClaudeCliControlPlane({
+    const controlPlane = new DeliveryStubControlPlane({
       claudeBin: stubPath,
       projectsDir: dir,
       dispatchTimeoutMs: 1_000,
@@ -559,21 +542,19 @@ test("an undeclared worker environment still dispatches with the ownership tag a
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { readFile, writeFile } from "node:fs/promises";
+        import { writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
-          // Registration acknowledges a complete capture from this dispatch.
-          try { JSON.parse(await readFile(${JSON.stringify(argvPath)}, "utf8")); }
-          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "no-settings-1",
             sessionId: ${JSON.stringify(sessionId)},
             name: ${JSON.stringify(name)},
             kind: "background",
+            pid: process.pid,
             cwd: ${JSON.stringify(dir)},
             status: "busy",
             state: "working"
@@ -583,12 +564,8 @@ test("an undeclared worker environment still dispatches with the ownership tag a
       `
     );
     await chmod(stubPath, 0o755);
-    // Exercise both sides of the capture boundary without scheduling delays.
-    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
-    await writeFile(argvPath, '["--bg",');
-    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
 
-    const controlPlane = new ClaudeCliControlPlane({
+    const controlPlane = new DeliveryStubControlPlane({
       claudeBin: stubPath,
       projectsDir: dir,
       dispatchTimeoutMs: 1_000
@@ -620,21 +597,19 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { readFile, writeFile } from "node:fs/promises";
+        import { writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
-          // Registration acknowledges a complete capture from this dispatch.
-          try { JSON.parse(await readFile(${JSON.stringify(argvPath)}, "utf8")); }
-          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "deny-rules-1",
             sessionId: ${JSON.stringify(sessionId)},
             name: ${JSON.stringify(name)},
             kind: "background",
+            pid: process.pid,
             cwd: ${JSON.stringify(dir)},
             status: "busy",
             state: "working"
@@ -644,12 +619,8 @@ test("permission deny rules join the per-dispatch settings file beside the env b
       `
     );
     await chmod(stubPath, 0o755);
-    // Exercise both sides of the capture boundary without scheduling delays.
-    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
-    await writeFile(argvPath, '["--bg",');
-    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
 
-    const controlPlane = new ClaudeCliControlPlane({
+    const controlPlane = new DeliveryStubControlPlane({
       claudeBin: stubPath,
       projectsDir: dir,
       dispatchTimeoutMs: 1_000
@@ -692,6 +663,7 @@ test("stop reaps a surviving process tagged with the dispatch's marker", async (
             sessionId: ${JSON.stringify(sessionId)},
             name: ${JSON.stringify(name)},
             kind: "background",
+            pid: process.pid,
             cwd: ${JSON.stringify(dir)},
             status: "busy",
             state: "working"
@@ -737,7 +709,7 @@ test("stop reaps a surviving process tagged with the dispatch's marker", async (
       }
     }
 
-    const controlPlane = new ClaudeCliControlPlane({
+    const controlPlane = new DeliveryStubControlPlane({
       claudeBin: stubPath,
       projectsDir: dir,
       dispatchTimeoutMs: 1_000,
@@ -766,83 +738,6 @@ const TMUX_STUB_COMMAND = `
   while (command[0] === "-S" || command[0] === "-f") command.splice(0, 2);
 `;
 
-test("steer returns false when either tmux delivery step fails", async (context) => {
-  for (const failedStep of ["literal", "later batch", "enter"] as const) {
-    await context.test(failedStep, async () => {
-      const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
-      try {
-        const claudeStub = path.join(dir, "claude-stub.mjs");
-        const tmuxStub = path.join(dir, "tmux-stub.mjs");
-        const callsPath = path.join(dir, "calls.jsonl");
-        const sessionId = "00000000-0000-4000-8000-000000000002";
-        await writeFile(
-          claudeStub,
-          `#!/usr/bin/env node
-            const args = process.argv.slice(2);
-            if (args[0] === "agents" && args[1] === "--json") {
-              process.stdout.write(JSON.stringify([{
-                id: "steer-1",
-                sessionId: ${JSON.stringify(sessionId)},
-                name: "steer-probe",
-                kind: "background",
-                cwd: ${JSON.stringify(dir)},
-                status: "idle",
-                state: "blocked"
-              }]));
-            }
-          `
-        );
-        await writeFile(
-          tmuxStub,
-          `#!/usr/bin/env node
-            import { appendFileSync, readFileSync } from "node:fs";
-            ${TMUX_STUB_COMMAND}
-            appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
-            const calls = readFileSync(${JSON.stringify(callsPath)}, "utf8").trim().split("\\n");
-            const literal = command[0] === "send-keys" && command.includes("-l");
-            const enter = command[0] === "send-keys" && command.at(-1) === "Enter";
-            if ((${JSON.stringify(failedStep)} === "literal" && literal) ||
-                (${JSON.stringify(failedStep)} === "later batch" && literal && calls.length === 3) ||
-                (${JSON.stringify(failedStep)} === "enter" && enter)) {
-              process.stderr.write("delivery refused");
-              process.exit(1);
-            }
-          `
-        );
-        await chmod(claudeStub, 0o755);
-        await chmod(tmuxStub, 0o755);
-
-        const controlPlane = new ClaudeCliControlPlane({
-          claudeBin: claudeStub,
-          tmuxBin: tmuxStub,
-          projectsDir: dir,
-          valveAttachSettleMs: 0,
-          valveSubmitSettleMs: 0,
-          valveKillSettleMs: 0
-        });
-        const steered = await controlPlane.steer(
-          { id: "steer-1", sessionId, name: "steer-probe", cwd: dir },
-          "x\t\r\n😀\r".repeat(100)
-        );
-
-        assert.equal(steered.delivered, false);
-        if (!steered.delivered) {
-          assert.match(steered.reason, /delivery refused/);
-          assert.match(steered.reason, failedStep === "enter" ? /submit/ : failedStep === "literal" ? /slice 1 of/ : /slice 2 of/);
-        }
-        const calls = (await readFile(callsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
-        assert.equal(calls.at(-1)?.at(-1), "kill-server");
-        assert.equal(calls.filter((call) => call.includes("Enter")).length, failedStep === "enter" ? 1 : 0);
-        assert.equal(calls.filter((call) => call.includes("-l")).length, failedStep === "literal" ? 1 : 2);
-        const socket = calls[0]?.[1];
-        assert.ok(socket);
-        await assert.rejects(stat(path.dirname(socket)), { code: "ENOENT" });
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
-    });
-  }
-});
 
 test("every launched claude child sees the workspace declared sandboxed, above a machine declaration, and the settings file never carries it", async () => {
   // The declaration is what lifts Claude Code's trust gate for a scratch
@@ -884,6 +779,7 @@ test("every launched claude child sees the workspace declared sandboxed, above a
             sessionId: ${JSON.stringify(sessionId)},
             name: probe,
             kind: "background",
+            pid: process.pid,
             cwd: ${JSON.stringify(dir)},
             status: "busy",
             state: "working"
@@ -902,7 +798,7 @@ test("every launched claude child sees the workspace declared sandboxed, above a
       assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
       // Keep direct fixture probes out of the control-plane child observations.
       await rm(path.join(dir, `children-${name}.jsonl`));
-      const controlPlane = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000, workerEnv });
+      const controlPlane = new DeliveryStubControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000, workerEnv });
       const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
       await controlPlane.stop(handle);
       const children = (await readFile(path.join(dir, `children-${name}.jsonl`), "utf8"))
@@ -948,320 +844,175 @@ test("every launched claude child sees the workspace declared sandboxed, above a
   }
 });
 
-test("the valve's private tmux server starts from the declared environment, and no tmux argument carries a declared value", async () => {
-  // The declared values are gateway credentials, and a process's argv is
-  // readable by every local user: they must reach the attach client only as
-  // the environment its private server starts from.
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-sandboxed-"));
-  try {
-    const claudeStub = path.join(dir, "claude-stub.mjs");
-    const tmuxStub = path.join(dir, "tmux-stub.mjs");
-    const invocationsPath = path.join(dir, "tmux-invocations.jsonl");
-    const sessionId = "00000000-0000-4000-8000-000000000022";
-    // A declared TMUX_TMPDIR is the workers' setting, not the valve's: it
-    // must not steer where the valve's socket goes, which would put a
-    // declared value into every `-S` argument.
-    const declared = {
-      ANTHROPIC_BASE_URL: "https://declared.example",
-      ANTHROPIC_AUTH_TOKEN: "declared-gateway-token",
-      TMUX_TMPDIR: "/declared-tmux-root"
-    };
-    await writeFile(
-      claudeStub,
-      `#!/usr/bin/env node
-        const args = process.argv.slice(2);
-        if (args[0] === "agents" && args[1] === "--json") {
-          process.stdout.write(JSON.stringify([{
-            id: "valve-1",
-            sessionId: ${JSON.stringify(sessionId)},
-            name: "valve-probe",
-            kind: "background",
-            cwd: ${JSON.stringify(dir)},
-            status: "idle",
-            state: "blocked"
-          }]));
-        }
-      `
-    );
-    await writeFile(
-      tmuxStub,
-      `#!/usr/bin/env node
-        import { appendFile } from "node:fs/promises";
-        await appendFile(${JSON.stringify(invocationsPath)}, JSON.stringify({
-          argv: process.argv.slice(2),
-          base: process.env.ANTHROPIC_BASE_URL ?? null,
-          token: process.env.ANTHROPIC_AUTH_TOKEN ?? null,
-          sandboxed: process.env[${JSON.stringify(SANDBOXED_WORKSPACE_VARIABLE)}] ?? null
-        }) + "\\n");
-      `
-    );
-    await chmod(claudeStub, 0o755);
-    await chmod(tmuxStub, 0o755);
-
-    const controlPlane = new ClaudeCliControlPlane({
-      claudeBin: claudeStub,
-      tmuxBin: tmuxStub,
-      projectsDir: dir,
-      workerEnv: declared,
-      valveAttachSettleMs: 0,
-      valveSubmitSettleMs: 0,
-      valveKillSettleMs: 0
-    });
-    const steered = await controlPlane.steer({ id: "valve-1", sessionId, name: "valve-probe", cwd: dir }, "continue");
-    assert.deepEqual(steered, { delivered: true });
-
-    const invocations = (await readFile(invocationsPath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { argv: string[]; base: string | null; token: string | null; sandboxed: string | null });
-    for (const { argv } of invocations) {
-      for (const value of Object.values(declared)) {
-        assert.ok(
-          argv.every((argument) => !argument.includes(value)),
-          `a tmux invocation carried a declared value in argv: ${JSON.stringify(argv)}`
-        );
+/** Real helper execution behind a scripted terminal and native transcript. */
+async function installValveStubs(dir: string, mode = "exact") {
+  const claude = path.join(dir, "claude stub.mjs");
+  const tmux = path.join(dir, "tmux-stub.mjs");
+  const project = path.join(dir, "project");
+  await mkdir(project);
+  const transcript = path.join(project, "valve-session.jsonl");
+  // A matching old row must never acknowledge a new delivery.
+  await writeFile(transcript, JSON.stringify({ type: "user", message: { content: "old" } }) + "\n");
+  const handle = { id: "valve-1", sessionId: "valve-session", name: "valve-probe", cwd: dir };
+  await writeFile(claude, `#!/usr/bin/env node
+    if (process.argv[2] === "agents") process.stdout.write(JSON.stringify([
+      { ...${JSON.stringify({ ...handle, status: "busy", state: "working", kind: "background" })}, pid: process.pid }
+    ]));
+  `, { mode: 0o755 });
+  await writeFile(tmux, `#!/usr/bin/env node
+    import { appendFileSync, readFileSync, writeFileSync, statSync } from "node:fs";
+    import { execFileSync } from "node:child_process";
+    import path from "node:path";
+    ${TMUX_STUB_COMMAND}
+    const root = path.dirname(process.argv[3]);
+    const state = path.join(root, "test-state.json");
+    const target = path.join(root, "edited.txt");
+    const mode = ${JSON.stringify(mode)};
+    appendFileSync(${JSON.stringify(path.join(dir, "calls.jsonl"))}, JSON.stringify({
+      argv: process.argv.slice(2), env: {
+        base: process.env.ANTHROPIC_BASE_URL, token: process.env.ANTHROPIC_AUTH_TOKEN,
+        sandboxed: process.env.CLAUDE_CODE_SANDBOXED
       }
+    }) + "\\n");
+    const step = command[0] === "new-session" ? "attach" : command.at(-1);
+    if (mode === step) { console.error("delivery refused"); process.exit(1); }
+    if (command[0] === "new-session") {
+      writeFileSync(state, JSON.stringify({ editor: process.env.VISUAL }));
     }
-
-    // One private server for the whole valve: every command names the same
-    // socket, the server starts on no configuration file, and the valve ends
-    // by killing it.
-    const socket = invocations[0]?.argv[1];
-    assert.ok(invocations.every(({ argv }) => argv[0] === "-S" && argv[1] === socket));
-    assert.deepEqual(invocations[0]?.argv.slice(2, 5), ["-f", "/dev/null", "new-session"]);
-    assert.deepEqual(
-      invocations.slice(1).map(({ argv }) => argv[2]),
-      ["send-keys", "send-keys", "kill-server"]
-    );
-
-    // The server's starting environment is what its pane inherits.
-    const started = invocations[0];
-    assert.deepEqual(
-      { base: started?.base, token: started?.token, sandboxed: started?.sandboxed },
-      { base: declared.ANTHROPIC_BASE_URL, token: declared.ANTHROPIC_AUTH_TOKEN, sandboxed: "1" }
-    );
-
-    // tmux leaves its socket file behind on exit; the valve removes it with
-    // its directory.
-    await assert.rejects(access(path.dirname(socket ?? "")));
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("a real tmux valve hands the declared environment and the message to its attach client, and leaves no server behind", async (t) => {
-  try {
-    execFileSync("tmux", ["-V"], { stdio: "ignore" });
-  } catch {
-    t.skip("tmux is not installed");
-    return;
-  }
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-real-"));
-  // The pane runs its command through the server's shell, which tmux takes
-  // from SHELL: a plain sh keeps the attach stub's start well inside the
-  // attach settle, whatever the operator's login shell loads.
-  const savedShell = process.env.SHELL;
-  const savedTmpdir = process.env.TMPDIR;
-  const savedTmuxTmpdir = process.env.TMUX_TMPDIR;
-  process.env.SHELL = "/bin/sh";
-  // tmux keeps its sockets under TMUX_TMPDIR. A short, empty root of the
-  // test's own keeps the valve away from the operator's tmux server and
-  // shows afterwards whether anything — a default server's socket
-  // directory, a valve's leftover one — was made there.
-  const tmuxRoot = await mkdtemp(path.join("/tmp", "ensemble-tmux-root-"));
-  process.env.TMUX_TMPDIR = tmuxRoot;
-  try {
-    const claudeStub = path.join(dir, "claude-stub.sh");
-    const sessionId = "00000000-0000-4000-8000-000000000024";
-    const roster = JSON.stringify([
-      { id: "valve-real-1", sessionId, name: "valve-real-probe", kind: "background", cwd: dir, status: "idle", state: "blocked" }
-    ]);
-    // The attach stub records the two variables it inherited, then echoes
-    // its terminal input to a file, as the real attach client would take it.
-    await writeFile(
-      claudeStub,
-      `#!/bin/sh
-case "$1" in
-  agents) printf '%s' '${roster}' ;;
-  attach)
-    printf '%s\\n%s\\n' "$ANTHROPIC_AUTH_TOKEN" "$${SANDBOXED_WORKSPACE_VARIABLE}" > '${dir}/attach-env.tmp'
-    mv '${dir}/attach-env.tmp' '${dir}/attach-env'
-    exec cat > '${dir}/attach-input'
-    ;;
-esac
-`
-    );
-    await chmod(claudeStub, 0o755);
-    // A temp root deeper than any socket path can be: the valve's socket
-    // lives where tmux keeps its own, so the temp root must not matter.
-    const deepTmpdir = path.join(dir, "t".repeat(120));
-    await mkdir(deepTmpdir);
-    process.env.TMPDIR = deepTmpdir;
-
-    const controlPlane = new ClaudeCliControlPlane({
-      claudeBin: claudeStub,
-      projectsDir: dir,
-      workerEnv: { ANTHROPIC_AUTH_TOKEN: "declared-gateway-token" },
-      valveAttachSettleMs: 1_500,
-      valveSubmitSettleMs: 200,
-      valveKillSettleMs: 1_000
-    });
-    const steered = await controlPlane.steer({ id: "valve-real-1", sessionId, name: "valve-real-probe", cwd: dir }, "continue");
-    assert.deepEqual(steered, { delivered: true });
-
-    assert.equal(await readFile(path.join(dir, "attach-env"), "utf8"), "declared-gateway-token\n1\n");
-    assert.equal(await readFile(path.join(dir, "attach-input"), "utf8"), valveSlices("continue").join("") + "\n");
-    assert.deepEqual(await readdir(tmuxRoot), [], "the valve left a socket directory behind, or used the default tmux server");
-    // The server is forked from the client that started it and keeps that
-    // client's argv, which names the stub; it exits once killed, though not
-    // necessarily before the kill command returns.
-    const deadline = Date.now() + 5_000;
-    while ((await processesNaming(claudeStub)).length > 0) {
-      assert.ok(Date.now() < deadline, "the valve's tmux server outlived the valve");
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    if (step === "C-g" && mode !== "editor-missing") {
+      const { editor } = JSON.parse(readFileSync(state, "utf8"));
+      const [file, ...args] = editor.split(" ");
+      execFileSync(file, [...args, target]);
+      appendFileSync(${JSON.stringify(path.join(dir, "copied.jsonl"))}, JSON.stringify({
+        text: readFileSync(target, "utf8"), mode: statSync(path.join(root, "prompt.txt")).mode & 0o777,
+        editorMode: statSync(path.join(root, "editor.cjs")).mode & 0o777, root
+      }) + "\\n");
     }
-  } finally {
-    restoreEnv("SHELL", savedShell);
-    restoreEnv("TMPDIR", savedTmpdir);
-    restoreEnv("TMUX_TMPDIR", savedTmuxTmpdir);
-    // Only a valve that used the default server leaves one running here.
-    try {
-      execFileSync("tmux", ["kill-server"], { env: { ...process.env, TMUX_TMPDIR: tmuxRoot }, stdio: "ignore" });
-    } catch {
-      // No server under the test's root: the expected case.
+    if (step === "Enter") {
+      const text = readFileSync(target, "utf8");
+      if ((mode === "notification" || mode === "notification-missing")) appendFileSync(${JSON.stringify(transcript)}, JSON.stringify({
+        type: "user", origin: { kind: "task-notification" }, message: { content: "<task-notification>background task complete</task-notification>" }
+      }) + "\\n");
+      const row = (mode === "missing" || mode === "notification-missing") ? { type: "assistant", message: { content: "unrelated" } } :
+        { type: "user", message: { content: mode === "mismatch" ? text + "changed" : text } };
+      appendFileSync(${JSON.stringify(transcript)}, JSON.stringify(row) + "\\n");
     }
-    await rm(dir, { recursive: true, force: true });
-    await rm(tmuxRoot, { recursive: true, force: true });
-  }
-});
-
-test("valveSlices encodes exact UTF-16 key records and cuts only between bounded whole records", () => {
-  assert.deepEqual(valveSlices(""), []);
-  assert.deepEqual(valveSlices("Aé😀\n\nB\n"), [
-    "\u001b[0;0;65;1;0;1_\u001b[0;0;233;1;0;1_\u001b[0;0;55357;1;0;1_" +
-    "\u001b[0;0;56832;1;0;1_\u001b[0;0;10;1;0;1_\u001b[0;0;10;1;0;1_" +
-    "\u001b[0;0;66;1;0;1_\u001b[0;0;10;1;0;1_"
-  ]);
-  // Exercise variable-width decimal units and surrogate pairs at batch edges.
-  const message = "Aé€😀\t\r\n\r".repeat(2_000);
-  const expected = "Aé€😀    \n\n".repeat(2_000);
-  const slices = valveSlices(message);
-  assert.ok(slices.length > 1);
-  for (const [index, slice] of slices.entries()) {
-    assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
-    // eslint-disable-next-line no-control-regex -- terminal records start with ESC.
-    const records = slice.match(/\u001b\[0;0;\d+;1;0;1_/g) ?? [];
-    assert.equal(records.join(""), slice, "every batch contains only complete records");
-    // eslint-disable-next-line no-control-regex -- terminal records start with ESC.
-    const nextRecord = slices[index + 1]?.match(/^\u001b\[0;0;\d+;1;0;1_/u)?.[0];
-    if (nextRecord !== undefined) {
-      assert.ok(slice.length + nextRecord.length > VALVE_SLICE_BYTES, "batches fill up to the next whole record");
-    }
-  }
-  assert.equal(decodeValveRecords(slices.join("")), expected);
-});
-
-test("valveSlices converts tabs and carriage returns before batching complete records", () => {
-  for (const [message, expected] of [
-    ["\t", "    "],
-    ["a\rb", "a\nb"],
-    ["a\r\nb", "a\nb"],
-    ["é\t😀\r中\r\n\t\r", "é    😀\n中\n    \n"]
-  ] as const) {
-    assert.equal(decodeValveRecords(valveSlices(message).join("")), expected);
-  }
-
-  // An ASCII record is 15 bytes: leave room for two of a tab's four spaces.
-  const prefix = "A".repeat(Math.floor(VALVE_SLICE_BYTES / 15) - 2);
-  const tabSlices = valveSlices(prefix + "\t😀\r\nB\rC");
-  assert.equal(decodeValveRecords(tabSlices[0]!), prefix + "  ");
-  assert.equal(decodeValveRecords(tabSlices.slice(1).join("")), "  😀\nB\nC");
-
-  // A CRLF at a full batch edge still encodes just one line break.
-  const fullPrefix = "A".repeat(Math.floor(VALVE_SLICE_BYTES / 15));
-  const crlfSlices = valveSlices(fullPrefix + "\r\n\tZ");
-  assert.equal(decodeValveRecords(crlfSlices[0]!), fullPrefix);
-  assert.equal(decodeValveRecords(crlfSlices.slice(1).join("")), "\n    Z");
-});
-
-function decodeValveRecords(wire: string): string {
-  // eslint-disable-next-line no-control-regex -- decode the explicit ESC record delimiter.
-  return wire.replace(/\u001b\[0;0;(\d+);1;0;1_/g, (_, unit: string) => String.fromCharCode(Number(unit)));
+  `, { mode: 0o755 });
+  return { claude, tmux, handle, transcript };
 }
 
-test("a follow-up turn larger than one argv element reaches the valve whole, in order, before its submit keystroke", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-large-"));
+for (const mode of ["attach", "C-g", "Enter", "editor-missing"] as const) {
+  test(`reply valve reports ${mode} failure and removes its private files`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-failure-"));
+    try {
+      const stub = await installValveStubs(dir, mode);
+      const control = new ClaudeCliControlPlane({
+        claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir,
+        valveAttachSettleMs: 0, valveDeliveryTimeoutMs: 50
+      });
+      const result = await control.steer(stub.handle, "old");
+      assert.equal(result.submitted, false);
+      if (!result.submitted) {
+        assert.match(result.reason, mode === "editor-missing" ? /editor did not finish/ : /delivery refused/);
+      }
+      const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { argv: string[] });
+      assert.equal(calls.at(-1)?.argv.at(-1), "kill-server");
+      await assert.rejects(access(path.dirname(calls[0]!.argv[1]!)));
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+}
+
+test("a background notification between attach and receipt does not acknowledge or corrupt delivery", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-notification-"));
   try {
-    const claudeStub = path.join(dir, "claude-stub.mjs");
-    const tmuxStub = path.join(dir, "tmux-stub.mjs");
-    const sendKeysPath = path.join(dir, "send-keys.jsonl");
-    const sessionId = "00000000-0000-4000-8000-000000000023";
-    await writeFile(
-      claudeStub,
-      `#!/usr/bin/env node
-        const args = process.argv.slice(2);
-        if (args[0] === "agents" && args[1] === "--json") {
-          process.stdout.write(JSON.stringify([{
-            id: "valve-2",
-            sessionId: ${JSON.stringify(sessionId)},
-            name: "valve-large-probe",
-            kind: "background",
-            cwd: ${JSON.stringify(dir)},
-            status: "idle",
-            state: "blocked"
-          }]));
-        }
-      `
-    );
-    await writeFile(
-      tmuxStub,
-      `#!/usr/bin/env node
-        import { appendFile } from "node:fs/promises";
-        ${TMUX_STUB_COMMAND}
-        if (command[0] === "send-keys") {
-          await appendFile(${JSON.stringify(sendKeysPath)}, JSON.stringify(command.slice(3)) + "\\n");
-        }
-      `
-    );
-    await chmod(claudeStub, 0o755);
-    await chmod(tmuxStub, 0o755);
-
-    const controlPlane = new ClaudeCliControlPlane({
-      claudeBin: claudeStub,
-      tmuxBin: tmuxStub,
-      projectsDir: dir,
-      valveAttachSettleMs: 0,
-      valveSubmitSettleMs: 0,
-      valveKillSettleMs: 0
+    const stub = await installValveStubs(dir, "notification");
+    const control = new ClaudeCliControlPlane({
+      claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0
     });
-    // Well past Linux's 128 KiB single-argument cap: a diff-carrying follow-up
-    // of the size that a one-argument send fails on with `spawn E2BIG`.
-    const message = "diff --git a/src/wide.ts b/src/wide.ts\n" + "+  const value = \"é\";\n".repeat(12_000);
-    const controls = "\t😀\ré\r\n中\t\r";
-    const expected = message + "    😀\né\n中    \n";
-    assert.ok(Buffer.byteLength(message, "utf8") > 256 * 1024);
+    assert.deepEqual(await control.steer(stub.handle, "new input"), { submitted: true });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 
-    assert.deepEqual(await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, ""), { delivered: true });
-    assert.equal(await readFile(sendKeysPath, "utf8"), '["Enter"]\n');
-    await writeFile(sendKeysPath, "");
+test("literal command-record XML is accepted as exact ordinary text", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-literal-"));
+  try {
+    const stub = await installValveStubs(dir);
+    const control = new ClaudeCliControlPlane({
+      claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0
+    });
+    const message = "<command-message>check</command-message>\n<command-name>/check</command-name>\n<command-args>literal fixture</command-args>";
+    assert.deepEqual(await control.steer(stub.handle, message), { submitted: true });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 
-    const steered = await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, message + controls);
-    assert.deepEqual(steered, { delivered: true });
+test("concurrent multi-megabyte follow-ups use private editors, exact receipts and no payload argv", async () => {
+  const dirs = await Promise.all([0, 1].map(() => mkdtemp(path.join(tmpdir(), "ensemble-valve-large-"))));
+  const declared = { ANTHROPIC_BASE_URL: "https://declared.example", ANTHROPIC_AUTH_TOKEN: "declared-token", TMUX_TMPDIR: "/declared-root" };
+  try {
+    const roots = await Promise.all(dirs.map(async (dir, index) => {
+      const stub = await installValveStubs(dir);
+      const control = new ClaudeCliControlPlane({
+        claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, workerEnv: declared,
+        valveAttachSettleMs: 0
+      });
+      const message = `${index}:` + "café £ Ω 中文 😀;\n- data\n/slash inside\n".repeat(60_000) + "end";
+      assert.ok(Buffer.byteLength(message) > 2_000_000);
+      assert.deepEqual(await control.steer(stub.handle, message), { submitted: true });
+      const copied = JSON.parse((await readFile(path.join(dir, "copied.jsonl"), "utf8")).trim()) as { text: string; mode: number; editorMode: number; root: string };
+      assert.equal(copied.text, message);
+      assert.equal(copied.mode, 0o600);
+      assert.equal(copied.editorMode, 0o700);
+      const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { argv: string[]; env: { base: string; token: string; sandboxed: string } });
+      for (const call of calls) {
+        assert.ok(call.argv.every(arg => Buffer.byteLength(arg) < 8192));
+        for (const value of Object.values(declared)) assert.ok(call.argv.every(arg => !arg.includes(value)));
+        assert.equal(call.argv[1], path.join(copied.root, "tmux.sock"));
+      }
+      assert.deepEqual(calls[0]?.env, { base: declared.ANTHROPIC_BASE_URL, token: declared.ANTHROPIC_AUTH_TOKEN, sandboxed: "1" });
+      assert.deepEqual(calls.slice(1).map(call => call.argv.at(-1)), ["C-g", "Enter", "kill-server"]);
+      await assert.rejects(access(copied.root));
+      return copied.root;
+    }));
+    assert.notEqual(roots[0], roots[1]);
+  } finally { await Promise.all(dirs.map(dir => rm(dir, { recursive: true, force: true }))); }
+});
 
-    const sends = (await readFile(sendKeysPath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string[]);
-    const literal = sends.filter((send) => send[0] === "-l").map((send) => send[2] ?? "");
-    assert.ok(literal.length > 1, "the message took more than one literal send");
-    for (const slice of literal) {
-      assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
-    }
-    assert.equal(decodeValveRecords(literal.join("")), expected);
-    assert.equal(sends.filter((send) => send[0] !== "-l").length, 1);
-    assert.ok(sends.slice(0, -1).every((send) => send[0] === "-l" && send[1] === "--"));
-    assert.deepEqual(sends.at(-1), ["Enter"], "the submit keystroke follows the last slice");
+test("a real private tmux server gives its attach client the editor and declared environment", async (t) => {
+  try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); }
+  catch { t.skip("tmux is not installed"); return; }
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-real-"));
+  const savedShell = process.env.SHELL;
+  process.env.SHELL = "/bin/sh";
+  try {
+    const stub = await installValveStubs(dir);
+    await writeFile(stub.claude, `#!/usr/bin/env node
+      import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+      import { execFileSync } from "node:child_process";
+      if (process.argv[2] === "agents") {
+        console.log(JSON.stringify([${JSON.stringify({ ...stub.handle, status: "idle", state: "working", kind: "background" })}]));
+      } else if (process.argv[2] === "attach") {
+        writeFileSync(${JSON.stringify(path.join(dir, "attach-env"))}, JSON.stringify({ token: process.env.ANTHROPIC_AUTH_TOKEN, sandboxed: process.env.CLAUDE_CODE_SANDBOXED }));
+        process.stdin.setRawMode(true);
+        process.stdin.on("data", chunk => {
+          if (chunk.includes(7)) {
+            const [file, ...args] = process.env.VISUAL.split(" ");
+            execFileSync(file, [...args, ${JSON.stringify(path.join(dir, "edited.txt"))}]);
+          }
+          if (chunk.includes(13)) appendFileSync(${JSON.stringify(stub.transcript)}, JSON.stringify({ type: "user", message: { content: readFileSync(${JSON.stringify(path.join(dir, "edited.txt"))}, "utf8") } }) + "\\n");
+        });
+      }
+    `);
+    const control = new ClaudeCliControlPlane({
+      claudeBin: stub.claude, projectsDir: dir,
+      workerEnv: { ANTHROPIC_AUTH_TOKEN: "declared-token" }, valveAttachSettleMs: 1_500
+    });
+    assert.deepEqual(await control.steer(stub.handle, "é😀\nwhole turn"), { submitted: true });
+    assert.deepEqual(JSON.parse(await readFile(path.join(dir, "attach-env"), "utf8")), { token: "declared-token", sandboxed: "1" });
+    await waitForCondition(async () => (await processesNaming(stub.claude)).length === 0, "private attach client survived cleanup");
   } finally {
+    restoreEnv("SHELL", savedShell);
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -1287,7 +1038,7 @@ test("a dispatch Claude Code refuses is a ClaudeDispatchError naming the directo
     );
     await chmod(stubPath, 0o755);
 
-    const controlPlane = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000 });
+    const controlPlane = new DeliveryStubControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000 });
     await assert.rejects(
       () => controlPlane.dispatch({ prompt: "hello", name: "refused-probe", cwd: dir }),
       (error: unknown) => {
@@ -1298,7 +1049,9 @@ test("a dispatch Claude Code refuses is a ClaudeDispatchError naming the directo
         assert.match(error.message, new RegExp(`declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}`));
         // Engine-controlled text on a one-line operator surface: flattened,
         // control-stripped, bounded — so the run's failure is one clean line.
-        assert.match(error.message, /Workspace not trusted\. Run `claude` in .* once and accept the trust prompt, then retry\.$/);
+        assert.match(error.message, /Workspace not trusted\. Run `claude` in .* once and accept the trust prompt, then retry\./);
+        assert.match(error.message, /dispatch exit 1/);
+        assert.equal((failedTurnResultOf(error)?.diagnostics?.claudeLaunch as { command: { exitCode: number } }).command.exitCode, 1);
         assert.ok(!error.message.includes("\n") && !error.message.includes("\u001b"), "the refusal must be one clean line");
         return true;
       }
@@ -1324,7 +1077,7 @@ test("a dispatch the daemon accepted but never registered is a registration time
     );
     await chmod(stubPath, 0o755);
 
-    const controlPlane = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 50 });
+    const controlPlane = new DeliveryStubControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 50 });
     await assert.rejects(
       () => controlPlane.dispatch({ prompt: "hello", name: "unregistered-probe", cwd: dir }),
       (error: unknown) => {
@@ -1335,7 +1088,8 @@ test("a dispatch the daemon accepted but never registered is a registration time
         assert.ok(!(error instanceof ClaudeDispatchError));
         // The whole line, compared as text: a path is not a pattern, and a
         // temp root with a dot in it must not change what the test proves.
-        assert.equal(error.message, `dispatched session 'unregistered-probe' in ${dir} did not register within 50ms`);
+        assert.ok(error.message.startsWith(`dispatched session 'unregistered-probe' in ${dir} did not start within 50ms`));
+        assert.equal((failedTurnResultOf(error)?.diagnostics?.claudeLaunch as { command: { exitCode: number } }).command.exitCode, 0);
         return true;
       }
     );
@@ -1391,6 +1145,7 @@ test("every claude process the control plane starts is launched through the scop
             sessionId: ${JSON.stringify(sessionId)},
             name: ${JSON.stringify(name)},
             kind: "background",
+            pid: process.pid,
             cwd: ${JSON.stringify(dir)},
             status: "busy",
             state: "working"
@@ -1417,7 +1172,7 @@ test("every claude process the control plane starts is launched through the scop
       },
       async close() {}
     };
-    const controlPlane = new ClaudeCliControlPlane({
+    const controlPlane = new DeliveryStubControlPlane({
       claudeBin: stubPath,
       projectsDir: dir,
       dispatchTimeoutMs: 1_000,
@@ -1543,7 +1298,7 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
       },
       async close() {}
     };
-    const controlPlane = new ClaudeCliControlPlane({
+    const controlPlane = new DeliveryStubControlPlane({
       claudeBin: stubPath,
       projectsDir: dir,
       dispatchTimeoutMs: 60_000,
@@ -1559,8 +1314,7 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
     await waitForCondition(() => placed.length > 0, "the session to be placed while `claude --bg` was still running", 90_000, 25);
     assert.equal(placed[0]!.bgStillRunning, true, "the session was placed only after `claude --bg` returned");
     assert.ok(placed[0]!.rosterQueries >= 3, `the roster was read ${placed[0]!.rosterQueries} time(s) before placement; the two pid-less answers were never seen`);
-    const handle = await dispatching;
-    assert.equal(await fileExists(bgExitedPath), false, "dispatch waited for the held background command");
+    assert.equal(await fileExists(bgExitedPath), false, "placement waited for the held background command");
     await waitForCondition(() => fileExists(settingsPathFile), "the background command to publish its settings path", 60_000, 25);
     const settingsPath = await readFile(settingsPathFile, "utf8");
     assert.equal(await fileExists(settingsPath), true, "registration removed the live session's settings");
@@ -1577,7 +1331,9 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
       [{ group, pids: [first.pid] }],
       "the session was not placed once its pid was named"
     );
-    assert.deepEqual(controlPlane.placementOf(handle), { kind: "placed", unit: `ensemble-test-${group}.scope`, pids: [first.pid] });
+    assert.deepEqual(controlPlane.placementOf(await dispatching), { kind: "placed", unit: `ensemble-test-${group}.scope`, pids: [first.pid] });
+
+    const handle = await dispatching;
 
     // The same pid again places nothing more; a new pid is placed again.
     await controlPlane.poll(handle);
@@ -1640,7 +1396,7 @@ test("refused Claude placement retries during registration and at the same polle
       }
     };
     const events: RuntimeEvent[] = [];
-    plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir, scopes, placementSettleMs: 60_000, placementWatchIntervalMs: 600_000, onEvent: (event) => events.push(event) });
+    plane = new DeliveryStubControlPlane({ claudeBin: stub, projectsDir: dir, scopes, placementSettleMs: 60_000, placementWatchIntervalMs: 600_000, onEvent: (event) => events.push(event) });
     dispatching = plane.dispatch({ prompt: "hello", name, cwd: dir });
     assert.equal(await Promise.race([dispatching.then(() => "dispatch settled"), retried.then(() => "placement retried")]), "placement retried",
       "dispatch treated the first refused placement as final");
@@ -1701,7 +1457,7 @@ test("owned idle sessions re-place replacement PIDs without turn polling", async
         }
       `);
       await chmod(stub, 0o755);
-      plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir, scopes: manager, workerScope });
+      plane = new DeliveryStubControlPlane({ claudeBin: stub, projectsDir: dir, scopes: manager, workerScope });
       handle = await plane.dispatch({ prompt: "hello", name: "idle-worker", cwd: dir });
       const unit = manager.unitFor(workerScope === "run" ? "run" : "idle-worker");
       assert.ok((await readFile(`/proc/${first.pid}/cgroup`, "utf8")).trim().endsWith(`/${unit}`));
@@ -1724,7 +1480,7 @@ test("owned idle sessions re-place replacement PIDs without turn polling", async
   }
 });
 
-test("unavailable scope placement returns a PID-less completed registration without further roster reads", async () => {
+test("unavailable scope placement still waits for a PID before accepting registration", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-no-scope-registration-"));
   try {
     const queries = path.join(dir, "queries");
@@ -1739,9 +1495,198 @@ test("unavailable scope placement returns a PID-less completed registration with
       }
     `);
     await chmod(stub, 0o755);
-    const plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir });
+    const plane = new DeliveryStubControlPlane({ claudeBin: stub, projectsDir: dir });
     const handle = await plane.dispatch({ prompt: "hello", name: "no-scope", cwd: dir });
-    assert.equal(await readFile(queries, "utf8"), "1", "a no-op placement manager still waited for a PID");
+    assert.ok(Number(await readFile(queries, "utf8")) >= 2, "a PID-less seed was accepted as a running session");
+    await plane.stop(handle);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+for (const mode of ["seed", "pid", "zero-without-pid"] as const) {
+  test(`a ${mode} roster row cannot hide a failed launch or its evidence`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-launch-evidence-"));
+    try {
+      const stub = path.join(dir, "claude.mjs");
+      const seen = path.join(dir, "seen");
+      const calls = path.join(dir, "calls");
+      const capture = path.join(dir, "settings-path");
+      const removed = path.join(dir, "removed");
+      const row = { kind: "background", name: "failed-launch", id: "failed", sessionId: "failed-session", cwd: dir };
+      await writeFile(stub, `#!/usr/bin/env node
+        import { access, appendFile, readFile, writeFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          await writeFile(${JSON.stringify(capture)}, args[args.indexOf("--settings") + 1]);
+          const deadline = Date.now() + 30_000;
+          while (!(await access(${JSON.stringify(seen)}).then(() => true, () => false))) {
+            if (Date.now() >= deadline) process.exit(99);
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+          console.log("backgrounded failed"); console.error("spawn E2BIG");
+          process.exit(${mode === "zero-without-pid" ? 0 : 42});
+        }
+        if (args[0] === "agents") {
+          await writeFile(${JSON.stringify(seen)}, "seen");
+          const removed = await access(${JSON.stringify(removed)}).then(() => true, () => false);
+          console.log(JSON.stringify(removed ? [] : [{ ...${JSON.stringify(row)}, ${mode === "pid" ? "pid: process.pid" : ""} }]));
+        }
+        if (args[0] === "logs") console.log("worker crashed: E2BIG");
+        if (args[0] === "rm") await writeFile(${JSON.stringify(removed)}, "removed");
+        if (["stop", "rm"].includes(args[0])) await appendFile(${JSON.stringify(calls)}, args.join(" ") + "\\n");
+      `, { mode: 0o755 });
+      const plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir, dispatchTimeoutMs: 50 });
+      await assert.rejects(plane.dispatch({ prompt: "payload", name: row.name, cwd: dir }), error => {
+        assert.ok(error instanceof Error);
+        assert.ok(mode === "zero-without-pid" ? error instanceof ClaudeRegistrationTimeoutError : error instanceof ClaudeDispatchError);
+        assert.equal((failedTurnResultOf(error)?.diagnostics?.claudeLaunch as { command: { exitCode: number } }).command.exitCode, mode === "zero-without-pid" ? 0 : 42);
+        const evidence = failedTurnResultOf(error)?.diagnostics?.claudeLaunch;
+        assert.ok(evidence && typeof evidence === "object");
+        assert.match(JSON.stringify(evidence), /backgrounded failed/);
+        assert.match(JSON.stringify(evidence), /worker crashed: E2BIG/);
+        assert.match(JSON.stringify(evidence), /failed-session/);
+        return true;
+      });
+      assert.equal(await fileExists(await readFile(capture, "utf8")), false, "failed launch retained its settings");
+      assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n"), ["stop failed", "rm failed"]);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+}
+
+test("dispatch resolves a submitted opening even when its native receipt differs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-mismatch-"));
+  try {
+    const stub = await installValveStubs(dir, "mismatch");
+    await writeFile(stub.transcript, "");
+    const plane = new ClaudeCliControlPlane({ claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0 });
+    const handle = await plane.dispatch({ prompt: "original", name: stub.handle.name, cwd: dir });
+    try { assert.match(await readFile(stub.transcript, "utf8"), /originalchanged/); }
+    finally { await plane.stop(handle); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a PID-less launch advances the declared fallback once and archives its launch account", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-launch-fallback-"));
+  let runtime: EnsembleRuntime | undefined;
+  try {
+    const stub = await installValveStubs(dir);
+    await writeFile(stub.transcript, "");
+    const state = path.join(dir, "launch.json");
+    await writeFile(stub.claude, `#!/usr/bin/env node
+      import { readFile, unlink, writeFile } from "node:fs/promises";
+      const args = process.argv.slice(2);
+      if (args[0] === "--bg") {
+        await writeFile(${JSON.stringify(state)}, JSON.stringify({ name: args[args.indexOf("--name") + 1], model: args[args.indexOf("--model") + 1] }));
+        console.log("backgrounded valve-1");
+      }
+      if (args[0] === "agents") {
+        const state = await readFile(${JSON.stringify(state)}, "utf8").then(JSON.parse).catch(() => null);
+        console.log(JSON.stringify(state === null ? [] : [{
+          ...${JSON.stringify({ ...stub.handle, kind: "background", status: "idle", state: "done" })},
+          name: state.name, ...(state.model === "fallback" ? { pid: process.pid } : {})
+        }]));
+      }
+      if (args[0] === "logs") console.log("cold spawn E2BIG");
+      if (args[0] === "rm") await unlink(${JSON.stringify(state)});
+    `);
+    // The scripted terminal supplies a completed native reply only after
+    // the product has actually delivered the fallback's opening turn.
+    await appendFile(stub.tmux, `
+      if (step === "Enter") appendFileSync(${JSON.stringify(stub.transcript)}, JSON.stringify({
+        type: "assistant", message: { content: [{ type: "text", text: "answer" }], stop_reason: "end_turn", model: "fallback" }
+      }) + "\\n");
+    `);
+    const plane = new ClaudeCliControlPlane({ claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, dispatchTimeoutMs: 50, valveAttachSettleMs: 0 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime = new EnsembleRuntime({ cwd: dir, defaultMaxAttempts: 1, engines: new EngineRegistry([new ClaudeEngineAdapter({ controlPlane: plane, config: { pollIntervalMs: 1 } })]) });
+    runtime.setRunRecorder({
+      recordAttemptStart: async () => {}, recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    assert.equal(await runtime.agent("payload", { engine: "claude", model: "primary", fallback: [{ engine: "claude", model: "fallback" }], maxAttempts: 1 }), "answer");
+    const record = records.at(-1)!;
+    assert.equal(record.attempts.length, 2);
+    assert.deepEqual(record.attempts.map(attempt => attempt.chainDecision), ["advanced", null]);
+    assert.equal(record.attempts[0]?.failure?.kind, "claude-registration-timeout");
+    assert.match(JSON.stringify(record.attempts[0]?.diagnostics), /cold spawn E2BIG/);
+    assert.equal(record.attempts[0]?.workerExit, null, "the dispatch command is distinct from the native worker process");
+  } finally {
+    await runtime?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a rejected opening retains output and spend already present before its receipt failed", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-spend-"));
+  let runtime: EnsembleRuntime | undefined;
+  try {
+    const stub = await installValveStubs(dir, "mismatch");
+    await writeFile(stub.transcript, "");
+    await appendFile(stub.tmux, `
+      if (step === "Enter") appendFileSync(${JSON.stringify(stub.transcript)}, JSON.stringify({
+        type: "assistant", message: { model: "paid-model", stop_reason: "tool_use",
+          content: [{type:"text", text:"already working"}],
+          usage: { input_tokens: 120, output_tokens: 30, cache_read_input_tokens: 9 }
+        }
+      }) + "\\n");
+    `);
+    const nameFile = path.join(dir, "dispatch-name");
+    await writeFile(stub.claude, `#!/usr/bin/env node
+      import { readFileSync, writeFileSync } from "node:fs";
+      const args = process.argv.slice(2);
+      if (args[0] === "--bg") writeFileSync(${JSON.stringify(nameFile)}, args[args.indexOf("--name") + 1]);
+      if (args[0] === "agents") {
+        const name = (() => { try { return readFileSync(${JSON.stringify(nameFile)}, "utf8"); } catch { return null; } })();
+        console.log(JSON.stringify(name === null ? [] : [{
+          ...${JSON.stringify({ ...stub.handle, kind: "background", status: "idle", state: "done" })}, name, pid: process.pid
+        }]));
+      }
+    `);
+    const records: RuntimeAgentRecord[] = [];
+    const plane = new ClaudeCliControlPlane({ claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0 });
+    runtime = new EnsembleRuntime({ cwd: dir, defaultMaxAttempts: 1, engines: new EngineRegistry([new ClaudeEngineAdapter({ controlPlane: plane })]) });
+    runtime.setRunRecorder({
+      recordAttemptStart: async () => {}, recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    assert.equal(await runtime.agent("payload", { engine: "claude", maxAttempts: 1, fallback: [{ engine: "claude", model: "unused" }] }), null);
+    const attempt = records.at(-1)?.attempts[0];
+    assert.equal(attempt?.rawOutput, "already working");
+    assert.equal(attempt?.tokenUsageEvents[0]?.total.totalTokens, 159);
+    assert.equal(records.at(-1)?.resolvedModel, "paid-model");
+    assert.equal(attempt?.failure?.kind, "claude-delivery-error");
+    assert.deepEqual(attempt?.classification, { class: "unclassified", rule: "claude.delivery" });
+    assert.equal(records.at(-1)?.attempts.length, 1, "a differing receipt advanced the fallback chain");
+  } finally {
+    await runtime?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a launch whose cleanup is refused resolves its owned session with the original launch account", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-launch-cleanup-refused-"));
+  try {
+    const stub = path.join(dir, "claude.mjs");
+    const settings = path.join(dir, "settings-path");
+    const name = "cleanup-refused";
+    await writeFile(stub, `#!/usr/bin/env node
+      import { writeFileSync } from "node:fs";
+      const args = process.argv.slice(2);
+      if (args[0] === "--bg") {
+        writeFileSync(${JSON.stringify(settings)}, args[args.indexOf("--settings") + 1]);
+        console.error("launch failed after registration"); process.exit(42);
+      }
+      if (args[0] === "agents") console.log(JSON.stringify([{
+        id:"owned", sessionId:"owned-session", name:${JSON.stringify(name)}, kind:"background", pid:process.pid
+      }]));
+      if (["stop", "rm"].includes(args[0])) process.exit(1);
+    `, { mode: 0o755 });
+    const plane = new ClaudeCliControlPlane({ claudeBin: stub, projectsDir: dir });
+    const handle = await plane.dispatch({ prompt: "payload", name, cwd: dir });
+    assert.equal(handle.sessionId, "owned-session");
+    assert.match(JSON.stringify(handle.launchFailure?.diagnostics), /launch failed after registration/);
+    assert.equal((handle.launchFailure?.diagnostics.claudeLaunch as { cleanupConfirmed: boolean }).cleanupConfirmed, false);
+    assert.match(handle.launchFailure?.message ?? "", /dispatch exit 42.*launch failed after registration/);
+    assert.equal(await fileExists(await readFile(settings, "utf8")), true, "an owned session lost its settings before teardown");
     await plane.stop(handle);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -7,6 +7,7 @@ import test from "node:test";
 import { runNode } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const fakeTmuxPath = path.resolve("test/fixtures/claude/prompt-editor-tmux.mjs");
 const fakeClaudePath = path.resolve("test/fixtures/claude/blocked-worker-cli.mjs");
 const archiveReaderPath = path.resolve("test/consumers/read-claude-failure-spend.mjs");
 
@@ -32,10 +33,9 @@ test("built CLI archives the spend and transcript a failed Claude worker already
       `#!/usr/bin/env node\nimport ${JSON.stringify(fakeClaudePath)};\n`
     );
     await chmod(path.join(binDirectory, "claude"), 0o755);
-    // No reply valve: the engine's blocked recovery needs tmux, so its bound
-    // is spent at once and the worker's failure is immediate rather than
-    // nudged. A `tmux` on the machine's PATH would otherwise be found.
-    await writeFile(path.join(binDirectory, "tmux"), "#!/usr/bin/env node\nprocess.exit(1);\n");
+    // Permit the opening editor handshake; the fixture refuses -V so
+    // blocked recovery spends its bound immediately without nudging.
+    await writeFile(path.join(binDirectory, "tmux"), `#!/usr/bin/env node\nimport ${JSON.stringify(fakeTmuxPath)};\n`);
     await chmod(path.join(binDirectory, "tmux"), 0o755);
 
     const run = await runNode(
@@ -88,7 +88,7 @@ test("built CLI archives a failed Claude worker's spend-free transcript as engin
       `#!/usr/bin/env node\nimport ${JSON.stringify(fakeClaudePath)};\n`
     );
     await chmod(path.join(binDirectory, "claude"), 0o755);
-    await writeFile(path.join(binDirectory, "tmux"), "#!/usr/bin/env node\nprocess.exit(1);\n");
+    await writeFile(path.join(binDirectory, "tmux"), `#!/usr/bin/env node\nimport ${JSON.stringify(fakeTmuxPath)};\n`);
     await chmod(path.join(binDirectory, "tmux"), 0o755);
 
     const run = await runNode(

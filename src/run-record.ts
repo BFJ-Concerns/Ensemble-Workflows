@@ -1260,9 +1260,7 @@ function transcriptAbsenceReason(
   if (record.attempts.length === 0) {
     return "no-attempt-ran";
   }
-  if (record.attempts.every((attempt) =>
-    attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
-  )) {
+  if (substratesNeverStarted(record)) {
     return "substrate-never-started";
   }
   if (record.status === "interrupted") {
@@ -1290,7 +1288,10 @@ function transcriptAbsenceReason(
  */
 function agentUsage(
   record: RuntimeAgentRecord
-): { summary: UsageSummary } | { unavailable: "record-unsettled" | "no-attempt-ran" | "engine-reported-no-usage" } {
+): { summary: UsageSummary } | {
+  unavailable: "record-unsettled" | "no-attempt-ran" | "engine-reported-no-usage"
+    | "substrate-never-started" | "worker-interrupted" | "worker-timed-out";
+} {
   // Summed attempt by attempt under each attempt's own engine: a fallback
   // chain can put one agent's attempts on two engines, and each engine's
   // native usage is read by its own inclusion rule before the summaries
@@ -1308,7 +1309,26 @@ function agentUsage(
   if (record.status === "in-progress") {
     return { unavailable: "record-unsettled" };
   }
-  return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
+  if (record.attempts.length === 0) {
+    return { unavailable: "no-attempt-ran" };
+  }
+  if (substratesNeverStarted(record)) {
+    return { unavailable: "substrate-never-started" };
+  }
+  if (record.status === "interrupted") {
+    return { unavailable: "worker-interrupted" };
+  }
+  if (record.status === "timed-out") {
+    return { unavailable: "worker-timed-out" };
+  }
+  return { unavailable: "engine-reported-no-usage" };
+}
+
+/** Every recorded attempt was refused before a worker existed. */
+function substratesNeverStarted(record: RuntimeAgentRecord): boolean {
+  return record.attempts.length > 0 && record.attempts.every((attempt) =>
+    attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
+  );
 }
 
 function buildCostRollup(

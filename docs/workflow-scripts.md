@@ -290,6 +290,10 @@ full-access mode explicitly on every turn, and Ensemble does not turn off
 Codex's backend web search; Claude and opencode workers run without any
 containment from Ensemble.
 
+Ensemble starts opencode with `--auto`, approving permissions that opencode
+would otherwise ask about, including shell access outside the worker's cwd.
+Explicit denies in the operator's opencode configuration still apply.
+
 `strip` is the one opt-in restriction. It removes a named tool-surface
 capability — `"skills"` (the skill tool) or `"agents"` (subagent and
 agent-messaging tools) — and nothing else: stripping `agents` does not stop a
@@ -471,6 +475,10 @@ timeout, retaining its engine diagnostic, streamed usage, transcript, and
 subprocess exit signal on the attempt. The execution deadline stops when the
 subprocess exits, even if its output streams are still draining. A subprocess
 that exits non-zero for another reason records an opencode run error.
+An engine error reported with exit status zero also records an opencode run
+error. If a worker ends empty after a failed tool call, the failure names
+the tool and its diagnostic instead of reporting only `empty-output`.
+A tool error followed by a recovered answer does not fail the attempt.
 
 A message Ensemble sends into a live Claude session — a follow-up turn, a
 correction, a nudge to a blocked worker — counts as delivered only when the

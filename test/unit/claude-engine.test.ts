@@ -1787,6 +1787,8 @@ test("a background task that never wakes the session times the attempt out, with
       assert.equal(attempt?.backgroundWaits.length, 1);
       assert.equal(attempt?.backgroundWaits[0]?.taskId, "bya9z1l44");
       assert.equal(attempt?.backgroundWaits[0]?.endedAt, null, "an open wait names the task that never woke the session");
+      assert.equal(attempt?.transcripts[0]?.partial, true,
+        "an interim reply does not complete the transcript while its background task is outstanding");
     } finally {
       await runtime.close();
     }

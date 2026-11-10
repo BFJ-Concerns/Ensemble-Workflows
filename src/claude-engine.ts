@@ -777,7 +777,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     return {
       handle,
       transcript,
-      completed: turnComplete(transcript.entries, fromIndex),
+      completed: turnComplete(transcript.entries, fromIndex) &&
+        outstandingBackgroundTasks(transcript.entries, fromIndex).length === 0,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: usageSince(transcript.entries, fromIndex),

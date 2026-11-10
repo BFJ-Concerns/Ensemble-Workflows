@@ -37,7 +37,7 @@ import {
   WorktreePlacementRejectedError
 } from "../../src/errors.js";
 
-import { RunRecordWriter, type RuntimeAgentRecord } from "../../src/run-record.js";
+import { RunRecordWriter, type LiveAttemptStart, type RuntimeAgentRecord } from "../../src/run-record.js";
 import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
 import type {
@@ -4737,7 +4737,7 @@ for (const structured of [false, true]) {
     runtime.setRunRecorder({
       recordAgent: async (record: RuntimeAgentRecord) => { snapshots.push(structuredClone(record)); },
       recordAttemptEnd: ignoreAttemptEnd,
-      recordAttemptStart: async (id: number, attempt: number, at: string) => { starts.push({ id, attempt, at }); },
+      recordAttemptStart: async (id: number, { attempt, startedAt: at }: LiveAttemptStart) => { starts.push({ id, attempt, at }); },
       appendCodexTranscript: async (id: number, attempt: number, event: unknown) => {
         await new Promise<void>((resolve) => setImmediate(resolve));
         writes.push({ id, attempt, event });
@@ -4853,7 +4853,7 @@ test("fallback targets publish their own transcript and reject callbacks from th
   runtime.setRunRecorder({
     recordAgent: async () => undefined,
     recordAttemptEnd: ignoreAttemptEnd,
-    recordAttemptStart: async (id: number, attempt: number) => { starts.push([id, attempt]); },
+    recordAttemptStart: async (id: number, { attempt }: LiveAttemptStart) => { starts.push([id, attempt]); },
     appendCodexTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); },
     recordClaudeTranscript: async (id: number, attempt: number, file: string) => { writes.push([id, attempt, file]); }
   } as unknown as RunRecordWriter);
@@ -4922,12 +4922,12 @@ for (const boundary of ["retry", "settlement"] as const) {
     const reachedBoundary = new Promise<void>((resolve) => { entered = resolve; });
     const publication = new Promise<void>((resolve) => { release = resolve; });
     const recordStart = writer.recordAttemptStart.bind(writer);
-    writer.recordAttemptStart = async (id, attempt, at) => {
-      if (boundary === "retry" && attempt === 2) {
+    writer.recordAttemptStart = async (id, start) => {
+      if (boundary === "retry" && start.attempt === 2) {
         entered();
         await publication;
       }
-      await recordStart(id, attempt, at);
+      await recordStart(id, start);
     };
     const recordAgent = writer.recordAgent.bind(writer);
     writer.recordAgent = async (record) => {
@@ -5354,3 +5354,43 @@ test("unawaited combinators registered after runtime close have handled run-endi
     await runtime.close();
   }
 });
+
+for (const engineName of ["codex", "claude", "opencode"] as const) {
+  test(`${engineName} records attempt start and identity before settlement and ignores late identity`, async () => {
+    const starts: LiveAttemptStart[] = [];
+    const identities: Array<{ attempt: number; model: string | null; effort: string | null }> = [];
+    let lateIdentity: (() => void) | undefined;
+    const engine: EngineAdapter = {
+      name: engineName, concurrency: 1, schedule: async (task) => task(),
+      createInvocation: () => ({ runAttempt: async (context) => {
+        assert.equal(starts.length, 1, "engine started before its durable attempt metadata");
+        context.onIdentity?.({ resolvedModel: "served-model", resolvedEffort: "high" });
+        lateIdentity = () => context.onIdentity?.({ resolvedModel: "late-model", resolvedEffort: null });
+        return turn("answer");
+      } }),
+      close: async () => undefined
+    };
+    const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => {
+        if (record.status === "in-progress") return;
+        assert.deepEqual(identities, [{ attempt: 1, model: "served-model", effort: "high" }],
+          "settlement must drain identity persistence");
+      },
+      recordAttemptStart: async (_id: number, start: LiveAttemptStart) => { starts.push(start); },
+      recordAttemptEnd: ignoreAttemptEnd,
+      recordAttemptIdentity: async (_id: number, attempt: number, identity: { resolvedModel: string | null; resolvedEffort: string | null }) => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        identities.push({ attempt, model: identity.resolvedModel, effort: identity.resolvedEffort });
+      }
+    } as unknown as RunRecordWriter);
+    try {
+      assert.equal(await runtime.agent("answer", { engine: engineName }), "answer");
+      assert.equal(starts[0]?.target.engine, engineName);
+      assert.deepEqual(starts[0]?.identity, { resolvedModel: null, resolvedEffort: null });
+      lateIdentity?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(identities.length, 1);
+    } finally { await runtime.close(); }
+  });
+}

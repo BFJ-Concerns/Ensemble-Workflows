@@ -300,7 +300,7 @@ export function requireRegisteredOpenCodeModel(
 ): OpenCodeModelRegistryEntry {
   const registered = registry.get(model);
   if (registered === undefined) {
-    throw new OpenCodeModelNotRegisteredError(model, registry.names());
+    throw new OpenCodeModelNotRegisteredError(model, registry);
   }
   return registered;
 }

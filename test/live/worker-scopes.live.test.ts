@@ -192,7 +192,7 @@ for (const scenario of scenarios) {
         worker_scope: { value: Grouping; layer: string };
         cli_flags: { workerScope?: Grouping };
       };
-      assert.equal(manifest.schema_version, 4);
+      assert.equal(manifest.schema_version, 5);
       assert.deepEqual(manifest.worker_scope, {
         value: scenario.expected,
         layer: scenario.flag ? "flag" : scenario.environment ? "env" : scenario.config ? "config-file" : "default"

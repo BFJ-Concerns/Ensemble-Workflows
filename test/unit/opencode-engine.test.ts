@@ -639,8 +639,7 @@ test("a created runtime dispatches opencode against the models it was given", as
 });
 
 test("an opencode adapter with no declared models names where to declare them", () => {
-  // The harness ships no catalogue: an unconfigured machine's refusal must
-  // point the operator at the config section, not list an empty set.
+  // A bare library adapter has no machine configuration source.
   const runner = new FakeOpenCodeRunner();
   const adapter = new OpenCodeEngineAdapter({ runner });
 
@@ -652,12 +651,52 @@ test("an opencode adapter with no declared models names where to declare them", 
       () => adapter.createInvocation("unconfigured", options),
       (error: unknown) => {
         assert.ok(error instanceof ErrorClass);
-        assert.match(error.message, /no opencode models are declared; declare them under opencode_models in the machine configuration/);
+        assert.match(error.message, /no opencode models are declared; supply model entries through openCodeModels or the adapter's modelRegistry/);
         return true;
       }
     );
   }
   assert.equal(runner.runs.length, 0);
+});
+
+test("empty opencode registries name the config resolved for custom, unset and empty XDG homes", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-model-source-"));
+  try {
+    for (const xdgHome of [path.join(directory, "custom config"), undefined, ""]) {
+      const env: NodeJS.ProcessEnv = { ...process.env, HOME: directory };
+      if (xdgHome === undefined) {
+        delete env.XDG_CONFIG_HOME;
+      } else {
+        env.XDG_CONFIG_HOME = xdgHome;
+      }
+      const expectedFile = path.join(xdgHome || path.join(directory, ".config"), "ensemble", "config.json");
+      await execFileAsync(process.execPath, ["--input-type=module", "--eval", `
+        import assert from "node:assert/strict";
+        import { resolveAmbientSettings } from ${JSON.stringify(new URL("../../src/ambient-settings.js", import.meta.url).href)};
+        import { createOpenCodeModelRegistry } from ${JSON.stringify(new URL("../../src/opencode-model-registry.js", import.meta.url).href)};
+        import { validateEngineDefaults } from ${JSON.stringify(new URL("../../src/engine-option-validation.js", import.meta.url).href)};
+        import { OpenCodeEngineAdapter } from ${JSON.stringify(new URL("../../src/engines.js", import.meta.url).href)};
+        const settings = resolveAmbientSettings({ env: process.env, cwd: process.cwd() });
+        assert.equal(settings.configFile, process.argv[1]);
+        const registry = createOpenCodeModelRegistry(settings.openCodeModels, { kind: "machine-config", file: settings.configFile });
+        const adapter = new OpenCodeEngineAdapter({ modelRegistry: registry });
+        for (const refuse of [
+          () => validateEngineDefaults("opencode", { model: "undeclared" }, registry),
+          () => adapter.createInvocation("hello", { model: "undeclared" }),
+          () => adapter.createInvocation("hello", {})
+        ]) {
+          assert.throws(refuse, (error) => {
+            assert.ok(error.message.includes("opencode_models in the machine configuration (" + process.argv[1] + ")"), error.message);
+            assert.ok(!error.message.includes("$XDG_CONFIG_HOME"));
+            return true;
+          });
+        }
+        await adapter.close();
+      `, expectedFile], { env });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("opencode rejects an effort outside the registry entry's declared variants before spawning", () => {
@@ -692,7 +731,8 @@ test("opencode rejects an effort outside the registry entry's declared variants 
             variants: ["fast", "thorough"]
           }
         : undefined,
-    names: () => ["variant-model"]
+    names: () => ["variant-model"],
+    source: { kind: "caller" } as const
   };
   const variantAdapter = new OpenCodeEngineAdapter({ runner, modelRegistry: registry });
   assert.doesNotThrow(() => variantAdapter.createInvocation("ok", { model: "variant-model", effort: "thorough" }));
@@ -770,7 +810,8 @@ test("opencode run parses final text, usage, transcript, and effort variant", as
             variants: ["minimal"]
           }
         : undefined,
-    names: () => ["glm-5.2"]
+    names: () => ["glm-5.2"],
+    source: { kind: "caller" } as const
   };
   const adapter = new OpenCodeEngineAdapter({
     runner,

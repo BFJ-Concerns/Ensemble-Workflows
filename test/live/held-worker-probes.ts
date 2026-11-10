@@ -1,5 +1,6 @@
 import { access } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 /**
  * Prompts for live workers a test holds open until it has looked at them.
@@ -115,20 +116,29 @@ export function heldProbeFollowUpPrompt(probe: HeldProbe): string {
 
 /**
  * Resolve once `target` exists, polling every quarter second; reject after
- * `timeoutMs`. The observer's half of the handshake: wait on `ready`
- * before reading the evidence, so the read never races the worker's write.
+ * `timeoutMs` or when `signal` aborts. Wait on `ready` before reading the
+ * evidence, so the read never races the worker's write.
  */
-export async function waitForPath(target: string, timeoutMs: number): Promise<void> {
+export async function waitForPath(target: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    signal?.throwIfAborted();
     try {
       await access(target);
+      signal?.throwIfAborted();
       return;
-    } catch {
+    } catch (error) {
+      signal?.throwIfAborted();
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       if (Date.now() >= deadline) {
         throw new Error(`${target} did not appear within ${timeoutMs}ms`);
       }
-      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      try {
+        await delay(250, undefined, { signal });
+      } catch (error) {
+        signal?.throwIfAborted();
+        throw error;
+      }
     }
   }
 }

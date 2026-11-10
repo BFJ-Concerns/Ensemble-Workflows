@@ -239,12 +239,13 @@ test("unsupported Codex schema shapes still fail with the distinct subset error"
   const unsupported: JsonSchema = { not: {} };
   const transport = new RejectingTransport(
     appServerErrorFromPayload("turn notification", {
-      code: undefined,
+      code: "other",
       message: "received scoped error notification",
       data: {
         error: {
           message:
-            "{\"type\":\"error\",\"error\":{\"code\":\"invalid_json_schema\",\"message\":\"not is unsupported\"},\"status\":400}"
+            JSON.stringify({ error: { type: "invalid_request_error", code: "invalid_json_schema", message: "not is unsupported", param: "text.format.schema" } }),
+          codexErrorInfo: "other"
         }
       }
     })
@@ -253,7 +254,7 @@ test("unsupported Codex schema shapes still fail with the distinct subset error"
     transport,
     concurrencyCaps: { codex: 1 },
     defaultTurnTimeoutMs: 1_000,
-    defaultMaxAttempts: 1
+    defaultMaxAttempts: 3
   });
 
   // Codex's pre-generation rejection arrives after the turn was dispatched,
@@ -267,6 +268,9 @@ test("unsupported Codex schema shapes still fail with the distinct subset error"
   } as RunRecordWriter);
   assert.equal(await runtime.agent("return verdict", { engine: "codex", schema: unsupported }), null);
   assert.equal(records.at(-1)?.attempts.at(-1)?.failure?.kind, "CodexSchemaSubsetUnsupportedError");
+  assert.deepEqual(records.at(-1)?.attempts.at(-1)?.classification, { class: "unclassified", rule: "codex.schema-rejected" });
+  assert.equal(records.at(-1)?.attempts.length, 1, "schema rejection must settle before retrying");
+  assert.equal(transport.turns.length, 1);
   assert.deepEqual(transport.turns[0]?.options.schema, unsupported);
 });
 

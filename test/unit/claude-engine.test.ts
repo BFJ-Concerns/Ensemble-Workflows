@@ -19,7 +19,7 @@ import { parallel, pipeline } from "../../src/hooks.js";
 import { usageSince } from "../../src/claude-transcript.js";
 
 import { RunRecordWriter } from "../../src/run-record.js";
-import type { RuntimeAgentRecord } from "../../src/run-record.js";
+import type { LiveAttemptStart, RuntimeAgentRecord } from "../../src/run-record.js";
 import type { TranscriptEntry } from "../../src/claude-transcript.js";
 import type {
   ClaudeControlPlane,
@@ -2445,7 +2445,7 @@ for (const grows of [false, true]) {
     const runtime = makeRuntime(plane, { maxAttempts: 2 });
     const records: RuntimeAgentRecord[] = [];
     runtime.setRunRecorder({
-      recordAttemptStart: async (_id: number, attempt: number) => {
+      recordAttemptStart: async (_id: number, { attempt }: LiveAttemptStart) => {
         if (grows && attempt === 2) {
           const file = await plane.transcriptPath();
           assert.ok(file);
@@ -2518,7 +2518,7 @@ for (const [altered, lateOpening] of [[true, false], [false, false], [false, tru
     const records: RuntimeAgentRecord[] = [];
     const nudgeAnswer = altered ? "answer to altered task" : "answer to verified task";
     runtime.setRunRecorder({
-      recordAttemptStart: async (_id: number, attempt: number) => {
+      recordAttemptStart: async (_id: number, { attempt }: LiveAttemptStart) => {
         if (lateOpening && attempt === 2) {
           const file = await plane.transcriptPath();
           assert.ok(file);
@@ -2567,7 +2567,7 @@ for (const shape of ["slow", "monitor"] as const) {
     const runtime = makeRuntime(plane, { maxAttempts: 2, receiptTimeoutMs: 1 });
     const records: RuntimeAgentRecord[] = [];
     runtime.setRunRecorder({
-      recordAttemptStart: async (_id: number, attempt: number) => {
+      recordAttemptStart: async (_id: number, { attempt }: LiveAttemptStart) => {
         if (attempt === 2) {
           const file = await plane.transcriptPath();
           assert.ok(file && plane.nudge);
@@ -2619,7 +2619,7 @@ for (const [altered, lateCorrection] of [[true, false], [true, true], [false, fa
     const runtime = makeRuntime(plane, { maxAttempts: 5, receiptTimeoutMs: 1, blockedRecoveryBound: 1 });
     const records: RuntimeAgentRecord[] = [];
     runtime.setRunRecorder({
-      recordAttemptStart: async (_id: number, attempt: number) => {
+      recordAttemptStart: async (_id: number, { attempt }: LiveAttemptStart) => {
         const file = await plane.transcriptPath();
         if (lateCorrection && attempt === 3) {
           assert.ok(file && plane.correction);

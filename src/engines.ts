@@ -36,7 +36,7 @@ import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { WorkerExitStatus } from "./errors.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
 import type { OpenCodeRunner } from "./opencode-engine.js";
-import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
+import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode-model-registry.js";
 import type { ResourceRequirement } from "./resource-preflight.js";
 import type {
   AgentWaitSnapshot,
@@ -749,7 +749,7 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
       throw new EngineShutdownError(this.name);
     }
     if (options.model === undefined) {
-      throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
+      throw new OpenCodeModelRequiredError(this.#modelRegistry);
     }
     const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
     // The registry owns the variant domain as it owns the model list:
@@ -798,6 +798,7 @@ export interface CreateDefaultEngineRegistryOptions {
   concurrencyCaps?: EngineConcurrencyCaps;
   workerEnvironment?: EngineWorkerEnvironment;
   openCodeModels?: readonly OpenCodeModelRegistryEntry[];
+  openCodeModelSource?: OpenCodeModelSource;
   /**
    * The run's resolved hold scope (null for the shared scope), handed to the
    * Claude control plane for delivery to every worker session. Omitted, the
@@ -871,7 +872,9 @@ export async function createDefaultEngineRegistry(
           ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) }
           : {}),
         ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {}),
-        ...(options.openCodeModels !== undefined ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {}),
+        ...(options.openCodeModels !== undefined || options.openCodeModelSource !== undefined
+          ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels ?? [], options.openCodeModelSource) }
+          : {}),
         onEvent: options.onOpenCodeEvent
       })
     ],

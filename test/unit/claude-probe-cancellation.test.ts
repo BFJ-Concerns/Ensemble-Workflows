@@ -106,7 +106,10 @@ for (const stalled of ["open", "poll", "stop", "close", "dispatch-open", "dispat
         assert.ok(outcome && "value" in outcome, "cleanup cancellation replaced an established surface");
         assert.equal((outcome.value as { cliVersion: string }).cliVersion, "2.1.fixture");
       } else if (stalled.startsWith("dispatch-")) {
-        assert.ok(outcome && "error" in outcome, "ordinary opening cancellation did not settle");
+        assert.ok(outcome && "value" in outcome, "ordinary opening cancellation lost ownership of the registered session");
+        const handle = outcome.value as Parameters<ClaudeCliControlPlane["stop"]>[0];
+        assert.match(handle.launchFailure?.message ?? "", /cancelled/);
+        await plane.stop(handle);
         assert.deepEqual(Object.getOwnPropertyNames(reason), ["stack", "message"], "cancellation reason was mutated");
       } else {
         assert.ok(outcome && "error" in outcome && outcome.error === reason);

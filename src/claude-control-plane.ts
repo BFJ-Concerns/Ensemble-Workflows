@@ -99,8 +99,8 @@ export interface ClaudeControlPlane {
    * environment, and per-dispatch settings file with the declared worker
    * variables and these deny rules and `env` variables, written as
    * `dispatch` writes a strip's. The probe has no effort pin, since
-   * effort does not change the tool surface. One variable is added to the
-   * settings `env` block: `ANTHROPIC_BASE_URL`, set to the `origin` of a
+   * effort does not change the tool surface. The
+   * settings `env` block routes `ANTHROPIC_BASE_URL` to the `origin` of a
    * capture provider (`startCaptureProvider`) that this probe owns. A
    * declared value for that variable is overridden, because the probe must
    * not reach a real provider. A worker environment that routes Claude
@@ -111,8 +111,9 @@ export interface ClaudeControlPlane {
    * The probe waits until the session stops sending requests: its turn has
    * ended, or one second has passed with no new capture. It then stops the
    * session with `stop`'s full teardown, closes the provider, and returns
-   * `readClaudeToolSurface(requests, nonce)`. When `signal` aborts, it tears
-   * everything down and rejects.
+   * `readClaudeToolSurface(requests, nonce)`. Cancellation before a surface
+   * is established tears everything down and rejects. Once established,
+   * cleanup uses an independent bound and cannot replace that result.
    */
   probeToolSurface?: ClaudeToolSurfaceProbe;
   /**
@@ -589,6 +590,15 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     let lastSeen: { handle: ClaudeSessionHandle; pid: number | null; row: RosterRow } | null = null;
     let launch: Promise<CommandResult> | undefined;
     let openingStarted = false;
+    const acceptHandle = (handle: ClaudeSessionHandle): ClaudeSessionHandle => {
+      accepted = true;
+      this.#settingsDirs.set(handle.sessionId, settingsDir);
+      if (!(this.#scopes instanceof NoWorkerScopes)) {
+        this.#watchedSessions.set(handle.sessionId, handle);
+        this.#schedulePlacementWatch();
+      }
+      return handle;
+    };
     try {
       signal?.throwIfAborted();
       // Start an empty native session. The complete opening rides the same
@@ -672,12 +682,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           launchAccount(dispatch.result)
         );
       }
-      accepted = true;
-      if (!(this.#scopes instanceof NoWorkerScopes)) {
-        this.#watchedSessions.set(handle.sessionId, handle);
-        this.#schedulePlacementWatch();
-      }
-      return handle;
+      return acceptHandle(handle);
     } catch (error) {
       // A cancellation's residue is the control plane's, and its reason is
       // the caller's own value: no launch account is attached to it.
@@ -689,19 +694,25 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         throw signal.reason;
       }
       if (unclaimed) throw error;
+      if (signal.aborted && registered !== null) {
+        // Delivery has begun and may have submitted. Hand the owned session
+        // to the caller, whose receipt and shutdown path retain its native
+        // evidence before teardown. A cancellation is never a launch timeout.
+        registered.launchFailure = {
+          message: "Claude opening delivery was cancelled",
+          diagnostics: { claudeLaunch: { failure: "opening cancelled", cleanupConfirmed: false } }
+        };
+        return acceptHandle(registered);
+      }
       // Opening may already have submitted. Reclaim it before reporting a
-      // failure, under a fresh cleanup bound, without mutating an abort
-      // reason shared by other dispatches.
-      const cleanup = signal.aborted ? AbortSignal.timeout(this.#reclaimTimeoutMs) : undefined;
-      const failure = signal.aborted
-        ? new ClaudeRegistrationTimeoutError("Claude opening delivery was cancelled", { cause: error })
-        : error;
-      if (failure instanceof Error) {
+      // failure, under a fresh cleanup bound.
+      const cleanup = AbortSignal.timeout(this.#reclaimTimeoutMs);
+      if (error instanceof Error) {
         const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id], cleanup).catch(() => null);
         const file = registered === null ? null : await this.transcriptPath(registered).catch(() => null);
         const transcript = file === null ? null : await readFile(file, "utf8").catch(() => null);
         const diagnostics = { claudeLaunch: {
-          failure: failure.message,
+          failure: error.message,
           cleanupConfirmed: registered === null,
           command: dispatch.result === null ? null : { ...dispatch.result },
           roster: lastSeen === null ? null : JSON.parse(JSON.stringify(lastSeen.row)),
@@ -709,7 +720,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         } };
         if (registered !== null) {
           discarded = await controlCommandContext.run(
-            { owner: this, signal: cleanup ?? AbortSignal.timeout(this.#reclaimTimeoutMs) },
+            { owner: this, signal: cleanup },
             () => this.#stopSession(registered!, true, cleanup)
           ).catch(() => false);
           diagnostics.claudeLaunch.cleanupConfirmed = discarded;
@@ -717,17 +728,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
             // No rejection may hand this prompt to another target while a
             // launch we could not remove still exists. The engine owns its
             // receipt and subsequent teardown, including the original account.
-            registered.launchFailure = { message: failure.message, diagnostics };
-            accepted = true;
-            this.#settingsDirs.set(registered.sessionId, settingsDir);
-            if (!(this.#scopes instanceof NoWorkerScopes)) {
-              this.#watchedSessions.set(registered.sessionId, registered);
-              this.#schedulePlacementWatch();
-            }
-            return registered;
+            registered.launchFailure = { message: error.message, diagnostics };
+            return acceptHandle(registered);
           }
         }
-        attachFailedTurnResult(failure, {
+        attachFailedTurnResult(error, {
           text: "", deltaText: "", durationMs: null, firstDeltaMs: null, items: {}, tokenUsageEvents: [],
           diagnostics,
           ...(transcript === null ? {} : { transcripts: [{
@@ -736,7 +741,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           }] })
         });
       }
-      throw failure;
+      throw error;
     } finally {
       if (!accepted && !unclaimed) {
         if (registered !== null && !discarded) await this.stop(registered);
@@ -1109,8 +1114,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   /**
-   * Cancel every dispatch still waiting for its session, then end what
-   * every cancelled launch left behind, all within `reclaimTimeoutMs`:
+   * Cancel every dispatch and probe, await the probes' independently bounded
+   * cleanup, then reclaim cancelled launches under `reclaimTimeoutMs`:
    *
    * 1. In-flight dispatches are cancelled and awaited, so a dispatch the
    *    close itself cancelled is among those reclaimed. One already past

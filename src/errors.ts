@@ -1,4 +1,5 @@
 import type { EngineAttemptResult } from "./engines.js";
+import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 import type { EngineTranscriptArtifact } from "./types.js";
 
 export class EnsembleError extends Error {
@@ -599,23 +600,33 @@ export class ClaudeCollectionError extends ClaudeWorkerError {}
  */
 export class ClaudeWorkerDiagnosticError extends ClaudeWorkerError {}
 
+/**
+ * The opencode refusals take the registry the refusing site consulted, so
+ * the message is rendered from that registry's names and its `source` —
+ * where those models were declared — and never from a location resolved
+ * at the throw site.
+ */
 export class OpenCodeModelRequiredError extends AgentOptionRejectedError {
-  constructor(registered: readonly string[]) {
-    super(`agent({ engine:'opencode' }) requires a model from the opencode registry; ${registeredOpenCodeModels(registered)}`);
+  constructor(registry: OpenCodeModelRegistry) {
+    super(`agent({ engine:'opencode' }) requires a model from the opencode registry; ${registeredOpenCodeModels(registry)}`);
   }
 }
 
 export class OpenCodeModelNotRegisteredError extends AgentOptionRejectedError {
-  constructor(model: string, registered: readonly string[]) {
-    super(`OpenCode model ${JSON.stringify(model)} is not registered; ${registeredOpenCodeModels(registered)}`);
+  constructor(model: string, registry: OpenCodeModelRegistry) {
+    super(`OpenCode model ${JSON.stringify(model)} is not registered; ${registeredOpenCodeModels(registry)}`);
   }
 }
 
 /** The registry's names, or — when it has none — where the operator declares them. */
-function registeredOpenCodeModels(registered: readonly string[]): string {
-  return registered.length > 0
-    ? `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
-    : "no opencode models are declared; declare them under opencode_models in the machine configuration ($XDG_CONFIG_HOME/ensemble/config.json)";
+function registeredOpenCodeModels(registry: OpenCodeModelRegistry): string {
+  const registered = registry.names();
+  if (registered.length > 0) {
+    return `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`;
+  }
+  return registry.source.kind === "machine-config"
+    ? `no opencode models are declared; declare them under opencode_models in the machine configuration (${registry.source.file})`
+    : "no opencode models are declared; supply model entries through openCodeModels or the adapter's modelRegistry";
 }
 
 function renderDiagnostic(value: unknown): string {

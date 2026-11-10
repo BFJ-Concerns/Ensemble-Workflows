@@ -238,8 +238,9 @@ ownership.
 
 Declares the models opencode workers may name. It is the whole catalogue:
 Ensemble ships no models, so without this section every opencode call is
-refused before its worker spawns, with an error naming the section. Like
-`worker_environment`, it exists only in the file.
+refused before its worker spawns, with an error naming `opencode_models` and
+the resolved configuration file path. Like `worker_environment`, it exists
+only in the file.
 
 Each key is the name an `agent()` call passes as `model`; a call may also name
 the entry by its route. A key or route that would name two entries is invalid.
@@ -361,6 +362,8 @@ environment variable:
 | `codexSessionStaleAfterMs` | 60 minutes | When a held Codex session is marked stale |
 | `workerScope` | `worker` | Systemd scope grouping (`worker` or `run`); the library uses the explicit option or its default |
 | `holdScope` | None | Hold scope for the runtime's runs; overrides `ENSEMBLE_HOLD_SCOPE` |
+| `openCodeModels` | None | The models opencode workers may name, in the registry entry shape; the library reads no machine configuration, so without this option every opencode call is refused |
+| `openCodeModelSource` | `{ kind: "caller" }` | Where `openCodeModels` were declared: `{ kind: "machine-config", file }` for models taken from a machine configuration file, `{ kind: "caller" }` otherwise. An opencode refusal draws on it to say where models are declared |
 
 `firstOutputTimeoutMs` is satisfied by any output-bearing turn frame, not only
 an agent-message delta; the run record's `first_delta_ms` still measures the

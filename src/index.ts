@@ -96,6 +96,8 @@ export {
   isRunEnding
 } from "./errors.js";
 export type { WorkerExitStatus } from "./errors.js";
+export { ResourcePreflightRefusedError } from "./resource-preflight.js";
+export type { CallerSandbox, ResourceDenial, ResourceRequirement } from "./resource-preflight.js";
 export {
   AmbientConfigError,
   CONFIG_SCHEMA_VERSION,

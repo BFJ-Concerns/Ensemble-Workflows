@@ -231,7 +231,7 @@ output of every worker that finished successfully, and `error` is the same
 |---|---|
 | 0 | Success: the script returned or the single agent answered (the result is on stdout), or a listing, `--help`, or `--version` completed |
 | 1 | The run failed or timed out, or Node is too old. stdout carries the partial-result envelope — or the already printed result, when the failure came after the script returned |
-| 2 | Rejected invocation: a usage error, an unreadable script path, or an `agent --cwd` that is not an existing directory |
+| 2 | Rejected invocation: a usage error, an unreadable script path, an `agent --cwd` that is not an existing directory, or, with recording on, a run record store the launching process cannot create entries in |
 | 130 | Interrupted by SIGINT (partial-result envelope on stdout) |
 | 143 | Interrupted by SIGTERM (partial-result envelope on stdout) |
 
@@ -242,6 +242,13 @@ through stdout, the sentinel, and the archive when recording is on. The exit
 code is recorded in the manifest, `result.json`, and the sentinel; an uncaught
 exception that lands while the archive is being sealed is reflected only in
 the sentinel and the process's exit code.
+
+The launcher checks its own required record store before accepting the run.
+Engine homes and scratch directories are checked just before that engine's
+first attempt, because a script's engines are known only as it runs; a new
+worker placement with different resolved resources is checked separately.
+An engine refusal is a run failure or advances the call's fallback chain,
+with the denied path and its setting named in the diagnostic.
 
 ## How a run ends
 

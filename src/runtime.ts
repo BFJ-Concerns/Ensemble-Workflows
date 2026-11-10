@@ -45,6 +45,7 @@ import {
 import { HoldManager, defaultHoldsDirectory, resolveHoldScope } from "./holds.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 import { RunProgress } from "./progress.js";
+import { EngineResourceGate } from "./resource-preflight.js";
 
 import type { HoldDecision } from "./holds.js";
 import {
@@ -460,6 +461,8 @@ export class EnsembleRuntime {
   readonly progress: RunProgress;
 
   #engines: EngineRegistry;
+  /** Judges each engine's filesystem requirements before its first attempt. */
+  #resourceGate: EngineResourceGate;
   #admission: AdmissionController;
   #placement: AgentPlacementManager;
   #defaultTurnTimeoutMs: number | undefined;
@@ -581,6 +584,8 @@ export class EnsembleRuntime {
           ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {})
         })
       ]);
+    const engines = this.#engines;
+    this.#resourceGate = new EngineResourceGate((engine, cwd) => engines.resourceRequirements(engine, cwd));
     this.#admission = new AdmissionController({
       ceiling: options.agentCeiling ?? null,
       caps: this.#engineCaps()
@@ -1735,7 +1740,8 @@ export class EnsembleRuntime {
     invocation: EngineInvocation,
     context: EngineAttemptContext,
     agentId: number,
-    startedAt: number
+    startedAt: number,
+    cwd: string
   ): Promise<EngineAttemptResult> {
     const recorder = this.#runRecorder;
     const record = this.#unsettledAgentRecords.get(agentId)?.record;
@@ -1764,6 +1770,10 @@ export class EnsembleRuntime {
       this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
     }
     try {
+      // The engine's filesystem requirements are judged here, before its
+      // substrate first starts: a denial is a substrate refusal, recorded
+      // and chained like any other refusal raised from inside the attempt.
+      await this.#resourceGate.require(engine, cwd);
       result = await invocation.runAttempt({
         ...context,
         onLiveEvidence: () => { if (active) context.onLiveEvidence?.(); },
@@ -2278,7 +2288,7 @@ export class EnsembleRuntime {
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...(previousFailure !== undefined ? { previousFailure } : {})
-        }, agentId, startedAt);
+        }, agentId, startedAt, agentRecord.resolvedCwd);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -2362,7 +2372,7 @@ export class EnsembleRuntime {
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...(previousFailure !== undefined ? { previousFailure } : {})
-        }, agentId, startedAt);
+        }, agentId, startedAt, agentRecord.resolvedCwd);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);

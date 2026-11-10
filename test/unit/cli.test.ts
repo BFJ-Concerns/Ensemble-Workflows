@@ -420,48 +420,40 @@ test("the sentinel carries each terminal outcome the launcher can handle", async
   }
 });
 
-test("a store the launcher cannot create announces no sentinel path and names the cause in one line", async () => {
+test("a store the launcher cannot create refuses the invocation before any run artefact, in one line", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-unwritable-"));
-  // A file where the store directory should be makes every mkdir under it
-  // fail. A supervisor arms on the announced path, so no path may be
-  // announced that cannot be written: the launcher says instead, in one
-  // line, that this run has no sentinel and why.
+  // A file where the store directory should be: the store can hold neither
+  // the archive nor the sentinel, so the launcher refuses the invocation at
+  // its acceptance boundary rather than starting a run it cannot account
+  // for — no sentinel announced, nothing on stdout, exit 2.
   const runRecordDir = path.join(directory, "store-blocker");
   await writeFile(runRecordDir, "not a directory");
   const script = path.join(directory, "workflow.js");
-  await writeFile(
-    script,
-    `
-      export const meta = { name: "sentinel-unwritable" };
-      return "ok";
-    `
-  );
+  await writeFile(script, `export const meta = { name: "sentinel-unwritable" }; return "ok";`);
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
+  let runtimeCreated = false;
   try {
     const exitCode = await runEnsembleCli([script], {
       cwd: directory,
       stdout,
       stderr,
       runRecordDir,
-      createRuntime: async () => fakeRuntime()
+      createRuntime: async () => {
+        runtimeCreated = true;
+        return fakeRuntime();
+      }
     });
 
-    // The unwritable store fails the run through the record writer: exit 1,
-    // the failure envelope, and a one-line cause.
-    assert.equal(exitCode, 1);
-    const lines = stderr.text().split("\n");
-    const sentinelLines = lines.filter((line) => line.startsWith("[sentinel]"));
-    assert.equal(sentinelLines.length, 1, `expected exactly one sentinel line, got:\n${stderr.text()}`);
-    assert.match(sentinelLines[0]!, /^\[sentinel\] no sentinel will be written for this run — cannot create \S.*: ENOTDIR/);
-    assert.doesNotMatch(stderr.text(), /\[sentinel\] will write /, "no path may be announced under a store that cannot be created");
-    assert.ok(lines.some((line) => line.startsWith("the durable run record could not start under ")), stderr.text());
-    assert.equal(lines.filter((line) => /^\s+at /.test(line)).length, 0, `stack frames on stderr:\n${stderr.text()}`);
-    const envelope = JSON.parse(stdout.text()) as { partial: boolean; reason: string; error: { kind: string } };
-    assert.equal(envelope.partial, true);
-    assert.equal(envelope.reason, "failed");
-    assert.equal(envelope.error.kind, "RunRecordStartError");
+    assert.equal(exitCode, 2);
+    assert.equal(stdout.text(), "");
+    assert.equal(runtimeCreated, false);
+    assert.doesNotMatch(stderr.text(), /\[sentinel\]/);
+    const lines = stderr.text().split("\n").filter((line) => line.length > 0);
+    assert.equal(lines.length, 1, stderr.text());
+    assert.ok(lines[0]!.includes(`cannot create entries in ${runRecordDir}`), stderr.text());
+    assert.match(lines[0]!, /run record store \(from the runRecordDir option\): ENOTDIR/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -4100,4 +4092,60 @@ test("CLI renders Codex app-server placement refusals as bounded notices", async
     assert.equal(code, 0, stderr.text());
     assert.match(stderr.text(), /\[codex\] app-server \(pid 123\) scope placement refused: manager refused\n/);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("relative record stores use the launcher directory for preflight, archive and sentinel", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-relative-store-"));
+  try {
+    for (const source of ["option", "environment"] as const) {
+      const base = path.join(directory, source);
+      // More levels than the process cwd: the relative path resolves to two
+      // distinct locations, both beneath this test's own directory.
+      const cwd = path.join(base, ...Array<string>(20).fill("nested"));
+      await mkdir(cwd, { recursive: true });
+      const store = path.join(base, "records");
+      const relativeStore = path.relative(process.cwd(), store);
+      const wrongStore = path.resolve(cwd, relativeStore);
+      assert.notEqual(wrongStore, store);
+      assert.ok(wrongStore.startsWith(`${base}${path.sep}`));
+      await mkdir(path.dirname(wrongStore), { recursive: true });
+      await writeFile(wrongStore, "the workflow-relative path is unusable");
+      const script = path.join(cwd, "workflow.js");
+      await writeFile(script, 'export const meta = { name: "relative-store" }; return "answer";');
+      const storage = source === "option"
+        ? { runRecordDir: relativeStore, env: { ENSEMBLE_STATUS: "0" } }
+        : { env: { ENSEMBLE_RUN_RECORD_DIR: relativeStore, ENSEMBLE_STATUS: "0" } };
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      assert.equal(await runEnsembleCli([script], {
+        cwd, stdout, stderr, ...storage, createRuntime: async () => fakeRuntime()
+      }), 0, stderr.text());
+      const archive = announcedRunRecord(stderr.text());
+      assert.ok(archive.archive_path.startsWith(`${store}${path.sep}`), archive.archive_path);
+      await access(path.join(archive.archive_path, "manifest.json"));
+      const sentinel = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+      assert.ok(sentinel, stderr.text());
+      assert.equal(path.dirname(sentinel[1]!), archive.archive_path);
+      await access(sentinel[1]!);
+
+      // Reverse the obstruction: refuse the real store even though the
+      // workflow-relative path would pass, before creating any runtime.
+      await rm(store, { recursive: true, force: true });
+      await writeFile(store, "the actual store is unusable");
+      await rm(wrongStore);
+      await mkdir(wrongStore);
+      let runtimeCreated = false;
+      const refusedOut = new CaptureStream();
+      const refusedErr = new CaptureStream();
+      assert.equal(await runEnsembleCli([script], {
+        cwd, stdout: refusedOut, stderr: refusedErr, ...storage,
+        createRuntime: async () => { runtimeCreated = true; return fakeRuntime(); }
+      }), 2);
+      assert.equal(runtimeCreated, false);
+      assert.equal(refusedOut.text(), "");
+      assert.ok(refusedErr.text().includes(`cannot create entries in ${store}`), refusedErr.text());
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

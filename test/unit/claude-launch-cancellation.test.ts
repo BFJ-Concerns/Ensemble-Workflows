@@ -9,7 +9,7 @@ import { ClaudeEngineAdapter } from "../../src/engines.js";
 import { EngineShutdownError } from "../../src/errors.js";
 import type { CommandBounds } from "../../src/owned-command.js";
 import type { RuntimeEvent } from "../../src/types.js";
-import { isLive } from "../../src/worker-scopes.js";
+import { isLive, NoWorkerScopes, type WorkerScopes } from "../../src/worker-scopes.js";
 import { waitForCondition } from "../wait-for-condition.js";
 
 // A cancelled launch is judged by three oracles: the caller's wait ends
@@ -229,6 +229,57 @@ test("engine close cancels a strip preparation stuck in the native probe launch"
     assert.equal(events[0]?.method, "claude/launchUnreclaimed");
   } finally {
     await adapter.close();
+    if (settingsDir !== null) await rm(settingsDir, { recursive: true, force: true });
+    await rm(stub.dir, { recursive: true, force: true });
+  }
+});
+
+
+test("cancellation during placement preserves its reason and hands ownership to close", { timeout: 15_000 }, async () => {
+  const stub = await installStub();
+  const entered = Promise.withResolvers<void>();
+  const placement = Promise.withResolvers<Awaited<ReturnType<WorkerScopes["place"]>>>();
+  const direct = new NoWorkerScopes();
+  const scopes: WorkerScopes = {
+    slice: direct.slice,
+    launch: direct.launch.bind(direct),
+    close: direct.close.bind(direct),
+    place: async () => { entered.resolve(); return placement.promise; }
+  };
+  // The registered fixture row needs a pid to enter placement. It need not
+  // be a real session process: placement is the controlled wait under test.
+  const source = await readFile(stub.claude, "utf8");
+  await writeFile(stub.claude, source.replace('kind: "background",', 'pid: 123456, kind: "background",'));
+  const controlPlane = new ClaudeCliControlPlane({
+    claudeBin: stub.claude, projectsDir: stub.dir, scopes,
+    commandBounds: bounds, reclaimTimeoutMs: 5_000, reapGraceMs: 0
+  });
+  const abort = new AbortController();
+  const reason = new Error("cancel placement");
+  const reasonKeys = Reflect.ownKeys(reason);
+  let settingsDir: string | null = null;
+  const pending = controlPlane.dispatch({ prompt: "unused", name: "placed-cancel", cwd: stub.dir, signal: abort.signal });
+  const rejected = assert.rejects(pending, error => error === reason);
+  const backstop = setTimeout(() => placement.resolve({ kind: "unavailable" }), 5_000);
+  try {
+    await launchStarted(stub);
+    settingsDir = await settingsDirOf(stub);
+    await writeFile(stub.registered, "placed-cancel");
+    await entered.promise;
+    abort.abort(reason);
+    await rejected;
+    assert.deepEqual(Reflect.ownKeys(reason), reasonKeys, "cancellation acquired launch diagnostics");
+    assert.equal(await exists(settingsDir), true);
+    assert.equal((await calls(stub)).some(args => args[0] === "logs" || args[0] === "stop"), false);
+    placement.resolve({ kind: "unavailable" });
+    await controlPlane.close();
+    assert.deepEqual((await calls(stub)).filter(args => args[0] === "stop" || args[0] === "rm"), [["stop", "late"], ["rm", "late"]]);
+    assert.equal(await exists(settingsDir), false);
+  } finally {
+    clearTimeout(backstop);
+    placement.resolve({ kind: "unavailable" });
+    abort.abort(reason);
+    await controlPlane.close();
     if (settingsDir !== null) await rm(settingsDir, { recursive: true, force: true });
     await rm(stub.dir, { recursive: true, force: true });
   }

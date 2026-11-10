@@ -158,6 +158,31 @@ for (const route of routes) {
     }
   });
 
+  test(`${route.name}: SIGKILL with an observed exit stays cancelled while a descendant holds streams`, async () => {
+    const scopes = await route.scopes();
+    const dir = await mkdtemp(path.join(tmpdir(), "owned-command-kill-drain-"));
+    let holder: number | null = null;
+    try {
+      const ready = path.join(dir, "ready");
+      const abort = new AbortController();
+      const body = `trap '' TERM; sleep 60 & echo "$!" > ${ready}; while :; do sleep 0.05; done`;
+      const pending = runOwnedCommand(scopes, "sh", await script(dir, body), {
+        env: process.env, input: null, signal: abort.signal, bounds
+      });
+      await waitForCondition(async () => (await readFile(ready, "utf8").catch(() => "")).trim().length > 0, "the stream holder to start", 10_000);
+      holder = Number((await readFile(ready, "utf8")).trim());
+      abort.abort(new Error("deadline"));
+      const result = await pending;
+      assert.equal(result.signal, "SIGKILL", "the owned command's exit was not observed");
+      assert.equal(result.ending, "cancelled");
+      assert.equal(isLive(holder), true, "cancellation reached the stream holder");
+    } finally {
+      if (holder !== null && isLive(holder)) process.kill(holder, "SIGKILL");
+      await scopes.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test(`${route.name}: a command that exits while a descendant holds its streams settles within the drain bound`, async () => {
     const scopes = await route.scopes();
     const dir = await mkdtemp(path.join(tmpdir(), "owned-command-drain-"));

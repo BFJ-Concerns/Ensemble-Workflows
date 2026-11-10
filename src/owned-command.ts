@@ -142,7 +142,7 @@ export async function runOwnedCommand(
       after(bounds.stopGraceMs, () => {
         if (exited !== null) return;
         child.kill("SIGKILL");
-        after(bounds.drainMs, () => settle("unconfirmed"));
+        after(bounds.drainMs, () => settle(exited === null ? "unconfirmed" : "cancelled"));
       });
     };
 

@@ -19635,7 +19635,7 @@ async function runOwnedCommand(scopes, file, args, options) {
       after(bounds.stopGraceMs, () => {
         if (exited !== null) return;
         child.kill("SIGKILL");
-        after(bounds.drainMs, () => settle("unconfirmed"));
+        after(bounds.drainMs, () => settle(exited === null ? "unconfirmed" : "cancelled"));
       });
     };
     child.stdout?.on("data", (chunk) => stdout.push(chunk));
@@ -20115,13 +20115,16 @@ var ClaudeCliControlPlane = class {
     let discarded = false;
     let unclaimed = false;
     let lastSeen = null;
+    let launch;
+    let openingStarted = false;
     try {
       signal?.throwIfAborted();
-      const launch = this.#launch(this.#claudeBin, args, { input: "", cwd: options.cwd, signal });
-      void launch.then((result) => dispatch.result = result);
+      const launched = this.#launch(this.#claudeBin, args, { input: "", cwd: options.cwd, signal });
+      launch = launched;
+      void launched.then((result) => dispatch.result = result);
       const releaseIfCancelled = () => {
         if (!signal.aborted) return;
-        this.#unclaimed.set(options.name, { name: options.name, settingsDir, command: launch });
+        this.#unclaimed.set(options.name, { name: options.name, settingsDir, command: launched });
         unclaimed = true;
         signal.throwIfAborted();
       };
@@ -20168,6 +20171,7 @@ var ClaudeCliControlPlane = class {
       const handle = registered;
       this.#settingsDirs.set(handle.sessionId, settingsDir);
       signal?.throwIfAborted();
+      openingStarted = true;
       const delivery = await this.steer(handle, options.prompt);
       if (!delivery.submitted) {
         throw new ClaudeRegistrationTimeoutError(
@@ -20181,6 +20185,13 @@ var ClaudeCliControlPlane = class {
       }
       return handle;
     } catch (error) {
+      if (signal.aborted && !openingStarted) {
+        if (launch !== void 0) {
+          this.#unclaimed.set(options.name, { name: options.name, settingsDir, command: launch });
+          unclaimed = true;
+        }
+        throw signal.reason;
+      }
       if (unclaimed) throw error;
       if (error instanceof Error) {
         const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id]).catch(() => null);

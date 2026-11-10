@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -19,7 +20,7 @@ const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs"
 
 /** Private settings, placeholder credentials and a private daemon; no model is reached. */
 async function fixture() {
-  const root = await mkdtemp("/mnt/ai-data/scratch/ensemble-claude-strip-");
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-claude-strip-"));
   const config = path.join(root, "claude");
   const xdg = path.join(root, "config");
   await mkdir(config);

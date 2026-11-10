@@ -564,6 +564,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     let discarded = false;
     let unclaimed = false;
     let lastSeen: { handle: ClaudeSessionHandle; pid: number | null; row: RosterRow } | null = null;
+    let launch: Promise<CommandResult> | undefined;
+    let openingStarted = false;
     try {
       signal?.throwIfAborted();
       // Start an empty native session. The complete opening rides the same
@@ -571,8 +573,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // duplicated dispatch-file payload and cold-spawn argument limit.
       // The launch command shares the dispatch's signal, so cancelling ends
       // the command itself within the command bounds.
-      const launch = this.#launch(this.#claudeBin, args, { input: "", cwd: options.cwd, signal });
-      void launch.then((result) => (dispatch.result = result));
+      const launched = this.#launch(this.#claudeBin, args, { input: "", cwd: options.cwd, signal });
+      launch = launched;
+      void launched.then((result) => (dispatch.result = result));
       // Cancelled before the opening was submitted: no session holds the
       // prompt. Whether the launch already asked the supervisor for a
       // session cannot be known here — a registration can be one roster read
@@ -581,7 +584,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // which ends them at close(), and the caller's wait ends now.
       const releaseIfCancelled = (): void => {
         if (!signal.aborted) return;
-        this.#unclaimed.set(options.name, { name: options.name, settingsDir, command: launch });
+        this.#unclaimed.set(options.name, { name: options.name, settingsDir, command: launched });
         unclaimed = true;
         signal.throwIfAborted();
       };
@@ -638,6 +641,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // stop()'s complete teardown, including tagged descendants and settings.
       this.#settingsDirs.set(handle.sessionId, settingsDir);
       signal?.throwIfAborted();
+      openingStarted = true;
       const delivery = await this.steer(handle, options.prompt);
       if (!delivery.submitted) {
         throw new ClaudeRegistrationTimeoutError(
@@ -654,6 +658,13 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     } catch (error) {
       // A cancellation's residue is the control plane's, and its reason is
       // the caller's own value: no launch account is attached to it.
+      if (signal.aborted && !openingStarted) {
+        if (launch !== undefined) {
+          this.#unclaimed.set(options.name, { name: options.name, settingsDir, command: launch });
+          unclaimed = true;
+        }
+        throw signal.reason;
+      }
       if (unclaimed) throw error;
       if (error instanceof Error) {
         const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id]).catch(() => null);

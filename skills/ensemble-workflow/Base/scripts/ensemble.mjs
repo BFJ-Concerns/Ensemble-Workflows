@@ -22761,42 +22761,34 @@ var CodexEngineAdapter = class {
   name = "codex";
   concurrency;
   /**
-   * Measured 2026-08-28 on codex-cli 0.149.1, at Codex's own wire to the
-   * model provider:
+   * Provider-wire boundary coverage on codex-cli 0.160.0 and 0.167.0:
+   * test/integration/codex-strip-boundary-estate.test.ts dispatches real
+   * Codex workers against a credential-free capture provider. Unstripped
+   * siblings before and after a stripped thread establish the controls;
+   * each request is matched to its archived thread and turn.
    *
-   * - `agents` strips through the per-thread `thread/start` config overlay:
-   *   `{ agents: { enabled: false } }` removes the entire `collaboration`
-   *   tool namespace from the tool schema Codex sends the model, per
-   *   thread, without leaking between sibling threads on one app-server
-   *   process. The key is `--strict-config`-validated but undocumented,
-   *   and its failure mode on a Codex rename would be silent — a live test
-   *   against a real worker is what re-checks this judgement per release.
-   * - `skills` strips through the same per-thread overlay, measured
-   *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
-   *   growing filesystem-and-plugin set and then repeat it, or one set
-   *   unchanged across every sample — discovery complete at the first call,
-   *   observed 2026-10-05 on a fresh seeded CODEX_HOME (sampled up to
-   *   10 times at 1000 ms spacing by default; the transport's discovery
-   *   deadline, checked between samples, stops the loop once its elapsed
-   *   budget is spent — each call itself is bounded by the request
-   *   timeout). The measured cold race resolved within one interval, so a
-   *   cold state that repeats and then grows inside the window is rejected
-   *   rather than mistaken for complete discovery; bundled skills are
-   *   disabled and every accepted name gets an exact `skills.config` deny.
-   *   Discovery has no protocol-level completion signal — the
-   *   acceptance heuristic is a measured judgement of one release's
-   *   timing, so **re-verify it on every codex-cli upgrade**: a future
-   *   multi-stage or slower-than-interval discovery would stabilise early
-   *   and silently under-strip.
+   * - `agents`: the per-thread `agents.enabled=false` overlay removes the
+   *   `multi_agent_v1` tool group, including spawn and messaging tools.
+   * - `skills`: there is no dedicated skill tool on these versions. Skills
+   *   appear as an instruction listing; a `$name` mention invokes a skill
+   *   by injecting its body. Disabling bundled skills and every discovered
+   *   name removes both the listing and the invoked body, including a
+   *   seeded body token. Shell reads are outside this capability boundary.
+   *
+   * Discovery still has no protocol-level completion signal. Fresh
+   * `skills/list` calls must grow then repeat, or remain unchanged across
+   * every sample (up to 10 at 1000 ms spacing). A shrink after growth is
+   * rejected. This timing heuristic can under-strip a future multi-stage
+   * discovery; the boundary test must keep running on Codex upgrades.
    */
   capabilities = {
     skills: {
       route: "config",
-      detail: "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, or stands unchanged across every sample, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
+      detail: "provider-wire boundary tested on codex-cli 0.160.0 and 0.167.0: thread/start disables bundled skills and denies every discovered name, removing the skill listing and invoked body; discovery grows then repeats or stays unchanged across every sample, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
     },
     agents: {
       route: "config",
-      detail: "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+      detail: "provider-wire boundary tested on codex-cli 0.160.0 and 0.167.0: thread/start config overlay agents.enabled=false removes the multi_agent_v1 tool group"
     }
   };
   #transport;

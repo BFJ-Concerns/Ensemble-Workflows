@@ -114,7 +114,8 @@ after(async () => {
   }
 });
 
-test("a Codex worker stripped of agents is shown no agent tools, while unstripped siblings before and after it are", () => {
+test("a Codex worker stripped of agents is shown no agent tools, while unstripped siblings before and after it are", (context) => {
+  context.diagnostic(JSON.stringify(evidenceSummary()));
   const spawnsAgents = (arm: Arm) => evidence.arms[arm].surface.tools.some((tool) => tool.endsWith("spawn_agent"));
   const detail = JSON.stringify(evidence, (key, value: unknown) => (key === "inputText" ? undefined : value), 2);
 
@@ -133,14 +134,33 @@ test("a Codex worker stripped of agents is shown no agent tools, while unstrippe
 });
 
 test("a Codex worker stripped of skills is shown neither the seeded skill's listing nor its invoked body, while unstripped siblings are", () => {
-  // The skills leg, written by the job that owns Codex strip enforcement on
-  // the model of the agents leg above. It establishes, from `evidence`:
-  // both controls list the seeded skill and carry its injected body
-  // (`listedSkills`, `injectedSkills`, `seeded.skill.bodyToken` in
-  // `inputText`); the stripped worker has none of the three; and its listing
-  // holds no skill at all, since the strip disables bundled skills too.
-  assert.fail("the skills leg of the Codex strip boundary probe is not written yet");
+  const detail = JSON.stringify(evidenceSummary(), null, 2);
+  for (const arm of ["control-before", "control-after"] as const) {
+    const surface = evidence.arms[arm].surface;
+    assert.ok(surface.listedSkills.includes(seeded.skill.name), `${arm}: the seeded skill was not listed\n${detail}`);
+    assert.ok(surface.injectedSkills.includes(seeded.skill.name), `${arm}: the named skill was not invoked\n${detail}`);
+    assert.ok(surface.inputText.includes(seeded.skill.bodyToken), `${arm}: the invoked skill body was not supplied\n${detail}`);
+  }
+  const stripped = evidence.arms.stripped.surface;
+  assert.deepEqual(stripped.listedSkills, [], `the stripped worker was shown a skill listing\n${detail}`);
+  assert.deepEqual(stripped.injectedSkills, [], `the stripped worker received an invoked skill\n${detail}`);
+  assert.ok(!stripped.inputText.includes(seeded.skill.bodyToken), `the stripped worker received the seeded body token\n${detail}`);
 });
+
+/** Persistable witness without input text, credentials or temporary fixture paths. */
+function evidenceSummary() {
+  return {
+    codexVersion: evidence.codexVersion,
+    arms: Object.fromEntries(ARMS.map(({ arm }) => {
+      const { inputText, ...surface } = evidence.arms[arm].surface;
+      return [arm, {
+        strip: evidence.arms[arm].strip,
+        ...surface,
+        seededBodyPresent: inputText.includes(seeded.skill.bodyToken)
+      }];
+    }))
+  };
+}
 
 interface RecordedTurn {
   strip: readonly string[];

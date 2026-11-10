@@ -14,7 +14,7 @@ import { liveCodexOptions, liveCodexScriptOptions } from "./live-models.js";
 import type { RuntimeEvent } from "../../src/types.js";
 
 const isLive = process.env.ENSEMBLE_LIVE === "1";
-const liveOptions = { skip: !isLive, timeout: 420_000 };
+const liveOptions = { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 420_000 };
 const execFileAsync = promisify(execFile);
 
 const nestedSchema = {

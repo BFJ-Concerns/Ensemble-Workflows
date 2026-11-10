@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -46,6 +46,45 @@ test("selected Claude executable and command resolution survive installation sym
       await selected.dispose();
     }
     await assert.rejects(exec("claude", [], { env: { PATH: selected.env.PATH!.split(path.delimiter)[0] } }));
+  });
+});
+
+test("Claude selection uses PATH order in a home without a local launcher", async () => {
+  await fixture(async (root) => {
+    const home = path.join(root, "home");
+    const first = path.join(root, "first");
+    const second = path.join(root, "second");
+    const blocked = path.join(root, "blocked");
+    const directory = path.join(root, "directory");
+    for (const entry of [home, first, second, blocked, path.join(directory, "claude")]) await mkdir(entry, { recursive: true });
+    await writeFile(path.join(blocked, "claude"), "not executable", { mode: 0o600 });
+    for (const [entry, version] of [[first, "2.1.318"], [second, "2.1.319"]]) {
+      await writeFile(path.join(entry!, "claude"), `#!/bin/sh\nprintf '${version} (Claude Code)\\n'\n`, { mode: 0o755 });
+    }
+    for (const [entries, expected] of [[[blocked, directory, first, second], first], [[second, first], second]] as const) {
+      const env = { HOME: home, PATH: entries.join(path.delimiter) };
+      const selected = await selectClaudeExecutable("claude", root, env);
+      try {
+        assert.equal(selected.executable, path.join(expected, "claude"));
+        assert.equal((await exec("claude", ["--version"], { env: selected.env })).stdout.trim(), `${selected.version} (Claude Code)`);
+        assert.equal(selected.env.HOME, home);
+      } finally {
+        await selected.dispose();
+      }
+    }
+    await assert.rejects(selectClaudeExecutable("claude", root, { HOME: home, PATH: home }), /claude not found on PATH/);
+  });
+});
+
+test("Codex-only scope cases reach their own prerequisites without a Claude installation", async () => {
+  await fixture(async (root) => {
+    const result = await exec(process.execPath, [
+      "--test", "--test-reporter=tap", "--test-name-pattern=^built launcher scopes: (direct|unreachable manager) codex$",
+      path.resolve("dist/test/live/worker-scopes.live.test.js")
+    ], { env: { ...process.env, HOME: root, PATH: root, NODE_TEST_CONTEXT: undefined, ENSEMBLE_LIVE: "1", ENSEMBLE_LIVE_CODEX_MODEL: "" } })
+      .then(() => assert.fail("the Codex model prerequisite must refuse the run"), (error: unknown) => error as { stdout: string });
+    assert.equal((result.stdout.match(/UNPROVEN: ENSEMBLE_LIVE_CODEX_MODEL is required/g) ?? []).length, 2);
+    assert.doesNotMatch(result.stdout, /hookFailed|ENOENT|not found on PATH/);
   });
 });
 

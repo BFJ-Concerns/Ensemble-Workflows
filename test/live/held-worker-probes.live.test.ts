@@ -22,7 +22,7 @@ const isLive = process.env.ENSEMBLE_LIVE === "1";
 for (const engine of ["claude", "codex"] as const) {
   test(
     `live ${engine} held probe writes its shell's cgroup, holds until released, and repeats on a follow-up turn`,
-    { skip: !isLive, timeout: 1_200_000 },
+    { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 1_200_000 },
     async (t) => {
       const directory = await mkdtemp(path.join(tmpdir(), `ensemble-held-probe-${engine}-`));
       const runtime = await createRuntime({

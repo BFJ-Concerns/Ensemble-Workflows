@@ -4,7 +4,7 @@ import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
-import { classifyAttemptFailure } from "./failure-classification.js";
+import { classifyAttemptFailure, diagnoseAttemptFailure } from "./failure-classification.js";
 
 import type { DischargedEnforcement } from "./capability-stripping.js";
 import { harnessVersion } from "./harness-version.js";
@@ -2334,11 +2334,8 @@ export class EnsembleRuntime {
           throw error;
         }
         if (error instanceof CodexSchemaSubsetUnsupportedError) {
-          // The backend judged the call's own schema, which no retry can
-          // change: it costs one thread start with no generation, so the
-          // call ends as a value with the one attempt it spent — the rule's
-          // one exemption beside the availability refusal a chain entry
-          // answers.
+          // The backend rejected the schema before generation: the contract
+          // exempts this failure from retries.
           return { status: "failed", value: null, cause: error };
         }
         // A dispatched worker's thrown failure — a deadline, a transport
@@ -2442,11 +2439,8 @@ export class EnsembleRuntime {
           throw error;
         }
         if (error instanceof CodexSchemaSubsetUnsupportedError) {
-          // The backend judged the call's own schema, which no retry can
-          // change: it costs one thread start with no generation, so the
-          // call ends as a value with the one attempt it spent — the rule's
-          // one exemption beside the availability refusal a chain entry
-          // answers.
+          // The backend rejected the schema before generation: the contract
+          // exempts this failure from retries.
           return { status: "failed", value: null, cause: error };
         }
         // A dispatched worker's thrown failure — a deadline, a transport
@@ -2514,11 +2508,17 @@ export class EnsembleRuntime {
     startedAt: number,
     result: EngineAttemptResult,
     attempts: TargetAttempts
-  ): { failure: EngineAttemptFailure; refused: boolean } | undefined {
+  ): { failure: PreviousAttemptFailure; refused: boolean } | undefined {
     if (result.attemptFailure === undefined) {
       return undefined;
     }
-    const classification = this.#classify(attempts.target.engine, result.attemptFailure, null, result.diagnostics);
+    const failure = diagnoseAttemptFailure({
+      engine: attempts.target.engine,
+      failure: result.attemptFailure,
+      appServerDiagnostic: null,
+      diagnostics: result.diagnostics
+    });
+    const classification = this.#classify(attempts.target.engine, failure, null, result.diagnostics);
     const refused = classification.class === "availability" && attempts.chainRemains;
     if (!refused) {
       attempts.ledger.answered += 1;
@@ -2529,7 +2529,7 @@ export class EnsembleRuntime {
         attempt,
         attempts.target,
         "failed",
-        result.attemptFailure,
+        failure,
         // Returned operational failures use empty text when the worker
         // produced nothing; an answered empty string takes the output path.
         result.text === "" ? null : result.text,
@@ -2543,7 +2543,7 @@ export class EnsembleRuntime {
         chainDecisionAfter(attempts, classification, !refused && boundRemains(attempts.ledger))
       )
     );
-    return { failure: result.attemptFailure, refused };
+    return { failure, refused };
   }
 
   /**
@@ -2559,7 +2559,12 @@ export class EnsembleRuntime {
     startedAt: number,
     attempts: TargetAttempts
   ): { refused: boolean; failure: PreviousAttemptFailure } {
-    const observed = failureFromError(error);
+    const observed = diagnoseAttemptFailure({
+      engine: attempts.target.engine,
+      failure: failureFromError(error),
+      appServerDiagnostic: appServerDiagnosticOf(error),
+      diagnostics: failedTurnResultOf(error)?.diagnostics
+    });
     const failedResult = failedTurnResultOf(error);
     if (failedResult !== null) {
       recordTurnMetadata(record, failedResult);

@@ -3012,7 +3012,7 @@ test("a codex skills strip denies the stabilised discovery set; an unstripped ca
         skills: {
           route: "config",
           detail:
-            "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, or stands unchanged across every sample, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
+            "provider-wire boundary tested on codex-cli 0.160.0 and 0.167.0: thread/start disables bundled skills and denies every discovered name, removing the skill listing and invoked body; discovery grows then repeats or stays unchanged across every sample, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
         }
       }
     });
@@ -3109,7 +3109,7 @@ test("a Codex agents-only strip keeps skills untouched", async () => {
         agents: {
           route: "config",
           detail:
-            "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+            "provider-wire boundary tested on codex-cli 0.160.0 and 0.167.0: thread/start config overlay agents.enabled=false removes the multi_agent_v1 tool group"
         }
       }
     });
@@ -4364,6 +4364,35 @@ test("a Codex substrate refusal advances the chain to a Claude target, costing n
   );
   assert.deepEqual(settled.answeredBy, { entry: 0, engine: "claude", model: "claude-served-after-codex" });
   await runtime.close();
+});
+
+test("credential text in substrate failures still advances the fallback chain", async () => {
+  for (const engine of ["codex", "claude"] as const) {
+    for (const schema of [false, true]) {
+      const failure = engine === "codex"
+        ? new AppServerExitedError("Recent stderr: 401 Unauthorized")
+        : new ClaudeDispatchError("launch refused: authentication failed");
+      const failing = new ChainEngine(engine, [async () => { throw failure; }]);
+      const fallbackEngine = engine === "codex" ? "claude" : "codex";
+      const fallback = new ChainEngine(fallbackEngine, [answers(schema ? '{"answer":"fallback"}' : "fallback")]);
+      const { runtime, records } = chainRuntime([failing, fallback], 1);
+      try {
+        const output = await runtime.agent("work", {
+          engine,
+          ...(schema ? { schema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } } : {}),
+          fallback: [{ engine: fallbackEngine, model: "fallback-model" }]
+        });
+        assert.deepEqual(output, schema ? { answer: "fallback" } : "fallback");
+        const settled = records.at(-1)!;
+        assert.equal(settled.attempts[0]?.failure?.message, failure.message);
+        assert.equal(settled.attempts[0]?.classification?.class, "availability");
+        assert.equal(settled.answeredBy?.engine, fallbackEngine);
+        assert.equal(settled.attempts.length, 2);
+      } finally {
+        await runtime.close();
+      }
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------

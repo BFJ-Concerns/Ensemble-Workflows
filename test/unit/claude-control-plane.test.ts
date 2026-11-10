@@ -586,11 +586,13 @@ test("an undeclared worker environment still dispatches with the ownership tag a
   }
 });
 
-test("permission deny rules join the per-dispatch settings file beside the env block", async () => {
+test("a strip's deny rules and removal variables join the per-dispatch settings file", async () => {
   // Capability stripping rides the same single-purpose file as the
   // worker environment: deny rules union additively across settings layers
   // and beat every allow, so carrying only this dispatch's rules never
-  // touches the operator's own permission configuration.
+  // touches the operator's own permission configuration. A removal
+  // variable lands over the declared worker environment, so a declaration
+  // cannot give a stripped worker the tool back.
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-deny-rules-"));
   try {
     const argvPath = path.join(dir, "dispatch-argv.json");
@@ -626,13 +628,15 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     const controlPlane = new DeliveryStubControlPlane({
       claudeBin: stubPath,
       projectsDir: dir,
-      dispatchTimeoutMs: 1_000
+      dispatchTimeoutMs: 1_000,
+      workerEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "" }
     });
     await controlPlane.dispatch({
       prompt: "hello",
       name,
       cwd: dir,
-      permissionDenyRules: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow"]
+      permissionDenyRules: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow", "advisor"],
+      settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" }
     });
 
     const dispatchArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
@@ -640,8 +644,8 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     assert.notEqual(flagIndex, -1);
     assert.deepEqual(JSON.parse(await readFile(dispatchArgv[flagIndex + 1]!, "utf8")), {
       worktree: { bgIsolation: "none" },
-      env: { [WORKER_MARKER_VARIABLE]: name },
-      permissions: { deny: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow"] }
+      env: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", [WORKER_MARKER_VARIABLE]: name },
+      permissions: { deny: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow", "advisor"] }
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1701,5 +1705,112 @@ test("a launch whose cleanup is refused resolves its owned session with the orig
     assert.match(handle.launchFailure?.message ?? "", /dispatch exit 42.*launch failed after registration/);
     assert.equal(await fileExists(await readFile(settings, "utf8")), true, "an owned session lost its settings before teardown");
     await plane.stop(handle);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a tool-surface probe fixes its provider route in settings, carries deny rules and tears down its session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-surface-probe-"));
+  const argvPath = path.join(dir, "argv.json");
+  const stub = path.join(dir, "claude.mjs");
+  const settings: Array<{ env: Record<string, string>; permissions?: { deny: string[] } }> = [];
+  const actionsPath = path.join(dir, "actions");
+  const removedPath = path.join(dir, "removed");
+  await writeFile(stub, `#!/usr/bin/env node
+    import { readFileSync, writeFileSync, appendFileSync, existsSync, rmSync } from "node:fs";
+    const args = process.argv.slice(2);
+    if (args[0] === "--bg") {
+      writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(args));
+      rmSync(${JSON.stringify(removedPath)}, { force: true });
+    }
+    if (args[0] === "stop" || args[0] === "rm") appendFileSync(${JSON.stringify(actionsPath)}, args[0] + "\\n");
+    if (args[0] === "rm") writeFileSync(${JSON.stringify(removedPath)}, "");
+    if (args[0] === "agents") {
+      let launch; try { launch = JSON.parse(readFileSync(${JSON.stringify(argvPath)}, "utf8")); } catch {}
+      console.log(JSON.stringify(launch && !existsSync(${JSON.stringify(removedPath)}) ? [{ id: "surface", sessionId: "surface-session", kind: "background",
+        name: launch[launch.indexOf("--name") + 1], cwd: ${JSON.stringify(dir)}, pid: process.pid, state: "done", status: "idle" }] : []));
+    }
+  `);
+  await chmod(stub, 0o755);
+  class CaptureSubmission extends ClaudeCliControlPlane {
+    override async steer(_handle: unknown, prompt: string) {
+      const args = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+      const file = args[args.indexOf("--settings") + 1]!;
+      const config = JSON.parse(await readFile(file, "utf8")) as typeof settings[number];
+      settings.push(config);
+      if (config.env.ANTHROPIC_BASE_URL?.startsWith("http://127.0.0.1:")) {
+        await fetch(`${config.env.ANTHROPIC_BASE_URL}/v1/messages`, {
+          method: "POST", headers: { "content-type": "application/json", "user-agent": "claude-cli/2.1.fixture" },
+          body: JSON.stringify({ tools: [{ name: "Read" }], messages: [{ role: "user", content: prompt }] })
+        });
+      }
+      return { submitted: true as const };
+    }
+  }
+  const plane = new CaptureSubmission({ claudeBin: stub, reapGraceMs: 0, workerEnv: {
+    ANTHROPIC_BASE_URL: "https://worker.invalid", DECLARED_VALUE: "kept", CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "0",
+    CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0"
+  } });
+  try {
+    const surface = await plane.probeToolSurface({ cwd: dir, permissionDenyRules: ["Agent"], settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_USE_VERTEX: "1", CLAUDE_CODE_USE_FOUNDRY: "1" }, signal: AbortSignal.timeout(10_000) });
+    assert.equal(surface.cliVersion, "2.1.fixture");
+    assert.deepEqual(surface.tools, [{ name: "Read", exposure: "loaded" }]);
+    assert.equal(await readFile(actionsPath, "utf8"), "stop\nrm\n");
+    assert.equal(settings[0]?.env.DECLARED_VALUE, "kept");
+    for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) {
+      assert.equal(settings[0]?.env[key], "0", `probe settings must override ${key} in every inherited settings layer`);
+    }
+    assert.equal(settings[0]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "1");
+    assert.deepEqual(settings[0]?.permissions?.deny, ["Agent"]);
+    const handle = await plane.dispatch({ cwd: dir, name: "unstripped", prompt: "ordinary" });
+    await plane.stop(handle);
+    assert.equal(settings[1]?.env.ANTHROPIC_BASE_URL, "https://worker.invalid");
+    assert.equal(settings[1]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "0");
+    assert.equal(settings[1]?.permissions, undefined);
+  } finally { await plane.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a probe refuses provider switches before launching a session and honours an already aborted signal", async () => {
+  const switched = new ClaudeCliControlPlane({ claudeBin: "must-not-be-launched", workerEnv: { CLAUDE_CODE_USE_BEDROCK: "1" } });
+  const request = { cwd: process.cwd(), permissionDenyRules: [], settingsEnv: {}, signal: AbortSignal.timeout(1_000) };
+  await assert.rejects(switched.probeToolSurface(request), /cannot override CLAUDE_CODE_USE_BEDROCK/);
+  await assert.rejects(switched.probeToolSurface({ ...request, signal: AbortSignal.abort(new Error("stopped")) }), /stopped/);
+});
+
+test("a cancelled probe retains ownership of a session registering after the native command ends", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-probe-cancel-"));
+  const stub = path.join(dir, "claude.mjs");
+  const started = path.join(dir, "started");
+  const registered = path.join(dir, "registered");
+  const actions = path.join(dir, "actions");
+  await writeFile(stub, `#!/usr/bin/env node
+    import { readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
+    const args = process.argv.slice(2);
+    if (args[0] === "--bg") {
+      writeFileSync(${JSON.stringify(started)}, JSON.stringify(args));
+      setInterval(() => undefined, 1000);
+    }
+    if (args[0] === "agents") {
+      let launch; try { launch = JSON.parse(readFileSync(${JSON.stringify(registered)}, "utf8")); } catch {}
+      console.log(JSON.stringify(launch ? [{ id: "late", sessionId: "late-session", kind: "background",
+        name: launch[launch.indexOf("--name") + 1], cwd: ${JSON.stringify(dir)}, pid: process.pid, state: "working", status: "busy" }] : []));
+    }
+    if (args[0] === "stop" || args[0] === "rm") appendFileSync(${JSON.stringify(actions)}, args[0] + "\\n");
+    if (args[0] === "rm") rmSync(${JSON.stringify(registered)}, { force: true });
+  `);
+  await chmod(stub, 0o755);
+  const abort = new AbortController();
+  const plane = new DeliveryStubControlPlane({ claudeBin: stub, dispatchTimeoutMs: 2_000, reapGraceMs: 0 });
+  try {
+    const pending = plane.probeToolSurface({ cwd: dir, permissionDenyRules: [], settingsEnv: {}, signal: abort.signal });
+    const rejected = assert.rejects(pending, /probe cancelled/);
+    await waitForCondition(async () => access(started).then(() => true, () => false), "the probe launch to start", 5_000);
+    abort.abort(new Error("probe cancelled"));
+    await rejected;
+    // The supervisor can register an already accepted request after the
+    // command and its caller have both ended. The control plane owns it.
+    await writeFile(registered, await readFile(started, "utf8"));
+    await plane.close();
+    assert.match(await readFile(actions, "utf8"), /stop\nrm\n/);
+    await assert.rejects(access(registered), { code: "ENOENT" });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

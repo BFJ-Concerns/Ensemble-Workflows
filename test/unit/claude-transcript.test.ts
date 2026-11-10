@@ -12,6 +12,7 @@ import {
   parseTranscriptText,
   readTranscript,
   resolvedModelSince,
+  submissionReceipt,
   turnComplete,
   usageSince
 } from "../../src/claude-transcript.js";
@@ -136,6 +137,26 @@ test("effortSince returns the latest served effort in range, or null when no ent
   assert.equal(effortSince(entries, 1), "high");
   assert.equal(effortSince(entries, 2), null);
   assert.equal(effortSince([]), null);
+});
+
+test("submissionReceipt judges the first submission after the mark by equality, and reads nothing before it", () => {
+  const submitted = (content: unknown): string => JSON.stringify({ type: "user", message: { role: "user", content } });
+  const toolResult = submitted([{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }]);
+  const earlier = [submitted("now fix the tests"), assistant([textBlock("done")])];
+  const mark = earlier.length;
+  const read = (rows: string[]) => submissionReceipt(parseTranscriptText([...earlier, ...rows].join("\n")), mark, "now fix the tests");
+
+  // The same text before the mark belongs to an earlier turn: no receipt.
+  assert.deepEqual(read([]), { state: "missing" });
+  // Rows no submission wrote are passed over, on the way to one or to none.
+  assert.deepEqual(read([toolResult, assistant([textBlock("working")])]), { state: "missing" });
+  assert.deepEqual(read([toolResult, submitted("now fix the tests")]), { state: "verified" });
+  // Equality and nothing looser: one trimmed character is a different text,
+  // and the first submission decides even when an exact copy follows it.
+  assert.deepEqual(read([submitted("now fix the tests "), submitted("now fix the tests")]), {
+    state: "differing",
+    received: "now fix the tests "
+  });
 });
 
 test("usageSince counts every figure once per API call and sums across the turn's calls", () => {
@@ -649,4 +670,38 @@ test("submittedUserText reads native typed turns and reconstructs expanded slash
   assert.equal(submittedUserText({ type: "user", isMeta: true, message: { content: message } }), null);
   assert.equal(submittedUserText({ type: "user", isCompactSummary: true, message: { content: message } }), null);
   assert.equal(submittedUserText({ type: "user", message: { content: [{ type: "tool_result", content: message }] } }), null);
+});
+
+
+test("submissionReceipt recognises native commands, literal XML and absorbed prompts without accepting notifications", () => {
+  const command = "<command-message>check</command-message>\n<command-name>/check</command-name>\n<command-args>é😀</command-args>";
+  const user = (content: string) => ({ type: "user", message: { content } });
+  assert.deepEqual(submissionReceipt([user(command)], 0, "/check é😀"), { state: "verified" });
+  assert.deepEqual(submissionReceipt([user(command)], 0, command), { state: "verified" });
+  const empty = "<command-message>check</command-message>\n<command-name>/check</command-name>";
+  assert.deepEqual(submissionReceipt([user(empty)], 0, "/check"), { state: "verified" });
+  const ignored = [
+    { ...user("notification"), origin: { kind: "task-notification" } },
+    { ...user("meta"), isMeta: true },
+    { ...user("summary"), isCompactSummary: true },
+    { type: "queue-operation", operation: "enqueue", content: "wanted" },
+    { type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", prompt: "wanted" } }
+  ];
+  assert.deepEqual(submissionReceipt(ignored, 0, "wanted"), { state: "missing" });
+  const queued = { type: "attachment", attachment: { type: "queued_command", commandMode: "prompt", prompt: "wanted" } };
+  assert.deepEqual(submissionReceipt([...ignored, queued], 0, "wanted"), { state: "verified" });
+  assert.deepEqual(submissionReceipt([queued], 0, "wanted "), { state: "differing", received: "wanted" });
+  assert.deepEqual(submissionReceipt([user("wanted\n")], 0, "wanted"), { state: "differing", received: "wanted\n" });
+});
+
+test("a newer native submission or absorbed prompt waits for its answer after an earlier answer completed", () => {
+  const prior = JSON.parse(assistant([textBlock("earlier answer")]));
+  for (const submission of [
+    { type: "user", message: { content: "follow-up" } },
+    { type: "attachment", attachment: { type: "queued_command", commandMode: "prompt", prompt: "follow-up" } }
+  ]) {
+    assert.equal(turnComplete([prior, submission]), false);
+    assert.equal(turnComplete([prior, submission, JSON.parse(assistant([textBlock("new answer")]))]), true);
+  }
+  assert.equal(turnComplete([prior, { type: "user", origin: { kind: "task-notification" }, message: { content: "a task ended" } }]), true);
 });

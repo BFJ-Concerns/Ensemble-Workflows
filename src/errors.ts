@@ -537,7 +537,22 @@ export class ClaudeRegistrationTimeoutError extends ClaudeWorkerError {}
 
 export class ClaudeBlockedError extends ClaudeWorkerError {}
 
+/**
+ * The reply valve did not submit a message: a step before the submit
+ * keystroke failed, or the valve is unavailable. Nothing reached the
+ * session, so the retry may send the same message again.
+ */
 export class ClaudeValveError extends ClaudeWorkerError {}
+
+/**
+ * A message was submitted to the session and its receipt did not verify:
+ * the transcript shows the session received different text, or shows no
+ * submission at all within the receipt deadline. Distinct from
+ * `ClaudeValveError` because the session may hold, and may be running, a
+ * turn nobody sent — the retry must account for that turn before it sends
+ * anything, and must never send the message again as though it were new.
+ */
+export class ClaudeDeliveryError extends ClaudeWorkerError {}
 
 export class ClaudeTranscriptError extends ClaudeWorkerError {}
 

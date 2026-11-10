@@ -25,7 +25,7 @@ import type {
   ClaudeDispatchOptions,
   ClaudeSessionHandle,
   ClaudeSessionStatus,
-  ValveDelivery
+  ValveSubmission
 } from "../../src/claude-control-plane.js";
 
 /**
@@ -150,17 +150,22 @@ class FakeControlPlane implements ClaudeControlPlane {
     return this.#path;
   }
 
-  async steer(_handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery> {
+  async steer(_handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
     this.steerCount += 1;
     this.steered.push(message);
     this.#steered = true;
     if (!this.#steerSucceeds) {
-      return { delivered: false, reason: "fake valve refused" };
+      return { submitted: false, reason: "fake valve refused" };
     }
     if (this.#steerConsumesTurn) {
+      // The session records what it received as its own user row — the
+      // receipt the engine reads — then takes the next scripted turn.
+      if (this.#path !== null) {
+        await appendFile(this.#path, `${JSON.stringify({ type: "user", message: { role: "user", content: message } })}\n`);
+      }
       await this.#consume("append");
     }
-    return { delivered: true };
+    return { submitted: true };
   }
 
   async stop(): Promise<void> {
@@ -1047,8 +1052,8 @@ class MissingTranscriptControlPlane implements ClaudeControlPlane {
     return null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1091,8 +1096,8 @@ class SlowAliveControlPlane implements ClaudeControlPlane {
     return this.#present ? this.#path : null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1456,8 +1461,8 @@ class SplitRowsControlPlane implements ClaudeControlPlane {
     return this.#present ? this.#path : null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1645,8 +1650,8 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
     return this.#present ? this.#path : null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {

@@ -1,11 +1,9 @@
-import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname, tmpdir } from "node:os";
 import path from "node:path";
 
 import { withoutRunScopedVariables } from "./ambient-settings.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js";
-import { parseTranscriptText, submittedUserText } from "./claude-transcript.js";
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
@@ -46,19 +44,34 @@ export interface ClaudeControlPlane {
   /** Locate the session's JSONL transcript on disk, or null if not yet present. */
   transcriptPath(handle: ClaudeSessionHandle): Promise<string | null>;
   /**
-   * Inject a message into the live session (the valve). A refusal names the
-   * step that failed and what it said, so the turn's failure record carries
-   * the cause rather than the bare fact of non-delivery.
+   * Type a message into the live session and submit it (the valve). The
+   * result says whether the message was submitted, never whether it arrived:
+   * see `ValveSubmission`.
    */
-  steer(handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery>;
+  steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission>;
   /** Tear the session down (stop + remove). Best-effort; never throws. */
   stop(handle: ClaudeSessionHandle): Promise<void>;
   /** Whether the tmux valve is usable; gates in-session correction and blocked recovery. */
   tmuxAvailable(): Promise<boolean>;
 }
 
-/** The valve's verdict on one injection: delivered, or refused with the failing step's account. */
-export type ValveDelivery = { delivered: true } | { delivered: false; reason: string };
+/**
+ * What the valve can attest about one injection: whether it submitted the
+ * message. Submission is not delivery. Once the submit keystroke is
+ * accepted the session may run a turn on whatever text it received, and
+ * only the session's transcript says what that text was — the receipt
+ * (`submissionReceipt`), which the engine reads, not the valve.
+ *
+ * - `submitted: false` — nothing was submitted, the session's conversation
+ *   is as it was, and the same message may be sent again. The reason names
+ *   the step that failed and what it said, so the turn's failure record
+ *   carries the cause.
+ * - `submitted: true` — the submit keystroke was accepted. A failure the
+ *   valve cannot place before that keystroke is reported this way too: a
+ *   wrong "not submitted" invites a second copy of a message the session
+ *   already holds, while a wrong "submitted" costs one missing receipt.
+ */
+export type ValveSubmission = { submitted: true } | { submitted: false; reason: string };
 
 export interface ClaudeDispatchOptions {
   prompt: string;
@@ -191,8 +204,8 @@ export interface ClaudeCliControlPlaneOptions {
   valveAttachSettleMs?: number;
   valveSubmitSettleMs?: number;
   valveKillSettleMs?: number;
-  /** Bound for each editor-copy and transcript-receipt wait; defaults to 30 seconds. */
-  valveDeliveryTimeoutMs?: number;
+  /** Bound for the prompt editor to finish copying; defaults to 30 seconds. */
+  valveEditorTimeoutMs?: number;
   /**
    * Places each dispatched session in a worker scope and launches every
    * `claude` and `tmux` process this control plane starts.
@@ -235,8 +248,8 @@ interface ExecResult {
 /**
  * The real control plane: drives `claude` and `tmux` as child processes. The
  * reply valve loads a private UTF-8 file through the attached prompt editor,
- * submits once, and proves delivery against the native user row before
- * closing its private tmux server. The daemon owns the held session.
+ * submits once and closes its private tmux server. The engine verifies the
+ * native transcript receipt. The daemon owns the held session.
  */
 export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #claudeBin: string;
@@ -248,7 +261,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveAttachSettleMs: number;
   #valveSubmitSettleMs: number;
   #valveKillSettleMs: number;
-  #valveDeliveryTimeoutMs: number;
+  #valveEditorTimeoutMs: number;
   #scopes: WorkerScopes;
   #workerScope: WorkerScopeGrouping;
   #placementSettleMs: number;
@@ -306,7 +319,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 0;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 0;
-    this.#valveDeliveryTimeoutMs = options.valveDeliveryTimeoutMs ?? 30_000;
+    this.#valveEditorTimeoutMs = options.valveEditorTimeoutMs ?? 30_000;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
     this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
@@ -605,9 +618,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return null;
   }
 
-  async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery> {
+  async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
     if ((await this.poll(handle)).present === false) {
-      return { delivered: false, reason: "the session is no longer in the daemon's roster" };
+      return { submitted: false, reason: "the session is no longer in the daemon's roster" };
     }
 
     this.#valveCounter += 1;
@@ -629,16 +642,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       socketDir = await mkdtemp(path.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
-      return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
+      return { submitted: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
     }
     const server = ["-S", path.join(socketDir, "tmux.sock")];
 
     try {
-      const transcriptPath = await this.transcriptPath(handle);
-      if (transcriptPath === null) {
-        return { delivered: false, reason: "follow-up delivery not attempted: no transcript baseline is available" };
-      }
-      const before = parseTranscriptText(await readFile(transcriptPath, "utf8"));
       const payload = path.join(socketDir, "prompt.txt");
       const editor = path.join(socketDir, "editor.cjs");
       const copied = path.join(socketDir, "copied");
@@ -660,7 +668,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       await delay(this.#valveAttachSettleMs);
       const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
       if (!opened.ok) return refused("tmux send-keys (editor)", opened);
-      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
+      const copyDeadline = Date.now() + this.#valveEditorTimeoutMs;
       for (;;) {
         try {
           await access(copied);
@@ -669,7 +677,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
         if (Date.now() >= copyDeadline) {
-          return { delivered: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
+          return { submitted: false, reason: `prompt editor did not finish copying within ${this.#valveEditorTimeoutMs}ms` };
         }
         await delay(50);
       }
@@ -677,25 +685,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
       if (!submitted.ok) return refused("tmux send-keys (submit)", submitted);
 
-      const receiptDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
-      for (;;) {
-        const entries = parseTranscriptText(await readFile(transcriptPath, "utf8"));
-        for (const entry of entries.slice(before.length)) {
-          const text = submittedUserText(entry);
-          if (text === null) continue;
-          if (text !== message && entry.message?.content !== message) {
-            return { delivered: false, reason: `follow-up delivery mismatch: expected ${textIdentity(message)}; received ${textIdentity(text)}` };
-          }
-          await delay(this.#valveKillSettleMs);
-          return { delivered: true };
-        }
-        if (Date.now() >= receiptDeadline) {
-          return { delivered: false, reason: `follow-up delivery missing: no matching user turn within ${this.#valveDeliveryTimeoutMs}ms (expected ${textIdentity(message)})` };
-        }
-        await delay(50);
-      }
+      await delay(this.#valveKillSettleMs);
+      return { submitted: true };
     } catch (error) {
-      return { delivered: false, reason: `reply valve failed: ${boundedEvidence(error instanceof Error ? error.message : String(error))}` };
+      return { submitted: false, reason: `reply valve failed: ${boundedEvidence(error instanceof Error ? error.message : String(error))}` };
     } finally {
       // The server and all editor files belong to this delivery alone.
       await this.#run(this.#tmuxBin, [...server, "kill-server"]);
@@ -996,17 +989,13 @@ function normaliseState(state: unknown): ClaudeSessionState {
 }
 
 /** A refused valve step, named with the bounded text tmux gave for it. */
-function refused(step: string, result: ExecResult): ValveDelivery {
+function refused(step: string, result: ExecResult): ValveSubmission {
   const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
-  return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
+  return { submitted: false, reason: `${step} failed: ${boundedEvidence(said)}` };
 }
 
 function shellQuote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'";
-}
-
-function textIdentity(text: string): string {
-  return `${Buffer.byteLength(text, "utf8")} UTF-8 bytes, sha256 ${createHash("sha256").update(text).digest("hex")}`;
 }
 
 function delay(ms: number): Promise<void> {

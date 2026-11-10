@@ -80,10 +80,19 @@ interface TranscriptMessage {
  * The operator's submitted text, excluding tool results and synthetic rows.
  * Claude records an expanded slash command as command-name/command-args;
  * reconstruct that submission so its arguments receive the same equality
- * check as plain text. Ordinary submissions remain unwrapped strings.
+ * check as plain text. A queued_command attachment records prompt text
+ * absorbed into an active turn; queue bookkeeping and task notifications
+ * do not attest receipt. Ordinary submissions remain unwrapped strings.
  */
 export function submittedUserText(entry: TranscriptEntry): string | null {
-  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
+  if (entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
+  if (entry.type === "attachment") {
+    const attachment = asRecord(entry.attachment);
+    return attachment?.type === "queued_command" && attachment.commandMode !== "task-notification" && typeof attachment.prompt === "string"
+      ? attachment.prompt
+      : null;
+  }
+  if (entry.type !== "user") return null;
   const content = entry.message?.content;
   if (typeof content !== "string") return null;
   const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
@@ -91,6 +100,41 @@ export function submittedUserText(entry: TranscriptEntry): string | null {
   const name = command[1] ?? "";
   const args = command[2] ?? "";
   return args === "" ? name : `${name} ${args}`;
+}
+
+/**
+ * What the transcript shows the session received for one submitted message
+ * — the only evidence that a submission was delivered.
+ *
+ * - `verified` — the session holds the message exactly as sent.
+ * - `differing` — the session took a submission in its place whose text is
+ *   not the message (`received`). A turn is running, or ran, on text nobody
+ *   sent; its reply answers that text and is never the message's answer.
+ * - `missing` — the transcript shows no submission yet. That is not proof
+ *   none will land: a later read from the same mark may find one.
+ */
+export type SubmissionReceipt =
+  | { state: "verified" }
+  | { state: "differing"; received: string }
+  | { state: "missing" };
+
+/**
+ * Read the receipt for `message`, submitted when the transcript held `mark`
+ * entries: the first submission recorded at or after the mark, compared
+ * with the message for equality and nothing looser. Pure, so the same
+ * submission can be judged again from the same mark for as long as its
+ * receipt is missing.
+ */
+export function submissionReceipt(entries: TranscriptEntry[], mark: number, message: string): SubmissionReceipt {
+  for (let index = Math.max(0, mark); index < entries.length; index += 1) {
+    const entry = entries[index];
+    const received = entry === undefined ? null : submittedUserText(entry);
+    if (received === null) {
+      continue;
+    }
+    return received === message || entry?.message?.content === message ? { state: "verified" } : { state: "differing", received };
+  }
+  return { state: "missing" };
 }
 
 /** Parse a whole transcript file's text into entries, skipping blank/garbled lines. */
@@ -246,7 +290,9 @@ export function effortSince(entries: TranscriptEntry[], fromIndex = 0): string |
  * a tool result, still mid-turn") **and carries text**. Claude Code writes one
  * API reply as several rows — a `thinking` row, then the `text` row — each
  * stamped with the whole message's `stop_reason`, and the thinking row lands
- * first (measured 2026-09-30: 1.8 s before its text row). A thinking-only
+ * first (measured 2026-09-30: 1.8 s before its text row). A newer submission
+ * or absorbed queued prompt awaits a reply even after an earlier assistant
+ * row ended. A thinking-only
  * `end_turn` row is therefore a reply still being written, not a finished
  * turn: reading it as complete would collect whatever text-bearing message
  * came before it — an interim message — as the answer. Returns false when no
@@ -256,6 +302,10 @@ export function effortSince(entries: TranscriptEntry[], fromIndex = 0): string |
 export function turnComplete(entries: TranscriptEntry[], fromIndex = 0): boolean {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
     const entry = entries[index];
+    if (entry !== undefined && submittedUserText(entry) !== null) {
+      // A submitted prompt after the last answer still needs its own reply.
+      return false;
+    }
     if (entry === undefined || entry.type !== "assistant") {
       continue;
     }

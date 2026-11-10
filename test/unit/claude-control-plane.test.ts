@@ -855,15 +855,10 @@ test("every launched claude child sees the workspace declared sandboxed, above a
   }
 });
 
-/** Real helper execution behind a scripted terminal and native transcript. */
+/** Real helper execution behind a scripted terminal, with no transcript receipts. */
 async function installValveStubs(dir: string, mode = "exact") {
   const claude = path.join(dir, "claude stub.mjs");
   const tmux = path.join(dir, "tmux-stub.mjs");
-  const project = path.join(dir, "project");
-  await mkdir(project);
-  const transcript = path.join(project, "valve-session.jsonl");
-  // A matching old row must never acknowledge a new delivery.
-  await writeFile(transcript, JSON.stringify({ type: "user", message: { content: "old" } }) + "\n");
   const handle = { id: "valve-1", sessionId: "valve-session", name: "valve-probe", cwd: dir };
   await writeFile(claude, `#!/usr/bin/env node
     if (process.argv[2] === "agents") process.stdout.write(JSON.stringify([
@@ -899,33 +894,23 @@ async function installValveStubs(dir: string, mode = "exact") {
         editorMode: statSync(path.join(root, "editor.cjs")).mode & 0o777, root
       }) + "\\n");
     }
-    if (step === "Enter") {
-      const text = readFileSync(target, "utf8");
-      if ((mode === "notification" || mode === "notification-missing")) appendFileSync(${JSON.stringify(transcript)}, JSON.stringify({
-        type: "user", origin: { kind: "task-notification" }, message: { content: "<task-notification>background task complete</task-notification>" }
-      }) + "\\n");
-      const row = (mode === "missing" || mode === "notification-missing") ? { type: "assistant", message: { content: "unrelated" } } :
-        { type: "user", message: { content: mode === "mismatch" ? text + "changed" : text } };
-      appendFileSync(${JSON.stringify(transcript)}, JSON.stringify(row) + "\\n");
-    }
   `, { mode: 0o755 });
-  return { claude, tmux, handle, transcript };
+  return { claude, tmux, handle };
 }
 
-for (const mode of ["attach", "C-g", "Enter", "editor-missing", "missing", "notification-missing", "mismatch"] as const) {
+for (const mode of ["attach", "C-g", "Enter", "editor-missing"] as const) {
   test(`reply valve reports ${mode} failure and removes its private files`, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-failure-"));
     try {
       const stub = await installValveStubs(dir, mode);
       const control = new ClaudeCliControlPlane({
         claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir,
-        valveAttachSettleMs: 0, valveDeliveryTimeoutMs: 50
+        valveAttachSettleMs: 0, valveEditorTimeoutMs: 50
       });
       const result = await control.steer(stub.handle, "old");
-      assert.equal(result.delivered, false);
-      if (!result.delivered) {
-        assert.match(result.reason, mode === "editor-missing" ? /editor did not finish/ :
-          (mode === "missing" || mode === "notification-missing") ? /delivery missing/ : mode === "mismatch" ? /delivery mismatch.*sha256/ : /delivery refused/);
+      assert.equal(result.submitted, false);
+      if (!result.submitted) {
+        assert.match(result.reason, mode === "editor-missing" ? /editor did not finish/ : /delivery refused/);
       }
       const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
         .map(line => JSON.parse(line) as { argv: string[] });
@@ -935,48 +920,7 @@ for (const mode of ["attach", "C-g", "Enter", "editor-missing", "missing", "noti
   });
 }
 
-test("a missing transcript baseline refuses delivery before opening an attachment", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-no-baseline-"));
-  try {
-    const stub = await installValveStubs(dir);
-    await rm(stub.transcript);
-    const control = new ClaudeCliControlPlane({
-      claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0
-    });
-    const result = await control.steer(stub.handle, "new input");
-    assert.equal(result.delivered, false);
-    if (!result.delivered) assert.match(result.reason, /not attempted.*no transcript baseline/);
-    const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
-      .map(line => JSON.parse(line) as { argv: string[] });
-    assert.deepEqual(calls.map(call => call.argv.at(-1)), ["kill-server"]);
-    await assert.rejects(access(path.dirname(calls[0]!.argv[1]!)));
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-
-test("a background notification between attach and receipt does not acknowledge or corrupt delivery", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-notification-"));
-  try {
-    const stub = await installValveStubs(dir, "notification");
-    const control = new ClaudeCliControlPlane({
-      claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0
-    });
-    assert.deepEqual(await control.steer(stub.handle, "new input"), { delivered: true });
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-
-test("literal command-record XML is accepted as exact ordinary text", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-literal-"));
-  try {
-    const stub = await installValveStubs(dir);
-    const control = new ClaudeCliControlPlane({
-      claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0
-    });
-    const message = "<command-message>check</command-message>\n<command-name>/check</command-name>\n<command-args>literal fixture</command-args>";
-    assert.deepEqual(await control.steer(stub.handle, message), { delivered: true });
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-
-test("concurrent multi-megabyte follow-ups use private editors, exact receipts and no payload argv", async () => {
+test("concurrent multi-megabyte follow-ups use private editors and no payload argv", async () => {
   const dirs = await Promise.all([0, 1].map(() => mkdtemp(path.join(tmpdir(), "ensemble-valve-large-"))));
   const declared = { ANTHROPIC_BASE_URL: "https://declared.example", ANTHROPIC_AUTH_TOKEN: "declared-token", TMUX_TMPDIR: "/declared-root" };
   try {
@@ -988,7 +932,7 @@ test("concurrent multi-megabyte follow-ups use private editors, exact receipts a
       });
       const message = `${index}:` + "café £ Ω 中文 😀;\n- data\n/slash inside\n".repeat(60_000) + "end";
       assert.ok(Buffer.byteLength(message) > 2_000_000);
-      assert.deepEqual(await control.steer(stub.handle, message), { delivered: true });
+      assert.deepEqual(await control.steer(stub.handle, message), { submitted: true });
       const copied = JSON.parse((await readFile(path.join(dir, "copied.jsonl"), "utf8")).trim()) as { text: string; mode: number; editorMode: number; root: string };
       assert.equal(copied.text, message);
       assert.equal(copied.mode, 0o600);
@@ -1030,7 +974,7 @@ test("a real private tmux server gives its attach client the editor and declared
             const [file, ...args] = process.env.VISUAL.split(" ");
             execFileSync(file, [...args, ${JSON.stringify(path.join(dir, "edited.txt"))}]);
           }
-          if (chunk.includes(13)) appendFileSync(${JSON.stringify(stub.transcript)}, JSON.stringify({ type: "user", message: { content: readFileSync(${JSON.stringify(path.join(dir, "edited.txt"))}, "utf8") } }) + "\\n");
+
         });
       }
     `);
@@ -1038,8 +982,9 @@ test("a real private tmux server gives its attach client the editor and declared
       claudeBin: stub.claude, projectsDir: dir,
       workerEnv: { ANTHROPIC_AUTH_TOKEN: "declared-token" }, valveAttachSettleMs: 1_500
     });
-    assert.deepEqual(await control.steer(stub.handle, "é😀\nwhole turn"), { delivered: true });
+    assert.deepEqual(await control.steer(stub.handle, "é😀\nwhole turn"), { submitted: true });
     assert.deepEqual(JSON.parse(await readFile(path.join(dir, "attach-env"), "utf8")), { token: "declared-token", sandboxed: "1" });
+    assert.equal(await readFile(path.join(dir, "edited.txt"), "utf8"), "é😀\nwhole turn");
     await waitForCondition(async () => (await processesNaming(stub.claude)).length === 0, "private attach client survived cleanup");
   } finally {
     restoreEnv("SHELL", savedShell);

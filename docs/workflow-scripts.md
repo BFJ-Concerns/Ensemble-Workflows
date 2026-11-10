@@ -156,8 +156,10 @@ results file) on a run that has already begun ending. Only a worker's own
 failure is a value.
 
 To tell a failed call from one that legitimately answered `null`, pass
-`identity: true`. The call then resolves `{ label, phase, output, failure }`,
-where `failure` is `null` exactly when the worker completed — so
+`identity: true`. The call then resolves `{ label, phase, output, failure }`.
+`phase` is the call's explicit phase, or the run's current `phase()` title
+when the call enters the queue; it is `null` when neither was set.
+`failure` is `null` exactly when the worker completed — so
 `output: null` with `failure: null` is a genuine answer — and a `{ message }`
 account when it failed. Inside `parallel()` and `pipeline()`, an identified
 call that collapses resolves this shape too, never a bare `null`.
@@ -191,7 +193,9 @@ workflows` lists them.
 ### `phase()`, `log()`, and `tally()`
 
 `phase(title)` and `log(message)` write to the run log on stderr; `phase()`
-also sets the current phase in the live status file.
+also sets the current run phase. Each agent or session turn captures it when
+it queues, for both the live status file and the archived agent record, unless
+the agent/session has an explicit `phase` option.
 
 `tally(name, value)` records a named number in the run record's manifest,
 beside the usage totals — how many findings a check accepted, or how many fix
@@ -234,7 +238,7 @@ unknown engine throws before any worker spawns.
 | `maxAttempts` | Attempt bound, a positive integer. Default 3 |
 | `strip` | Capabilities to remove from the worker: `"skills"`, `"agents"` (see [Permissions](#permissions-and-strip)) |
 | `identity` | `true` to resolve `{ label, phase, output, failure }` (see [`parallel()`](#parallel-and-pipeline)) |
-| `label`, `phase` | Bookkeeping shown in progress output and the run record |
+| `label`, `phase` | Bookkeeping shown in progress output and the run record. An omitted `phase` takes the current `phase()` title when queued, or `null` if unset |
 
 An unrecognised option, or an invalid value for `effort`, `isolation`,
 `timeoutMs`, `maxAttempts`, `identity`, or `strip`, throws before the worker
@@ -306,6 +310,14 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
 Each agent record lists the requested strips and how each was enforced.
 
 ### Worktree isolation
+
+`cwd` places edits in the requested directory on every engine. Claude
+background sessions receive a per-session `worktree.bgIsolation: "none"`
+setting, so Claude Code does not require a second worktree before editing.
+This leaves the operator's project and user settings unchanged. If a Claude
+session explicitly enters a worktree, its agent record retains the observed
+paths and branches in each attempt's `diagnostics.worktrees`; Ensemble does
+not manage or remove those native worktrees.
 
 With `isolation: "worktree"` the worker runs in a fresh linked git worktree on
 a temporary branch. With `cwd` as well, `cwd` selects the source repository; a

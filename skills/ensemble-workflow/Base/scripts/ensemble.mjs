@@ -16227,6 +16227,7 @@ var RunRecordWriter = class _RunRecordWriter {
       }
     }
     const agentJsonPath = `${agentDir}/agent.json`;
+    const unsettledTiming = record.status === "in-progress" || record.status === "abandoned";
     await this.#writeJson(agentJsonPath, {
       ...this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id) } } : {},
       schema_version: SCHEMA_VERSION,
@@ -16257,7 +16258,7 @@ var RunRecordWriter = class _RunRecordWriter {
       label: record.label,
       phase: record.phase,
       status: record.status,
-      termination_cause: record.terminationCause,
+      termination_cause: record.status === "in-progress" && record.terminationCause === null ? { kind: "record-unsettled", message: "the writer has not observed this worker's outcome" } : record.terminationCause,
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
@@ -16275,8 +16276,8 @@ var RunRecordWriter = class _RunRecordWriter {
       // none — an agent with no usage data must be legible as "unknown for
       // this reason", never indistinguishable from zero spend.
       usage: agentUsage(record),
-      queued_ms: record.queuedMs,
-      execution_ms: record.executionMs,
+      queued_ms: unsettledTiming && record.queuedMs === 0 ? null : record.queuedMs,
+      execution_ms: unsettledTiming && record.executionMs === 0 ? null : record.executionMs,
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,
@@ -17432,7 +17433,7 @@ function classifyAttemptFailure(evidence) {
     return { class: "unclassified", rule: "run-settlement" };
   }
   if (kind === "EngineShutdownError") {
-    return { class: "unclassified", rule: "run-settlement" };
+    return { class: "unclassified", rule: "engine-shutdown" };
   }
   switch (evidence.engine) {
     case "codex":
@@ -17601,6 +17602,10 @@ var RunProgress = class {
     this.#counters(input.engine).queued += 1;
     this.#touch();
     return id;
+  }
+  /** The phase fixed for a worker when it entered the queue. */
+  queuedAgentPhase(id) {
+    return this.#live.get(id)?.phase ?? null;
   }
   /**
    * Returns a running worker to the queue on another engine: a fallback
@@ -18673,7 +18678,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         source: "codex-app-server-events",
         threadId,
         content: this.#transcriptText(threadId),
-        partial: true
+        partial: turn.completedAt === null
       });
     }
     this.#transcripts.delete(threadId);
@@ -19487,7 +19492,16 @@ var ClaudeCliControlPlane = class {
       ...this.#workerEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
-    const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
+    const settings = {
+      env,
+      // Ensemble owns placement: cwd is the caller's checkout, or the
+      // worktree Ensemble created for isolation. Claude's default background
+      // isolation would move edits into a second, hidden worktree instead.
+      // This per-session setting reaches the daemon without changing the
+      // operator's project or user settings (measured on Claude Code 2.1.321).
+      worktree: { bgIsolation: "none" },
+      ...permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { permissions: { deny: permissionDenyRules } } : {}
+    };
     const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
 `;
     const dir = await mkdtemp(path11.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
@@ -19951,6 +19965,19 @@ function parseTranscriptText(text) {
     }
   }
   return entries;
+}
+function enteredWorktrees(entries) {
+  const worktrees = [];
+  for (const entry of entries) {
+    if (entry.type !== "worktree-state" || entry.worktreeSession === null || typeof entry.worktreeSession !== "object" || Array.isArray(entry.worktreeSession)) continue;
+    const state = entry.worktreeSession;
+    if (typeof state.worktreePath !== "string" || state.worktreePath.length === 0) continue;
+    const branch = typeof state.worktreeBranch === "string" && state.worktreeBranch.length > 0 ? state.worktreeBranch : null;
+    if (!worktrees.some((tree) => tree.path === state.worktreePath && tree.branch === branch)) {
+      worktrees.push({ path: state.worktreePath, branch });
+    }
+  }
+  return worktrees;
 }
 async function readTranscriptFile(path16) {
   let text;
@@ -20868,7 +20895,6 @@ var ClaudeEngineInvocation = class {
     const usageEvent = this.#usageEvent(handle, usage2, usage2);
     return {
       text,
-      ...handle.launchFailure === void 0 ? {} : { diagnostics: handle.launchFailure.diagnostics },
       ...resolvedModel !== null ? { resolvedModel } : {},
       ...resolvedEffort !== null ? { resolvedEffort } : {},
       ...this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {},
@@ -20877,6 +20903,7 @@ var ClaudeEngineInvocation = class {
       firstDeltaMs: null,
       items: {},
       tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      diagnostics: { ...handle.launchFailure?.diagnostics, worktrees: enteredWorktrees(entries) },
       transcripts: [
         {
           filename: "transcript.claude.jsonl",
@@ -20932,6 +20959,7 @@ var ClaudeEngineInvocation = class {
     return {
       handle,
       transcript,
+      completed: turnComplete(transcript.entries, fromIndex) && outstandingBackgroundTasks(transcript.entries, fromIndex).length === 0,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: this.#unaccountedUsage(handle, transcript.entries),
@@ -21132,7 +21160,11 @@ function failedTurnResult(error, evidence, usageEvent) {
     // The refusal's structured account rides the attempt as diagnostics,
     // where the failure classifier reads it: a 429's status and code are
     // the engine's own word, which the diagnostic prose is not.
-    ...evidence !== null && evidence.apiError !== null ? { diagnostics: { ...failedTurnResultOf(error)?.diagnostics, apiError: evidence.apiError } } : {},
+    ...evidence !== null ? { diagnostics: {
+      ...failedTurnResultOf(error)?.diagnostics,
+      ...evidence.apiError !== null ? { apiError: evidence.apiError } : {},
+      worktrees: enteredWorktrees(evidence.transcript.entries)
+    } } : {},
     ...evidence === null ? {} : {
       transcripts: [
         {
@@ -21141,7 +21173,7 @@ function failedTurnResult(error, evidence, usageEvent) {
           source: "claude-session-jsonl",
           sessionId: evidence.handle.sessionId,
           content: evidence.transcript.text,
-          partial: true
+          partial: !evidence.completed
         }
       ]
     }
@@ -22856,15 +22888,15 @@ var BODY_RETURNED = "the script returned without awaiting this worker";
 function identifiedResult(options, output, record) {
   return {
     label: options.label ?? null,
-    phase: options.phase ?? null,
+    phase: record.phase,
     output,
     failure: record.status === "complete" ? null : { message: settledFailureMessage(record) }
   };
 }
-function identifiedFailure(options, error) {
+function identifiedFailure(options, error, phase = options.phase ?? null) {
   if (options.identity !== true) return error;
   const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
-  attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
+  attachAgentIdentity(carrier, { label: options.label ?? null, phase });
   return carrier;
 }
 var WorkerSession = class {
@@ -23114,6 +23146,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.#openCalls.delete(call);
     });
     call.outward = outward;
+    if (this.#closed) {
+      void outward.catch(() => void 0);
+    }
     return outward;
   }
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
@@ -23204,6 +23239,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       label: options.label ?? null,
       phase: options.phase ?? null
     });
+    const phase = this.progress.queuedAgentPhase(agentId);
     if (engine.name === "claude" && options.model === void 0) {
       this.#emitEvent({
         method: "claude/unpinnedModel",
@@ -23211,7 +23247,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
+    const agentRecord = this.#newAgentRecord(
+      agentId,
+      engine.name,
+      prompt,
+      { ...dispatchOptions, ...phase !== null ? { phase } : {} },
+      stripRoutes
+    );
     const unsettled = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     try {
@@ -23223,7 +23265,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
       return output;
     } catch (error) {
-      throw identifiedFailure(options, error);
+      throw identifiedFailure(options, error, phase);
     } finally {
       this.#noteAgentSettled(agentId);
     }
@@ -23356,6 +23398,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
+    let phase = options.phase ?? null;
     state.inFlight = true;
     try {
       this.budget.assertCanStart(engine.name);
@@ -23365,6 +23408,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         label: options.label ?? null,
         phase: options.phase ?? null
       });
+      phase = this.progress.queuedAgentPhase(agentId);
       if (engine.name === "claude" && options.model === void 0 && state.turnCount === 0) {
         this.#emitEvent({
           method: "claude/unpinnedModel",
@@ -23385,7 +23429,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
         ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
         ...options.label !== void 0 ? { label: options.label } : {},
-        ...options.phase !== void 0 ? { phase: options.phase } : {},
+        ...phase !== null ? { phase } : {},
         ...turn.schema !== void 0 ? { schema: turn.schema } : {},
         ...options.strip !== void 0 ? { strip: options.strip } : {}
       };
@@ -23403,7 +23447,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           const output = await this.#runChained(
             engine,
             targets,
-            { label: options.label ?? null, phase: options.phase ?? null },
+            { label: options.label ?? null, phase },
             options.maxAttempts,
             agentId,
             agentRecord,
@@ -23427,7 +23471,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         state.lastTurnEndedAt = this.#now();
       }
     } catch (error) {
-      throw identifiedFailure(options, error);
+      throw identifiedFailure(options, error, phase);
     } finally {
       state.inFlight = false;
     }
@@ -23474,8 +23518,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const invocation = {
       runAttempt: async (context) => {
         const result = await turnInvocation.runAttempt(context);
-        if (result.resolvedModel === void 0 && state.resolvedModel !== null && result.attemptFailure === void 0 && result.text.trim().length > 0) {
-          return { ...result, resolvedModel: state.resolvedModel };
+        if (result.resolvedModel === void 0 && agentRecord.resolvedModel !== null && (agentRecord.attempts.at(-1)?.target.engine === target.engine || result.attemptFailure === void 0 && result.text.trim().length > 0)) {
+          return { ...result, resolvedModel: agentRecord.resolvedModel };
         }
         return result;
       }
@@ -23560,7 +23604,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return this.#runChained(
       engine,
       chainTargets(engine.name, options),
-      { label: options.label ?? null, phase: options.phase ?? null },
+      { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,
       agentRecord,
@@ -23619,6 +23663,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
             if (settled.status !== "refused") {
               return settled;
             }
+            agentRecord.resolvedModel = null;
+            agentRecord.resolvedEffort = null;
           }
           throw new Error("fallback chain ended without a settlement");
         })
@@ -23692,7 +23738,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (outcome === "done") {
         agentRecord.status = "complete";
       } else {
-        this.#settleTerminalStatus(agentRecord, execution.cause ?? null);
+        this.#settleWorkerFailure(agentRecord, execution.cause ?? null);
       }
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
@@ -23790,7 +23836,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         phase: identity.phase,
         status: agentRecord.status,
         attempts: agentRecord.attempts.length,
-        targetsTried: agentRecord.fallback === null ? null : 1 + advancesOf(agentRecord).length,
+        targetsTried: agentRecord.fallback === null ? null : targetsTriedOf(agentRecord),
         failure: { kind: failure.kind, message: failure.message },
         diagnosis
       },
@@ -24138,7 +24184,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   #runSettlementCause(error, dispatch = "in-flight") {
     const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
-    if (error instanceof EngineShutdownError || substrate instanceof AppServerExitedError && this.#closed) {
+    if (this.#closed && (isRunEnding(error) || error instanceof EngineShutdownError || error instanceof TurnTimeoutError || substrate instanceof AppServerExitedError)) {
       return this.#closeCause(dispatch);
     }
     return null;
@@ -24170,6 +24216,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       record.terminationCause = settlement;
       return;
     }
+    this.#settleWorkerFailure(record, error);
+  }
+  /** Settle the worker's own failure without consulting a later run ending. */
+  #settleWorkerFailure(record, error) {
     if (error instanceof TurnTimeoutError) {
       record.status = "timed-out";
       record.terminationCause = {
@@ -24185,7 +24235,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
+    record.terminationCause = record.attempts.at(-1)?.status === "complete" || attemptedFailureAccount(record) === null ? failedWithoutAttemptCause(error, record.attempts.length > 0) : null;
   }
   /**
    * One target's placement, invocation, and bounded attempts. Resolves to
@@ -24788,21 +24838,24 @@ function attemptedFailureAccount(record) {
   }
   return null;
 }
-function failedWithoutAttemptCause(error) {
+function failedWithoutAttemptCause(error, hasAttempt) {
   if (error === null || error === void 0) {
-    return unavailableCause("no error was reported to the runtime");
+    return unavailableCause("no error was reported to the runtime", hasAttempt);
   }
   const described = describedRejection(error);
   if (described === null) {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`, hasAttempt);
   }
   if (described.message.trim() === "") {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`, hasAttempt);
   }
   return described;
 }
-function unavailableCause(reason) {
-  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+function unavailableCause(reason, hasAttempt) {
+  return {
+    kind: "unavailable",
+    message: `the agent failed ${hasAttempt ? "after an attempt without its own failure account" : "with no attempt recorded"} and ${reason}`
+  };
 }
 function describedRejection(error) {
   try {
@@ -24825,12 +24878,20 @@ function rejectionShape(error) {
 function advancesOf(record) {
   return record.attempts.filter((attempt) => attempt.chainDecision === "advanced");
 }
-function settledFailureAccount(record) {
-  const attempted = attemptedFailureAccount(record);
-  if (attempted !== null) {
-    return attempted;
+function targetsTriedOf(record) {
+  if (record.attempts.length === 0) {
+    return 0;
   }
-  return record.terminationCause ?? { kind: "unavailable", message: "the agent failed without a recorded cause" };
+  return advancesOf(record).length + (record.attempts.at(-1)?.chainDecision === "advanced" ? 0 : 1);
+}
+function settledFailureAccount(record) {
+  if (record.attempts.at(-1)?.status === "complete" && record.terminationCause !== null) {
+    return record.terminationCause;
+  }
+  return attemptedFailureAccount(record) ?? record.terminationCause ?? {
+    kind: "unavailable",
+    message: "the agent failed without a recorded cause"
+  };
 }
 function settledFailureMessage(record) {
   const account = settledFailureAccount(record);

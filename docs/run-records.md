@@ -521,7 +521,10 @@ The fields present throughout a record's lifetime are:
 - `resolved_cwd`, `isolation` (`null` when unused).
 - `worktree`: the isolated worktree's `branch`, `base_commit`, `tip_commit`,
   `changed`, and `removed` — or `null`.
-- `label`, `phase`, and `status`. Status is `"in-progress"`, `"complete"`,
+- `phase`: the explicit agent/session option, or the current run phase set by
+  `phase(title)` when the agent or session turn queues; `null` if neither is
+  set. Later phase changes do not alter an existing agent record.
+- `label` and `status`. Status is `"in-progress"`, `"complete"`,
   `"failed"`, `"timed-out"`, `"interrupted"`, or `"abandoned"`. `"abandoned"`
   means no outcome was observed: either the run's own close ended while the
   dispatch record was still being written, or another run's sweep found the
@@ -529,7 +532,7 @@ The fields present throughout a record's lifetime are:
 - `termination_cause`: the `{ kind, message }` that settled the agent at that
   status when the runtime decided it — a run that ended under the worker, or a
   deadline the runtime enforced — and `null` when the attempts already name the
-  cause. Two deadline kinds are distinguished: `"turn-timeout"` (the per-agent
+  cause. An unsettled dispatch record carries `"record-unsettled"`: the writer has not yet observed an outcome, and a reaped record retains that account. A close failure after a completed attempt carries the close error here. Two deadline kinds are distinguished: `"turn-timeout"` (the per-agent
   turn deadline expired while the worker was still going) and
   `"request-timeout"` (a transport request deadline expired because the engine
   never answered a request). The first means a slow worker; the second, an
@@ -555,7 +558,9 @@ The fields present throughout a record's lifetime are:
   in flight and its spend are unobserved), `"no-attempt-ran"`, or
   `"engine-reported-no-usage"`.
 - `queued_ms`, `execution_ms`: time spent waiting for admission and time
-  spent executing.
+  spent executing. `null` on an unsettled record means the interval has not
+  been measured; it does not claim zero time. Runtime abandonment and a reap
+  preserve those unknown intervals.
 - `attempts`: the attempts that have settled. An attempt still running when
   the record was written is not listed, so an empty array on an `in-progress`
   or `abandoned` record means unobserved, not "none ran". Each entry has:
@@ -576,6 +581,12 @@ The fields present throughout a record's lifetime are:
     `observed_failure` keeps the symptom the turn saw (a closed app-server, an
     aborted poll); `null` when the engine's own failure is the cause.
   - `diagnostics` and `token_usage_events` (the engine-native usage events).
+    Claude's `diagnostics.worktrees` lists `{ path, branch }` for each native
+    worktree its transcript proves the session entered, including trees it
+    later left; `branch` is `null` when unreported (for example, a hook-created
+    tree). An empty list means no native worktree entry was observed in the
+    available transcript. These are separate from the top-level `worktree`,
+    which describes Ensemble's `isolation: "worktree"` placement.
     When pending Claude work spans attempts, each attempt accounts only for
     growth since the previous attempt's session total, even if its transcript
     reference repeats earlier API calls. Summing attempts never charges that
@@ -607,10 +618,12 @@ The fields present throughout a record's lifetime are:
   unparseable, off-schema — retried in place), or `"unclassified"` (including
   a Codex rejection of the authored schema before generation). `rule` names
   the classifier rule that matched (`codex.usage-limit`, `claude.rate-limit`,
-  `codex.substrate-dead`, `run-settlement`, …) and is `null` only when no rule
-  recognised the diagnostic — a sign that an engine's error wording is not
+  `codex.substrate-dead`, `engine-shutdown`, `run-settlement`, …) and is `null`
+  only when no rule recognised the diagnostic — a sign that an engine's error wording is not
   recognised. The raw diagnostic stays in `failure`, `app_server_diagnostic`,
-  and `diagnostics`. `null` on a complete attempt.
+  and `diagnostics`. `engine-shutdown` describes a local engine or session
+  close; `run-settlement` describes the run ending under the worker.
+  `null` on a complete attempt.
 - `chain_decision` on a failed attempt of a call that declared a `fallback`
   chain: what Ensemble did next — `"advanced"` (an availability failure with
   a later entry remaining: the call moved to that entry, spending none of its

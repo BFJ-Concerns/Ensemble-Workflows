@@ -24,6 +24,7 @@ import {
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError,
   appServerDiagnosticOf,
+  partialTranscriptOf,
   partialWorkerTextOf,
   workerExitStatusOf
 } from "../../src/errors.js";
@@ -229,6 +230,7 @@ test("a systemError followed by completion remains a diagnostic-less terminal fa
         assert.ok(error instanceof AppServerSystemError);
         assert.match(error.message, /systemError without a diagnostic/);
         assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        assert.equal(partialTranscriptOf(error)?.partial, false);
         return true;
       }
     );

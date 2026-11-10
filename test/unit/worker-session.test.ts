@@ -544,15 +544,17 @@ test("an identified held session distinguishes a failed schema turn from a valid
     session = runtime.createWorkerSession({ engine: "codex", identity: true, label: "held", maxAttempts: 1 });
   });
   assert.ok(session);
+  runtime.notePhase("Check");
   const first = await session.send("fail", { schema: { type: "null" } }) as {
     label: string | null; phase: string | null; output: unknown; failure: { message: string } | null;
   };
+  runtime.notePhase("Answer");
   const second = await session.send("answer null", { schema: { type: "null" } });
   assert.equal(first.label, "held");
-  assert.equal(first.phase, null);
+  assert.equal(first.phase, "Check");
   assert.equal(first.output, null);
   assert.match(first.failure?.message ?? "", /schema-validation/);
-  assert.deepEqual(second, { label: "held", phase: null, output: null, failure: null });
+  assert.deepEqual(second, { label: "held", phase: "Answer", output: null, failure: null });
   assert.deepEqual(transport.turns.map((turn) => turn.threadId), ["thread-1", "thread-1"]);
   await runtime.close();
 });
@@ -570,10 +572,11 @@ test("identified session setup failures retain their envelope through both combi
         worktreeManager: { create: fail, finish: async () => { throw new Error("no worktree was created"); } }
       });
       try {
+        runtime.notePhase("build");
         for (const identity of [true, false]) {
           for (const combinator of ["parallel", "pipeline"]) {
             const session = runtime.createWorkerSession({
-              engine: "codex", identity, label: "held", phase: "build",
+              engine: "codex", identity, label: "held",
               ...(failureAt === "placement" ? { isolation: "worktree" } : {})
             });
             const send = () => session.send("go");

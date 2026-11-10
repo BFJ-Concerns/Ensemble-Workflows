@@ -21,6 +21,7 @@ import {
 import {
   apiErrorSince,
   effortSince,
+  enteredWorktrees,
   endsInSyntheticReply,
   finalAssistantText,
   outstandingBackgroundTasks,
@@ -966,7 +967,6 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     const usageEvent = this.#usageEvent(handle, usage, usage);
     return {
       text,
-      ...(handle.launchFailure === undefined ? {} : { diagnostics: handle.launchFailure.diagnostics }),
       ...(resolvedModel !== null ? { resolvedModel } : {}),
       ...(resolvedEffort !== null ? { resolvedEffort } : {}),
       ...(this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {}),
@@ -975,6 +975,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       firstDeltaMs: null,
       items: {},
       tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      diagnostics: { ...handle.launchFailure?.diagnostics, worktrees: enteredWorktrees(entries) },
       transcripts: [
         {
           filename: "transcript.claude.jsonl",
@@ -1036,6 +1037,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     return {
       handle,
       transcript,
+      completed: turnComplete(transcript.entries, fromIndex) &&
+        outstandingBackgroundTasks(transcript.entries, fromIndex).length === 0,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: this.#unaccountedUsage(handle, transcript.entries),
@@ -1290,7 +1293,11 @@ function failedTurnResult(
     // The refusal's structured account rides the attempt as diagnostics,
     // where the failure classifier reads it: a 429's status and code are
     // the engine's own word, which the diagnostic prose is not.
-    ...(evidence !== null && evidence.apiError !== null ? { diagnostics: { ...failedTurnResultOf(error)?.diagnostics, apiError: evidence.apiError } } : {}),
+    ...(evidence !== null ? { diagnostics: {
+      ...failedTurnResultOf(error)?.diagnostics,
+      ...(evidence.apiError !== null ? { apiError: evidence.apiError } : {}),
+      worktrees: enteredWorktrees(evidence.transcript.entries)
+    } } : {}),
     ...(evidence === null
       ? {}
       : {
@@ -1301,7 +1308,7 @@ function failedTurnResult(
               source: "claude-session-jsonl",
               sessionId: evidence.handle.sessionId,
               content: evidence.transcript.text,
-              partial: true
+              partial: !evidence.completed
             }
           ]
         })
@@ -1312,6 +1319,7 @@ function failedTurnResult(
 interface FailureEvidence {
   handle: Pick<ClaudeSessionHandle, "sessionId">;
   transcript: Pick<TranscriptFile, "text" | "entries">;
+  completed: boolean;
   resolvedModel: string | null;
   resolvedEffort: string | null;
   usage: TokenUsageBreakdown;

@@ -10,7 +10,8 @@ family can check another's work within a single run.
   sessions (`claude --bg`), and opencode runs through `opencode run`. Every
   call names its engine; there is no default.
 - A call given a JSON Schema returns a value that validates against it, or
-  `null` if the call fails.
+  `null` on worker failure. Pre-spawn rejections and run endings throw; see
+  [Failures](docs/workflow-scripts.md#failures).
 - `parallel()` and `pipeline()` fan work out, `session()` keeps a worker's
   context across turns, `workflow()` runs saved workflows inline, and
   `hold()` pauses a run for an outside decision.
@@ -30,6 +31,8 @@ family can check another's work within a single run.
   Codex, `claude` (Claude Code) for Claude, and `opencode` for opencode.
   opencode models must also be declared in the
   [machine configuration](docs/configuration.md#opencode_models).
+- For Claude, accept its bypass-permissions disclaimer once interactively
+  before dispatching workers; see [Claude dispatch](docs/workflow-scripts.md#claude-dispatch).
 - `tmux`, for opening prompts, follow-up turns and in-session corrections on Claude.
 - `git`, for worktree isolation.
 
@@ -52,7 +55,7 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
   --engine codex --model gpt-6-luna 'Say hello in one sentence.'
 ```
 
-The answer is printed on stdout as JSON:
+The answer is printed on stdout as JSON. Illustrative output:
 
 ```json
 "Hello!"
@@ -145,7 +148,7 @@ Node module. The hooks it can call:
 
 | Hook | Purpose |
 |---|---|
-| `agent(prompt, options)` | Run one worker and return its answer, or `null` if it failed |
+| `agent(prompt, options)` | Run one worker; return its answer or `null` on worker failure. Pre-spawn rejections and run endings throw (see [Failures](docs/workflow-scripts.md#failures)) |
 | `session(options)` | Create a multi-turn worker that keeps its context between turns |
 | `parallel(thunks)` | Run calls concurrently |
 | `pipeline(items, ...stages)` | Run each item through a series of stages |
@@ -176,10 +179,12 @@ see [CLI](docs/cli.md).
 
 ## Configuration
 
-Ensemble runs Codex and Claude workers without any configuration. An optional
-file at `~/.config/ensemble/config.json` sets concurrency caps, a run-wide
-agent ceiling, worker scope grouping (`worker_scope`), where run records and
-status files go, extra environment variables for workers, and the models
+Codex and Claude workers need no Ensemble configuration file. Claude needs
+the [one-time bypass-permissions consent](docs/workflow-scripts.md#claude-dispatch)
+before its first dispatch. An optional file at
+`~/.config/ensemble/config.json` sets concurrency caps, a run-wide agent
+ceiling, worker scope grouping (`worker_scope`), where run records and status
+files go, extra environment variables for workers, and the models
 opencode may use. `ENSEMBLE_*` environment variables override the caps, the
 ceiling, and the run record and status settings; `ENSEMBLE_WORKER_SCOPE`
 overrides scope grouping. `--worker-scope worker|run` overrides both.
@@ -210,6 +215,11 @@ file tells a supervising process when, and how, the run ended. See
 
 ## Building from source
 
+Run these commands from the checkout root, with Node as required above and
+npm on `PATH`. The build needs development dependencies (TypeScript and
+esbuild), npm's executable links, and optional dependencies (esbuild's
+platform binary). Use one install/build at a time per checkout:
+
 ```sh
 npm ci
 npm run build
@@ -217,6 +227,33 @@ npm run build
 
 The build compiles the TypeScript in `src/` to `dist/` and rebuilds the
 launcher at `skills/ensemble-workflow/Base/scripts/ensemble.mjs`.
+
+If `tsc` is missing, let any other install in that checkout finish first:
+[`npm ci`](https://docs.npmjs.com/cli/v11/commands/npm-ci/) removes
+`node_modules` before installing. If your npm settings omit development or
+optional dependencies, or disable executable links, reinstall explicitly:
+
+```sh
+npm ci --include=dev --include=optional --bin-links
+npm run build
+```
+
+Some npm versions warn that esbuild's `postinstall` is not covered by
+`allowScripts`. The build works with that script skipped when the matching
+optional platform package is installed. The script checks the binary version
+and optimises the executable shim; see
+[esbuild's installation notes](https://esbuild.github.io/getting-started/#installing-esbuild).
+No script approval is needed for this build route; `npm ci --ignore-scripts`
+also works with development and optional dependencies installed.
+
+The current lockfile also has unresolved audit advisories: URI-handling
+findings in `fast-uri` (through Ajv, included in the launcher), and denial of
+service findings in the lint toolchain's `minimatch`, `brace-expansion` and
+`js-yaml`. `npm audit` gives the affected versions and advisory links;
+`npm audit --omit=dev` shows the runtime dependency findings separately.
+A successful build does not resolve these advisories. Review dependency
+changes separately rather than applying `npm audit fix --force`, which can
+change the declared tooling versions.
 
 ## Licence
 

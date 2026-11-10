@@ -1,0 +1,3 @@
+{"type":"step_start","sessionID":"ses_permission_refused","part":{"type":"step-start"}}
+{"type":"tool_use","sessionID":"ses_permission_refused","part":{"type":"tool","tool":"bash","callID":"call_refused","state":{"status":"error","input":{"command":"touch /outside-cwd/marker; sleep 1"},"error":"The user rejected permission to use this specific tool call."}}}
+{"type":"step_finish","sessionID":"ses_permission_refused","part":{"reason":"tool-calls","type":"step-finish","tokens":{"total":7157,"input":7108,"output":34,"reasoning":15,"cache":{"write":0,"read":0}},"cost":0.000382956}}

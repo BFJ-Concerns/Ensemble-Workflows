@@ -1,3 +1,4 @@
+import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 
@@ -241,6 +242,8 @@ export interface RuntimeOptions {
    * set, holds land in the default shared scope.
    */
   holdScope?: string;
+  /** Systemd scope grouping; defaults to worker (Codex threads share one app-server scope). */
+  workerScope?: WorkerScopeGrouping;
   /** Gap between hold decision-file polls; a library/test knob like the timeouts above. */
   holdPollIntervalMs?: number;
 }
@@ -348,7 +351,14 @@ export interface TurnResult {
   diagnostics?: JsonObject;
 }
 
-export interface TurnStartOptions {
+export interface LiveTranscriptObserver {
+  /** Receives each Codex app-server event in arrival order. */
+  onTranscriptEvent?: (event: unknown) => void;
+  /** Receives the readable absolute path of an engine-owned transcript. */
+  onTranscriptPath?: (path: string) => void;
+}
+
+export interface TurnStartOptions extends LiveTranscriptObserver {
   schema?: JsonSchema;
   model?: string;
   // Omitted → no per-turn deadline (unbounded). There is no default; a backstop

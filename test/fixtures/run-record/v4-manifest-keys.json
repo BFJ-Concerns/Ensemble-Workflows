@@ -32,6 +32,7 @@
     "status",
     "tallies",
     "tallies_unavailable",
+    "worker_scope",
     "workflow",
     "workflow_invocations"
   ]

@@ -89,7 +89,7 @@ test("queue → start → settle tracks per-engine and total counts", () => {
   assert.equal(snapshot.engines.codex?.active, 0);
   assert.equal(snapshot.engines.codex?.done, 1);
   assert.equal(snapshot.totals.done, 1);
-  assert.equal(snapshot.agents.length, 0);
+  assert.equal(snapshot.agents[0]?.state, "done");
 });
 
 test("documented status file schema stays in sync with progress snapshots", () => {
@@ -118,7 +118,7 @@ test("documented status file schema stays in sync with progress snapshots", () =
   );
   assert.deepEqual(
     documentedNestedFields(section, "agents")
-      .filter((field) => !["codex", "claude", "opencode", "queued", "running"].includes(field))
+      .filter((field) => !["codex", "claude", "opencode", "queued", "running", "done", "failed"].includes(field))
       .filter((field) => field !== "null")
       .sort(),
     sortedKeys(snapshot.agents[0] ?? {})
@@ -233,7 +233,7 @@ test("new engine spend republishes the live snapshot once while an agent is runn
   assert.equal(progress.snapshot().agents[0]?.state, "running");
 });
 
-test("the live agent list is bounded and lists running agents before queued ones", () => {
+test("the live agent list retains all workers and lists running agents before queued ones", () => {
   const clock = 1_000;
   const progress = progressAt(() => clock);
 
@@ -252,8 +252,11 @@ test("the live agent list is bounded and lists running agents before queued ones
   }
   snapshot = progress.snapshot();
   assert.equal(snapshot.totals.active, 101);
-  assert.equal(snapshot.agents.length, 64);
-  assert.ok(snapshot.agents.every((agent) => agent.state === "running"));
+  assert.equal(snapshot.agents.length, 102);
+  assert.equal(snapshot.totals.queued, 1);
+  assert.deepEqual(snapshot.agents.map((agent) => agent.id).sort((a, b) => a - b),
+    Array.from({ length: 102 }, (_, index) => index + 1));
+  assert.equal(snapshot.agents.at(-1)?.id, queued);
 });
 
 test("what a worker is waiting on rides the live agent snapshot, last report winning, cleared on a fresh attempt", () => {
@@ -297,4 +300,99 @@ test("liveness stamps ride the live agent snapshot, earliest evidence winning", 
   progress.noteAgentEvidence(id);
   agent = progress.snapshot().agents[0];
   assert.equal(agent?.firstEvidenceAtMs, firstEvidence);
+});
+
+test("producer evidence survives settlement and unknowns stay null", () => {
+  let clock = 100;
+  const progress = progressAt(() => clock);
+  const id = progress.queueAgent({ engine: "codex", label: null, phase: null });
+  assert.equal(progress.snapshot().agents[0]?.spent, null);
+  progress.setArchiveDir("/archive/run");
+  progress.noteAgentIdentity(id, { requestedModel: "wanted", requestedEffort: "high" });
+  progress.noteAgentWorktree(id, "/worktree");
+  progress.startAgent(id);
+  progress.noteAgentIdentity(id, { resolvedModel: "served", resolvedEffort: "medium" });
+  progress.noteAgentTranscript(id, "agents/1/live.jsonl");
+  progress.noteAgentSpend(id, 25);
+  progress.noteAgentEvidence(id);
+  clock = 200;
+  progress.noteAttempt(id, 2);
+  progress.noteAgentEvidence(id);
+  assert.equal(progress.snapshot().agents[0]?.firstEvidenceAtMs, 100);
+  assert.equal(progress.snapshot().agents[0]?.lastEvidenceAtMs, 200);
+  progress.requeueAgent(id, "claude");
+  const queued = progress.snapshot().agents[0];
+  assert.equal(queued?.startedAtMs, null);
+  assert.equal(queued?.lastEvidenceAtMs, null);
+  assert.equal(queued?.resolvedModel, null);
+  assert.equal(queued?.transcript, null);
+  assert.equal(queued?.requestedModel, "wanted");
+  assert.equal(queued?.spent, 25);
+  progress.startAgent(id);
+  progress.noteAgentIdentity(id, { resolvedModel: "fallback" });
+  progress.noteAgentTranscript(id, "/session.jsonl");
+  const failure = { kind: "timeout", message: "deadline expired" };
+  progress.settleAgent(id, "failed", failure);
+  failure.message = "changed";
+  progress.settleAgent(id, "done");
+  progress.noteAgentEvidence(id);
+  const snapshot = progress.snapshot();
+  assert.equal(snapshot.archiveDir, "/archive/run");
+  assert.equal(snapshot.totals.failed, 1);
+  assert.equal(snapshot.totals.done, 0);
+  assert.equal(snapshot.agents[0]?.finishedAtMs, 200);
+  assert.equal(snapshot.agents[0]?.failure?.message, "deadline expired");
+  assert.equal(snapshot.agents[0]?.worktree, "/worktree");
+  assert.equal(snapshot.agents[0]?.transcript, "/session.jsonl");
+});
+
+test("all finished evidence survives alongside queued and running workers until run completion", () => {
+  let clock = 100;
+  const progress = progressAt(() => clock);
+  const expected = [];
+  for (let index = 0; index < 100; index += 1) {
+    const id = progress.queueAgent({ engine: "codex", label: `worker-${index}`, phase: "build" });
+    progress.noteAgentIdentity(id, {
+      requestedModel: "wanted", requestedEffort: "high",
+      resolvedModel: "served", resolvedEffort: "medium"
+    });
+    progress.noteAgentTranscript(id, `/transcripts/${id}`);
+    progress.noteAgentWorktree(id, `/worktrees/${id}`);
+    progress.noteAgentSpend(id, id * 10);
+    progress.startAgent(id);
+    progress.noteAgentEvidence(id);
+    clock += 1;
+    progress.noteAgentEvidence(id);
+    progress.settleAgent(id, index % 2 === 0 ? "done" : "failed",
+      { kind: "timeout", message: `expired-${id}` });
+    expected.push(progress.snapshot().agents.find((agent) => agent.id === id));
+  }
+  const queued = progress.queueAgent({ engine: "claude", label: null, phase: null });
+  const running = progress.queueAgent({ engine: "claude", label: null, phase: null });
+  progress.startAgent(running);
+  progress.noteAgentEvidence(running);
+  const snapshot = progress.snapshot();
+  assert.equal(snapshot.agents.length, 102);
+  assert.deepEqual(snapshot.agents.map((agent) => agent.id).sort((a, b) => a - b),
+    Array.from({ length: 102 }, (_, index) => index + 1));
+  assert.equal(snapshot.agents[0]?.id, running);
+  assert.equal(snapshot.agents[1]?.id, queued);
+  assert.deepEqual(snapshot.agents.slice(2), expected.reverse());
+  assert.deepEqual(snapshot.totals, { active: 1, queued: 1, done: 50, failed: 50 });
+  assert.equal(snapshot.engines.codex?.done, 50);
+  assert.equal(snapshot.engines.codex?.failed, 50);
+  assert.equal(snapshot.engines.codex?.active, 0);
+  assert.equal(snapshot.engines.codex?.queued, 0);
+  assert.equal(snapshot.engines.claude?.active, 1);
+  assert.equal(snapshot.engines.claude?.queued, 1);
+
+  clock += 1;
+  progress.settleAgent(1, "failed", { kind: "late", message: "duplicate" });
+  progress.settleAgent(2, "done");
+  assert.deepEqual(progress.snapshot(), snapshot);
+  progress.finish();
+  const finished = progress.snapshot();
+  assert.equal(finished.state, "finished");
+  assert.deepEqual(finished.agents, snapshot.agents);
+  assert.deepEqual(finished.totals, snapshot.totals);
 });

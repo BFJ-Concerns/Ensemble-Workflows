@@ -30,6 +30,9 @@ import type { EngineAdapter, EngineAttemptResult } from "../../src/engines.js";
 import type { OpenCodeRunner } from "../../src/opencode-engine.js";
 import type { RuntimeTransport, ThreadStartOptions, TurnResult, TurnStartOptions } from "../../src/types.js";
 
+const ignoreAttemptStart: RunRecordWriter["recordAttemptStart"] = async () => undefined;
+const ignoreAttemptEnd: RunRecordWriter["recordAttemptEnd"] = async () => undefined;
+
 // ---------------------------------------------------------------------------
 // Codex side: a scripted transport. Each runTurn consumes the next response;
 // the recorded calls are the assertions' evidence — a session's whole point
@@ -182,6 +185,8 @@ test("a session turn's schema failure corrects in-session, on the same thread", 
 test("per-turn records carry session identity, their own prompts, and dispatch-time writes", async () => {
   const captured: RuntimeAgentRecord[] = [];
   const recorder = {
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => {
       captured.push(structuredClone(record));
     }
@@ -218,6 +223,8 @@ test("per-turn records carry session identity, their own prompts, and dispatch-t
 test("a failed first Codex turn carries served identity into the next dispatch", async () => {
   const captured: RuntimeAgentRecord[] = [];
   const recorder = {
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => {
       captured.push(structuredClone(record));
     }
@@ -422,6 +429,8 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
   const session = runtime.createWorkerSession({ engine: "codex" });
   const captured: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => {
       captured.push(structuredClone(record));
     }
@@ -873,6 +882,8 @@ test("a session's chain applies to the creating turn alone, and the answering ta
     async (runtime, controlPlane) => {
       const records: RuntimeAgentRecord[] = [];
       runtime.setRunRecorder({
+        recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
         recordAgent: async (record) => {
           records.push(structuredClone(record));
         }
@@ -923,4 +934,36 @@ test("a session's chain applies to the creating turn alone, and the answering ta
     },
     { alongside: [codex], staleAfterMs: 7_000, codexStaleAfterMs: 60_000 }
   );
+});
+
+
+test("held turns publish separate live records and ignore prior-turn callbacks", async () => {
+  const transport = new ScriptedTransport([turnResult("first"), turnResult("second")]);
+  const starts: Array<[number, number]> = [];
+  const writes: Array<[number, number, unknown]> = [];
+  const callbacks: TurnStartOptions[] = [];
+  const runTurn = transport.runTurn.bind(transport);
+  transport.runTurn = async (thread, prompt, options) => {
+    callbacks.at(-1)?.onTranscriptEvent?.({ stale: true });
+    callbacks.push(options);
+    options.onTranscriptEvent?.({ prompt });
+    return runTurn(thread, prompt, options);
+  };
+  const runtime = codexRuntime(transport);
+  runtime.setRunRecorder({
+    recordAgent: async () => undefined,
+    recordAttemptEnd: ignoreAttemptEnd,
+    recordAttemptStart: async (id: number, attempt: number) => { starts.push([id, attempt]); },
+    appendCodexTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); }
+  } as unknown as RunRecordWriter);
+  const session = runtime.createWorkerSession({ engine: "codex" });
+  try {
+    assert.equal(await session.send("first"), "first");
+    assert.equal(await session.send("second"), "second");
+    assert.deepEqual(starts, [[1, 1], [2, 1]], "each held turn must publish a distinct agent record");
+    assert.deepEqual(writes, [[1, 1, { prompt: "first" }], [2, 1, { prompt: "second" }]]);
+  } finally {
+    await session.close();
+    await runtime.close();
+  }
 });

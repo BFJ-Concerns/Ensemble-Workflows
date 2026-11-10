@@ -100,14 +100,17 @@ test("status disablement and explicit directories preserve discovery and indepen
       const releaseFile = path.join(directory, `release-${index}`);
       const finishWhen = path.join(directory, `finish-${index}`);
       const readyFile = path.join(directory, `ready-${index}`);
+      const acknowledgements = path.join(directory, `observed-${index}`);
       await writeFile(workflow, `export const meta = { name: "concurrent-status" }; ${barrier(releaseFile)}`);
       const spec = path.join(directory, `spec-${index}.json`);
-      await writeFile(spec, JSON.stringify({ bundle, workflow, cwd: directory, releaseFile, finishWhen, readyFile, workers: [] }));
+      await writeFile(spec, JSON.stringify({ bundle, workflow, cwd: directory, releaseFile, finishWhen, readyFile, acknowledgements, workers: [] }));
       const result = runNode([consumer, spec], { ...env, ENSEMBLE_STATUS_DIR: status }, 60_000);
       running.push(result);
-      specs.push({ result, finishWhen, readyFile });
+      specs.push({ result, finishWhen, readyFile, acknowledgements });
     }
-    await Promise.all(specs.map((spec) => Promise.race([waitForFile(spec.readyFile), spec.result.then((result) => {
+    // The consumer creates its acknowledgement file only after awaiting the
+    // complete announcement write. The capture's existence alone is too early.
+    await Promise.all(specs.map((spec) => Promise.race([waitForFile(spec.acknowledgements), spec.result.then((result) => {
       assert.fail(`status reader exited before readiness: ${result.stderr}`);
     })])));
     const [first, second] = await Promise.all(specs.map(async (spec) => JSON.parse(await readFile(spec.readyFile, "utf8"))));

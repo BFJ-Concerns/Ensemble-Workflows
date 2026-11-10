@@ -202,6 +202,86 @@ test("a new writer's startup sweep removes the files of runs whose owner is prov
   ].sort());
 });
 
+test("temp sweep refutes reused pids by start ticks and retains unjudgeable files", async () => {
+  const root = await mkdtemp("/mnt/ai-data/scratch/status-temp-sweep-");
+  const procDir = path.join(root, "proc");
+  const dir = path.join(root, "status");
+  await mkdir(dir);
+  await writeProcStat(procDir, process.pid, "77777");
+  await writeProcStat(procDir, 4242, "99999");
+  const cases: Array<[string, boolean]> = [
+    ["ensemble.dead.local.json.555555.12345.1.tmp", true],
+    ["ensemble.reused.local.json.4242.11111.1.tmp", true],
+    ["ensemble.live.local.json.4242.99999.1.tmp", false],
+    ["ensemble.zero.local.json.4242.0.1.tmp", true],
+    ["ensemble.big-ticks.local.json.4242.99999999999999999999.1.tmp", true],
+    ["ensemble.unknown.local.json.555555.unknown.1.tmp", false],
+    ["ensemble.malformed.local.json.555555.invalid.1.tmp", false],
+    ["ensemble.unsafe-pid.local.json.99999999999999999999.1.1.tmp", false],
+    ["settings.local.json.555555.12345.1.tmp", false],
+    ["ensemble.legacy-dead.local.json.555555.1.tmp", true],
+    ["ensemble.legacy-live.local.json.4242.1.tmp", false]
+  ];
+  try {
+    await Promise.all(cases.map(([name]) => writeFile(path.join(dir, name), "incomplete")));
+    const writer = new StatusFileWriter({ progress: newProgress("sweeper"), dir, procDir });
+    try {
+      assert.equal(await writer.ready(), true);
+      for (const [name, removed] of cases) {
+        assert.equal(await exists(path.join(dir, name)), !removed, name);
+      }
+    } finally {
+      await writer.close();
+    }
+
+    // Without readable proc evidence, neither an absent pid nor start ticks
+    // refute an owner. This includes a legacy pid-only temp name.
+    await rm(procDir, { recursive: true });
+    await Promise.all(cases.map(([name]) => writeFile(path.join(dir, name), "incomplete")));
+    const blindWriter = new StatusFileWriter({ progress: newProgress("blind"), dir, procDir });
+    try {
+      assert.equal(await blindWriter.ready(), true);
+      for (const [name] of cases) assert.equal(await exists(path.join(dir, name)), true, name);
+    } finally {
+      await blindWriter.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("atomic temp names carry the same start identity as the published owner", async () => {
+  const root = await mkdtemp("/mnt/ai-data/scratch/status-temp-identity-");
+  const procDir = path.join(root, "proc");
+  await writeProcStat(procDir, process.pid, "77777");
+  try {
+    for (const ticks of ["77777", null]) {
+      if (ticks === null) await rm(procDir, { recursive: true });
+      const writes: string[] = [];
+      const progress = newProgress(ticks ?? "unknown");
+      const writer = new StatusFileWriter({ progress, dir: root, procDir, fileOperations: {
+        writeFile: async (file, contents, encoding) => {
+          const owner = JSON.parse(contents).owner as { pid: number; start_ticks: string | null };
+          assert.equal(owner.start_ticks, ticks);
+          assert.equal(file, `${path.join(root, statusFileName(progress.runId))}.${owner.pid}.${ticks ?? "unknown"}.${writes.length + 1}.tmp`);
+          writes.push(file);
+          await writeFile(file, contents, encoding);
+        }
+      } });
+      try {
+        assert.equal(await writer.ready(), true);
+        progress.setPhase("next");
+        await writer.ready();
+        assert.equal(writes.length, 2);
+      } finally {
+        await writer.close();
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("StatusFileWriter publishes a live snapshot and removes it on close", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
   const progress = newProgress();

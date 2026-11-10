@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-import { liveCodexModel } from "./live-models.js";
+import { liveCodexModel, liveCodexScriptOptions } from "./live-models.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const archiveReaderPath = path.resolve("test/consumers/read-run-record.mjs");
@@ -36,9 +36,19 @@ function withoutArchiveAnnouncement(stderr: string): string {
   return stderr.replace(announcement, "");
 }
 
+// A worker dispatched without a model announces the ambient default it
+// resolved to. The leg runs unpinned unless ENSEMBLE_LIVE_CODEX_MODEL is set,
+// so the notice is required exactly once when unpinned and absent when pinned.
+function withoutUnpinnedNotice(stderr: string): string {
+  const notice = /^\[codex\] agent 1 \(live-serialisability-worker\) runs unpinned — resolved ambient default: [^\n]+\n/gm;
+  const matches = stderr.match(notice) ?? [];
+  assert.equal(matches.length, liveCodexModel === undefined ? 1 : 0, `unexpected unpinned-worker notices in:\n${stderr}`);
+  return stderr.replace(notice, "");
+}
+
 test(
   "live built CLI salvages completed Codex output and a consumer can recover it from the archive alone",
-  { skip: !isLive || (liveCodexModel === undefined ? "ENSEMBLE_LIVE_CODEX_MODEL is unset" : false), timeout: 300_000 },
+  { skip: !isLive, timeout: 300_000 },
   async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-serialisability-"));
     const script = path.join(directory, "workflow.js");
@@ -55,8 +65,7 @@ test(
           };
           const completed = await agent("Return exactly one JSON object containing token ${token}.", {
             engine: "codex",
-            model: ${JSON.stringify(liveCodexModel)},
-            effort: "low",
+            ${liveCodexScriptOptions()}
             maxAttempts: 1,
             timeoutMs: 180000,
             label: "live-serialisability-worker",
@@ -78,7 +87,7 @@ test(
 
       assert.equal(result.code, 1, result.stderr);
       assert.equal(
-        withoutArchiveAnnouncement(withoutSentinelAnnouncement(result.stderr)),
+        withoutUnpinnedNotice(withoutArchiveAnnouncement(withoutSentinelAnnouncement(result.stderr))),
         "WorkflowScriptError: workflow return value must be a JSON value: return value.settlementFailure is a BigInt\n"
       );
       const envelope = JSON.parse(result.stdout) as SalvageEnvelope;

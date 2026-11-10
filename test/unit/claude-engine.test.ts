@@ -5,7 +5,6 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { claudeCacheTtlToMs } from "../../src/claude-engine.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import {
   ClaudeDispatchError,
@@ -26,7 +25,7 @@ import type {
   ClaudeDispatchOptions,
   ClaudeSessionHandle,
   ClaudeSessionStatus,
-  ValveDelivery
+  ValveSubmission
 } from "../../src/claude-control-plane.js";
 
 /**
@@ -82,6 +81,7 @@ class FakeControlPlane implements ClaudeControlPlane {
   #dispatchGate: DispatchGate | undefined;
   #refuseDispatch: string | undefined;
   #registrationTimeout: string | undefined;
+  #openingArrival: (sent: string) => string | null;
   #steered = false;
 
   #sessionSeq = 0;
@@ -105,6 +105,7 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#dispatchGate = options.dispatchGate;
     this.#refuseDispatch = options.refuseDispatch;
     this.#registrationTimeout = options.registrationTimeout;
+    this.#openingArrival = options.openingArrival ?? ((sent) => sent);
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -122,7 +123,12 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#path = path.join(this.#dir, `${sessionId}.jsonl`);
     this.#handle = { id: `fake-${this.#sessionSeq}`, sessionId, name: options.name, cwd: options.cwd };
     this.#present = true;
-    await this.#consume("write");
+    // A new session's transcript opens with its own record of the prompt it
+    // was launched with — the opening's receipt — and then takes the first
+    // scripted turn.
+    const arrived = this.#openingArrival(options.prompt);
+    await writeFile(this.#path, arrived === null ? "" : `${submissionRow(arrived)}\n`);
+    await this.#consume();
     this.#dispatchGate?.arrived();
     await this.#dispatchGate?.release;
     return this.#handle;
@@ -151,17 +157,22 @@ class FakeControlPlane implements ClaudeControlPlane {
     return this.#path;
   }
 
-  async steer(_handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery> {
+  async steer(_handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
     this.steerCount += 1;
     this.steered.push(message);
     this.#steered = true;
     if (!this.#steerSucceeds) {
-      return { delivered: false, reason: "fake valve refused" };
+      return { submitted: false, reason: "fake valve refused" };
     }
     if (this.#steerConsumesTurn) {
-      await this.#consume("append");
+      // The session records what it received as its own user row — the
+      // receipt the engine reads — then takes the next scripted turn.
+      if (this.#path !== null) {
+        await appendFile(this.#path, `${submissionRow(message)}\n`);
+      }
+      await this.#consume();
     }
-    return { delivered: true };
+    return { submitted: true };
   }
 
   async stop(): Promise<void> {
@@ -173,22 +184,21 @@ class FakeControlPlane implements ClaudeControlPlane {
     return this.#tmux;
   }
 
-  // Consume the next scripted turn: set busy/outcome and write/append its
+  // Consume the next scripted turn: set busy/outcome and append its
   // assistant message. A missing turn means "settle complete, produce nothing".
-  async #consume(mode: "write" | "append"): Promise<void> {
+  async #consume(): Promise<void> {
     const turn = this.#turns.shift();
     this.#busyRemaining = turn?.busyPolls ?? 0;
     this.#outcome = turn?.outcome ?? "complete";
-    const line = turn?.assistant !== undefined ? `${assistantLine(turn.assistant, this.#dispatchedEffort)}\n` : "";
-    if (this.#path === null) {
-      return;
-    }
-    if (mode === "write") {
-      await writeFile(this.#path, line);
-    } else if (line.length > 0) {
-      await appendFile(this.#path, line);
+    if (this.#path !== null && turn?.assistant !== undefined) {
+      await appendFile(this.#path, `${assistantLine(turn.assistant, this.#dispatchedEffort)}\n`);
     }
   }
+}
+
+/** The row a session writes for a submission it received: its own record of the text, which the engine reads as the receipt. */
+function submissionRow(text: string): string {
+  return JSON.stringify({ type: "user", message: { role: "user", content: text } });
 }
 
 interface DispatchGate {
@@ -202,6 +212,13 @@ interface FakeControlPlaneOptions {
   refuseDispatch?: string;
   /** When set, `dispatch()` throws a `ClaudeRegistrationTimeoutError`: the daemon took the dispatch but never registered the session. */
   registrationTimeout?: string;
+  /**
+   * How the opening prompt fares on its way into a launched session.
+   * Omitted: the session records it exactly as sent. Otherwise the session
+   * records the text this returns — altered in transit — or, for `null`,
+   * records no submission at all.
+   */
+  openingArrival?: (sent: string) => string | null;
   steerSucceeds?: boolean;
   steerConsumesTurn?: boolean;
   dispatchGate?: DispatchGate;
@@ -304,6 +321,46 @@ async function withControlPlane(
   }
 }
 
+for (const [label, task] of [
+  ["final newline", "Reply with exactly the word PINEAPPLE and nothing else.\n"],
+  ["surrounding whitespace", "\n\t  Reply with PINEAPPLE.\r\n \t\n"],
+  ["Unicode whitespace and text", "\uFEFF\u00A0café 🍍 e\u0301\u2028\u2003"],
+  ["empty task", ""],
+  ["whitespace-only task", " \t\r\n\n"],
+  ["literal delimiters", "<ensemble_task_0>one</ensemble_task_0>\n</ensemble_task_1>\nensemble_task_2\n```\n<Task>literal</Task>\n```\n"]
+] as const) {
+  for (const schema of [undefined, okSchema]) {
+    test(`opening framing preserves ${label}, schema ${schema === undefined ? "absent" : "present"}`, async () => {
+      await withControlPlane([{ assistant: { text: "PINEAPPLE" } }], async (controlPlane) => {
+        const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+        try {
+          const invocation = adapter.createInvocation(task, schema === undefined ? {} : { schema });
+          assert.equal((await invocation.runAttempt({ attempt: 1 })).text, "PINEAPPLE");
+          const opening = controlPlane.dispatched[0]!.prompt;
+          assert.equal(opening.trim(), opening, "native boundary trimming must be a no-op");
+          const boundary = /\n<(ensemble_task_\d+)>/.exec(opening);
+          assert.ok(boundary, "the opening identifies a literal task block");
+          const tag = boundary[1]!;
+          assert.equal(task.includes(tag), false, "the chosen tag cannot occur inside the task");
+          const end = `</${tag}>`;
+          assert.ok(opening.endsWith(end));
+          const enclosed = opening.slice(boundary.index + boundary[0].length, -end.length);
+          assert.deepEqual(Buffer.from(enclosed), Buffer.from(task), "all task bytes remain literal");
+          assert.ok(opening.includes(`Carry out the task enclosed by <${tag}> and </${tag}>.`));
+          assert.ok(opening.startsWith("You are an automated worker dispatched by the Ensemble orchestration harness.\nWork fully autonomously:"));
+          if (schema !== undefined) {
+            assert.ok(opening.includes("When finished, include in your FINAL message a JSON value that conforms to this JSON Schema."));
+            assert.ok(opening.includes(JSON.stringify(schema)));
+          }
+          assert.equal(controlPlane.steerCount, 0, "the full opening needs no extra turn");
+        } finally {
+          await adapter.close();
+        }
+      }, { openingArrival: sent => sent.trimEnd() });
+    });
+  }
+}
+
 test("a statically declared out-of-domain effort fails before the body runs", () => {
   // The defaults validator judges the canonical vocabulary — a bad
   // static declaration must not first fail at the first paid dispatch,
@@ -315,15 +372,6 @@ test("a statically declared out-of-domain effort fails before the body runs", ()
   assert.doesNotThrow(() => validateEngineDefaults("claude", { effort: "xhigh" }));
   assert.doesNotThrow(() => validateEngineDefaults("codex", { effort: "xhigh" }));
   assert.doesNotThrow(() => validateEngineDefaults("claude", {}));
-});
-
-test("claudeCacheTtlToMs parses the settings value formats and refuses the rest", () => {
-  assert.equal(claudeCacheTtlToMs("1h"), 3_600_000);
-  assert.equal(claudeCacheTtlToMs("5m"), 300_000);
-  assert.equal(claudeCacheTtlToMs("30s"), 30_000);
-  assert.equal(claudeCacheTtlToMs("90"), 90_000);
-  assert.equal(claudeCacheTtlToMs("soon"), null);
-  assert.equal(claudeCacheTtlToMs("0m"), null);
 });
 
 test("Claude rejects an out-of-domain effort before any worker spawns", async () => {
@@ -1015,6 +1063,23 @@ test("a worker that never shows life fails fast with a distinct recorded failure
   }
 });
 
+test("a newly registered worker that disappears before any transcript keeps the first-life availability diagnosis", async () => {
+  class GoneBeforeLife extends MissingTranscriptControlPlane {
+    override async poll(): Promise<ClaudeSessionStatus> { return { status: "absent", state: "unknown", present: false }; }
+  }
+  const plane = new GoneBeforeLife();
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = makeRuntime(plane, { maxAttempts: 1, turnTimeoutMs: 5_000, firstLifeTimeoutMs: 4_000 });
+  runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); } } as unknown as RunRecordWriter);
+  try {
+    assert.equal(await runtime.agent("decide", { engine: "claude", fallback: [{ engine: "claude", model: "next" }] }), null);
+    const attempts = records.at(-1)?.attempts ?? [];
+    assert.equal(attempts.length, 2);
+    assert.deepEqual(attempts.map(attempt => attempt.failure?.kind), ["claude-first-life-timeout", "claude-first-life-timeout"]);
+    assert.deepEqual(attempts.map(attempt => attempt.chainDecision), ["advanced", "exhausted"]);
+  } finally { await runtime.close(); }
+});
+
 test("a slow worker survives the first-life guard once its transcript appears", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-slow-alive-"));
   try {
@@ -1057,8 +1122,8 @@ class MissingTranscriptControlPlane implements ClaudeControlPlane {
     return null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1082,9 +1147,10 @@ class SlowAliveControlPlane implements ClaudeControlPlane {
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
     this.#present = true;
-    // The persisted user entry proves dispatch reached the worker. Assistant
-    // output may legitimately take much longer and is governed by timeoutMs.
-    await writeFile(this.#path, `${JSON.stringify({ type: "user", message: { role: "user", content: "decide" } })}\n`);
+    // The persisted user entry is the opening's receipt: the prompt reached
+    // the worker as sent. Assistant output may legitimately take much longer
+    // and is governed by timeoutMs.
+    await writeFile(this.#path, `${submissionRow(options.prompt)}\n`);
     return { id: "slow-1", sessionId: "slow-alive", name: options.name, cwd: options.cwd };
   }
 
@@ -1101,8 +1167,8 @@ class SlowAliveControlPlane implements ClaudeControlPlane {
     return this.#present ? this.#path : null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1440,7 +1506,7 @@ class SplitRowsControlPlane implements ClaudeControlPlane {
     const firstCall = { id: "msg_first_call", stop: "tool_use", input: 100, output: 10, cached: 50, creation: 20 };
     await writeFile(
       this.#path,
-      `${assistantLine({ ...firstCall })}\n${assistantLine({ ...firstCall, text: "looking" })}\n`
+      `${submissionRow(options.prompt)}\n${assistantLine({ ...firstCall })}\n${assistantLine({ ...firstCall, text: "looking" })}\n`
     );
     return { id: "split-rows-1", sessionId: "split-rows", name: options.name, cwd: options.cwd };
   }
@@ -1466,8 +1532,8 @@ class SplitRowsControlPlane implements ClaudeControlPlane {
     return this.#present ? this.#path : null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1581,6 +1647,7 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
     this.#present = true;
     const call = { type: "tool_use", id: "toolu_bg", name: "Bash", input: { command: "sleep 45", description: "Wait 45 seconds in background", run_in_background: true } };
     const rows = [
+      submissionRow(options.prompt),
       JSON.stringify({ type: "assistant", message: { role: "assistant", content: [call], stop_reason: "tool_use" } }),
       JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bg", content: "Command running in background with ID: bya9z1l44. You will be notified when it completes." }] } })
     ];
@@ -1655,8 +1722,8 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
     return this.#present ? this.#path : null;
   }
 
-  async steer(): Promise<ValveDelivery> {
-    return { delivered: false, reason: "fake valve refused" };
+  async steer(): Promise<ValveSubmission> {
+    return { submitted: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1902,6 +1969,117 @@ test("a dispatch the daemon took but never registered degrades to a failed turn 
   );
 });
 
+// ---------------------------------------------------------------------------
+// An opening prompt is delivered when its receipt verifies, not when the
+// launch returns. These two are the rule for what a failed opening may do
+// next: a session that took something keeps the call on its target, and
+// only a launch that left no session lets the same prompt go to the next
+// entry of the fallback chain. Each reads the control plane's own log —
+// what was launched, on which model, and when a session was stopped.
+// ---------------------------------------------------------------------------
+
+test("an opening the session received altered stays on its target: each session is stopped before the next is launched, and the chain is never consulted", async () => {
+  // Every launch delivers the prompt cut short, as a launch with a size
+  // limit of its own would, so no attempt can verify.
+  const cut = (sent: string): string => sent.slice(0, -1);
+  await withControlPlane(
+    [
+      { assistant: { text: "reply to the cut prompt" } },
+      { assistant: { text: "reply to the cut prompt" } },
+      { assistant: { text: "reply to the cut prompt" } }
+    ],
+    async (controlPlane) => {
+      const order: string[] = [];
+      const launch = controlPlane.dispatch.bind(controlPlane);
+      const stop = controlPlane.stop.bind(controlPlane);
+      controlPlane.dispatch = async (options) => {
+        order.push("launch");
+        return launch(options);
+      };
+      controlPlane.stop = async () => {
+        order.push("stop");
+        return stop();
+      };
+      const runtime = makeRuntime(controlPlane);
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => {
+          records.push(structuredClone(record));
+        }
+      } as unknown as RunRecordWriter);
+      try {
+        // The session answered the cut prompt each time, and no reply is the
+        // call's value: a reply to text nobody sent answers nothing.
+        const result = await runtime.agent("decide", {
+          engine: "claude",
+          fallback: [{ engine: "claude", model: "sonnet" }]
+        });
+        assert.equal(result, null);
+
+        // The discriminating assertions. Every launch is on the call's own
+        // target: the chain entry's model was never launched, because a
+        // session that took something is not an unavailable target.
+        assert.deepEqual(controlPlane.dispatched.map((dispatched) => dispatched.model), [undefined, undefined, undefined]);
+        // And no two sessions ever held the prompt at once: the one that
+        // took the cut copy was stopped before the retry launched another.
+        assert.deepEqual(order, ["launch", "stop", "launch", "stop", "launch", "stop"]);
+
+        // Each attempt is a delivery failure that says so, classed as
+        // neither availability nor output, keeping what the session wrote.
+        const attempts = records.at(-1)?.attempts ?? [];
+        assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind), ["claude-delivery-error", "claude-delivery-error", "claude-delivery-error"]);
+        assert.deepEqual(attempts.map((attempt) => attempt.classification), Array(3).fill({ class: "unclassified", rule: "claude.delivery" }));
+        assert.deepEqual(attempts.map((attempt) => attempt.chainDecision), ["retried-in-place", "retried-in-place", "exhausted"]);
+        assert.deepEqual(attempts.map((attempt) => attempt.rawOutput), Array(3).fill("reply to the cut prompt"));
+        assert.match(
+          attempts[0]?.failure?.message ?? "",
+          /^the opening prompt was submitted, but the session received different text: sent \d+ UTF-8 bytes, sha256 [0-9a-f]{64}; received \d+ UTF-8 bytes, sha256 [0-9a-f]{64}$/
+        );
+      } finally {
+        await runtime.close();
+      }
+    },
+    { openingArrival: cut }
+  );
+});
+
+test("a launch that left no session moves the call to its next chain entry, and that entry's opening is verified like any other", async () => {
+  await withControlPlane([{ assistant: { text: "answer from the chain entry" } }], async (controlPlane) => {
+    const launch = controlPlane.dispatch.bind(controlPlane);
+    let launches = 0;
+    controlPlane.dispatch = async (options) => {
+      launches += 1;
+      if (launches === 1) {
+        // Nothing registered, so no session holds the prompt.
+        throw new ClaudeRegistrationTimeoutError("dispatched session 'w' in /fake/cwd did not register within 30000ms");
+      }
+      return launch(options);
+    };
+    const runtime = makeRuntime(controlPlane);
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => {
+        records.push(structuredClone(record));
+      }
+    } as unknown as RunRecordWriter);
+    try {
+      const result = await runtime.agent("decide", {
+        engine: "claude",
+        fallback: [{ engine: "claude", model: "sonnet" }]
+      });
+      assert.equal(result, "answer from the chain entry");
+      assert.equal(launches, 2);
+      assert.deepEqual(controlPlane.dispatched.map((dispatched) => dispatched.model), ["sonnet"]);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind ?? null), ["claude-registration-timeout", null]);
+      assert.deepEqual(attempts[0]?.classification, { class: "availability", rule: "claude.no-registration" });
+      assert.equal(attempts[0]?.chainDecision, "advanced");
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
 test("Claude reports a readable transcript after an initially absent path", async () => {
   await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
     const lookup = controlPlane.transcriptPath.bind(controlPlane);
@@ -2031,3 +2209,238 @@ test("a held Claude turn retains observed identity before new assistant output",
     } finally { await held.close(); await adapter.close(); }
   });
 });
+
+test("a successful native turn retains the account of a launch that could not be safely discarded", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-recovered-launch-"));
+  const diagnostics = { claudeLaunch: { failure: "attachment outcome uncertain", cleanupConfirmed: false, command: { exitCode: 0 } } };
+  class AccountedLaunch extends FakeControlPlane {
+    override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+      const handle = await super.dispatch(options);
+      return { ...handle, launchFailure: { message: "attachment outcome uncertain", diagnostics } };
+    }
+  }
+  const plane = new AccountedLaunch(dir, [{ assistant: { text: "answer" } }]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = makeRuntime(plane, { maxAttempts: 1 });
+  runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); } } as unknown as RunRecordWriter);
+  try {
+    assert.equal(await runtime.agent("decide", { engine: "claude" }), "answer");
+    assert.equal(records.at(-1)?.status, "complete");
+    assert.deepEqual(records.at(-1)?.attempts[0]?.diagnostics, diagnostics);
+  } finally {
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+for (const grows of [false, true]) {
+  test(`pending held work is charged once across retries${grows ? " while later API usage still counts" : ""}`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-pending-spend-"));
+    class AbsentWhilePending extends FakeControlPlane {
+      override async poll(): Promise<ClaudeSessionStatus> { return { status: "absent", state: "unknown", present: false }; }
+    }
+    const plane = new AbsentWhilePending(dir, [{ assistant: { id: "first-call", text: "working", input: 100, output: 10, stop: "tool_use" } }], { openingArrival: sent => sent.replace("decide ", "decide") });
+    const runtime = makeRuntime(plane, { maxAttempts: 2 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAttemptStart: async (_id: number, attempt: number) => {
+        if (grows && attempt === 2) {
+          const file = await plane.transcriptPath();
+          assert.ok(file);
+          await appendFile(file, assistantLine({ id: "later-call", text: "more work", input: 20, output: 5, stop: "tool_use" }) + "\n");
+        }
+      },
+      recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    try {
+      const held = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await held.send("decide "), null);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.equal(attempts.length, 2);
+      assert.equal(plane.dispatchCount, 1);
+      assert.equal(plane.steerCount, 0, "the retry submitted into unfinished pending work");
+      assert.deepEqual(attempts.map(attempt => attempt.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0)), [110, grows ? 25 : 0]);
+      assert.equal(runtime.budget.spent("claude"), grows ? 135 : 110);
+    } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+}
+
+for (const present of [false, true]) {
+  test(`an unclean launch without a transcript stays non-availability while roster presence is ${present}`, async () => {
+    class UncleanLaunch extends MissingTranscriptControlPlane {
+      launches = 0;
+      override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+        this.launches += 1;
+        return { ...await super.dispatch(options), launchFailure: {
+          message: "launch cleanup remains unconfirmed",
+          diagnostics: { claudeLaunch: { cleanupConfirmed: false, failure: "launch failed" } }
+        } };
+      }
+      override async poll(): Promise<ClaudeSessionStatus> { return { status: present ? "busy" : "absent", state: "unknown", present }; }
+      override async stop(): Promise<void> { /* The control plane cannot confirm removal. */ }
+    }
+    const plane = new UncleanLaunch();
+    const runtime = makeRuntime(plane, { maxAttempts: 1, firstLifeTimeoutMs: present ? 1 : 5_000 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); } } as unknown as RunRecordWriter);
+    try {
+      assert.equal(await runtime.agent("decide", { engine: "claude", fallback: [{ engine: "claude", model: "unused" }] }), null);
+      assert.equal(plane.launches, 1, "an unclean launch advanced fallback");
+      assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "claude-delivery-error");
+      assert.deepEqual(records.at(-1)?.attempts[0]?.classification, { class: "unclassified", rule: "claude.delivery" });
+      assert.match(JSON.stringify(records.at(-1)?.attempts[0]?.diagnostics), /launch failed/);
+    } finally { await runtime.close(); }
+  });
+}
+
+for (const [altered, lateOpening] of [[true, false], [false, false], [false, true]] as const) {
+  test(`a late recovery-nudge receipt ${altered ? "cannot verify an altered task" : lateOpening ? "can finish a late-verified task" : "can finish an already verified task"}`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-nudge-receipt-"));
+    class LateNudge extends FakeControlPlane {
+      readonly messages: string[] = [];
+      nudge: string | null = null;
+      override async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
+        this.messages.push(message);
+        if (this.nudge === null) {
+          this.nudge = message;
+          return { submitted: true };
+        }
+        return super.steer(handle, message);
+      }
+    }
+    const plane = new LateNudge(dir, [{ outcome: "blocked" }, { assistant: { text: "answer after exact redelivery" } }], {
+      openingArrival: sent => lateOpening ? null : altered ? sent.replace("decide ", "decide") : sent
+    });
+    const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 1, blockedRecoveryBound: 1 });
+    const records: RuntimeAgentRecord[] = [];
+    const nudgeAnswer = altered ? "answer to altered task" : "answer to verified task";
+    runtime.setRunRecorder({
+      recordAttemptStart: async (_id: number, attempt: number) => {
+        if (lateOpening && attempt === 2) {
+          const file = await plane.transcriptPath();
+          assert.ok(file);
+          await appendFile(file, submissionRow(plane.dispatched[0]!.prompt) + "\n");
+        }
+        if (attempt === (lateOpening ? 3 : 2)) {
+          const file = await plane.transcriptPath();
+          assert.ok(file && plane.nudge);
+          await appendFile(file, submissionRow(plane.nudge) + "\n" + assistantLine({ id: "nudge-answer", text: nudgeAnswer }) + "\n");
+        }
+      },
+      recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    try {
+      const held = runtime.createWorkerSession({ engine: "claude" });
+      const result = await held.send("decide ");
+      assert.equal(result, altered ? "answer after exact redelivery" : nudgeAnswer, JSON.stringify({ failures: records.at(-1)?.attempts.map(attempt => attempt.failure), messages: plane.messages }));
+      assert.equal(plane.dispatchCount, 1);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.equal(attempts.length, altered || lateOpening ? 3 : 2);
+      if (altered) {
+        assert.match(attempts[1]?.failure?.message ?? "", /^the opening prompt was submitted, but the session received different text:/);
+        assert.equal(attempts[1]?.rawOutput, nudgeAnswer);
+        assert.ok(plane.messages[1]?.endsWith(plane.dispatched[0]!.prompt), "the full opening was not redelivered");
+      } else assert.equal(plane.messages.length, 1, "a verified task was redelivered after its nudge's receipt arrived");
+    } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+}
+
+for (const shape of ["slow", "monitor"] as const) {
+  test(`a pending nudge keeps the task collection window for ${shape === "slow" ? "background Bash" : "Monitor"} work`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-nudge-window-"));
+    class NudgeWithBackgroundWork extends BackgroundTaskControlPlane {
+      nudge: string | null = null;
+      override async poll(): Promise<ClaudeSessionStatus> {
+        return this.nudge === null ? { status: "idle", state: "blocked", present: true } : super.poll();
+      }
+      override async steer(_handle?: ClaudeSessionHandle, message?: string): Promise<ValveSubmission> {
+        assert.ok(message);
+        this.nudge = message;
+        return { submitted: true };
+      }
+    }
+    const plane = new NudgeWithBackgroundWork(dir, { wakeAtPoll: 3, shape });
+    const runtime = makeRuntime(plane, { maxAttempts: 2, receiptTimeoutMs: 1 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAttemptStart: async (_id: number, attempt: number) => {
+        if (attempt === 2) {
+          const file = await plane.transcriptPath();
+          assert.ok(file && plane.nudge);
+          await appendFile(file, submissionRow(plane.nudge) + "\n" + assistantLine({ text: "Still waiting for background work" }) + "\n");
+        }
+      },
+      recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    try {
+      const held = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await held.send("decide"), '{"ok":true}');
+      assert.ok(plane.pollCount >= (shape === "slow" ? 5 : 10), "the interim reply was collected before background completion");
+      const waits = records.at(-1)?.attempts[1]?.backgroundWaits ?? [];
+      assert.ok(waits.some(wait => wait.taskId === (shape === "slow" ? "bya9z1l44" : "b7zb0kfnb")));
+    } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+}
+
+for (const [altered, lateCorrection] of [[true, false], [true, true], [false, false], [false, true]] as const) {
+  test(`a late nudge receipt ${altered ? "cannot verify an altered" : "can finish a verified"} correction${lateCorrection ? " that arrived late" : ""}`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-correction-nudge-"));
+    class CorrectionNudge extends FakeControlPlane {
+      readonly messages: string[] = [];
+      correction: string | null = null;
+      nudge: string | null = null;
+      override async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
+        this.messages.push(message);
+        if (this.messages.length === 2) {
+          this.nudge = message;
+          return { submitted: true };
+        }
+        if (this.messages.length === 1) {
+          this.correction = altered ? message + " " : message;
+          const result = await super.steer(handle, this.correction);
+          if (lateCorrection) {
+            const file = await this.transcriptPath();
+            assert.ok(file);
+            await writeFile(file, (await readFile(file, "utf8")).replace(submissionRow(this.correction) + "\n", ""));
+          }
+          return result;
+        }
+        return super.steer(handle, message);
+      }
+    }
+    const plane = new CorrectionNudge(dir, [
+      { assistant: { text: "not JSON" } }, { outcome: "blocked" }, { assistant: { text: '{"ok":true}' } }
+    ]);
+    const runtime = makeRuntime(plane, { maxAttempts: 5, receiptTimeoutMs: 1, blockedRecoveryBound: 1 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAttemptStart: async (_id: number, attempt: number) => {
+        const file = await plane.transcriptPath();
+        if (lateCorrection && attempt === 3) {
+          assert.ok(file && plane.correction);
+          await appendFile(file, submissionRow(plane.correction) + "\n");
+        }
+        if (attempt === (lateCorrection ? 4 : 3)) {
+          assert.ok(file && plane.nudge);
+          await appendFile(file, submissionRow(plane.nudge) + "\n" + assistantLine({ text: '{"ok":false}' }) + "\n");
+        }
+      },
+      recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    try {
+      const held = runtime.createWorkerSession({ engine: "claude" });
+      assert.deepEqual(await held.send("decide", { schema: okSchema }), { ok: altered });
+      assert.equal(plane.dispatchCount, 1);
+      assert.equal(plane.messages.length, altered ? 3 : 2);
+      if (altered) {
+        const attempt = records.at(-1)?.attempts[lateCorrection ? 3 : 2];
+        assert.match(attempt?.failure?.message ?? "", /^the correction was submitted, but the session received different text:/);
+        assert.equal(attempt?.rawOutput, '{"ok":false}');
+      }
+    } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+}

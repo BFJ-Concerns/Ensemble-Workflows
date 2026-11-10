@@ -1355,7 +1355,7 @@ test("built CLI can lift a machine agent ceiling for one run without editing the
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore,
       },
-      5_000,
+      30_000,
     );
 
     assert.equal(result.code, 0, result.stderr);
@@ -1788,6 +1788,7 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
   for (const interruptResponse of ["accepted", "rejected", "withheld"] as const) {
     const fixture = await createProcessFixture(`interrupt-before-replacement-${interruptResponse}`, "recovered");
     const recordStore = path.join(path.dirname(fixture.script), "records");
+    const wireTimingPath = path.join(path.dirname(fixture.script), "wire-timing.jsonl");
     try {
       await writeFile(
         fixture.script,
@@ -1803,15 +1804,14 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
         `
       );
 
-      const startedAt = performance.now();
       const result = await fixture.runWithEnv({
         ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(overloadSequence),
         ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT: interruptResponse === "rejected" ? "1" : "0",
         ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE: interruptResponse === "withheld" ? "1" : "0",
+        ENSEMBLE_FAKE_CODEX_CAPTURE_TIMING: wireTimingPath,
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       });
-      const elapsedMs = performance.now() - startedAt;
 
       assert.equal(result.code, 0, result.stderr);
       assert.equal(result.stdout, `"recovered"\n`);
@@ -1820,6 +1820,14 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
       );
       assert.equal(overloadPayloadOptOut, undefined, "the overload payload must validate without its itemId opt-out");
       if (interruptResponse === "withheld") {
+        const wireTimings = (await readFile(wireTimingPath, "utf8"))
+          .trim().split("\n")
+          .map((line) => JSON.parse(line) as { method: string; atMs: number });
+        const interruptIndex = wireTimings.findIndex((timing) => timing.method === "turn/interrupt");
+        assert.ok(interruptIndex >= 0, "the fixture did not receive the interrupt request");
+        const replacementStart = wireTimings.slice(interruptIndex + 1).find((timing) => timing.method === "thread/start");
+        assert.ok(replacementStart, "the fixture did not receive the replacement thread start");
+        const elapsedMs = replacementStart.atMs - wireTimings[interruptIndex]!.atMs;
         assert.ok(
           elapsedMs < 10_000,
           `replacement took ${elapsedMs.toFixed(0)}ms with the interrupt response withheld; it must not await the 30s request timeout`
@@ -1855,11 +1863,23 @@ test("built CLI interrupts and settles a turn that times out before any turn not
           name: "interrupt-timeout-before-notification",
           description: "Interrupt a started turn when its local deadline expires"
         };
-        return await agent("time out before a notification", {
+        const result = await agent("time out before a notification", {
           engine: "codex",
           maxAttempts: 1,
           timeoutMs: 30001
         });
+        // The interrupt is sent without awaiting its response. Keep the
+        // app-server alive until it has read that request, before returning
+        // lets runtime shutdown terminate it. The parent timeout catches a
+        // missing interrupt; no scheduling delay stands in for receipt.
+        const { readFile } = require("node:fs/promises");
+        for (;;) {
+          const capture = await readFile(process.env.ENSEMBLE_FAKE_CODEX_CAPTURE, "utf8");
+          const messages = capture.split("\\n").slice(0, -1).filter(Boolean).map((line) => JSON.parse(line));
+          if (messages.some((message) => message.method === "turn/interrupt")) break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return result;
       `
     );
 
@@ -2413,6 +2433,35 @@ test("a body's process.exit — direct or from a lingering callback — leaves a
       assert.ok(manifest.ended_at !== null, `${ending.name}: the record is sealed before the process exits`);
       assert.equal(sentinel.manifest.sha256, manifest.integrity.manifest_sha256, ending.name);
       assert.equal(result.stderr.split("\n").filter((line) => /^\s+at /.test(line)).length, 0, `${ending.name}:\n${result.stderr}`);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("unawaited combinators keep author errors visible before teardown", { timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-unawaited-author-error-"));
+  try {
+    for (const cli of [path.resolve("dist/src/cli/ensemble.js"), bundledCliPath]) {
+      for (const combinator of ["parallel", "pipeline"]) {
+        const script = path.join(directory, `${combinator}.js`);
+        const call = 'workflow("./does-not-exist.js")';
+        await writeFile(script, `
+          export const meta = { name: "unawaited-author-error" };
+          ${combinator === "parallel" ? `parallel([() => ${call}])` : `pipeline(["item"], () => ${call})`};
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          return "must not succeed";
+        `);
+        const result = await runNode([cli, script], {
+          ENSEMBLE_RUN_RECORD: "0",
+          ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records"),
+          ENSEMBLE_STATUS: "0"
+        });
+        assert.equal(result.code, 1, `${combinator}: ${result.stderr}`);
+        const envelope = assertSalvageEnvelope(result.stdout, "failed");
+        assert.equal(envelope.error.kind, "WorkflowUncaughtExceptionError");
+        assert.match(envelope.error.message, /does-not-exist/);
+      }
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

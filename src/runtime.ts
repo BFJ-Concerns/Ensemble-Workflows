@@ -15,33 +15,32 @@ import {
   snapshotAgentCwd
 } from "./engine-option-validation.js";
 import {
-  AppServerExitedError,
   AgentPromptRejectedError,
+  appServerDiagnosticOf,
+  AppServerExitedError,
+  attachAgentIdentity,
+  CodexSchemaSubsetUnsupportedError,
+  describeError,
   EngineShutdownError,
+  failedTurnResultOf,
   FallbackTargetRejectedError,
+  firstDeltaMsOf,
   HoldRejectedError,
+  markRunEnding,
   MissingEngineError,
   MultiTurnUnsupportedError,
-  CodexSchemaSubsetUnsupportedError,
+  partialTranscriptOf,
+  partialWorkerTextOf,
   PreSpawnAuthorError,
   SessionBusyError,
   SessionClosedError,
-  TallyRejectedError,
-  appServerDiagnosticOf,
-  attachAgentIdentity,
   attachFailedTurnResult,
-  describeError,
-  failedTurnResultOf,
-  firstDeltaMsOf,
-  partialWorkerTextOf,
-  partialTranscriptOf,
   SubstrateRefusedError,
+  TallyRejectedError,
   TurnTimeoutError,
   UnknownEngineError,
   workerExitStatusOf
 } from "./errors.js";
-import { CLAUDE_CACHE_TTL_VARIABLE } from "./claude-control-plane.js";
-import { claudeCacheTtlToMs } from "./claude-engine.js";
 import { HoldManager, defaultHoldsDirectory, resolveHoldScope } from "./holds.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 import { RunProgress } from "./progress.js";
@@ -394,9 +393,7 @@ export class WorkerSession {
 
   /**
    * The idle gap at which this session reads stale: the resolved runtime
-   * option, or — on Claude — the machine-declared cache TTL when one
-   * overrides the injected default, so the mark and the cache expire on
-   * one clock.
+   * option, or the engine's default advisory threshold.
    */
   get staleAfterMs(): number {
     return this.#state.stalenessThresholdMs;
@@ -405,7 +402,7 @@ export class WorkerSession {
   /**
    * The advisory staleness mark: true once the idle gap since the
    * last settled turn has outlived the session's cache economics — the
-   * configured TTL cliff on Claude, the measured idle threshold on Codex.
+   * subscription cache TTL on Claude, the measured idle threshold on Codex.
    * Always false while marking is disabled, before the first turn, and
    * mid-turn. Advisory only: the runtime never blocks or reroutes a send
    * on it — a fresh session cannot inherit the old transcript, so only the
@@ -529,7 +526,7 @@ export class EnsembleRuntime {
     });
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
-    // 1 hour on both by default: Claude's is the injected cache TTL's
+    // 1 hour on both by default: Claude's is the subscription cache TTL's
     // cliff, Codex's the measured 60-minute coin-flip point — numerically
     // equal, semantically distinct knobs.
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 3_600_000;
@@ -627,15 +624,9 @@ export class EnsembleRuntime {
       ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {}),
       ...(options.holdPollIntervalMs !== undefined ? { holdPollIntervalMs: options.holdPollIntervalMs } : {}),
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
-      // The staleness cliff tracks the *effective* TTL: an explicit option
-      // wins, else a machine-declared TTL for the Claude workers (which
-      // outranks the injected 1h in the settings file) sets the cliff, else
-      // the injected default's hour — never two silently different clocks.
       ...(options.claudeSessionStaleAfterMs !== undefined
         ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs }
-        : declaredClaudeTtlMs(options.workerEnvironment) !== null
-          ? { claudeSessionStaleAfterMs: declaredClaudeTtlMs(options.workerEnvironment) as number }
-          : {}),
+        : {}),
       ...(options.codexSessionStaleAfterMs !== undefined
         ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs }
         : {})
@@ -654,6 +645,24 @@ export class EnsembleRuntime {
   setRunRecorder(recorder: RunRecordWriter | null): void {
     this.#runRecorder = recorder;
     this.progress.setArchiveDir(recorder?.archiveDir ?? null);
+  }
+
+  /**
+   * Holds a promise the script receives from a combinator — `parallel()`,
+   * `pipeline()` — open from creation to settlement, exactly as `agent()`
+   * holds its own, so a run ending that rejects it (the combinators rethrow
+   * the run's own ending) is marked handled at close when nothing awaits
+   * it, never raised against a run that ended cleanly. Before close, an
+   * unhandled rejection remains visible to the launcher.
+   */
+  trackCallPromise<T>(promise: Promise<T>): Promise<T> {
+    const call: AgentCall = { outward: null };
+    this.#openCalls.add(call);
+    const outward = promise.finally(() => {
+      this.#openCalls.delete(call);
+    });
+    call.outward = outward;
+    return outward;
   }
 
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
@@ -742,7 +751,9 @@ export class EnsembleRuntime {
 
   async #agentCall(prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null> {
     if (this.#closed) {
-      throw new Error("EnsembleRuntime is closed");
+      // A call made after the run began ending is the run's ending reaching
+      // the body, not a worker failing: marked, so a combinator rethrows it.
+      throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
     // `cwd` is read here and nowhere else on this path: what follows works
@@ -945,7 +956,7 @@ export class EnsembleRuntime {
       resolvedEffort: null,
       stripRoutes,
       // The mark's threshold is per engine shape: Claude's is the cliff at
-      // its configured (injected) cache TTL, Codex's the measured coin-flip
+      // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
       stalenessThresholdMs:
         engine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs,
@@ -978,7 +989,11 @@ export class EnsembleRuntime {
   }
 
   async #runSessionTurn(state: WorkerSessionState, prompt: string, turn: SessionTurnOptions): Promise<unknown> {
-    if (this.#closed || state.closed) {
+    if (this.#closed) {
+      // The run's ending, not the session's own close: marked for the combinators.
+      throw markRunEnding(new SessionClosedError());
+    }
+    if (state.closed) {
       throw new SessionClosedError();
     }
     if (state.inFlight) {
@@ -1120,7 +1135,7 @@ export class EnsembleRuntime {
       const placement = state.placement;
       state.placement = null;
       await this.#placement.close(placement).catch(() => undefined);
-      throw new SessionClosedError();
+      throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
     agentRecord.resolvedCwd = state.placement.cwd;
     this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
@@ -1403,6 +1418,11 @@ export class EnsembleRuntime {
         this.#settleTerminalStatus(agentRecord, error, "queued");
         agentRecord.queuedMs += Math.max(0, Date.now() - queuedAt);
         await this.#recordSettlementSafely(agentId, agentRecord);
+        // A queued leg the shutdown cancelled leaves as the run's ending
+        // too — this path never reaches #executeAgent's marking site.
+        if (error instanceof Error && this.#runSettlementCause(error, "queued") !== null) {
+          markRunEnding(error);
+        }
       }
       throw error;
     }
@@ -1487,6 +1507,11 @@ export class EnsembleRuntime {
         // tells the operator the chain behind it was spent.
         if (agentRecord.attempts.at(-1)?.chainDecision === "exhausted") {
           this.#announceFailure(engineName, identity, agentId, agentRecord, error);
+        }
+        // The run's own ending leaves marked, so the combinators rethrow
+        // it rather than collapse it to a value or an identity envelope.
+        if (error instanceof Error && this.#runSettlementCause(error) !== null) {
+          markRunEnding(error);
         }
         throw error;
       }
@@ -2707,12 +2732,6 @@ export class EnsembleRuntime {
 
 export async function createRuntime(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
   return EnsembleRuntime.create(options);
-}
-
-/** The machine-declared Claude cache TTL in ms, when one is declared and parseable. */
-function declaredClaudeTtlMs(workerEnvironment: RuntimeOptions["workerEnvironment"]): number | null {
-  const declared = workerEnvironment?.claude?.[CLAUDE_CACHE_TTL_VARIABLE];
-  return declared === undefined ? null : claudeCacheTtlToMs(declared);
 }
 
 export function defaultConcurrency(): number {

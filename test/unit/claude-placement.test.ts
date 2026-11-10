@@ -102,7 +102,8 @@ for (const outcome of ["complete", "refused"] as const) {
       transcriptPath: async () => transcript,
       steer: async () => ({ submitted: false, reason: "unused" }),
       stop: async () => {},
-      tmuxAvailable: async () => false
+      tmuxAvailable: async () => false,
+      close: async () => {}
     };
     const runtime = new EnsembleRuntime({
       engines: new EngineRegistry([new ClaudeEngineAdapter({ cwd: dir, controlPlane: plane })]),

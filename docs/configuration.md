@@ -168,6 +168,31 @@ that refuses the control-command scope fails that command; Ensemble does not
 retry inside the launcher's box, where it could start the shared supervisor.
 The best-effort worker placement below concerns adoption of existing processes.
 
+Cancelling a control command — a Claude dispatch whose caller gave up
+waiting, or a run ending while a dispatch waits for its session — signals
+that command's own process alone: SIGTERM, then SIGKILL two seconds later,
+with a further second for its output to close. Its process group, its
+descendants and its scope are left alone, so a supervisor the command started
+keeps serving every other session. A dispatch cancelled before its session
+was accepted leaves Ensemble owning the dispatch's name until the run ends:
+a session the supervisor registers under that name is then stopped and
+removed with its settings file. Where the run's end cannot confirm that —
+the roster cannot be read, the session's teardown is not confirmed, or no
+session had registered when it looked — stderr says so:
+
+```text
+[claude] cancelled launch <name> not reclaimed: <reason>; a session registering under that name is left for the operator
+```
+
+Such a session holds no prompt, since Ensemble submits the opening only after
+registration. `claude agents` lists it by that name, and `claude stop` and
+`claude rm` end it. Its settings file is left for the next launcher's sweep,
+which removes it once this launcher has ended. Library event listeners
+receive `claude/launchUnreclaimed` with the dispatch name and the reason. A
+library caller building `ClaudeCliControlPlane` itself sets the cancellation
+bounds with `commandBounds` (`stopGraceMs`, `drainMs`) and the run-end
+reclamation's bound with `reclaimTimeoutMs` (30 seconds by default).
+
 Claude sessions and the Codex app-server are placed in transient scopes in
 the slice that holds the launcher. `worker_scope` chooses one scope per Claude
 worker and one for the run's shared Codex app-server (`worker`, the default),

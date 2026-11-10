@@ -473,6 +473,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
         return;
       }
+      if (event.method === "claude/launchUnreclaimed") {
+        const name = boundedEvidence(String(event.params.name ?? "unknown"));
+        stderr.write(
+          `[claude] cancelled launch ${name} not reclaimed: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}; ` +
+          "a session registering under that name is left for the operator\n"
+        );
+        return;
+      }
       if (event.method === "codex/workerScopePlacement") {
         if (event.params.kind === "refused") {
           const pid = typeof event.params.pid === "number" ? event.params.pid : "?";

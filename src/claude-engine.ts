@@ -289,6 +289,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #acceptedTurnCopy = "";
   /** The submission the session accepted whose receipt has not verified, if any. Outlives the turn that made it. */
   #pending: PendingSubmission | null = null;
+  /** A message the valve refused before submission; the next attempt sends this exact copy. */
+  #refused: Submission | null = null;
   /** A differing receipt survives nudges until a fresh answer is requested. */
   #deliveryFailure: ClaudeDeliveryError | null = null;
   /** Start of the current answer's work; recovery-nudge receipts never move it. */
@@ -343,6 +345,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#turnSchema = turn.schema;
     this.#turn = "unsent";
     this.#deliveryFailure = null;
+    this.#refused = null;
     if (this.#pending !== null) {
       // The turn that made it has settled without it: whatever reply it
       // still draws answers nothing the script is waiting on.
@@ -386,6 +389,18 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
+
+      if (this.#refused !== null && this.#handle !== null) {
+        const handle = this.#handle;
+        // A refusal can span native input cancellation. Judge the retry's
+        // receipt after those rows while retaining the task's earlier work.
+        const submission = { ...this.#refused, mark: (await this.#readTranscript(handle, context)).entries.length };
+        fromIndex = submission.carriesTurn ? submission.mark : this.#collectionMark;
+        await this.#deliver(handle, submission, context);
+        const transcript = await this.#runToCompletion(handle, fromIndex, context);
+        if (this.#deliveryFailure !== null) throw this.#deliveryFailure;
+        return this.#buildResult(handle, transcript, fromIndex);
+      }
 
       const held = this.#multiTurn ? this.#handle : null;
       if (held !== null) {
@@ -463,11 +478,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // too, and so is the usage it recorded: a result-less failure must
         // not un-learn spend the run has already paid for (failures carry
         // their evidence).
-        if (!this.#multiTurn) {
-          // One-shot only: a held session survives its turn's operational
-          // failure — tearing it down would leave the retry with no handle
-          // and a silent fresh dispatch as the only path, a continuity
-          // failure. Session teardown belongs to close().
+        // An explicitly refused message keeps its session for an exact retry.
+        // Other one-shot operational failures end their session. Held-session
+        // teardown belongs to close(): redispatch would lose continuity.
+        if (!this.#multiTurn && !(error instanceof ClaudeValveError && this.#refused !== null)) {
           await this.#teardown();
         }
         return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
@@ -590,10 +604,13 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * pending.
    */
   async #deliver(handle: ClaudeSessionHandle, submission: Submission, observers: AttemptObservers): Promise<void> {
+    if (submission.carriesTurn) this.#collectionMark = submission.mark;
     const outcome = await this.#controlPlane.steer(handle, submission.message);
     if (!outcome.submitted) {
+      this.#refused = submission;
       throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
     }
+    this.#refused = null;
     this.#accept(submission);
     await this.#requireReceipt(handle, submission, observers);
   }
@@ -873,6 +890,13 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       absences = 0;
 
       if (status.state === "blocked") {
+        // The native roster can report a question before the opening's
+        // transcript is flushed. Its receipt must verify before a nudge
+        // can take a later boundary; otherwise the opening acknowledges it.
+        if (!sawLife && opening !== undefined) {
+          await this.#pollDelay();
+          continue;
+        }
         const canNudge = this.#nudges < this.#blockedRecoveryBound && (await this.#controlPlane.tmuxAvailable());
         if (!canNudge) {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
@@ -1148,6 +1172,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // A stopped session runs nothing, so nothing submitted to it is pending,
     // and the turn's prompt is in no session: the next launch submits it anew.
     this.#pending = null;
+    this.#refused = null;
     this.#turn = "unsent";
     this.#deliveryFailure = null;
     this.#collectionMark = 0;

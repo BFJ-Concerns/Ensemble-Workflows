@@ -980,9 +980,27 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       if (!created.ok) return refused("tmux new-session", created);
 
       await delay(this.#valveAttachSettleMs, signal);
+      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
+      // Native input dialogs consume Ctrl+G instead of opening the editor.
+      // Decline the request for human input, then wait for the daemon to
+      // acknowledge that the dialog has closed before addressing the prompt.
+      if (status.state === "blocked" && status.waitingFor !== undefined && (await this.poll(handle)).waitingFor !== undefined) {
+        const cancelled = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Escape"]);
+        if (!cancelled.ok) return refused("tmux send-keys (cancel input)", cancelled);
+        for (;;) {
+          const current = await this.poll(handle);
+          if (!current.present) return { submitted: false, reason: "the session left the daemon's roster while cancelling input" };
+          // An empty native prompt can itself have state "blocked". The
+          // dialog is gone when its specific input request is gone.
+          if (current.state !== "unknown" && current.waitingFor === undefined) break;
+          if (Date.now() >= copyDeadline) {
+            return { submitted: false, reason: `blocked input did not clear within ${this.#valveDeliveryTimeoutMs}ms` };
+          }
+          await delay(50, signal);
+        }
+      }
       const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
       if (!opened.ok) return refused("tmux send-keys (editor)", opened);
-      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
       for (;;) {
         try {
           await access(copied);

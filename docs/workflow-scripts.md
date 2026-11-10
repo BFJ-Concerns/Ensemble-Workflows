@@ -539,12 +539,21 @@ session's transcript shows it received exactly the text sent. Two failures
 are told apart:
 
 - `claude-valve-error`: the message was never submitted. Nothing reached the
-  worker, and the retry sends the same message again.
+  worker, and the retry sends the same message again in the same session,
+  within the call's `maxAttempts` limit. A refused blocked-worker nudge does
+  not restart the task or replace the nudge with a correction.
 - `claude-delivery-error`: the message was submitted, but the transcript
   shows the worker received different text, or shows no trace of it within
   the receipt deadline. The message names the sizes and SHA-256 digests of
   what was sent and what arrived. A reply to altered text is never returned
   as the turn's value.
+
+Ensemble verifies the opening prompt's receipt before nudging a Claude worker.
+For a worker awaiting native input, it cancels the input dialog and waits for
+the daemon to clear its input request.
+This exposes the normal prompt so Claude Code's external editor can load the
+nudge. An ordinary empty prompt needs no cancellation. If the input request
+does not clear, the valve refuses the message without submitting it.
 
 In a `session()`, a turn the worker took on altered text runs to its end
 before the attempt fails, with its text kept on the attempt record, so the

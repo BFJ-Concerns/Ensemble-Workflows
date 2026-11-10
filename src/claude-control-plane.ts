@@ -44,19 +44,34 @@ export interface ClaudeControlPlane {
   /** Locate the session's JSONL transcript on disk, or null if not yet present. */
   transcriptPath(handle: ClaudeSessionHandle): Promise<string | null>;
   /**
-   * Inject a message into the live session (the valve). A refusal names the
-   * step that failed and what it said, so the turn's failure record carries
-   * the cause rather than the bare fact of non-delivery.
+   * Type a message into the live session and submit it (the valve). The
+   * result says whether the message was submitted, never whether it arrived:
+   * see `ValveSubmission`.
    */
-  steer(handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery>;
+  steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission>;
   /** Tear the session down (stop + remove). Best-effort; never throws. */
   stop(handle: ClaudeSessionHandle): Promise<void>;
   /** Whether the tmux valve is usable; gates in-session correction and blocked recovery. */
   tmuxAvailable(): Promise<boolean>;
 }
 
-/** The valve's verdict on one injection: delivered, or refused with the failing step's account. */
-export type ValveDelivery = { delivered: true } | { delivered: false; reason: string };
+/**
+ * What the valve can attest about one injection: whether it submitted the
+ * message. Submission is not delivery. Once the submit keystroke is
+ * accepted the session may run a turn on whatever text it received, and
+ * only the session's transcript says what that text was — the receipt
+ * (`submissionReceipt`), which the engine reads, not the valve.
+ *
+ * - `submitted: false` — nothing was submitted, the session's conversation
+ *   is as it was, and the same message may be sent again. The reason names
+ *   the step that failed and what it said, so the turn's failure record
+ *   carries the cause.
+ * - `submitted: true` — the submit keystroke was accepted. A failure the
+ *   valve cannot place before that keystroke is reported this way too: a
+ *   wrong "not submitted" invites a second copy of a message the session
+ *   already holds, while a wrong "submitted" costs one missing receipt.
+ */
+export type ValveSubmission = { submitted: true } | { submitted: false; reason: string };
 
 export interface ClaudeDispatchOptions {
   prompt: string;
@@ -599,9 +614,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return null;
   }
 
-  async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery> {
+  async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
     if ((await this.poll(handle)).present === false) {
-      return { delivered: false, reason: "the session is no longer in the daemon's roster" };
+      return { submitted: false, reason: "the session is no longer in the daemon's roster" };
     }
 
     this.#valveCounter += 1;
@@ -623,7 +638,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       socketDir = await mkdtemp(path.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
-      return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
+      return { submitted: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
     }
     const server = ["-S", path.join(socketDir, "tmux.sock")];
 
@@ -660,7 +675,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         return refused("tmux send-keys (submit)", submitted);
       }
       await delay(this.#valveKillSettleMs);
-      return { delivered: true };
+      return { submitted: true };
     } finally {
       // The server is this valve's alone, so ending it ends the pane too.
       // tmux leaves its socket file behind; the directory takes it.
@@ -972,9 +987,9 @@ function normaliseState(state: unknown): ClaudeSessionState {
 export const VALVE_SLICE_BYTES = 8 * 1024;
 
 /** A refused valve step, named with the bounded text tmux gave for it. */
-function refused(step: string, result: ExecResult): ValveDelivery {
+function refused(step: string, result: ExecResult): ValveSubmission {
   const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
-  return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
+  return { submitted: false, reason: `${step} failed: ${boundedEvidence(said)}` };
 }
 
 /**

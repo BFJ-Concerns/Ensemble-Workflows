@@ -350,6 +350,27 @@ and keep the worker's partial text, exit status, and the engine's diagnostic
 on the attempt record. A call whose deadline should end it outright sets
 `maxAttempts: 1`.
 
+A message Ensemble sends into a live Claude session — a follow-up turn, a
+correction, a nudge to a blocked worker — counts as delivered only when the
+session's transcript shows it received exactly the text sent. Two failures
+are told apart:
+
+- `claude-valve-error`: the message was never submitted. Nothing reached the
+  worker, and the retry sends the same message again.
+- `claude-delivery-error`: the message was submitted, but the transcript
+  shows the worker received different text, or shows no trace of it within
+  the receipt deadline. The message names the sizes and SHA-256 digests of
+  what was sent and what arrived. A reply to altered text is never returned
+  as the turn's value.
+
+In a `session()`, a turn the worker took on altered text runs to its end
+before the attempt fails, with its text kept on the attempt record, so the
+session is between turns when the retry begins. The retry never sends the
+follow-up a second time as though it were new: a submission that turns out to
+have landed late is collected as the answer, and otherwise the follow-up goes
+again with a preface telling the worker it replaces the earlier copy. Because
+of that preface a leading `/skill` line is not expanded on the retry.
+
 When a single `ensemble agent` run times out, the error says which deadline
 expired, because the remedies differ: the call's own `timeoutMs` (raise it or
 narrow the work), or the Codex transport's request deadline (where raising

@@ -128,6 +128,9 @@ const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
   ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],
   ["claude-blocked", { class: "unclassified", rule: "claude.blocked" }],
   ["claude-valve-error", { class: "unclassified", rule: "claude.valve" }],
+  // Submitted, but the transcript never showed the session holding the text
+  // as sent: evidence about the delivery, not about the engine's availability.
+  ["claude-delivery-error", { class: "unclassified", rule: "claude.delivery" }],
   ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);

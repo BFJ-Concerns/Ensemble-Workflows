@@ -811,8 +811,8 @@ test("steer returns false when either tmux delivery step fails", async (context)
           "x\t\r\n😀\r".repeat(100)
         );
 
-        assert.equal(steered.delivered, false);
-        if (!steered.delivered) {
+        assert.equal(steered.submitted, false);
+        if (!steered.submitted) {
           assert.match(steered.reason, /delivery refused/);
           assert.match(steered.reason, failedStep === "enter" ? /submit/ : failedStep === "literal" ? /slice 1 of/ : /slice 2 of/);
         }
@@ -994,7 +994,7 @@ test("the valve's private tmux server starts from the declared environment, and 
       valveKillSettleMs: 0
     });
     const steered = await controlPlane.steer({ id: "valve-1", sessionId, name: "valve-probe", cwd: dir }, "continue");
-    assert.deepEqual(steered, { delivered: true });
+    assert.deepEqual(steered, { submitted: true });
 
     const invocations = (await readFile(invocationsPath, "utf8"))
       .trim()
@@ -1093,7 +1093,7 @@ esac
       valveKillSettleMs: 1_000
     });
     const steered = await controlPlane.steer({ id: "valve-real-1", sessionId, name: "valve-real-probe", cwd: dir }, "continue");
-    assert.deepEqual(steered, { delivered: true });
+    assert.deepEqual(steered, { submitted: true });
 
     assert.equal(await readFile(path.join(dir, "attach-env"), "utf8"), "declared-gateway-token\n1\n");
     assert.equal(await readFile(path.join(dir, "attach-input"), "utf8"), valveSlices("continue").join("") + "\n");
@@ -1227,12 +1227,12 @@ test("a follow-up turn larger than one argv element reaches the valve whole, in 
     const expected = message + "    😀\né\n中    \n";
     assert.ok(Buffer.byteLength(message, "utf8") > 256 * 1024);
 
-    assert.deepEqual(await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, ""), { delivered: true });
+    assert.deepEqual(await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, ""), { submitted: true });
     assert.equal(await readFile(sendKeysPath, "utf8"), '["Enter"]\n');
     await writeFile(sendKeysPath, "");
 
     const steered = await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, message + controls);
-    assert.deepEqual(steered, { delivered: true });
+    assert.deepEqual(steered, { submitted: true });
 
     const sends = (await readFile(sendKeysPath, "utf8"))
       .trim()

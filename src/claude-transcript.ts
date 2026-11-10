@@ -73,6 +73,56 @@ interface TranscriptMessage {
   stop_reason?: unknown;
 }
 
+/**
+ * The text a row records the session receiving from a submission, or null
+ * for a row no submission wrote. A user row whose content is a plain string
+ * is a submission; a user row carrying content blocks is a tool result.
+ * Which rows count is this function's one decision, and `submissionReceipt`
+ * judges whatever it returns.
+ */
+export function submittedUserText(entry: TranscriptEntry): string | null {
+  if (entry.type !== "user") {
+    return null;
+  }
+  const content = entry.message?.content;
+  return typeof content === "string" ? content : null;
+}
+
+/**
+ * What the transcript shows the session received for one submitted message
+ * — the only evidence that a submission was delivered.
+ *
+ * - `verified` — the session holds the message exactly as sent.
+ * - `differing` — the session took a submission in its place whose text is
+ *   not the message (`received`). A turn is running, or ran, on text nobody
+ *   sent; its reply answers that text and is never the message's answer.
+ * - `missing` — the transcript shows no submission yet. That is not proof
+ *   none will land: a later read from the same mark may find one.
+ */
+export type SubmissionReceipt =
+  | { state: "verified" }
+  | { state: "differing"; received: string }
+  | { state: "missing" };
+
+/**
+ * Read the receipt for `message`, submitted when the transcript held `mark`
+ * entries: the first submission recorded at or after the mark, compared
+ * with the message for equality and nothing looser. Pure, so the same
+ * submission can be judged again from the same mark for as long as its
+ * receipt is missing.
+ */
+export function submissionReceipt(entries: TranscriptEntry[], mark: number, message: string): SubmissionReceipt {
+  for (let index = Math.max(0, mark); index < entries.length; index += 1) {
+    const entry = entries[index];
+    const received = entry === undefined ? null : submittedUserText(entry);
+    if (received === null) {
+      continue;
+    }
+    return received === message ? { state: "verified" } : { state: "differing", received };
+  }
+  return { state: "missing" };
+}
+
 /** Parse a whole transcript file's text into entries, skipping blank/garbled lines. */
 export function parseTranscriptText(text: string): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];

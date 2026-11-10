@@ -260,6 +260,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #controlPlane: ClaudeControlPlane;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #reportedUsage: TokenUsageBreakdown | null = null;
+  /** Cumulative native usage already covered by settled attempts in each session. */
+  #settledUsage = new Map<string, TokenUsageBreakdown>();
+  #usageAtSettlement: { sessionId: string; total: TokenUsageBreakdown } | null = null;
   /** The background tasks this attempt's turn waited on, in the order observed; reset per attempt. */
   #waits: BackgroundTaskWait[] = [];
   /**
@@ -347,6 +350,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
     this.#settlement = settlement;
     return settlement.finally(() => {
+      if (this.#usageAtSettlement !== null) {
+        this.#settledUsage.set(this.#usageAtSettlement.sessionId, this.#usageAtSettlement.total);
+        this.#usageAtSettlement = null;
+      }
       if (this.#settlement === settlement) {
         this.#settlement = null;
       }
@@ -364,6 +371,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     this.#assertOpen();
     this.#reportedUsage = null;
+    this.#usageAtSettlement = null;
     this.#waits = [];
     this.#nudges = 0;
     let fromIndex = 0;
@@ -767,7 +775,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
           await this.#requireReceipt(handle, opening, observers);
         }
         sawLife = true;
-        this.#reportUsage(handle, transcript.entries, fromIndex, observers);
+        this.#reportUsage(handle, transcript.entries, observers);
         try {
           this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
           this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
@@ -810,10 +818,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         }
       }
       if (!sawLife && Date.now() >= firstLifeDeadline) {
-        throw new ClaudeFirstLifeTimeoutError(
-          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)` +
-          (handle.launchFailure === undefined ? "" : `; launch: ${handle.launchFailure.message}`)
-        );
+        throw this.#firstLifeFailure(handle,
+          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`);
+
       }
 
       const status = await this.#controlPlane.poll(handle);
@@ -823,8 +830,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         absences += 1;
         if (absences >= MAX_CONSECUTIVE_ABSENCES) {
           if (!sawLife && opening !== undefined) {
-            throw new ClaudeFirstLifeTimeoutError("worker left the roster before writing an opening transcript" +
-              (handle.launchFailure === undefined ? "" : `; launch: ${handle.launchFailure.message}`));
+            throw this.#firstLifeFailure(handle, "worker left the roster before writing an opening transcript");
           }
           throw new ClaudePollTimeoutError("worker left the roster before completing");
         }
@@ -907,6 +913,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     }
   }
 
+  #firstLifeFailure(handle: ClaudeSessionHandle, message: string): ClaudeWorkerError {
+    return handle.launchFailure === undefined
+      ? new ClaudeFirstLifeTimeoutError(message)
+      : new ClaudeDeliveryError(`${message}; launch cleanup remains unconfirmed: ${handle.launchFailure.message}`);
+  }
+
   #buildResult(handle: ClaudeSessionHandle, transcript: TranscriptFile, fromIndex: number): TurnResult {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
@@ -925,8 +937,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // served model — evidence, never the dispatched flag, so a clamped or
     // silently defaulted dispatch is visible in the record as what ran.
     const resolvedEffort = effortSince(entries, fromIndex);
-    const usage = usageSince(entries, fromIndex);
-    this.#reportUsage(handle, entries, fromIndex);
+    const usage = this.#unaccountedUsage(handle, entries);
+    this.#reportUsage(handle, entries);
     const usageEvent = this.#usageEvent(handle, usage, usage);
     return {
       text,
@@ -1002,7 +1014,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       transcript,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex),
+      usage: this.#unaccountedUsage(handle, transcript.entries),
       apiError: apiErrorSince(transcript.entries, fromIndex),
       backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
     };
@@ -1032,6 +1044,17 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   }
 
   /**
+   * A pending submission may be read again from an older entry mark after a
+   * failed attempt. Count only growth beyond the session total that earlier
+   * attempts already covered, while retaining new API calls in the same work.
+   */
+  #unaccountedUsage(handle: Pick<ClaudeSessionHandle, "sessionId">, entries: TranscriptEntry[]): TokenUsageBreakdown {
+    const total = usageSince(entries);
+    this.#usageAtSettlement = { sessionId: handle.sessionId, total };
+    return subtractUsage(total, this.#settledUsage.get(handle.sessionId) ?? null);
+  }
+
+  /**
    * Feed transcript-derived usage through the same event shape Codex emits.
    * The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
@@ -1042,8 +1065,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * and the archived event's `total` is the same figure the agent record's
    * usage summarises — budget and archive read one arithmetic.
    */
-  #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number, observers?: AttemptObservers): void {
-    const total = usageSince(entries, fromIndex);
+  #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], observers?: AttemptObservers): void {
+    const total = this.#unaccountedUsage(handle, entries);
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
       return;

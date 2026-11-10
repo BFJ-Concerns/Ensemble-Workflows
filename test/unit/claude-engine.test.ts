@@ -2192,3 +2192,64 @@ test("a successful native turn retains the account of a launch that could not be
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+for (const grows of [false, true]) {
+  test(`pending held work is charged once across retries${grows ? " while later API usage still counts" : ""}`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-pending-spend-"));
+    class AbsentWhilePending extends FakeControlPlane {
+      override async poll(): Promise<ClaudeSessionStatus> { return { status: "absent", state: "unknown", present: false }; }
+    }
+    const plane = new AbsentWhilePending(dir, [{ assistant: { id: "first-call", text: "working", input: 100, output: 10, stop: "tool_use" } }], { openingArrival: sent => sent.trimEnd() });
+    const runtime = makeRuntime(plane, { maxAttempts: 2 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAttemptStart: async (_id: number, attempt: number) => {
+        if (grows && attempt === 2) {
+          const file = await plane.transcriptPath();
+          assert.ok(file);
+          await appendFile(file, assistantLine({ id: "later-call", text: "more work", input: 20, output: 5, stop: "tool_use" }));
+        }
+      },
+      recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    try {
+      const held = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await held.send("decide "), null);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.equal(attempts.length, 2);
+      assert.equal(plane.dispatchCount, 1);
+      assert.equal(plane.steerCount, 0, "the retry submitted into unfinished pending work");
+      assert.deepEqual(attempts.map(attempt => attempt.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0)), [110, grows ? 25 : 0]);
+      assert.equal(runtime.budget.spent("claude"), grows ? 135 : 110);
+    } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+}
+
+for (const present of [false, true]) {
+  test(`an unclean launch without a transcript stays non-availability while roster presence is ${present}`, async () => {
+    class UncleanLaunch extends MissingTranscriptControlPlane {
+      launches = 0;
+      override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+        this.launches += 1;
+        return { ...await super.dispatch(options), launchFailure: {
+          message: "launch cleanup remains unconfirmed",
+          diagnostics: { claudeLaunch: { cleanupConfirmed: false, failure: "launch failed" } }
+        } };
+      }
+      override async poll(): Promise<ClaudeSessionStatus> { return { status: present ? "busy" : "absent", state: "unknown", present }; }
+      override async stop(): Promise<void> { /* The control plane cannot confirm removal. */ }
+    }
+    const plane = new UncleanLaunch();
+    const runtime = makeRuntime(plane, { maxAttempts: 1, firstLifeTimeoutMs: present ? 1 : 5_000 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); } } as unknown as RunRecordWriter);
+    try {
+      assert.equal(await runtime.agent("decide", { engine: "claude", fallback: [{ engine: "claude", model: "unused" }] }), null);
+      assert.equal(plane.launches, 1, "an unclean launch advanced fallback");
+      assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "claude-delivery-error");
+      assert.deepEqual(records.at(-1)?.attempts[0]?.classification, { class: "unclassified", rule: "claude.delivery" });
+      assert.match(JSON.stringify(records.at(-1)?.attempts[0]?.diagnostics), /launch failed/);
+    } finally { await runtime.close(); }
+  });
+}

@@ -20268,6 +20268,9 @@ var ClaudeEngineInvocation = class {
   #controlPlane;
   #onEvent;
   #reportedUsage = null;
+  /** Cumulative native usage already covered by settled attempts in each session. */
+  #settledUsage = /* @__PURE__ */ new Map();
+  #usageAtSettlement = null;
   /** The background tasks this attempt's turn waited on, in the order observed; reset per attempt. */
   #waits = [];
   /**
@@ -20344,6 +20347,10 @@ var ClaudeEngineInvocation = class {
     const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
     this.#settlement = settlement;
     return settlement.finally(() => {
+      if (this.#usageAtSettlement !== null) {
+        this.#settledUsage.set(this.#usageAtSettlement.sessionId, this.#usageAtSettlement.total);
+        this.#usageAtSettlement = null;
+      }
       if (this.#settlement === settlement) {
         this.#settlement = null;
       }
@@ -20359,6 +20366,7 @@ var ClaudeEngineInvocation = class {
   async #runAttempt(context) {
     this.#assertOpen();
     this.#reportedUsage = null;
+    this.#usageAtSettlement = null;
     this.#waits = [];
     this.#nudges = 0;
     let fromIndex = 0;
@@ -20664,7 +20672,7 @@ var ClaudeEngineInvocation = class {
           await this.#requireReceipt(handle, opening, observers);
         }
         sawLife = true;
-        this.#reportUsage(handle, transcript.entries, fromIndex, observers);
+        this.#reportUsage(handle, transcript.entries, observers);
         try {
           this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
           this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
@@ -20698,8 +20706,9 @@ var ClaudeEngineInvocation = class {
         }
       }
       if (!sawLife && Date.now() >= firstLifeDeadline) {
-        throw new ClaudeFirstLifeTimeoutError(
-          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)` + (handle.launchFailure === void 0 ? "" : `; launch: ${handle.launchFailure.message}`)
+        throw this.#firstLifeFailure(
+          handle,
+          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
         );
       }
       const status = await this.#controlPlane.poll(handle);
@@ -20708,7 +20717,7 @@ var ClaudeEngineInvocation = class {
         absences += 1;
         if (absences >= MAX_CONSECUTIVE_ABSENCES) {
           if (!sawLife && opening !== void 0) {
-            throw new ClaudeFirstLifeTimeoutError("worker left the roster before writing an opening transcript" + (handle.launchFailure === void 0 ? "" : `; launch: ${handle.launchFailure.message}`));
+            throw this.#firstLifeFailure(handle, "worker left the roster before writing an opening transcript");
           }
           throw new ClaudePollTimeoutError("worker left the roster before completing");
         }
@@ -20774,6 +20783,9 @@ var ClaudeEngineInvocation = class {
       throw new EngineShutdownError("claude");
     }
   }
+  #firstLifeFailure(handle, message) {
+    return handle.launchFailure === void 0 ? new ClaudeFirstLifeTimeoutError(message) : new ClaudeDeliveryError(`${message}; launch cleanup remains unconfirmed: ${handle.launchFailure.message}`);
+  }
   #buildResult(handle, transcript, fromIndex) {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
@@ -20784,8 +20796,8 @@ var ClaudeEngineInvocation = class {
     }
     const resolvedModel = resolvedModelSince(entries, fromIndex);
     const resolvedEffort = effortSince(entries, fromIndex);
-    const usage2 = usageSince(entries, fromIndex);
-    this.#reportUsage(handle, entries, fromIndex);
+    const usage2 = this.#unaccountedUsage(handle, entries);
+    this.#reportUsage(handle, entries);
     const usageEvent = this.#usageEvent(handle, usage2, usage2);
     return {
       text,
@@ -20855,7 +20867,7 @@ var ClaudeEngineInvocation = class {
       transcript,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex),
+      usage: this.#unaccountedUsage(handle, transcript.entries),
       apiError: apiErrorSince(transcript.entries, fromIndex),
       backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
     };
@@ -20878,6 +20890,16 @@ var ClaudeEngineInvocation = class {
     }
   }
   /**
+   * A pending submission may be read again from an older entry mark after a
+   * failed attempt. Count only growth beyond the session total that earlier
+   * attempts already covered, while retaining new API calls in the same work.
+   */
+  #unaccountedUsage(handle, entries) {
+    const total = usageSince(entries);
+    this.#usageAtSettlement = { sessionId: handle.sessionId, total };
+    return subtractUsage(total, this.#settledUsage.get(handle.sessionId) ?? null);
+  }
+  /**
    * Feed transcript-derived usage through the same event shape Codex emits.
    * The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
@@ -20888,8 +20910,8 @@ var ClaudeEngineInvocation = class {
    * and the archived event's `total` is the same figure the agent record's
    * usage summarises — budget and archive read one arithmetic.
    */
-  #reportUsage(handle, entries, fromIndex, observers) {
-    const total = usageSince(entries, fromIndex);
+  #reportUsage(handle, entries, observers) {
+    const total = this.#unaccountedUsage(handle, entries);
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
       return;

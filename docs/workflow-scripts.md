@@ -362,7 +362,10 @@ session's first transcript. A missing or differing receipt is
 fallback. One-shot retries stop the old session before relaunching. A held
 session follows an altered turn to its end before resending the complete
 opening through the valve; it is never relaunched. A worker that never writes
-a transcript fails as `claude-first-life-timeout`, an availability failure.
+a transcript normally fails as `claude-first-life-timeout`, an availability
+failure. A retained launch whose cleanup is unconfirmed remains an
+unclassified delivery failure even without a transcript, so it cannot advance
+fallback.
 A model context rejection after exact delivery retains its own diagnostic.
 
 The editor transport applies the same exact-text checks as follow-ups below.

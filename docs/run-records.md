@@ -576,6 +576,10 @@ The fields present throughout a record's lifetime are:
     `observed_failure` keeps the symptom the turn saw (a closed app-server, an
     aborted poll); `null` when the engine's own failure is the cause.
   - `diagnostics` and `token_usage_events` (the engine-native usage events).
+    When pending Claude work spans attempts, each attempt accounts only for
+    growth since the previous attempt's session total, even if its transcript
+    reference repeats earlier API calls. Summing attempts never charges that
+    earlier work twice.
     A failed Claude launch supplies `diagnostics.claudeLaunch`: `failure`
     keeps the launch's account, and `cleanupConfirmed` says whether it was
     safe to reject after teardown. `command` contains the dispatch command's `ok`, `exitCode`, `signal`, `stdout` and

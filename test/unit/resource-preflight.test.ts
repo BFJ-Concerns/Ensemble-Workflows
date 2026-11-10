@@ -234,10 +234,17 @@ test("a Codex marker identifies a denied caller without mistaking a malformed pa
   const denial = { requirement: requirement({ path: "/store" }), probedPath: "/store", code: "EROFS", message: "read-only" };
   assert.equal(diagnoseCallerSandbox({}, [denial]), null);
   assert.equal(diagnoseCallerSandbox({ CODEX_THREAD_ID: "an-unsandboxed-caller" }, [denial]), null);
-  const identified = diagnoseCallerSandbox({ CODEX_SANDBOX_NETWORK_DISABLED: "1" }, [denial]);
-  assert.equal(identified?.name, "Codex");
-  assert.match(identified?.lift ?? "", /danger-full-access/);
-  assert.equal(diagnoseCallerSandbox({ CODEX_SANDBOX_NETWORK_DISABLED: "1" }, [{ ...denial, code: "ENOTDIR" }]), null);
+  for (const marker of ["CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_NETWORK_PROXY_ACTIVE"]) {
+    const env = { [marker]: "1" };
+    const identified = diagnoseCallerSandbox(env, [denial]);
+    assert.equal(identified?.name, "Codex", marker);
+    assert.equal(identified?.evidence, `${marker}=1; filesystem or socket access denied`);
+    assert.match(identified?.lift ?? "", /danger-full-access/);
+    assert.equal(diagnoseCallerSandbox(env, []), null);
+    assert.equal(diagnoseCallerSandbox(env, [{ ...denial, code: "ENOTDIR" }]), null);
+    assert.equal(diagnoseCallerSandbox({ [marker]: "0" }, [denial]), null);
+  }
+  assert.equal(diagnoseCallerSandbox({ CODEX_NETWORK_ALLOW_LOCAL_BINDING: "0" }, [denial]), null);
 });
 
 test("a denied engine scratch directory refuses before the engine starts", async () => {

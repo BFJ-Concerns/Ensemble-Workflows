@@ -108,15 +108,17 @@ export interface CallerSandboxRule {
  */
 export const CALLER_SANDBOX_RULES: readonly CallerSandboxRule[] = [
   {
-    // Measured with Codex 0.167.0: workspace-write exports this marker and
-    // denies writes outside its roots with EROFS; danger-full-access does
-    // neither. The marker identifies Codex, not its filesystem policy.
+    // Codex workspace-write marks disabled networking or an active network
+    // proxy. Either identifies Codex, not its filesystem policy, so a
+    // filesystem or socket denial is also required.
     name: "Codex",
     lift: 'launch Ensemble with sandbox_mode="danger-full-access", or a permission profile granting these paths and Unix socket access',
-    detect: (env, denials) =>
-      env.CODEX_SANDBOX_NETWORK_DISABLED === "1" && denials.some((denial) => ["EROFS", "EACCES", "EPERM"].includes(denial.code))
-        ? "CODEX_SANDBOX_NETWORK_DISABLED=1; filesystem or socket access denied"
-        : null
+    detect: (env, denials) => {
+      const marker = ["CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_NETWORK_PROXY_ACTIVE"].find((key) => env[key] === "1");
+      return marker !== undefined && denials.some((denial) => ["EROFS", "EACCES", "EPERM"].includes(denial.code))
+        ? `${marker}=1; filesystem or socket access denied`
+        : null;
+    }
   }
 ];
 

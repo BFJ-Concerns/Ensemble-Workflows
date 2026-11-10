@@ -188,9 +188,9 @@ export interface RuntimeOptions {
   startupHandshakeTimeoutMs?: number;
   /**
    * Idle gap after which a Claude multi-turn worker reads stale — the
-   * deterministic cliff at the worker's configured prompt-cache TTL (the
-   * 1-hour TTL its dispatch injects), past which resuming pays a full
-   * uncached re-read. A library-level option like `requestTimeoutMs` —
+   * subscription's fixed one-hour prompt-cache TTL, past which resuming
+   * pays a full uncached re-read. A library-level option like
+   * `requestTimeoutMs` —
    * deliberately not a CLI flag or ambient setting — so library callers
    * and tests can reach expiry. Defaults to 1 hour.
    */

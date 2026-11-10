@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { readProcessStartTicks } from "../../src/process-owner-evidence.js";
-import { access, mkdtemp, realpath, rm, symlink, readFile } from "node:fs/promises";
+import { access, mkdtemp, realpath, rm, symlink, readFile, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 
@@ -16,7 +16,23 @@ export async function selectClaudeExecutable(executable: string, temporaryRoot: 
   env: NodeJS.ProcessEnv;
   dispose: () => Promise<void>;
 }> {
-  const selected = await realpath(executable);
+  let resolved = executable;
+  if (!executable.includes(path.sep)) {
+    resolved = "";
+    for (const directory of (env.PATH ?? "/usr/bin:/bin").split(path.delimiter)) {
+      const candidate = path.resolve(directory, executable);
+      try {
+        await access(candidate, constants.X_OK);
+        if (!(await stat(candidate)).isFile()) continue;
+        resolved = candidate;
+        break;
+      } catch (error) {
+        if (!["ENOENT", "ENOTDIR", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      }
+    }
+    if (!resolved) throw new Error(`Executable ${executable} not found on PATH`);
+  }
+  const selected = await realpath(resolved);
   await access(selected, constants.X_OK);
   const directory = await mkdtemp(path.join(temporaryRoot, "claude-proof-"));
   try {

@@ -16844,7 +16844,7 @@ async function abandonedCostRollup(runDir) {
       if (!entry.isDirectory()) continue;
       const record = JSON.parse(await readFile4(path6.join(runDir, "agents", entry.name, "agent.json"), "utf8"));
       const view = rollupViewOfArchivedRecord(record);
-      if (view === null || view.status === "in-progress") return null;
+      if (view === null || !isObject2(record) || record.status === "in-progress") return null;
       views.push(view);
     }
     return buildCostRollup(views);
@@ -16875,7 +16875,14 @@ function rollupViewOfArchivedRecord(value) {
       tokenUsageEvents: attempt.token_usage_events
     });
   }
-  return { id, engine, status, resolvedModel, attempts: views };
+  const writerSettled = status !== "in-progress" && !(status === "abandoned" && isObject2(value.abandonment));
+  return {
+    id,
+    engine,
+    resolvedModel,
+    attempts: views,
+    mayHaveUnlistedAttempt: !writerSettled && views.every((attempt) => attempt.settled)
+  };
 }
 function isObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -24517,7 +24524,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         attempt: context.attempt,
         startedAt: new Date(startedAt).toISOString(),
         target: { engine: target.engine, model: target.model ?? null },
-        identity: record === void 0 || record.session === null || context.attempt !== 1 ? { resolvedModel: null, resolvedEffort: null } : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
+        identity: record === void 0 || record.session === null || record.session.turn === 1 ? { resolvedModel: null, resolvedEffort: null } : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
       }));
     }
     this.progress.noteAgentTranscript(agentId, null);
@@ -24615,6 +24622,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
         }
       } catch {
       }
+    }
+  }
+  /** Persist an ended attempt before a retry or fallback can replace its live evidence. */
+  async #recordAttemptBeforeRetry(record, attempt, ledger) {
+    const settled = record.attempts.at(-1);
+    if (!this.#closed && boundRemains(ledger) && record.status === "in-progress" && settled?.attempt === attempt && settled.status === "failed") {
+      await this.#recordSettlementSafely(record.id, record);
     }
   }
   async #recordSettlementSafely(agentId, record) {
@@ -24981,6 +24995,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         }
         previousFailure = thrown.failure;
         lastThrown = error;
+      } finally {
+        await this.#recordAttemptBeforeRetry(agentRecord, attempt, attempts.ledger);
       }
     }
     return {
@@ -25067,6 +25083,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         }
         previousFailure = thrown.failure;
         lastThrown = error;
+      } finally {
+        await this.#recordAttemptBeforeRetry(agentRecord, attempt, attempts.ledger);
       }
     }
     return {

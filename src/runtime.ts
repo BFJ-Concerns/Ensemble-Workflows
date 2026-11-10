@@ -1769,7 +1769,7 @@ export class EnsembleRuntime {
           attempt: context.attempt,
           startedAt: new Date(startedAt).toISOString(),
           target: { engine: target.engine, model: target.model ?? null },
-          identity: record === undefined || record.session === null || context.attempt !== 1
+          identity: record === undefined || record.session === null || record.session.turn === 1
             ? { resolvedModel: null, resolvedEffort: null }
             : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
         }));
@@ -1867,6 +1867,15 @@ export class EnsembleRuntime {
           }
         }
       } catch { /* Observability cannot replace the attempt outcome. */ }
+    }
+  }
+
+  /** Persist an ended attempt before a retry or fallback can replace its live evidence. */
+  async #recordAttemptBeforeRetry(record: RuntimeAgentRecord, attempt: number, ledger: AttemptLedger): Promise<void> {
+    const settled = record.attempts.at(-1);
+    if (!this.#closed && boundRemains(ledger) && record.status === "in-progress" &&
+      settled?.attempt === attempt && settled.status === "failed") {
+      await this.#recordSettlementSafely(record.id, record);
     }
   }
 
@@ -2346,6 +2355,8 @@ export class EnsembleRuntime {
         // out as the exhausted outcome's cause.
         previousFailure = thrown.failure;
         lastThrown = error;
+      } finally {
+        await this.#recordAttemptBeforeRetry(agentRecord, attempt, attempts.ledger);
       }
     }
 
@@ -2454,6 +2465,8 @@ export class EnsembleRuntime {
         // out as the exhausted outcome's cause.
         previousFailure = thrown.failure;
         lastThrown = error;
+      } finally {
+        await this.#recordAttemptBeforeRetry(agentRecord, attempt, attempts.ledger);
       }
     }
 

@@ -1776,7 +1776,7 @@ async function abandonedCostRollup(runDir: string): Promise<CostRollup | null> {
       if (!entry.isDirectory()) continue;
       const record: unknown = JSON.parse(await readFile(path.join(runDir, "agents", entry.name, "agent.json"), "utf8"));
       const view = rollupViewOfArchivedRecord(record);
-      if (view === null || view.status === "in-progress") return null;
+      if (view === null || !isObject(record) || record.status === "in-progress") return null;
       views.push(view);
     }
     return buildCostRollup(views);

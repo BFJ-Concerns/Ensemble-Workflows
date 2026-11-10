@@ -1373,3 +1373,25 @@ test("held turns publish separate live records and ignore prior-turn callbacks",
     await runtime.close();
   }
 });
+
+test("a later held turn keeps its served identity on every retry start", async () => {
+  const transport = new ScriptedTransport([
+    turnResult("first", { resolvedModel: "served-model", resolvedEffort: "high" }),
+    turnResult(""), turnResult("second")
+  ]);
+  const starts: Array<{ id: number; start: LiveAttemptStart }> = [];
+  const runtime = codexRuntime(transport);
+  runtime.setRunRecorder({ recordAgent: async () => undefined, recordAttemptEnd: ignoreAttemptEnd,
+    recordAttemptStart: async (id: number, start: LiveAttemptStart) => { starts.push({ id, start }); }
+  } as unknown as RunRecordWriter);
+  const session = runtime.createWorkerSession({ engine: "codex", maxAttempts: 2 });
+  try {
+    assert.equal(await session.send("first"), "first");
+    assert.equal(await session.send("second"), "second");
+    assert.deepEqual(starts.map(({ id, start }) => [id, start.attempt, start.identity]), [
+      [1, 1, { resolvedModel: null, resolvedEffort: null }],
+      [2, 1, { resolvedModel: "served-model", resolvedEffort: "high" }],
+      [2, 2, { resolvedModel: "served-model", resolvedEffort: "high" }]
+    ]);
+  } finally { await session.close(); await runtime.close(); }
+});

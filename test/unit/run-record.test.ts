@@ -2889,3 +2889,74 @@ test("a replacement live attempt clears identity and rejects an earlier attempt'
     assert.equal(writer.manifest.cost_rollup.claude?.["second-model"]?.complete, false);
   } finally { await rm(scratch, { recursive: true, force: true }); }
 });
+
+for (const mode of ["text retry", "schema retry", "cross-engine fallback"] as const) {
+  test(`${mode} persists prior attempts before a later attempt can be abandoned`, async () => {
+    const scratch = await mkdtemp(path.join(tmpdir(), "persisted-attempts-"));
+    let rejectTurn: ((error: Error) => void) | undefined;
+    let signalRunning!: () => void;
+    const running = new Promise<void>((resolve) => { signalRunning = resolve; });
+    const firstEngine = mode === "cross-engine fallback" ? "claude" : "codex";
+    const usage = agentRecord(1, firstEngine, null, 13).attempts[0]!.tokenUsageEvents;
+    const adapter = (name: EngineName): EngineAdapter => ({
+      name, concurrency: 1, schedule: async (task) => task(),
+      createInvocation: () => ({ runAttempt: async (context) => {
+        if (context.attempt === 1) return {
+          text: mode === "schema retry" ? "invalid JSON" : "", deltaText: "", durationMs: 5, firstDeltaMs: 1,
+          items: {}, tokenUsageEvents: usage, resolvedModel: `${name}-served`, resolvedEffort: "high",
+          ...(mode === "cross-engine fallback" ? {
+            attemptFailure: { kind: "claude-worker-diagnostic", message: "API Error: overloaded (529)" },
+            diagnostics: { apiError: { status: 529, code: "overloaded_error" } }
+          } : {})
+        };
+        context.onIdentity?.({ resolvedModel: `${name}-served`, resolvedEffort: "high" });
+        signalRunning();
+        return new Promise<TurnResult>((_resolve, reject) => { rejectTurn = reject; });
+      } }), close: async () => { rejectTurn?.(new EngineShutdownError(name)); }
+    });
+    const runtime = new EnsembleRuntime({ cwd: scratch, defaultMaxAttempts: 2, engines: new EngineRegistry(
+      mode === "cross-engine fallback" ? [adapter("claude"), adapter("codex")] : [adapter("codex")]
+    ) });
+    let worker: Promise<unknown> | undefined;
+    try {
+      const writer = await RunRecordWriter.start({ storeDir: path.join(scratch, "store"), cwd: scratch,
+        runUuid: "retrying", workflowPath: path.join(scratch, "workflow.js"), workflowSource: "return true;",
+        args: [], cliFlags: { jsonArgs: false } });
+      runtime.setRunRecorder(writer);
+      worker = runtime.agent("work", { engine: firstEngine, maxAttempts: 2,
+        ...(mode === "schema retry" ? { schema: { type: "object", required: ["answer"] } } : {}),
+        ...(mode === "cross-engine fallback" ? { fallback: [{ engine: "codex", model: "requested" }] } : {}) });
+      void worker.catch(() => undefined);
+      await running;
+      await writer.recordAttemptIdentity(1, 2, { resolvedModel: "codex-served", resolvedEffort: "high" });
+      const agentPath = path.join(writer.archiveDir, "agents/000001/agent.json");
+      const before = JSON.parse(await readFile(agentPath, "utf8"));
+      assert.deepEqual(before.attempts.map((entry: { attempt: number }) => entry.attempt), [1]);
+      assert.equal(before.current_attempt.attempt, 2);
+      assert.equal(before.usage.summary.totalTokens, 13);
+      const manifestPath = path.join(writer.archiveDir, "manifest.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      await writeAttestedRunManifest(path.dirname(writer.archiveDir), "retrying", {
+        ...manifest, owner: { pid: 999999, start_ticks: "1", host: hostname() }
+      }, manifest.files);
+      const procDir = path.join(scratch, "proc");
+      await writeProcStat(procDir, process.pid, "1");
+      assert.deepEqual(await reapAbandonedRuns({ namespaceDir: path.dirname(writer.archiveDir), procDir,
+        observer: { pid: process.pid, runUuid: "sweep" } }), ["retrying"]);
+      const after = JSON.parse(await readFile(agentPath, "utf8"));
+      assert.deepEqual(after.attempts.map((entry: { status: string }) => entry.status), ["failed", "abandoned"]);
+      const rollup = JSON.parse(await readFile(manifestPath, "utf8")).cost_rollup;
+      assert.equal(rollup[firstEngine][`${firstEngine}-served`].tokens.totalTokens, 13);
+      assert.deepEqual(rollup.codex["codex-served"].unobserved,
+        [{ agent: 1, attempt: 2, reason: "record-unsettled", measured: "none" }]);
+      if (mode === "cross-engine fallback") assert.equal(rollup.claude["claude-served"].complete, true);
+      const integrity = await readArchiveIntegrity(writer.archiveDir);
+      assert.equal(integrity.manifestVerified, true);
+      assert.deepEqual(integrity.filesLost, []);
+    } finally {
+      await runtime.close("interrupted");
+      await worker?.catch(() => undefined);
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+}

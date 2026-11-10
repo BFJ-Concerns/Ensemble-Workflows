@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after, before } from "node:test";
 import { promisify } from "node:util";
@@ -21,7 +21,7 @@ const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensem
 
 let claude: Awaited<ReturnType<typeof selectClaudeExecutable>>;
 before(async () => {
-  if (isLive) claude = await selectClaudeExecutable(path.join(homedir(), ".local/bin/claude"), tmpdir());
+  if (isLive) claude = await selectClaudeExecutable("claude", tmpdir());
 });
 after(async () => { await claude?.dispose(); });
 

@@ -666,7 +666,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         ? (result as { output: unknown }).output
         : result;
     if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
-      throw new SingleAgentFailedError();
+      throw new SingleAgentFailedError(runtime.lastAgentRecord?.()?.attempts.at(-1)?.failure ?? null);
     }
 
     const serialised = serialiseResult(result);
@@ -681,7 +681,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // the exit code stays non-zero, so callers that gate on it are unaffected.
     const status =
       error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
-    terminalError = describeError(error);
+    terminalError = error instanceof SingleAgentFailedError && error.failure !== null
+      ? error.failure : describeError(error);
     // The envelope carries what ended the run: a consumer capturing stdout,
     // as the contract directs, must not have to scrape stderr to learn why.
     const partial = partialResult(runtime, status, terminalError);
@@ -1331,8 +1332,8 @@ function watchRunEndings(): RunEndingWatch {
 }
 
 class SingleAgentFailedError extends Error {
-  constructor() {
-    super("Agent exhausted its attempts without producing a result");
+  constructor(readonly failure: { kind: string; message: string } | null) {
+    super(failure?.message ?? "Agent failed without producing a result");
     this.name = new.target.name;
   }
 }

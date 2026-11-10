@@ -939,9 +939,9 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
   assert.equal(exitCode, 1);
   assert.equal(
     stdout.text(),
-    '{"partial":true,"reason":"failed","error":{"kind":"SingleAgentFailedError","message":"Agent exhausted its attempts without producing a result"},"completed":[]}\n'
+    '{"partial":true,"reason":"failed","error":{"kind":"SingleAgentFailedError","message":"Agent failed without producing a result"},"completed":[]}\n'
   );
-  assert.match(stderr.text(), /Agent exhausted its attempts without producing a result/);
+  assert.match(stderr.text(), /Agent failed without producing a result/);
   const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
   assert.ok(announced, "a no-dispatch failure must retain the announced wake signal");
   const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
@@ -969,7 +969,7 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
     workers: null,
     error: {
       kind: "SingleAgentFailedError",
-      message: "Agent exhausted its attempts without producing a result"
+      message: "Agent failed without producing a result"
     },
     // A failed run still seals its archive, so the sentinel can attest it.
     manifest: { sha256: sealed.integrity.manifest_sha256 },
@@ -999,12 +999,10 @@ test("ensemble agent turns schema retry exhaustion into a failed-run envelope", 
   );
 
   assert.equal(exitCode, 1);
-  assert.equal(
-    stdout.text(),
-    '{"partial":true,"reason":"failed","error":{"kind":"SingleAgentFailedError","message":"Agent exhausted its attempts without producing a result"},"completed":[]}\n'
-  );
+  const envelope = JSON.parse(stdout.text());
+  assert.deepEqual(envelope.error, { kind: "invalid-json", message: "agent output did not contain parseable JSON" });
   assert.doesNotMatch(stdout.text(), /^null/m);
-  assert.match(stderr.text(), /Agent exhausted its attempts without producing a result/);
+  assert.match(stderr.text(), /agent output did not contain parseable JSON/);
   assert.equal(engine.attempts, 2);
 });
 
@@ -3669,7 +3667,7 @@ test("a workflow's failed worker is announced on stderr under its engine tag, wi
   });
   assert.equal(directExit, 1);
   assert.doesNotMatch(directStderr.text(), /failed after 1 attempt —/);
-  assert.match(directStderr.text(), /Agent exhausted its attempts without producing a result/);
+  assert.match(directStderr.text(), /engine refused the turn/);
 });
 
 async function runChainScript(
@@ -4109,24 +4107,19 @@ for (const claudeEntry of ["absent", "directory", "file"]) {
 test(`CLI publishes and announces automatic status before execution with .claude ${claudeEntry}`, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-auto-status-"));
   try {
+    const runtime = new EnsembleRuntime({ engines: new EngineRegistry([new ScheduledTextEngine("codex", 1)]), defaultMaxAttempts: 1 });
     const script = path.join(directory, "workflow.js");
     if (claudeEntry === "directory") await mkdir(path.join(directory, ".claude"));
     if (claudeEntry === "file") await writeFile(path.join(directory, ".claude"), "file");
     const statusDir = path.join(directory, "data", "ensemble", "status");
-    // An atomic update may have a temporary file alongside the published one.
-    // Keep that interleaving present without depending on filesystem timing.
-    const pendingSnapshot = `ensemble.pending.local.json.${process.pid}.1.tmp`;
+    const statusPath = path.join(statusDir, `ensemble.${runtime.progress.runId}.local.json`);
     await writeFile(script, `
       export const meta = { name: "automatic-status" };
-      const { readdir, readFile, writeFile } = require("node:fs/promises");
-      const dir = ${JSON.stringify(statusDir)};
-      await writeFile(dir + "/" + ${JSON.stringify(pendingSnapshot)}, "unfinished snapshot");
-      // The final filename is the atomic publication signal; .tmp entries
-      // belong to updates that have not completed their rename yet.
-      const files = (await readdir(dir)).filter((file) => file.startsWith("ensemble.") && file.endsWith(".local.json"));
-      if (files.length !== 1) throw new Error("status missing before execution");
-      const snapshot = JSON.parse(await readFile(dir + "/" + files[0], "utf8"));
-      if (!snapshot.runId || files[0] !== "ensemble." + snapshot.runId + ".local.json") throw new Error("invalid initial status");
+      const { readFile } = require("node:fs/promises");
+      // Directory enumeration can miss an entry replaced during its scan.
+      // Read this run's exact path as the first operation in the body.
+      const snapshot = JSON.parse(await readFile(${JSON.stringify(statusPath)}, "utf8"));
+      if (snapshot.runId !== ${JSON.stringify(runtime.progress.runId)}) throw new Error("invalid initial status");
       log("workflow-started");
       return "ok";
     `);
@@ -4135,7 +4128,7 @@ test(`CLI publishes and announces automatic status before execution with .claude
       cwd: directory, stdout: new CaptureStream(), stderr,
       env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
       runRecordDir: null,
-      createRuntime: async () => new EnsembleRuntime({ engines: new EngineRegistry([new ScheduledTextEngine("codex", 1)]), defaultMaxAttempts: 1 })
+      createRuntime: async () => runtime
     });
     assert.equal(exitCode, 0, stderr.text());
     const line = stderr.text().split("\n").find((entry) => entry.startsWith("[status-file] "));
@@ -4146,9 +4139,10 @@ test(`CLI publishes and announces automatic status before execution with .claude
     assert.ok(publicId, announcement.run_id);
     const expectedNamespace = createHash("sha256").update(await realpath(directory)).digest("hex").slice(0, 24);
     assert.equal(publicId[1], expectedNamespace);
-    assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${publicId[2]}.local.json`));
+    assert.equal(publicId[2], runtime.progress.runId);
+    assert.equal(announcement.status_path, statusPath);
     await assert.rejects(access(announcement.status_path));
-    assert.deepEqual(await readdir(path.dirname(announcement.status_path)), [pendingSnapshot]);
+    assert.deepEqual(await readdir(path.dirname(announcement.status_path)), []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -4246,6 +4240,37 @@ test("CLI renders Codex app-server placement refusals as bounded notices", async
     assert.equal(code, 0, stderr.text());
     assert.match(stderr.text(), /\[codex\] app-server \(pid 123\) scope placement refused: manager refused\n/);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("returned credential failures retry text and schema calls within the bound and reach stdout", async () => {
+  for (const engineName of ["claude", "opencode"] as const) {
+    for (const schema of [false, true]) {
+      let attempts = 0;
+      const rejectCredentials = async (): Promise<EngineAttemptResult> => {
+        attempts += 1;
+        return {
+        text: "", deltaText: "", durationMs: 1, firstDeltaMs: null, items: {}, tokenUsageEvents: [],
+        attemptFailure: { kind: engineName === "claude" ? "claude-worker-diagnostic" : "opencode-run-error", message: "HTTP 401: rejected credential" },
+        diagnostics: engineName === "claude" ? { apiError: { status: 401, code: "authentication_error" } } : {}
+        };
+      };
+      const engine = new ChainEngine(engineName, Array.from({ length: 3 }, () => rejectCredentials));
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exit = await runEnsembleCli(["agent", `--engine=${engineName}`, ...(schema ? ['--schema={"type":"object"}'] : []), "hello"], {
+        stdout, stderr, runRecordDir: null, statusDir: null,
+        createRuntime: async () => fixedEngineRuntime(engine, 3)
+      });
+      assert.equal(exit, 1, stderr.text());
+      const envelope = JSON.parse(stdout.text());
+      assert.equal(envelope.error.kind, "authentication-failure");
+      assert.match(envelope.error.message, /HTTP 401: rejected credential/);
+      assert.match(envelope.error.message, engineName === "claude" ? /claude auth login/ : /opencode auth login/);
+      assert.equal(attempts, 3);
+      assert.match(stderr.text(), /attempt 3/);
+      assert.doesNotMatch(stderr.text(), /Agent exhausted its attempts/);
+    }
+  }
 });
 
 

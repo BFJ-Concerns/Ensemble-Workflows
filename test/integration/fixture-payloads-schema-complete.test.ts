@@ -59,6 +59,31 @@ test("recorded thread/start frame also satisfies the closed legacy schema shape"
   });
 });
 
+test("built CLI accepts composed thread items but rejects stray and other-variant fields", async () => {
+  await withFixture(async (fixture) => {
+    const valid = await fixture.run();
+    assert.equal(valid.code, 0, valid.stderr);
+    assert.equal(valid.stdout, '"worker-ok"\n', valid.stderr);
+
+    for (const extra of [{ protocolDrift: true }, { content: [] }]) {
+      const invalid = await fixture.run({
+        ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[{
+          method: "item/completed",
+          params: {
+            completedAtMs: 1,
+            item: { id: "agent-message-turn-1", type: "agentMessage", text: "invalid", ...extra }
+          }
+        }]])
+      });
+      // The fixture can die before or after dispatch settles. Assert its
+      // validation diagnostic, independent of the client's failure phase.
+      assert.notEqual(invalid.stdout, valid.stdout);
+      assert.match(invalid.stderr, /Codex fixture payload failed ServerNotification\.json validation/);
+      assert.match(invalid.stderr, /(?:additional|unevaluated) properties/);
+    }
+  });
+});
+
 test("built CLI rejects a completed recording-fixture payload missing a required field", async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run({ ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT: "missing-initialize-user-agent" });

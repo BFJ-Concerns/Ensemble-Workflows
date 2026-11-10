@@ -1,5 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { parseWorkerScopeGrouping } from "./ambient-settings.js";
+import type { TurnProgressObserver } from "./app-server.js";
+import type { LiveTranscriptObserver } from "./types.js";
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
+import { createWorkerScopes, RUN_SCOPE_GROUP, type WorkerScopeGrouping, type WorkerScopes } from "./worker-scopes.js";
 import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
 import { requireRegisteredOpenCodeModel } from "./engine-option-validation.js";
 import {
@@ -92,7 +97,7 @@ export interface PreviousAttemptFailure {
   message: string;
 }
 
-export interface EngineAttemptContext {
+export interface EngineAttemptContext extends LiveTranscriptObserver, TurnProgressObserver {
   attempt: number;
   previousFailure?: PreviousAttemptFailure;
   /**
@@ -180,11 +185,14 @@ export interface EngineAdapter {
 
 export class EngineRegistry {
   #engines = new Map<EngineName, EngineAdapter>();
+  /** Resources the engines share and the registry therefore owns, closed after every engine has. */
+  #shared: readonly { close(): Promise<void> }[];
 
-  constructor(engines: EngineAdapter[]) {
+  constructor(engines: EngineAdapter[], shared: readonly { close(): Promise<void> }[] = []) {
     for (const engine of engines) {
       this.#engines.set(engine.name, engine);
     }
+    this.#shared = shared;
   }
 
   get(name: EngineName): EngineAdapter | undefined {
@@ -204,6 +212,10 @@ export class EngineRegistry {
     // synchronously-throwing close into a rejection, so one bad adapter
     // cannot stop the others from being closed at all.
     const results = await Promise.allSettled([...this.#engines.values()].map(async (engine) => engine.close()));
+    // Shared resources go after the engines that used them: a worker scope
+    // stopped while its engine is still tearing a worker down would end the
+    // worker under the engine's feet.
+    await Promise.allSettled(this.#shared.map(async (resource) => resource.close()));
     const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failures.length === 1) {
       throw failures[0]!.reason;
@@ -398,7 +410,9 @@ class CodexWorkerSession implements EngineWorkerSession {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(schema !== undefined ? { schema: normaliseForCodexOutputSchema(schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(context.onLiveEvidence !== undefined ? { onFirstOutput: context.onLiveEvidence } : {})
+      ...codexProgressObservers(context),
+      ...(context.onTranscriptEvent !== undefined ? { onTranscriptEvent: context.onTranscriptEvent } : {}),
+      ...(context.onTranscriptPath !== undefined ? { onTranscriptPath: context.onTranscriptPath } : {})
     });
   }
 
@@ -452,13 +466,13 @@ class CodexEngineInvocation implements EngineInvocation {
     // Codex retries open a fresh thread, so the correction rides the prompt —
     // the same degraded-correction shape the opencode engine uses.
     const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
-    return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
+    return this.#runTurnInCwd(prompt, this.#options.cwd, context);
   }
 
   async #runTurnInCwd(
     prompt: string,
     cwd: string | undefined,
-    onLiveEvidence: (() => void) | undefined
+    context: EngineAttemptContext
   ): Promise<TurnResult> {
     const threadId = await openCodexThread(this.#transport, this.#options, cwd);
 
@@ -466,10 +480,24 @@ class CodexEngineInvocation implements EngineInvocation {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.schema !== undefined ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(onLiveEvidence !== undefined ? { onFirstOutput: onLiveEvidence } : {})
+      ...codexProgressObservers(context),
+      ...(context.onTranscriptEvent !== undefined ? { onTranscriptEvent: context.onTranscriptEvent } : {}),
+      ...(context.onTranscriptPath !== undefined ? { onTranscriptPath: context.onTranscriptPath } : {})
     });
   }
 
+}
+
+/** Preserve observer fields through RuntimeTransport's narrower public option type. */
+function codexProgressObservers(context: EngineAttemptContext): TurnProgressObserver & {
+  onFirstOutput?: () => void;
+} {
+  return {
+    ...(context.onLiveEvidence !== undefined ? { onFirstOutput: context.onLiveEvidence } : {}),
+    ...(context.onOutput !== undefined ? { onOutput: context.onOutput } : {}),
+    ...(context.onIdentity !== undefined ? { onIdentity: context.onIdentity } : {}),
+    ...(context.onUsage !== undefined ? { onUsage: context.onUsage } : {})
+  };
 }
 
 export interface ClaudeEngineAdapterOptions {
@@ -722,6 +750,14 @@ export interface CreateDefaultEngineRegistryOptions {
    * control plane resolves the scope its own environment names.
    */
   holdScope?: string | null;
+  /**
+   * The scope manager the engines place and launch processes through.
+   * Omitted, the machine's own is built here — the systemd one where a
+   * user manager answers, the fallback otherwise — and the registry owns
+   * its close.
+   */
+  workerScopes?: WorkerScopes;
+  workerScope?: WorkerScopeGrouping;
   onEvent: (event: RuntimeEvent) => void;
   onClaudeEvent: (event: RuntimeEvent) => void;
   onOpenCodeEvent: (event: RuntimeEvent) => void;
@@ -730,12 +766,18 @@ export interface CreateDefaultEngineRegistryOptions {
 export async function createDefaultEngineRegistry(
   options: CreateDefaultEngineRegistryOptions
 ): Promise<EngineRegistry> {
-  // Lazy: constructing the registry performs no I/O. The app-server spawns
-  // when the first worker names Codex, so a run needs only the engines its
+  // The one I/O here is the scope manager's probe of the systemd user
+  // manager; the engines themselves stay lazy. The app-server spawns when
+  // the first worker names Codex, so a run needs only the engines its
   // script actually uses (no engine is privileged).
+  const grouping = parseWorkerScopeGrouping(options.workerScope ?? "worker", "workerScope");
+  const ownsScopes = options.workerScopes === undefined;
+  const workerScopes = options.workerScopes ?? (await createWorkerScopes({ label: `${process.pid}-${randomUUID()}` }));
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
+    scopes: workerScopes,
+    scopeGroup: grouping === "run" ? RUN_SCOPE_GROUP : "codex",
     ...(options.workerEnvironment?.codex !== undefined ? { workerEnv: options.workerEnvironment.codex } : {}),
     requestTimeoutMs: options.requestTimeoutMs,
     ...(options.retryPromiseSilenceTimeoutMs !== undefined
@@ -748,33 +790,39 @@ export async function createDefaultEngineRegistry(
     onEvent: options.onEvent
   });
 
-  return new EngineRegistry([
-    new CodexEngineAdapter({
-      transport,
-      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
-    }),
-    new ClaudeEngineAdapter({
-      cwd: options.cwd,
-      controlPlane: new ClaudeCliControlPlane({
-        ...(options.workerEnvironment?.claude !== undefined ? { workerEnv: options.workerEnvironment.claude } : {}),
-        ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {})
+  return new EngineRegistry(
+    [
+      new CodexEngineAdapter({
+        transport,
+        concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
       }),
-      ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {}),
-      // Claude deliberately emits the same usage event shape as Codex. Keep the
-      // adapter sink labelled so accounting never has to infer engine from payload.
-      onEvent: options.onClaudeEvent
-    }),
-    new OpenCodeEngineAdapter({
-      cwd: options.cwd,
-      ...(options.openCodeBin !== undefined ? { bin: options.openCodeBin } : {}),
-      ...(options.workerEnvironment?.opencode !== undefined
-        ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) }
-        : {}),
-      ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {}),
-      ...(options.openCodeModels !== undefined ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {}),
-      onEvent: options.onOpenCodeEvent
-    })
-  ]);
+      new ClaudeEngineAdapter({
+        cwd: options.cwd,
+        controlPlane: new ClaudeCliControlPlane({
+          ...(options.workerEnvironment?.claude !== undefined ? { workerEnv: options.workerEnvironment.claude } : {}),
+          ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {}),
+          scopes: workerScopes,
+          workerScope: grouping,
+          ...(options.onClaudeEvent !== undefined ? { onEvent: options.onClaudeEvent } : {})
+        }),
+        ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {}),
+        // Claude deliberately emits the same usage event shape as Codex. Keep the
+        // adapter sink labelled so accounting never has to infer engine from payload.
+        onEvent: options.onClaudeEvent
+      }),
+      new OpenCodeEngineAdapter({
+        cwd: options.cwd,
+        ...(options.openCodeBin !== undefined ? { bin: options.openCodeBin } : {}),
+        ...(options.workerEnvironment?.opencode !== undefined
+          ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) }
+          : {}),
+        ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {}),
+        ...(options.openCodeModels !== undefined ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {}),
+        onEvent: options.onOpenCodeEvent
+      })
+    ],
+    ownsScopes ? [workerScopes] : []
+  );
 }
 
 /**

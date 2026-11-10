@@ -3242,8 +3242,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path15) {
-      let input = path15;
+    function removeDotSegments(path16) {
+      let input = path16;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3495,8 +3495,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path15, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path15 && path15 !== "/" ? path15 : void 0;
+        const [path16, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path16 && path16 !== "/" ? path16 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -13834,13 +13834,13 @@ var require_acorn_globals = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path14 from "node:path";
+import path15 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile9, stat as stat4 } from "node:fs/promises";
+import { readFile as readFile10, stat as stat4 } from "node:fs/promises";
 import { hostname as hostname4 } from "node:os";
-import path13 from "node:path";
+import path14 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/ambient-settings.ts
@@ -13861,7 +13861,7 @@ function defaultOpenCodeConcurrency() {
 
 // src/holds.ts
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile as readFile3, readdir as readdir2, rename as rename2, rm, stat, writeFile as writeFile2 } from "node:fs/promises";
+import { mkdir as mkdir2, readFile as readFile3, readdir as readdir2, rename as rename2, rm, stat, writeFile as writeFile2 } from "node:fs/promises";
 import { homedir, hostname as hostname2 } from "node:os";
 import path3 from "node:path";
 
@@ -14590,7 +14590,7 @@ async function readProcessStartTicks(procDir, pid) {
 }
 
 // src/status-file.ts
-import { readdir, readFile as readFile2, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile as readFile2, rename, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path2 from "node:path";
 var STATUS_FILE_PREFIX = "ensemble.";
@@ -14623,7 +14623,7 @@ async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
   }
   return true;
 }
-var DEFAULT_FILE_OPERATIONS = { readFile: readFile2, readdir, rename, unlink, writeFile };
+var DEFAULT_FILE_OPERATIONS = { mkdir, readFile: readFile2, readdir, rename, unlink, writeFile };
 var StatusFileWriter = class {
   #progress;
   #target;
@@ -14632,6 +14632,8 @@ var StatusFileWriter = class {
   #unsubscribe;
   #writing = null;
   #dirty = false;
+  #published = false;
+  #unavailable = false;
   #closed = false;
   #tmpSeq = 0;
   #heartbeat;
@@ -14650,11 +14652,26 @@ var StatusFileWriter = class {
       pid: process.pid,
       start_ticks: await readProcessStartTicks(procDir, process.pid)
     }))();
-    this.#initialSweep = this.#sweepDeadRuns(options.dir);
+    const fileOperations = this.#fileOperations;
+    this.#initialSweep = (async () => {
+      if (options.createDirectory === true) {
+        await fileOperations.mkdir(options.dir, { recursive: true });
+      }
+      await this.#sweepDeadRuns(options.dir);
+      return true;
+    })().catch((error) => {
+      this.#reportError(error);
+      return false;
+    });
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
     this.#heartbeat.unref();
     this.#request();
+  }
+  /** Wait for the initial publication before announcing its location. */
+  async ready() {
+    await this.#writing;
+    return this.#published;
   }
   /** The path this run publishes to. */
   get path() {
@@ -14668,6 +14685,9 @@ var StatusFileWriter = class {
     while (this.#writing !== null) {
       await this.#writing;
     }
+    if (!this.#published) {
+      return;
+    }
     try {
       await this.#fileOperations.unlink(this.#target);
     } catch (error) {
@@ -14677,7 +14697,7 @@ var StatusFileWriter = class {
     }
   }
   #request() {
-    if (this.#closed) {
+    if (this.#closed || this.#unavailable) {
       return;
     }
     this.#dirty = true;
@@ -14697,18 +14717,24 @@ var StatusFileWriter = class {
     try {
       await this.#writeAtomic(this.#progress.snapshot());
     } catch (error) {
-      if (!isNodeError(error) || error.code !== "ENOENT") {
-        this.#reportError(error);
+      if (!this.#published) {
+        this.#unavailable = true;
+        this.#dirty = false;
       }
+      if (this.#published && isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#reportError(error);
     }
   }
   async #writeAtomic(snapshot) {
-    await this.#initialSweep;
+    if (!await this.#initialSweep) return;
     const tmp = `${this.#target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
     const published = { ...snapshot, owner: await this.#ownerEvidence };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
 `, "utf8");
     await this.#fileOperations.rename(tmp, this.#target);
+    this.#published = true;
   }
   /**
    * The new-writer trigger for what a killed run left behind (the same
@@ -14862,7 +14888,7 @@ var HoldManager = class {
       },
       decision_path: decisionPath
     };
-    await mkdir(this.#dir, { recursive: true });
+    await mkdir2(this.#dir, { recursive: true });
     await this.#retireDeadSiblings();
     record.run_identity = this.#identity?.() ?? null;
     await publishHoldRecord(holdPath, record);
@@ -15173,12 +15199,14 @@ function assertValidRaiseHoldOptions(options) {
 }
 
 // src/ambient-settings.ts
+var WORKER_SCOPE_ENV = "ENSEMBLE_WORKER_SCOPE";
 var CONFIG_SCHEMA_VERSION = 1;
 var AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
 var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
 var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
 var CALLER_IDENTITY_ENV = "ENSEMBLE_CALLER_IDENTITY";
 var RUN_SCOPED_ENVIRONMENT_VARIABLES = /* @__PURE__ */ new Set([
+  WORKER_SCOPE_ENV,
   AGENT_CEILING_ENV,
   RUN_RECORD_ENV,
   RUN_RECORD_DIR_ENV,
@@ -15220,6 +15248,7 @@ function resolveAmbientSettings(input) {
   };
   return {
     configFile,
+    workerScope: input.flags?.workerScope !== void 0 ? { value: parseWorkerScopeGrouping(input.flags.workerScope, "--worker-scope"), layer: "flag" } : input.env[WORKER_SCOPE_ENV] !== void 0 ? { value: parseWorkerScopeGrouping(input.env[WORKER_SCOPE_ENV], WORKER_SCOPE_ENV), layer: "env" } : config?.worker_scope !== void 0 ? { value: config.worker_scope, layer: "config-file" } : { value: "worker", layer: "default" },
     agentCeiling: resolveAgentCeiling({
       flag: input.flags?.agentCeiling,
       env: input.env[AGENT_CEILING_ENV],
@@ -15242,7 +15271,7 @@ function resolveAmbientSettings(input) {
     ),
     runRecordDir: resolveRunRecord(config, input.env),
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd),
+    statusDir: resolveStatus(config, input.env),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
@@ -15272,13 +15301,16 @@ function readMachineConfig(configFile) {
   }
   assertKnownKeys(
     parsed,
-    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+    ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
     configFile
   );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
     throw new AmbientConfigError(
       `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
     );
+  }
+  if (parsed.worker_scope !== void 0) {
+    parseWorkerScopeGrouping(parsed.worker_scope, `worker_scope in ${configFile}`);
   }
   validateOptionalPositiveInteger(parsed, "agent_ceiling", configFile);
   validateSection(parsed, "concurrency", ENGINES, configFile, validateOptionalPositiveInteger);
@@ -15474,7 +15506,7 @@ function resolveRunRecordStoreDir(config, env) {
     path4.join(dataHome(env), "ensemble")
   );
 }
-function resolveStatus(config, env, cwd) {
+function resolveStatus(config, env) {
   const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
   if (!enabled.value) {
     return { value: null, layer: enabled.layer };
@@ -15483,7 +15515,7 @@ function resolveStatus(config, env, cwd) {
     env.ENSEMBLE_STATUS_DIR,
     "ENSEMBLE_STATUS_DIR",
     config?.status?.dir,
-    path4.join(cwd, ".claude")
+    path4.join(dataHome(env), "ensemble", "status")
   );
   if (isDirectory(directory.value)) {
     return directory;
@@ -15493,7 +15525,7 @@ function resolveStatus(config, env, cwd) {
       `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} (from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
     );
   }
-  return { value: null, layer: directory.layer };
+  return directory;
 }
 function resolveEnabled(envValue, envKey, fileValue) {
   if (envValue !== void 0) {
@@ -15564,9 +15596,15 @@ function isNodeError2(error, code) {
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
+function parseWorkerScopeGrouping(value, source) {
+  if (value !== "worker" && value !== "run") {
+    throw new AmbientConfigError(`Invalid value for ${source}: expected worker or run; got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
 
 // src/completion-sentinel.ts
-import { mkdir as mkdir3, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir4, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
 import path7 from "node:path";
 
 // src/canonical-document.ts
@@ -15594,7 +15632,7 @@ function sha256(text) {
 
 // src/run-record.ts
 import { createHash as createHash2 } from "node:crypto";
-import { mkdir as mkdir2, readdir as readdir3, readFile as readFile4, realpath, rename as rename3, rm as rm2, stat as stat2, writeFile as writeFile3 } from "node:fs/promises";
+import { appendFile, mkdir as mkdir3, readdir as readdir3, readFile as readFile4, realpath, rename as rename3, rm as rm2, stat as stat2, writeFile as writeFile3 } from "node:fs/promises";
 import os from "node:os";
 import path6 from "node:path";
 import { execFile } from "node:child_process";
@@ -15787,6 +15825,9 @@ var RunRecordWriter = class _RunRecordWriter {
   #tmpSeq = 0;
   #writeChain = Promise.resolve();
   #sealed = false;
+  #currentAttempts = /* @__PURE__ */ new Map();
+  #liveCodex = /* @__PURE__ */ new Map();
+  #liveCodexHashes = /* @__PURE__ */ new Map();
   constructor(archiveDir, cwd, manifest) {
     this.archiveDir = archiveDir;
     this.#cwd = cwd;
@@ -15815,7 +15856,7 @@ var RunRecordWriter = class _RunRecordWriter {
     const namespace = await deriveNamespace(options.cwd);
     const runId = `${namespace.id}:${options.runUuid}`;
     const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
-    await mkdir2(archiveDir, { recursive: true });
+    await mkdir3(archiveDir, { recursive: true });
     const harnessRoot = await findHarnessRoot();
     const packageInfo = await readPackageInfo(harnessRoot ?? path6.dirname(fileURLToPath2(import.meta.url)));
     const harnessCommit = harnessRoot === null ? null : await git(["rev-parse", "HEAD"], harnessRoot);
@@ -15847,6 +15888,7 @@ var RunRecordWriter = class _RunRecordWriter {
         raw: null
       },
       cli_flags: options.cliFlags,
+      worker_scope: options.workerScope ?? { value: "worker", layer: "default" },
       concurrency: {
         agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
         engines: options.concurrency?.engines ?? {}
@@ -16028,6 +16070,78 @@ var RunRecordWriter = class _RunRecordWriter {
       await this.#writeManifest();
     });
   }
+  /** Publish execution start separately from dispatch and settlement. */
+  async recordAttemptStart(id, attempt, startedAt) {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const record = this.#agents.get(id);
+      if (record === void 0 || record.status !== "in-progress") return;
+      this.#currentAttempts.set(id, { attempt, started_at: startedAt, transcript: null });
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+  /** Clear execution metadata before another target waits for admission. */
+  async recordAttemptEnd(id, attempt) {
+    await this.#serialise(async () => {
+      if (this.#sealed || this.#currentAttempts.get(id)?.attempt !== attempt) return;
+      this.#currentAttempts.delete(id);
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+  /** Reference Claude's own readable transcript without copying a growing file. */
+  async recordClaudeTranscript(id, attempt, transcriptPath) {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const current2 = this.#currentAttempts.get(id);
+      if (current2?.attempt !== attempt) return;
+      await stat2(transcriptPath);
+      current2.transcript = transcriptPath;
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+  /** Append an event before publishing its archive reference. */
+  async appendCodexTranscript(id, attempt, event) {
+    const content = `${JSON.stringify(event)}
+`;
+    return await this.#serialise(async () => {
+      if (this.#sealed) return null;
+      const current2 = this.#currentAttempts.get(id);
+      if (current2?.attempt !== attempt) return null;
+      const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-transcript.codex.jsonl`;
+      await mkdir3(path6.dirname(path6.join(this.archiveDir, relativePath)), { recursive: true });
+      await appendFile(path6.join(this.archiveDir, relativePath), content);
+      const digest = this.#liveCodexHashes.get(relativePath) ?? { hash: createHash2("sha256"), size: 0 };
+      digest.hash.update(content);
+      digest.size += Buffer.byteLength(content);
+      this.#liveCodexHashes.set(relativePath, digest);
+      this.#files.set(relativePath, {
+        path: relativePath,
+        size: digest.size,
+        sha256: digest.hash.copy().digest("hex")
+      });
+      this.#liveCodex.set(`${id}:${attempt}`, relativePath);
+      if (current2.transcript !== relativePath) {
+        current2.transcript = relativePath;
+        await this.#publishCurrentAttempt(id);
+      } else {
+        await this.#writeManifest();
+      }
+      return relativePath;
+    });
+  }
+  /** Update live metadata without replaying settled attempt artefact writes. */
+  async #publishCurrentAttempt(id) {
+    const relativePath = `agents/${padId(id)}/agent.json`;
+    const record = JSON.parse(await readFile4(path6.join(this.archiveDir, relativePath), "utf8"));
+    const current2 = this.#currentAttempts.get(id);
+    if (current2 === void 0) {
+      delete record.current_attempt;
+    } else {
+      record.current_attempt = { ...current2 };
+    }
+    await this.#writeJson(relativePath, record);
+    await this.#writeManifest();
+  }
   async recordAgent(record) {
     const snapshot = structuredClone(record);
     await this.#serialise(async () => {
@@ -16039,6 +16153,7 @@ var RunRecordWriter = class _RunRecordWriter {
   }
   async #recordAgent(record) {
     this.#agents.set(record.id, record);
+    if (record.status !== "in-progress") this.#currentAttempts.delete(record.id);
     const agentDir = `agents/${padId(record.id)}`;
     const transcriptRefs = [];
     for (const attempt of record.attempts) {
@@ -16050,7 +16165,13 @@ var RunRecordWriter = class _RunRecordWriter {
         index += 1;
         const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
         const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
-        await this.#writeText(relativePath, transcript.content);
+        const liveFile = this.#files.get(relativePath);
+        const liveMatches = this.#liveCodex.get(`${record.id}:${attempt.attempt}`) === relativePath && liveFile?.sha256 === sha256(transcript.content) && (await stat2(path6.join(this.archiveDir, relativePath)).catch(() => null))?.size === liveFile.size;
+        if (liveMatches) {
+          await this.#trackFile(relativePath);
+        } else {
+          await this.#writeText(relativePath, transcript.content);
+        }
         transcriptRefs.push({
           attempt: attempt.attempt,
           path: relativePath,
@@ -16064,6 +16185,7 @@ var RunRecordWriter = class _RunRecordWriter {
     }
     const agentJsonPath = `${agentDir}/agent.json`;
     await this.#writeJson(agentJsonPath, {
+      ...this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id) } } : {},
       schema_version: SCHEMA_VERSION,
       kind: "agent_record",
       id: record.id,
@@ -16123,6 +16245,7 @@ var RunRecordWriter = class _RunRecordWriter {
         worker_exit: attempt.workerExit === null ? null : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
         app_server_diagnostic: attempt.appServerDiagnostic === null ? null : {
           code: attempt.appServerDiagnostic.code,
+          http_status_code: attempt.appServerDiagnostic.httpStatusCode,
           message: attempt.appServerDiagnostic.message,
           payload: attempt.appServerDiagnostic.payload
         },
@@ -16194,7 +16317,7 @@ var RunRecordWriter = class _RunRecordWriter {
   }
   async #writeText(relativePath, content) {
     const destination = path6.join(this.archiveDir, relativePath);
-    await mkdir2(path6.dirname(destination), { recursive: true });
+    await mkdir3(path6.dirname(destination), { recursive: true });
     const temporary = path6.join(path6.dirname(destination), `.${path6.basename(destination)}${this.#tmpSuffix()}`);
     await writeAndRename(temporary, destination, content);
     await this.#trackFile(relativePath);
@@ -16433,6 +16556,7 @@ async function resolveAbandonedAgentRecords(runDir, abandonment) {
       }
       agentRecord.status = "abandoned";
       agentRecord.abandonment = abandonment;
+      delete agentRecord.current_attempt;
       const content = `${canonicalJson(agentRecord)}
 `;
       await writeStandaloneText(agentJsonPath, content);
@@ -16559,7 +16683,7 @@ async function hashFile(filePath) {
   return createHash2("sha256").update(text).digest("hex");
 }
 async function writeStandaloneText(destination, content) {
-  await mkdir2(path6.dirname(destination), { recursive: true });
+  await mkdir3(path6.dirname(destination), { recursive: true });
   const temporary = path6.join(path6.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
   await writeAndRename(temporary, destination, content);
 }
@@ -16603,7 +16727,7 @@ var CompletionSentinel = class {
     let runDir;
     try {
       runDir = await resolveRunDirectory(options.storeDir, options.cwd, options.runUuid);
-      await mkdir3(runDir, { recursive: true });
+      await mkdir4(runDir, { recursive: true });
     } catch (error) {
       onError(new SentinelUnavailableError(`no sentinel will be written for this run \u2014 cannot create ${sentinelDirectory(options, error)}: ${causeMessage(error)}`, { cause: error }));
       return null;
@@ -16649,7 +16773,7 @@ var CompletionSentinel = class {
     };
     payload.integrity.sentinel_sha256 = sha256(canonicalJson(payload));
     try {
-      await mkdir3(path7.dirname(this.#path), { recursive: true });
+      await mkdir4(path7.dirname(this.#path), { recursive: true });
       const temporary = `${this.#path}.${process.pid}.tmp`;
       try {
         await writeFile4(temporary, `${canonicalJson(payload)}
@@ -16825,7 +16949,7 @@ function findErrorCode(error, code) {
 }
 
 // src/runtime.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID6 } from "node:crypto";
 
 // src/agent-placement.ts
 import { stat as stat3 } from "node:fs/promises";
@@ -16834,7 +16958,7 @@ import path9 from "node:path";
 // src/worktree-isolation.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { execFile as execFile2 } from "node:child_process";
-import { mkdir as mkdir4, rmdir } from "node:fs/promises";
+import { mkdir as mkdir5, rmdir } from "node:fs/promises";
 import path8 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var execFileAsync2 = promisify2(execFile2);
@@ -16847,7 +16971,7 @@ var GitWorktreeIsolationManager = class {
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
     const worktreePath = path8.join(path8.dirname(repoRoot), `${path8.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
-    await mkdir4(path8.dirname(worktreePath), { recursive: true });
+    await mkdir5(path8.dirname(worktreePath), { recursive: true });
     await git2(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
     const baseCommit = (await git2(worktreePath, ["rev-parse", "HEAD"])).trim();
     this.#worktreeRoots.set(worktreePath, repoRoot);
@@ -17195,6 +17319,16 @@ var CODEX_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
   ["responseStreamConnectionFailed", "codex.provider-unreachable"],
   ["internalServerError", "codex.provider-internal-error"]
 ]);
+var CODEX_STATUS_FORWARDING_CODES = /* @__PURE__ */ new Set(["responseTooManyFailedAttempts"]);
+function codexRuleForHttpStatus(status) {
+  if (status === 429) {
+    return "codex.rate-limit";
+  }
+  if (typeof status === "number" && status >= 500 && status <= 599) {
+    return "codex.provider-internal-error";
+  }
+  return void 0;
+}
 var CODEX_ERROR_CLASSES = /* @__PURE__ */ new Map([
   // The substrate died or never came up: the worker was lost before answering.
   ["AppServerExitedError", { class: "availability", rule: "codex.substrate-dead" }],
@@ -17223,7 +17357,7 @@ var CLAUDE_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
   ["overloaded_error", "claude.overloaded"]
 ]);
 var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
-  // Claude Code refused to start the worker at all. The engine throws
+  // The Claude dispatch command failed before a worker registered. The engine throws
   // it rather than returning a failed turn, so the kind is the thrown class
   // name, as the Codex rows are keyed; the runtime spends no attempt on it —
   // it advances the chain or propagates as a pre-spawn refusal.
@@ -17262,7 +17396,7 @@ function classifyAttemptFailure(evidence) {
 function classifyCodexFailure(kind, diagnostic) {
   const code = diagnostic?.code;
   if (typeof code === "string") {
-    const rule = CODEX_AVAILABILITY_CODES.get(code);
+    const rule = CODEX_STATUS_FORWARDING_CODES.has(code) ? codexRuleForHttpStatus(diagnostic?.httpStatusCode) : CODEX_AVAILABILITY_CODES.get(code);
     if (rule !== void 0) {
       return { class: "availability", rule };
     }
@@ -17297,16 +17431,1796 @@ function claudeApiErrorOf(diagnostics) {
   };
 }
 
+// src/progress.ts
+var RunProgress = class {
+  runId;
+  #budget;
+  #now;
+  #pid;
+  #archiveDir = null;
+  #finished = /* @__PURE__ */ new Map();
+  #workflow = null;
+  #currentPhase = null;
+  #state = "running";
+  #startedAt;
+  #updatedAt;
+  #finishedAt = null;
+  #nextAgentId = 0;
+  #live = /* @__PURE__ */ new Map();
+  #openHolds = /* @__PURE__ */ new Map();
+  #engines = /* @__PURE__ */ new Map();
+  #reportedSpend = /* @__PURE__ */ new Map();
+  #listeners = /* @__PURE__ */ new Set();
+  constructor(options) {
+    this.runId = options.runId;
+    this.#budget = options.budget;
+    this.#now = options.now ?? (() => Date.now());
+    this.#pid = options.pid ?? process.pid;
+    this.#startedAt = this.#now();
+    this.#updatedAt = this.#startedAt;
+  }
+  /** An open hold joins the snapshot the moment it is raised. */
+  noteHoldRaised(hold) {
+    this.#openHolds.set(hold.id, {
+      id: hold.id,
+      content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}\u2026` : hold.content,
+      verdicts: [...hold.verdicts],
+      raisedAtMs: this.#now()
+    });
+    this.#touch();
+  }
+  /** Settled holds — answered, timed out, or abandoned — leave the snapshot. */
+  noteHoldSettled(id) {
+    if (this.#openHolds.delete(id)) {
+      this.#touch();
+    }
+  }
+  /** Records an engine's concurrency cap so the snapshot can show saturation. */
+  registerEngine(engine, cap) {
+    this.#counters(engine).cap = cap;
+    this.#touch();
+  }
+  setArchiveDir(path16) {
+    this.#archiveDir = path16;
+    this.#touch();
+  }
+  /** Publishes only observed identity; served values must not echo the request. */
+  noteAgentIdentity(id, identity) {
+    const record = this.#live.get(id);
+    if (record === void 0) return;
+    Object.assign(record, identity);
+    this.#touch();
+  }
+  noteAgentTranscript(id, path16) {
+    const record = this.#live.get(id);
+    if (record === void 0) return;
+    record.transcript = path16;
+    this.#touch();
+  }
+  noteAgentWorktree(id, path16) {
+    const record = this.#live.get(id);
+    if (record === void 0) return;
+    record.worktree = path16;
+    this.#touch();
+  }
+  /** Cumulative worker tokens across attempts and targets; null means unobserved. */
+  noteAgentSpend(id, spent) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.spent === spent) return;
+    if (spent !== null && (!Number.isFinite(spent) || spent < 0)) {
+      throw new RangeError("Worker spend must be finite and non-negative");
+    }
+    record.spent = spent;
+    this.#touch();
+  }
+  setWorkflow(name) {
+    this.#workflow = name;
+    this.#touch();
+  }
+  setPhase(title) {
+    this.#currentPhase = title;
+    this.#touch();
+  }
+  /**
+   * Registers a worker as queued and returns its id. The phase is captured at
+   * queue time: an explicit `phase` wins, otherwise the run's current phase.
+   */
+  queueAgent(input) {
+    const id = this.#nextAgentId += 1;
+    this.#live.set(id, {
+      id,
+      requestedModel: null,
+      requestedEffort: null,
+      resolvedModel: null,
+      resolvedEffort: null,
+      transcript: null,
+      worktree: null,
+      spent: null,
+      lastEvidenceAtMs: null,
+      finishedAtMs: null,
+      failure: null,
+      engine: input.engine,
+      label: input.label,
+      phase: input.phase ?? this.#currentPhase,
+      state: "queued",
+      attempt: 1,
+      startedAt: null,
+      firstEvidenceAt: null,
+      waitingOn: null
+    });
+    this.#counters(input.engine).queued += 1;
+    this.#touch();
+    return id;
+  }
+  /**
+   * Returns a running worker to the queue on another engine: a fallback
+   * chain step across engines releases the refused engine's slot and
+   * waits for admission on the next, and the live view says so — the leg
+   * reads queued on its new engine, its evidence timestamps reset for the
+   * fresh dispatch, its earlier engine's counters restored.
+   */
+  requeueAgent(id, engine) {
+    const record = this.#live.get(id);
+    if (record === void 0) {
+      return;
+    }
+    const previous = this.#counters(record.engine);
+    if (record.state === "running") {
+      previous.active -= 1;
+    } else {
+      previous.queued -= 1;
+    }
+    record.engine = engine;
+    record.state = "queued";
+    record.startedAt = null;
+    record.firstEvidenceAt = null;
+    record.lastEvidenceAtMs = null;
+    record.resolvedModel = null;
+    record.resolvedEffort = null;
+    record.transcript = null;
+    record.waitingOn = null;
+    this.#counters(engine).queued += 1;
+    this.#touch();
+  }
+  /** Moves a queued worker into the running state (a scheduler slot freed up). */
+  startAgent(id) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.state !== "queued") {
+      return;
+    }
+    record.state = "running";
+    record.startedAt = this.#now();
+    const counters = this.#counters(record.engine);
+    counters.queued -= 1;
+    counters.active += 1;
+    this.#touch();
+  }
+  /**
+   * Records the first observed sign of worker output for a live agent.
+   * Each observation advances the last-output stamp; the first stamp stays fixed
+   * across retries on the same target.
+   */
+  noteAgentEvidence(id) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.state !== "running") {
+      return;
+    }
+    const now = this.#now();
+    record.firstEvidenceAt ??= now;
+    record.lastEvidenceAtMs = now;
+    this.#touch();
+  }
+  /**
+   * Records what a live worker is waiting on — a background task its
+   * session started — or that it no longer is (`null`). Last write wins:
+   * the engine reports each change as it observes it.
+   */
+  noteAgentWaiting(id, wait) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.waitingOn === null && wait === null) {
+      return;
+    }
+    record.waitingOn = wait;
+    this.#touch();
+  }
+  /** Updates a running worker's attempt number (retry / in-session correction); a fresh attempt waits on nothing yet. */
+  noteAttempt(id, attempt) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.attempt === attempt) {
+      return;
+    }
+    record.attempt = attempt;
+    record.waitingOn = null;
+    this.#touch();
+  }
+  /** Retires a worker, tallying it as done or failed and freeing its slot. */
+  settleAgent(id, outcome, failure = null) {
+    const record = this.#live.get(id);
+    if (record === void 0) {
+      return;
+    }
+    this.#live.delete(id);
+    const counters = this.#counters(record.engine);
+    if (record.state === "running") {
+      counters.active -= 1;
+    } else {
+      counters.queued -= 1;
+    }
+    if (outcome === "done") {
+      counters.done += 1;
+    } else {
+      counters.failed += 1;
+    }
+    record.state = outcome;
+    record.finishedAtMs = this.#now();
+    record.failure = outcome === "failed" && failure !== null ? { ...failure } : null;
+    record.waitingOn = null;
+    this.#finished.set(id, record);
+    this.#touch();
+  }
+  /** Marks the run finished. The serialiser writes one final snapshot after. */
+  finish() {
+    if (this.#state === "finished") {
+      return;
+    }
+    this.#state = "finished";
+    this.#finishedAt = this.#now();
+    this.#touch();
+  }
+  /**
+   * Publishes a changed per-engine spend figure to live consumers. Repeated
+   * reports of the same value are deliberately inert: accounting producers
+   * may observe the same running turn more than once.
+   */
+  noteEngineSpend(engine) {
+    const spent = this.#budget.spent(engine);
+    if (this.#reportedSpend.get(engine) === spent) {
+      return;
+    }
+    this.#reportedSpend.set(engine, spent);
+    this.#touch();
+  }
+  /** Refreshes the live snapshot without changing its modelled state. */
+  markChanged() {
+    this.#touch();
+  }
+  onChange(listener) {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+  snapshot() {
+    const engines = {};
+    const totals = { active: 0, queued: 0, done: 0, failed: 0 };
+    for (const engine of this.#engines.keys()) {
+      const counters = this.#counters(engine);
+      const remaining = this.#budget.remaining(engine);
+      engines[engine] = {
+        cap: counters.cap,
+        active: counters.active,
+        queued: counters.queued,
+        done: counters.done,
+        failed: counters.failed,
+        spent: this.#budget.spent(engine),
+        ceiling: this.#budget.ceilings[engine] ?? null,
+        remaining: Number.isFinite(remaining) ? remaining : null
+      };
+      totals.active += counters.active;
+      totals.queued += counters.queued;
+      totals.done += counters.done;
+      totals.failed += counters.failed;
+    }
+    return {
+      schema: 3,
+      runId: this.runId,
+      pid: this.#pid,
+      archiveDir: this.#archiveDir,
+      workflow: this.#workflow,
+      state: this.#state,
+      startedAt: this.#startedAt,
+      updatedAt: this.#updatedAt,
+      finishedAt: this.#finishedAt,
+      currentPhase: this.#currentPhase,
+      totals,
+      engines,
+      agents: this.#agents(),
+      holds: [...this.#openHolds.values()]
+    };
+  }
+  #agents() {
+    const records = [...this.#live.values(), ...this.#finished.values()];
+    records.sort((a, b) => rank(a.state) - rank(b.state) || (rank(a.state) === 2 ? b.id - a.id : a.id - b.id));
+    return records.map((record) => ({
+      requestedModel: record.requestedModel,
+      requestedEffort: record.requestedEffort,
+      resolvedModel: record.resolvedModel,
+      resolvedEffort: record.resolvedEffort,
+      transcript: record.transcript,
+      worktree: record.worktree,
+      spent: record.spent,
+      lastEvidenceAtMs: record.lastEvidenceAtMs,
+      finishedAtMs: record.finishedAtMs,
+      failure: record.failure === null ? null : { ...record.failure },
+      id: record.id,
+      engine: record.engine,
+      label: record.label,
+      phase: record.phase,
+      state: record.state,
+      attempt: record.attempt,
+      startedAtMs: record.startedAt,
+      firstEvidenceAtMs: record.firstEvidenceAt,
+      waitingOn: record.waitingOn
+    }));
+  }
+  #counters(engine) {
+    const counters = this.#engines.get(engine);
+    if (counters === void 0) {
+      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0 };
+      this.#engines.set(engine, fresh);
+      return fresh;
+    }
+    return counters;
+  }
+  #touch() {
+    this.#updatedAt = this.#now();
+    for (const listener of this.#listeners) {
+      listener();
+    }
+  }
+};
+function rank(state) {
+  return state === "running" ? 0 : state === "queued" ? 1 : 2;
+}
+
+// src/engines.ts
+import { randomUUID as randomUUID5 } from "node:crypto";
+
+// src/app-server.ts
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
+var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
+var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+var STDIN_CLOSE_EXIT_GRACE_MS = 500;
+var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
+var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
+var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
+var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
+var SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1e3;
+var MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
+var SKILL_DISCOVERY_DEADLINE_MS = 3e4;
+var MAX_REMEMBERED_SETTLED_TURN_IDS = 256;
+var LazyCodexAppServerTransport = class {
+  cwd;
+  #options;
+  #transportPromise;
+  #closed = false;
+  constructor(options) {
+    this.cwd = options.cwd;
+    this.#options = options;
+  }
+  async openThread(options) {
+    const transport = await this.#transport();
+    return transport.openThread(options);
+  }
+  async listSkills(cwd) {
+    const transport = await this.#transport();
+    return transport.listSkills(cwd);
+  }
+  async runTurn(threadId, prompt, options) {
+    const transport = await this.#transport();
+    return transport.runTurn(threadId, prompt, options);
+  }
+  async close() {
+    this.#closed = true;
+    if (this.#transportPromise === void 0) {
+      return;
+    }
+    let transport;
+    try {
+      transport = await this.#transportPromise;
+    } catch {
+      return;
+    }
+    await transport.close();
+  }
+  #transport() {
+    if (this.#closed) {
+      return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
+    }
+    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
+    return this.#transportPromise;
+  }
+};
+var CodexAppServerTransport = class _CodexAppServerTransport {
+  cwd;
+  #process;
+  #requestTimeoutMs;
+  #retryPromiseSilenceTimeoutMs;
+  #firstOutputTimeoutMs;
+  #startupHandshakeTimeoutMs;
+  #skillDiscoveryStabilityIntervalMs;
+  #skillDiscoveryDeadlineMs;
+  #nextId = 0;
+  #pending = /* @__PURE__ */ new Map();
+  #turns = /* @__PURE__ */ new Map();
+  #transcripts = /* @__PURE__ */ new Map();
+  /**
+   * Each open thread's served identity as its `thread/start` answer reported
+   * it — the model and reasoning effort the thread runs at for its whole
+   * life. `#completeTurn` prunes a turn's transcript buffer, so a held
+   * session's later turns re-register from here rather than from nothing:
+   * the engine confirmed the identity once, and every turn on the thread is
+   * served under it.
+   */
+  #threadIdentity = /* @__PURE__ */ new Map();
+  /** Ids of turns this transport has settled, insertion-ordered so the bound evicts the oldest. */
+  #settledTurnIds = /* @__PURE__ */ new Set();
+  #stderrTail = [];
+  #exitStatus = null;
+  #hasExited = false;
+  #stdinFailureGrace;
+  #terminalError;
+  #writeFailureWaiters = /* @__PURE__ */ new Set();
+  #onEvent;
+  constructor(options) {
+    this.cwd = options.cwd;
+    this.#requestTimeoutMs = options.requestTimeoutMs;
+    this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
+    this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
+    this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
+    this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
+    this.#skillDiscoveryDeadlineMs = options.skillDiscoveryDeadlineMs ?? SKILL_DISCOVERY_DEADLINE_MS;
+    this.#onEvent = options.onEvent;
+    this.#process = spawn(options.codexBin, ["app-server"], {
+      cwd: options.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      // Declared variables sit above inherited ones; everything undeclared
+      // still inherits, so a configured parent keeps working unchanged.
+      env: { ...process.env, ...options.workerEnv }
+    });
+    this.#wireReader();
+    this.#wireStderr();
+    this.#process.stdin.on("error", () => {
+      this.#scheduleStdinFailure();
+    });
+    this.#process.once("exit", (code, signal) => {
+      this.#exitStatus = { exitCode: code, signal };
+      this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
+    });
+    this.#process.once("error", (error) => {
+      this.#failAll(new AppServerExitedError(`codex app-server process error: ${error.message}`));
+    });
+  }
+  static async start(options) {
+    const transport = new _CodexAppServerTransport(options);
+    try {
+      if (transport.#process.pid !== void 0 && options.scopes !== void 0) {
+        const pid = transport.#process.pid;
+        const outcome = await options.scopes.place(options.scopeGroup ?? "codex", [pid]);
+        if (outcome.kind !== "placed") {
+          options.onEvent?.({
+            method: "codex/workerScopePlacement",
+            params: { pid, kind: outcome.kind, ...outcome.kind === "refused" ? { reason: outcome.reason } : {} },
+            receivedAt: Date.now()
+          });
+        }
+      }
+      await transport.#handshake(options.clientName, options.clientVersion);
+    } catch (error) {
+      await transport.close();
+      throw error;
+    }
+    return transport;
+  }
+  async openThread(options) {
+    const config = threadStartConfig(options);
+    const requestParams = {
+      cwd: options.cwd ?? this.cwd,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      ephemeral: true,
+      ...options.model !== void 0 ? { model: options.model } : {},
+      ...config !== void 0 ? { config } : {}
+    };
+    const result = await this.#request("thread/start", requestParams);
+    const resultObject = asJsonObject(result);
+    const directThreadId = resultObject?.threadId;
+    const nestedThread = asJsonObject(resultObject?.thread);
+    const nestedThreadId = nestedThread?.id;
+    const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
+    if (threadId !== null) {
+      const resolvedModel = resultObject?.model;
+      const resolvedEffort = resultObject?.reasoningEffort;
+      const identity = {
+        resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
+        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null
+      };
+      this.#threadIdentity.set(threadId, identity);
+      this.#transcripts.set(threadId, {
+        ...identity,
+        events: [
+          {
+            direction: "client",
+            method: "thread/start",
+            params: requestParams,
+            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+          },
+          {
+            direction: "server",
+            method: "thread/start/result",
+            result,
+            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+          }
+        ]
+      });
+      return threadId;
+    }
+    throw new AppServerRequestError("thread/start", {
+      code: void 0,
+      message: "response did not contain result.thread.id or result.threadId",
+      data: result
+    });
+  }
+  async listSkills(cwd = this.cwd) {
+    const startedAt = Date.now();
+    let previousNames;
+    let observedExpansion = false;
+    let unchangedSinceFirstSample = true;
+    for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
+      const names = await this.#listSkillsOnce(cwd);
+      if (observedExpansion && previousNames !== void 0 && sameStrings(previousNames, names)) {
+        return names;
+      }
+      if (previousNames !== void 0) {
+        if (!sameStrings(previousNames, names)) {
+          unchangedSinceFirstSample = false;
+        }
+        if (strictlyContainsAll(names, previousNames)) {
+          observedExpansion = true;
+        } else if (!sameStrings(previousNames, names)) {
+          observedExpansion = false;
+        }
+      }
+      if (unchangedSinceFirstSample && attempt === MAX_SKILL_DISCOVERY_ATTEMPTS) {
+        return names;
+      }
+      previousNames = names;
+      if (Date.now() - startedAt >= this.#skillDiscoveryDeadlineMs) {
+        throw new AppServerRequestError("skills/list", {
+          code: "discovery_deadline",
+          message: `skill discovery exceeded its ${this.#skillDiscoveryDeadlineMs}ms aggregate bound before stabilising`
+        });
+      }
+      if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
+      }
+    }
+    throw new AppServerRequestError("skills/list", {
+      code: "unstable_discovery",
+      message: `skill discovery observed neither a growing set followed by stability nor one set unchanged across all ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
+    });
+  }
+  async #listSkillsOnce(cwd) {
+    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
+    const entries = result?.data;
+    if (!Array.isArray(entries)) {
+      throw new AppServerRequestError("skills/list", {
+        code: "invalid_response",
+        message: "response omitted the discovered skill entries"
+      });
+    }
+    const names = /* @__PURE__ */ new Set();
+    for (const entry of entries) {
+      const entryObject = asJsonObject(entry);
+      const errors = entryObject?.errors;
+      const skills = entryObject?.skills;
+      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
+        throw new AppServerRequestError("skills/list", {
+          code: "incomplete_discovery",
+          message: "could not establish the complete discovered skill set"
+        });
+      }
+      for (const skill of skills) {
+        const name = asJsonObject(skill)?.name;
+        if (typeof name !== "string" || name.length === 0) {
+          throw new AppServerRequestError("skills/list", {
+            code: "invalid_response",
+            message: "response included a skill without a name"
+          });
+        }
+        names.add(name);
+      }
+    }
+    return [...names].sort();
+  }
+  async runTurn(threadId, prompt, options) {
+    if (!this.#transcripts.has(threadId)) {
+      this.#transcripts.set(threadId, {
+        ...this.#threadIdentity.get(threadId) ?? { resolvedModel: null, resolvedEffort: null },
+        events: []
+      });
+    }
+    const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
+    state.onTranscriptEvent = options.onTranscriptEvent;
+    state.progress = options;
+    this.#reportTurnIdentity(threadId, state);
+    this.#turns.set(threadId, state);
+    for (const event of this.#transcripts.get(threadId).events) {
+      this.#observeTranscriptEvent(state, event);
+    }
+    state.promise.catch(() => void 0);
+    try {
+      const params = {
+        threadId,
+        input: [{ type: "text", text: prompt }],
+        sandboxPolicy: { type: "dangerFullAccess" }
+      };
+      if (options.schema !== void 0) {
+        params.outputSchema = options.schema;
+      }
+      if (options.model !== void 0) {
+        params.model = options.model;
+      }
+      this.#appendTranscript(threadId, {
+        direction: "client",
+        method: "turn/start",
+        params,
+        recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      const result = asJsonObject(await this.#request("turn/start", params));
+      const startedTurn = asJsonObject(result?.turn);
+      if (typeof startedTurn?.id === "string") {
+        state.turnId = startedTurn.id;
+      }
+      return await state.promise;
+    } catch (error) {
+      if (this.#turns.get(threadId) === state) {
+        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      }
+      return await state.promise;
+    }
+  }
+  /** Number of thread transcripts currently held in memory. Observability for tests. */
+  openTranscripts() {
+    return this.#transcripts.size;
+  }
+  async close() {
+    if (!this.#hasExited) {
+      this.#failAll(new AppServerExitedError("codex app-server closed"));
+    }
+    this.#threadIdentity.clear();
+    this.#transcripts.clear();
+    if (this.#exitStatus !== null || this.#process.pid === void 0) {
+      return;
+    }
+    this.#process.stdin.end();
+    this.#process.kill("SIGTERM");
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.#process.kill("SIGKILL");
+        resolve();
+      }, 5e3);
+      this.#process.once("exit", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+  }
+  async #handshake(clientName, clientVersion) {
+    try {
+      await this.#request(
+        "initialize",
+        {
+          clientInfo: {
+            name: clientName,
+            version: clientVersion
+          }
+        },
+        this.#startupHandshakeTimeoutMs
+      );
+    } catch (error) {
+      if (error instanceof TurnTimeoutError) {
+        throw new AppServerStartupTimeoutError(this.#startupHandshakeTimeoutMs);
+      }
+      throw error;
+    }
+    this.#sendNotification("initialized", {});
+  }
+  #request(method, params, timeoutMs = this.#requestTimeoutMs) {
+    const id = this.#nextId + 1;
+    this.#nextId = id;
+    const payload = JSON.stringify({ id, method, params });
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(
+          new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`, {
+            kind: "request",
+            timeoutMs,
+            method
+          })
+        );
+      }, timeoutMs);
+      this.#pending.set(id, { method, resolve, reject, timeout });
+      this.#writeLine(payload).catch((error) => {
+        this.#pending.delete(id);
+        clearTimeout(timeout);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
+  }
+  #sendNotification(method, params) {
+    void this.#writeLine(JSON.stringify({ method, params })).catch(() => {
+    });
+  }
+  /** Sends a request through stdin without retaining or awaiting its response. */
+  async #sendUnacknowledgedRequest(method, params) {
+    const id = this.#nextId + 1;
+    this.#nextId = id;
+    await this.#writeLine(JSON.stringify({ id, method, params }));
+  }
+  async #writeLine(line) {
+    if (this.#hasExited) {
+      const failure = new AppServerExitedError(this.#terminalError?.message ?? "codex app-server is not running");
+      if (this.#exitStatus !== null) {
+        attachWorkerExitStatus(failure, this.#exitStatus);
+      }
+      throw failure;
+    }
+    const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+    await new Promise((resolve, reject) => {
+      this.#process.stdin.write(`${framedLine}
+`, (error) => {
+        if (error !== null && error !== void 0) {
+          this.#scheduleStdinFailure();
+          if (this.#terminalError !== void 0) {
+            reject(this.#terminalError);
+          } else {
+            this.#writeFailureWaiters.add(reject);
+          }
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+  #wireReader() {
+    let chunks = [];
+    let byteLength = 0;
+    let prefix = Buffer.alloc(0);
+    let discardingOversizedLine = false;
+    let oversizedLineByteLength = 0;
+    const resetLine = () => {
+      chunks = [];
+      byteLength = 0;
+      prefix = Buffer.alloc(0);
+      discardingOversizedLine = false;
+      oversizedLineByteLength = 0;
+    };
+    const retain = (chunk) => {
+      if (chunk.length === 0) {
+        return;
+      }
+      chunks.push(chunk);
+      byteLength += chunk.length;
+      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
+        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
+      }
+    };
+    const reportOversizedLine = () => {
+      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
+    };
+    const handleRetainedLine = () => {
+      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+      resetLine();
+      this.#handleLine(line);
+    };
+    this.#process.stdout.on("data", (chunk) => {
+      let offset2 = 0;
+      while (offset2 < chunk.length) {
+        const newline = chunk.indexOf(10, offset2);
+        const end = newline === -1 ? chunk.length : newline;
+        const segment = chunk.subarray(offset2, end);
+        if (discardingOversizedLine) {
+          oversizedLineByteLength += segment.length;
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
+          retain(segment);
+          if (newline !== -1) {
+            handleRetainedLine();
+          }
+        } else {
+          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
+          retain(segment.subarray(0, retainedBytes));
+          discardingOversizedLine = true;
+          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        }
+        offset2 = newline === -1 ? chunk.length : newline + 1;
+      }
+    });
+    this.#process.stdout.once("end", () => {
+      if (discardingOversizedLine) {
+        reportOversizedLine();
+        resetLine();
+      } else if (byteLength > 0) {
+        handleRetainedLine();
+      }
+      if (this.#hasExited) {
+        return;
+      }
+      const grace = setTimeout(() => {
+        this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
+      }, STDOUT_CLOSE_EXIT_GRACE_MS);
+      grace.unref();
+      this.#process.once("exit", () => {
+        clearTimeout(grace);
+      });
+    });
+  }
+  #wireStderr() {
+    const reader = createInterface({ input: this.#process.stderr });
+    reader.on("line", (line) => {
+      this.#stderrTail.push(line);
+      if (this.#stderrTail.length > 50) {
+        this.#stderrTail.shift();
+      }
+    });
+  }
+  #handleLine(line) {
+    if (line.trim().length === 0) {
+      return;
+    }
+    const parsed = parseRpcMessage(line);
+    if (parsed === null) {
+      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_CHARACTERS));
+      return;
+    }
+    const id = typeof parsed.id === "number" ? parsed.id : null;
+    const method = typeof parsed.method === "string" ? parsed.method : null;
+    if (id !== null && method !== null) {
+      this.#onEvent?.({
+        method: "server/request/denied",
+        params: { requestId: id, requestMethod: method },
+        receivedAt: Date.now()
+      });
+      const requestParams = asJsonObject(parsed.params);
+      if (requestParams !== null) {
+        const turn = this.#turnCorrelatedBy(requestParams);
+        if (turn !== void 0) {
+          this.#disarmRetryPromiseSilenceDeadline(turn);
+          this.#disarmFirstOutputDeadline(turn);
+          this.#noteTurnFirstOutput(turn);
+          try {
+            turn.progress.onOutput?.();
+          } catch {
+          }
+        }
+      }
+      this.#sendApprovalDenial(id);
+      return;
+    }
+    if (id !== null && ("result" in parsed || "error" in parsed)) {
+      this.#handleResponse(id, parsed);
+      return;
+    }
+    if (method !== null) {
+      this.#handleNotification(method, asJsonObject(parsed.params) ?? {});
+    }
+  }
+  #reportDecodeFailure(byteLength, linePrefix) {
+    this.#onEvent?.({
+      method: "transport/decodeFailed",
+      params: { byteLength, linePrefix },
+      receivedAt: Date.now()
+    });
+  }
+  #handleResponse(id, message) {
+    const pending = this.#pending.get(id);
+    if (pending === void 0) {
+      return;
+    }
+    this.#pending.delete(id);
+    clearTimeout(pending.timeout);
+    if (message.error !== void 0) {
+      pending.reject(appServerErrorFromPayload(pending.method, asRpcError(message.error)));
+      return;
+    }
+    pending.resolve(message.result);
+  }
+  #handleNotification(method, params) {
+    this.#onEvent?.({ method, params, receivedAt: Date.now() });
+    const threadId = params.threadId;
+    if (typeof threadId !== "string") {
+      return;
+    }
+    this.#appendTranscript(threadId, {
+      direction: "server",
+      method,
+      params,
+      recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    const turn = this.#turns.get(threadId);
+    if (turn === void 0) {
+      return;
+    }
+    const speaksForTurn = this.#correlatesWithTurn(turn, params);
+    if (speaksForTurn) {
+      this.#disarmRetryPromiseSilenceDeadline(turn);
+      if (isOutputBearingTurnFrame(method)) {
+        this.#disarmFirstOutputDeadline(turn);
+        this.#noteTurnFirstOutput(turn);
+        try {
+          turn.progress.onOutput?.();
+        } catch {
+        }
+      }
+    }
+    const now = Date.now();
+    if (isTurnProgressNotification(method)) {
+      turn.consecutiveRetryPromises = 0;
+    }
+    if (method === "turn/started") {
+      return;
+    }
+    if (method === "model/rerouted") {
+      if (!speaksForTurn) {
+        return;
+      }
+      const toModel = params.toModel;
+      const transcript = this.#transcripts.get(threadId);
+      if (transcript !== void 0 && typeof toModel === "string" && toModel.length > 0) {
+        transcript.resolvedModel = toModel;
+        this.#reportTurnIdentity(threadId, turn);
+      }
+      return;
+    }
+    if (method === "item/started") {
+      const item = asJsonObject(params.item);
+      const itemType = itemTypeFromItem(item);
+      turn.items.set(itemType, (turn.items.get(itemType) ?? 0) + 1);
+      return;
+    }
+    if (method === "item/agentMessage/delta") {
+      if (turn.firstDeltaAt === null) {
+        turn.firstDeltaAt = now;
+      }
+      if (typeof params.delta === "string") {
+        turn.deltaText += params.delta;
+      }
+      return;
+    }
+    if (method === "item/completed") {
+      const item = asJsonObject(params.item);
+      const itemType = itemTypeFromItem(item);
+      if (itemType === "agentMessage" && typeof item?.text === "string") {
+        turn.itemText = item.text;
+      }
+      return;
+    }
+    if (method === "thread/tokenUsage/updated") {
+      const event = tokenUsageEventFromParams(params);
+      if (event !== null) {
+        turn.tokenUsageEvents.push(event);
+        try {
+          turn.progress.onUsage?.(event);
+        } catch {
+        }
+      }
+      return;
+    }
+    if (method === "thread/status/changed") {
+      const status = asJsonObject(params.status);
+      if (status?.type === "systemError") {
+        this.#armSystemErrorDiagnosticGrace(threadId, turn, method, params);
+      }
+      return;
+    }
+    if (method === "turn/completed") {
+      if (!speaksForTurn) {
+        return;
+      }
+      turn.completedAt = now;
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+        return;
+      }
+      this.#completeTurn(threadId, turn);
+      return;
+    }
+    if (method === "error") {
+      if (!speaksForTurn) {
+        return;
+      }
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+        return;
+      }
+      if (params.willRetry === true) {
+        turn.consecutiveRetryPromises += 1;
+        if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
+          const diagnostic = errorPayloadFromNotification(params);
+          void this.#rejectTurn(
+            threadId,
+            turn,
+            attachAppServerDiagnostic(
+              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
+              appServerDiagnosticFromPayload(diagnostic)
+            )
+          );
+          return;
+        }
+        this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
+        return;
+      }
+      void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+    }
+  }
+  /**
+   * Whether an inbound frame speaks for the live turn on its thread. Thread
+   * identity has already matched; a frame naming a different turn (a
+   * straggler from an abandoned turn on a recycled thread) must neither
+   * disarm the live turn's deadline, settle it, nor stamp its served model.
+   * Frames carrying no turn identity are thread-scoped and count: ephemeral
+   * threads run one turn, so the thread speaking is the turn's server
+   * speaking.
+   *
+   * A turn learns its id from the first correlated frame when the
+   * `turn/start` response has not yet named it — except that an id this
+   * transport has already settled is never learned: a straggler arriving in
+   * that window would otherwise teach the live turn the abandoned turn's
+   * identity, and every later straggler would correlate.
+   */
+  #correlatesWithTurn(turn, params) {
+    const turnId = turnIdFromParams(params);
+    if (turnId === void 0) {
+      return true;
+    }
+    if (turn.turnId === void 0) {
+      if (this.#settledTurnIds.has(turnId)) {
+        return false;
+      }
+      turn.turnId = turnId;
+      return true;
+    }
+    return turn.turnId === turnId;
+  }
+  /** Remember a settled turn's id so its stragglers can never be learned as a later turn's identity. */
+  #rememberSettledTurn(turn) {
+    if (turn.turnId === void 0) {
+      return;
+    }
+    this.#settledTurnIds.add(turn.turnId);
+    if (this.#settledTurnIds.size > MAX_REMEMBERED_SETTLED_TURN_IDS) {
+      const oldest = this.#settledTurnIds.values().next().value;
+      if (oldest !== void 0) {
+        this.#settledTurnIds.delete(oldest);
+      }
+    }
+  }
+  /** Resolves an inbound frame's params to the live turn they speak for, if any. */
+  #turnCorrelatedBy(params) {
+    const threadId = params.threadId;
+    if (typeof threadId !== "string") {
+      return void 0;
+    }
+    const turn = this.#turns.get(threadId);
+    if (turn === void 0 || !this.#correlatesWithTurn(turn, params)) {
+      return void 0;
+    }
+    return turn;
+  }
+  #disarmRetryPromiseSilenceDeadline(turn) {
+    if (turn.retryPromiseSilenceDeadline !== void 0) {
+      clearTimeout(turn.retryPromiseSilenceDeadline);
+      turn.retryPromiseSilenceDeadline = void 0;
+    }
+  }
+  #disarmSystemErrorDiagnosticGrace(turn) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
+      turn.systemErrorDiagnosticGraceDeadline = void 0;
+    }
+  }
+  #armSystemErrorDiagnosticGrace(threadId, turn, method, statusParams) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      return;
+    }
+    const diagnostic = {
+      code: void 0,
+      message: "Codex app-server reported terminal systemError without a diagnostic",
+      data: statusParams
+    };
+    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
+      new AppServerSystemError(method, diagnostic),
+      appServerDiagnosticFromPayload(diagnostic)
+    );
+    turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+    }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
+  }
+  #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
+    const diagnostic = errorPayloadFromNotification(promiseParams);
+    turn.retryPromiseSilenceDeadline = setTimeout(() => {
+      void this.#rejectTurn(
+        threadId,
+        turn,
+        attachAppServerDiagnostic(
+          new AppServerRetryPromiseBrokenError(
+            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
+            diagnostic
+          ),
+          appServerDiagnosticFromPayload(diagnostic)
+        )
+      );
+    }, this.#retryPromiseSilenceTimeoutMs);
+  }
+  #disarmFirstOutputDeadline(turn) {
+    if (turn.firstOutputDeadline !== void 0) {
+      clearTimeout(turn.firstOutputDeadline);
+      turn.firstOutputDeadline = void 0;
+    }
+  }
+  #reportTurnIdentity(threadId, turn) {
+    const identity = this.#transcripts.get(threadId);
+    if (identity === void 0) return;
+    try {
+      turn.progress.onIdentity?.({ resolvedModel: identity.resolvedModel, resolvedEffort: identity.resolvedEffort });
+    } catch {
+    }
+  }
+  /**
+   * Fire the supervisor-facing first-output callback, once per turn. Called
+   * only from the frame-driven sites (an output-bearing notification, a
+   * turn-scoped server request) — never from the completion/rejection
+   * teardown, which also disarms the deadline but proves nothing about
+   * output. The callback is observability: a throw inside it must never
+   * affect the turn.
+   */
+  #noteTurnFirstOutput(turn) {
+    if (turn.firstOutputSeen) {
+      return;
+    }
+    turn.firstOutputSeen = true;
+    try {
+      turn.onFirstOutput?.();
+    } catch {
+    }
+  }
+  #armFirstOutputDeadline(threadId, turn) {
+    turn.firstOutputDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstOutputTimeoutMs));
+    }, this.#firstOutputTimeoutMs);
+  }
+  /**
+   * The single terminal path for a failing turn. Every way a turn can end
+   * short of completion — error notification, retry-promise bound,
+   * systemError, per-turn timeout, transport close, process death — comes
+   * through here, so the terminalisation invariant is enforced once: the
+   * worker's accumulated text rides the rejection instead of being deleted
+   * with the turn state.
+   */
+  #rejectTurn(threadId, turn, error) {
+    this.#turns.delete(threadId);
+    if (turn.firstDeltaAt !== null) {
+      attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
+    }
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript?.events.some((event) => event.direction === "server")) {
+      attachPartialTranscript(error, {
+        filename: "transcript.codex.jsonl",
+        format: "jsonl",
+        source: "codex-app-server-events",
+        threadId,
+        content: this.#transcriptText(threadId),
+        partial: true
+      });
+    }
+    this.#transcripts.delete(threadId);
+    this.#rememberSettledTurn(turn);
+    clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
+    this.#disarmFirstOutputDeadline(turn);
+    if (turn.turnId !== void 0) {
+      void this.#sendUnacknowledgedRequest("turn/interrupt", {
+        threadId,
+        turnId: turn.turnId
+      }).catch(() => {
+      });
+    }
+    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
+  }
+  #completeTurn(threadId, turn) {
+    this.#turns.delete(threadId);
+    this.#rememberSettledTurn(turn);
+    clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
+    this.#disarmFirstOutputDeadline(turn);
+    const text = turn.itemText ?? turn.deltaText;
+    const transcript = this.#transcripts.get(threadId);
+    const result = {
+      text,
+      ...transcript?.resolvedModel !== null && transcript?.resolvedModel !== void 0 ? { resolvedModel: transcript.resolvedModel } : {},
+      ...transcript?.resolvedEffort !== null && transcript?.resolvedEffort !== void 0 ? { resolvedEffort: transcript.resolvedEffort } : {},
+      deltaText: turn.deltaText,
+      durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
+      firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
+      items: Object.fromEntries(turn.items),
+      tokenUsageEvents: turn.tokenUsageEvents,
+      transcriptCapture: transcript === void 0 ? "lost" : "retained",
+      transcripts: [
+        {
+          filename: "transcript.codex.jsonl",
+          format: "jsonl",
+          source: "codex-app-server-events",
+          threadId,
+          content: this.#transcriptText(threadId)
+        }
+      ]
+    };
+    if (turn.itemText !== void 0) {
+      result.itemText = turn.itemText;
+    }
+    this.#transcripts.delete(threadId);
+    turn.resolve(result);
+  }
+  #appendTranscript(threadId, event) {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === void 0) {
+      return;
+    }
+    transcript.events.push(event);
+    const turn = this.#turns.get(threadId);
+    if (turn !== void 0) {
+      this.#observeTranscriptEvent(turn, event);
+    }
+  }
+  #observeTranscriptEvent(turn, event) {
+    try {
+      turn.onTranscriptEvent?.(event);
+    } catch {
+    }
+  }
+  #transcriptText(threadId) {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === void 0) {
+      return "";
+    }
+    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}
+`;
+  }
+  #createTurnState(threadId, timeoutMs, onFirstOutput) {
+    let resolveTurn = () => void 0;
+    let rejectTurn = () => void 0;
+    const promise = new Promise((resolve, reject) => {
+      resolveTurn = resolve;
+      rejectTurn = reject;
+    });
+    const state = {
+      threadId,
+      turnId: void 0,
+      startedAt: Date.now(),
+      firstDeltaAt: null,
+      firstOutputSeen: false,
+      progress: {},
+      onFirstOutput,
+      onTranscriptEvent: void 0,
+      completedAt: null,
+      deltaText: "",
+      items: /* @__PURE__ */ new Map(),
+      tokenUsageEvents: [],
+      consecutiveRetryPromises: 0,
+      retryPromiseSilenceDeadline: void 0,
+      systemErrorDiagnosticGraceDeadline: void 0,
+      systemErrorDiagnosticFallback: void 0,
+      firstOutputDeadline: void 0,
+      promise,
+      resolve: resolveTurn,
+      reject: rejectTurn,
+      // No timeoutMs → no per-turn deadline; the turn runs until it completes or
+      // the run is stopped. A backstop is the orchestrator's responsibility.
+      timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
+        void this.#rejectTurn(
+          threadId,
+          state,
+          new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`, {
+            kind: "turn",
+            timeoutMs,
+            threadId
+          })
+        );
+      }, timeoutMs)
+    };
+    this.#armFirstOutputDeadline(threadId, state);
+    return state;
+  }
+  #sendApprovalDenial(id) {
+    void this.#writeLine(
+      JSON.stringify({
+        id,
+        result: {
+          decision: "denied",
+          reason: "Ensemble workers run with approvalPolicy never"
+        }
+      })
+    ).catch(() => {
+    });
+  }
+  #scheduleStdinFailure() {
+    if (this.#hasExited || this.#stdinFailureGrace !== void 0) {
+      return;
+    }
+    this.#stdinFailureGrace = setTimeout(() => {
+      this.#failAll(new AppServerExitedError("codex app-server stdin closed unexpectedly"));
+    }, STDIN_CLOSE_EXIT_GRACE_MS);
+    this.#stdinFailureGrace.unref();
+  }
+  #failAll(error) {
+    if (this.#hasExited) {
+      return;
+    }
+    this.#hasExited = true;
+    if (this.#stdinFailureGrace !== void 0) {
+      clearTimeout(this.#stdinFailureGrace);
+      this.#stdinFailureGrace = void 0;
+    }
+    const stderr = this.#stderrTail.length > 0 ? `
+Recent stderr:
+${this.#stderrTail.join("\n")}` : "";
+    const wrapped = new AppServerExitedError(`${error.message}${stderr}`);
+    this.#terminalError = wrapped;
+    if (this.#exitStatus !== null) {
+      attachWorkerExitStatus(wrapped, this.#exitStatus);
+    }
+    for (const reject of this.#writeFailureWaiters) {
+      reject(wrapped);
+    }
+    this.#writeFailureWaiters.clear();
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(wrapped);
+    }
+    this.#pending.clear();
+    for (const [threadId, turn] of [...this.#turns]) {
+      const perTurn = new AppServerExitedError(wrapped.message);
+      if (this.#exitStatus !== null) {
+        attachWorkerExitStatus(perTurn, this.#exitStatus);
+      }
+      void this.#rejectTurn(threadId, turn, perTurn);
+    }
+    this.#turns.clear();
+    this.#transcripts.clear();
+  }
+};
+function appServerErrorFromPayload(method, errorPayload) {
+  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
+  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
+  return attachAppServerDiagnostic(error, diagnostic);
+}
+function appServerErrorFromNotification(params) {
+  const errorPayload = errorPayloadFromNotification(params);
+  if (errorPayload.code === "serverOverloaded") {
+    return attachAppServerDiagnostic(
+      new AppServerOverloadedError("turn notification", errorPayload),
+      appServerDiagnosticFromPayload(errorPayload)
+    );
+  }
+  return appServerErrorFromPayload("turn notification", errorPayload);
+}
+function appServerDiagnosticFromPayload(payload) {
+  return {
+    code: payload.code ?? null,
+    httpStatusCode: payload.httpStatusCode ?? null,
+    message: payload.message ?? "unknown app-server error",
+    payload: renderPayloadSafely(payload.data)
+  };
+}
+function codexErrorInfoOf(value) {
+  if (typeof value === "string") {
+    return { code: value, httpStatusCode: void 0 };
+  }
+  const variants = Object.entries(asJsonObject(value) ?? {});
+  const variant = variants.length === 1 ? variants[0] : void 0;
+  if (variant === void 0) {
+    return null;
+  }
+  const [code, detail] = variant;
+  const status = asJsonObject(detail)?.httpStatusCode;
+  return { code, httpStatusCode: Number.isInteger(status) ? status : void 0 };
+}
+function errorPayloadFromNotification(params) {
+  const turnError = asJsonObject(params.error);
+  const codexErrorInfo = turnError?.codexErrorInfo;
+  const errorInfoParts = codexErrorInfoOf(codexErrorInfo);
+  const errorInfo = typeof codexErrorInfo === "string" ? codexErrorInfo : asJsonObject(codexErrorInfo) === null ? void 0 : renderPayloadSafely(codexErrorInfo);
+  const message = typeof turnError?.message === "string" ? turnError.message : void 0;
+  const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
+  const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
+  return {
+    code: errorInfoParts?.code,
+    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
+    data: params,
+    ...errorInfoParts?.httpStatusCode === void 0 ? {} : { httpStatusCode: errorInfoParts.httpStatusCode }
+  };
+}
+function renderPayloadSafely(payload) {
+  try {
+    return JSON.stringify(payload) ?? "undefined";
+  } catch (error) {
+    return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
+  }
+}
+function isTurnProgressNotification(method) {
+  return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || // MCP progress is a tool saying it is alive, not the response stream
+  // resuming — the reset set's rationale. Counting it would let a
+  // promise/heartbeat alternation defeat the consecutive-promise bound.
+  method.startsWith("item/") && method !== "item/mcpToolCall/progress";
+}
+function isOutputBearingTurnFrame(method) {
+  return method !== "turn/started";
+}
+function turnIdFromParams(params) {
+  if (typeof params.turnId === "string") {
+    return params.turnId;
+  }
+  const turn = asJsonObject(params.turn);
+  return typeof turn?.id === "string" ? turn.id : void 0;
+}
+var MAX_INBOUND_PAYLOAD_DEPTH = 64;
+function payloadContainsInvalidJsonSchema(value, depth = 0) {
+  if (depth >= MAX_INBOUND_PAYLOAD_DEPTH) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return value.includes("invalid_json_schema");
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
+  }
+  const object = asJsonObject(value);
+  if (object === null) {
+    return false;
+  }
+  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
+}
+function parseRpcMessage(line) {
+  try {
+    const parsed = JSON.parse(line);
+    return asJsonObject(parsed);
+  } catch {
+    return null;
+  }
+}
+function threadStartConfig(options) {
+  if (options.threadConfig === void 0 && options.effort === void 0) {
+    return void 0;
+  }
+  return {
+    ...options.threadConfig,
+    ...options.effort !== void 0 ? { model_reasoning_effort: options.effort } : {}
+  };
+}
+function asJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function sameStrings(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+function strictlyContainsAll(candidate, baseline) {
+  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
+}
+function asRpcError(value) {
+  const object = asJsonObject(value);
+  if (object === null) {
+    return { code: void 0, message: String(value) };
+  }
+  return {
+    code: typeof object.code === "number" ? object.code : void 0,
+    message: typeof object.message === "string" ? object.message : void 0,
+    data: object.data
+  };
+}
+function itemTypeFromItem(item) {
+  if (item === null) {
+    return "?";
+  }
+  const itemType = item.itemType ?? item.type;
+  return typeof itemType === "string" ? itemType : "?";
+}
+
 // src/claude-control-plane.ts
-import { execFile as execFile3, spawn } from "node:child_process";
-import { access, mkdtemp, readFile as readFile5, readdir as readdir4, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
+import { access, mkdtemp, readFile as readFile6, readdir as readdir5, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
 import { homedir as homedir3, hostname as hostname3, tmpdir } from "node:os";
+import path11 from "node:path";
+
+// src/worker-scopes.ts
+import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
+import { readFile as readFile5, readdir as readdir4 } from "node:fs/promises";
 import path10 from "node:path";
+var RUN_SCOPE_GROUP = "run";
+var SystemdWorkerScopes = class {
+  slice;
+  #label;
+  #busctlBin;
+  #systemdRunBin;
+  #systemctlBin;
+  #env;
+  #procDir;
+  #moveTimeoutMs;
+  /** Units this manager created, by group: the set `close()` stops. */
+  #units = /* @__PURE__ */ new Map();
+  /** One placement at a time per group, so concurrent first placements create one scope rather than race for the name. */
+  #groupTurns = /* @__PURE__ */ new Map();
+  #closed = false;
+  constructor(options = {}) {
+    this.slice = options.slice ?? null;
+    this.#label = options.label ?? String(process.pid);
+    this.#busctlBin = options.busctlBin ?? "busctl";
+    this.#systemdRunBin = options.systemdRunBin ?? "systemd-run";
+    this.#systemctlBin = options.systemctlBin ?? "systemctl";
+    this.#env = options.env ?? process.env;
+    this.#procDir = options.procDir ?? "/proc";
+    this.#moveTimeoutMs = options.moveTimeoutMs ?? 5e3;
+  }
+  /** The unit a group's processes are placed in: `ensemble-<label>-<group>.scope`, the group made unit-name safe. */
+  unitFor(group) {
+    return `ensemble-${unitSafe(this.#label)}-${unitSafe(group)}.scope`;
+  }
+  async place(group, pids) {
+    if (this.#closed) {
+      return { kind: "refused", reason: "the scope manager is closed" };
+    }
+    const turn = (this.#groupTurns.get(group) ?? Promise.resolve()).then(() => this.#placeInTurn(group, pids));
+    this.#groupTurns.set(group, turn.catch(() => void 0));
+    return turn;
+  }
+  async #placeInTurn(group, requested) {
+    if (this.#closed) {
+      return { kind: "refused", reason: "the scope manager is closed" };
+    }
+    const unit = this.unitFor(group);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const pids = requested.filter(isLive);
+      if (pids.length === 0) {
+        return { kind: "refused", reason: "every process to place had already exited" };
+      }
+      const outcome = this.#units.has(group) ? await this.#attach(unit, pids, true) : await this.#start(unit, pids, true);
+      if (outcome === null) {
+        this.#units.set(group, unit);
+        if (!await this.#moved(unit, pids)) {
+          return { kind: "refused", reason: `the manager accepted ${unit} but its processes had not moved within ${this.#moveTimeoutMs}ms` };
+        }
+        return { kind: "placed", unit, pids };
+      }
+      if (/No such process/.test(outcome)) {
+        continue;
+      }
+      return { kind: "refused", reason: outcome };
+    }
+    return { kind: "refused", reason: "the processes to place exited while being placed" };
+  }
+  /**
+   * Create the group's scope around these processes. A unit of that name
+   * already loaded — a leftover of an earlier launcher with this label, or
+   * a concurrent creation — is joined instead. Null on success; otherwise
+   * the manager's refusal. Each route falls back to the other once: the
+   * unit's state can change between the two calls, and a second flip is
+   * reported rather than chased.
+   */
+  async #start(unit, pids, joinExisting) {
+    const properties = [
+      ["PIDs", "au", String(pids.length), ...pids.map(String)],
+      ["Delegate", "b", "true"],
+      ["CollectMode", "s", "inactive-or-failed"],
+      ...this.slice !== null ? [["Slice", "s", this.slice]] : []
+    ];
+    const started = await this.#manager("StartTransientUnit", "ssa(sv)a(sa(sv))", [
+      unit,
+      "fail",
+      String(properties.length),
+      ...properties.flat(),
+      "0"
+    ]);
+    if (started === null || !joinExisting || !/already loaded/.test(started)) {
+      return started;
+    }
+    return this.#attach(unit, pids, false);
+  }
+  /** Add processes to the group's existing scope; a scope that ended with its last process is created again. */
+  async #attach(unit, pids, recreateGone) {
+    const attached = await this.#manager("AttachProcessesToUnit", "ssau", [unit, "/", String(pids.length), ...pids.map(String)]);
+    if (attached === null || !recreateGone || !/not loaded/.test(attached)) {
+      return attached;
+    }
+    return this.#start(unit, pids, false);
+  }
+  /** Whether every listed process that is still alive sits in the unit, waited for up to the move timeout. */
+  async #moved(unit, pids) {
+    const deadline = Date.now() + this.#moveTimeoutMs;
+    for (; ; ) {
+      const lines = await Promise.all(
+        pids.map((pid) => readFile5(path10.join(this.#procDir, String(pid), "cgroup"), "utf8").catch(() => null))
+      );
+      if (lines.every((line) => line === null || line.trimEnd().endsWith(`/${unit}`))) {
+        return true;
+      }
+      if (Date.now() >= deadline) {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  /**
+   * The slice a launched command's scope goes in: the parent of the
+   * launcher's own slice, so the command — and a supervisor it starts —
+   * sits outside the box the launcher's slice draws, whether that box is
+   * the slice itself or a scope inside it. A launcher in `agents-run1.slice`
+   * launches into `agents.slice`; one in `agents.slice` or `app.slice`
+   * launches into the user manager's root slice. A root-slice launcher also
+   * launches into the root slice, in a scope separate from its own. Null
+   * where the launcher's slice is unknown: the manager's default applies.
+   */
+  get launchSlice() {
+    return this.slice === null ? null : parentSlice(this.slice);
+  }
+  async launch(file, args, options) {
+    const slice = this.launchSlice;
+    return spawn2(
+      this.#systemdRunBin,
+      [
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        ...slice !== null ? [`--slice=${slice}`] : [],
+        `--description=ensemble: ${file} ${args[0] ?? ""}`.trimEnd(),
+        "--",
+        file,
+        ...args
+      ],
+      options
+    );
+  }
+  async close() {
+    this.#closed = true;
+    await Promise.all([...this.#groupTurns.values()]);
+    this.#groupTurns.clear();
+    const units = [...this.#units.values()];
+    this.#units.clear();
+    await Promise.all(
+      units.map(
+        (unit) => new Promise((resolve) => {
+          execFile3(this.#systemctlBin, ["--user", "stop", "--no-block", unit], { env: this.#env }, () => resolve());
+        })
+      )
+    );
+  }
+  /** One call on the manager object. Null when it succeeded; otherwise the bounded text of its refusal. */
+  #manager(method, signature, args) {
+    return new Promise((resolve) => {
+      execFile3(
+        this.#busctlBin,
+        [
+          "--user",
+          "--",
+          "call",
+          "org.freedesktop.systemd1",
+          "/org/freedesktop/systemd1",
+          "org.freedesktop.systemd1.Manager",
+          method,
+          signature,
+          ...args
+        ],
+        { env: this.#env },
+        (error, _stdout, stderr) => {
+          resolve(error === null ? null : boundedEvidence(stderr.trim() || error.message));
+        }
+      );
+    });
+  }
+};
+var NoWorkerScopes = class {
+  slice = null;
+  async place() {
+    return { kind: "unavailable" };
+  }
+  async launch(file, args, options) {
+    return spawn2(file, [...args], options);
+  }
+  async close() {
+  }
+};
+async function createWorkerScopes(options = {}) {
+  const { procDir = "/proc", ...systemd } = options;
+  const env = systemd.env ?? process.env;
+  if (!await userManagerAnswers(systemd.busctlBin ?? "busctl", env)) {
+    return new NoWorkerScopes();
+  }
+  const cgroup = await readFile5(path10.join(procDir, "self", "cgroup"), "utf8").catch(() => "");
+  return new SystemdWorkerScopes({ ...systemd, slice: containingSlice(cgroup) });
+}
+function containingSlice(cgroupFile) {
+  const line = cgroupFile.split("\n").find((entry) => entry.startsWith("0::"));
+  if (line === void 0) {
+    return null;
+  }
+  const segments = line.slice("0::".length).split("/").filter((segment) => segment.length > 0);
+  const userManager = segments.findIndex((segment) => /^user@\d+\.service$/.test(segment));
+  if (userManager === -1) {
+    return null;
+  }
+  for (let index = segments.length - 1; index > userManager; index -= 1) {
+    const segment = segments[index];
+    if (segment.endsWith(".slice")) {
+      return segment;
+    }
+  }
+  return "-.slice";
+}
+function parentSlice(slice) {
+  if (slice === "-.slice") return slice;
+  const name = slice.slice(0, -".slice".length);
+  const dash = name.lastIndexOf("-");
+  return dash === -1 ? "-.slice" : `${name.slice(0, dash)}.slice`;
+}
+async function processTree(pid, procDir = "/proc") {
+  const seen = /* @__PURE__ */ new Set([pid]);
+  const queue = [pid];
+  while (queue.length > 0) {
+    const parent = queue.shift();
+    const taskDir = path10.join(procDir, String(parent), "task");
+    const tasks = await readdir4(taskDir).catch(() => []);
+    for (const task of tasks) {
+      const children = await readFile5(path10.join(taskDir, task, "children"), "utf8").catch(() => "");
+      for (const child of children.split(/\s+/).filter((entry) => /^\d+$/.test(entry)).map(Number)) {
+        if (!seen.has(child)) {
+          seen.add(child);
+          queue.push(child);
+        }
+      }
+    }
+  }
+  return [...seen];
+}
+function userManagerAnswers(busctlBin, env) {
+  return new Promise((resolve) => {
+    execFile3(
+      busctlBin,
+      ["--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.DBus.Peer", "Ping"],
+      { env, timeout: 5e3 },
+      (error) => resolve(error === null)
+    );
+  });
+}
+function isLive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function unitSafe(text) {
+  return text.replace(/[^A-Za-z0-9:_.-]/g, "_").slice(0, 64);
+}
+
+// src/claude-control-plane.ts
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
 var OWNER_FILENAME = "owner.json";
-var CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
 var ClaudeCliControlPlane = class {
   #claudeBin;
@@ -17318,6 +19232,18 @@ var ClaudeCliControlPlane = class {
   #valveAttachSettleMs;
   #valveSubmitSettleMs;
   #valveKillSettleMs;
+  #scopes;
+  #workerScope;
+  #placementSettleMs;
+  #placementWatchIntervalMs;
+  #onEvent;
+  /** Last placement attempt per session: refused attempts remain eligible at the same pid. */
+  #placements = /* @__PURE__ */ new Map();
+  /** Session ownership lasts through idle gaps, independently of turn polling. */
+  #watchedSessions = /* @__PURE__ */ new Map();
+  #placementTimer = null;
+  #placementSweep = null;
+  #placing = /* @__PURE__ */ new Map();
   #valveCounter = 0;
   /**
    * Where each valve's socket directory is made: where tmux keeps its own
@@ -17344,7 +19270,8 @@ var ClaudeCliControlPlane = class {
       ...this.#workerEnv,
       [SANDBOXED_WORKSPACE_VARIABLE]: "1"
     };
-    this.#projectsDir = options.projectsDir ?? path10.join(homedir3(), ".claude", "projects");
+    const configDir = this.#env.CLAUDE_CONFIG_DIR || path11.join(homedir3(), ".claude");
+    this.#projectsDir = options.projectsDir ?? path11.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";
@@ -17352,6 +19279,18 @@ var ClaudeCliControlPlane = class {
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2e3;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
+    this.#workerScope = options.workerScope ?? "worker";
+    this.#scopes = options.scopes ?? new NoWorkerScopes();
+    this.#placementSettleMs = options.placementSettleMs ?? 1e4;
+    this.#placementWatchIntervalMs = options.placementWatchIntervalMs ?? 1e3;
+    if (!Number.isInteger(this.#placementWatchIntervalMs) || this.#placementWatchIntervalMs < 1 || this.#placementWatchIntervalMs > 2147483647) {
+      throw new RangeError("placementWatchIntervalMs must be an integer from 1 to 2147483647");
+    }
+    this.#onEvent = options.onEvent;
+  }
+  /** How the session's process was last placed, or null before the roster has named a pid for it. */
+  placementOf(handle) {
+    return this.#placements.get(handle.sessionId)?.outcome ?? null;
   }
   async dispatch(options) {
     const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
@@ -17363,35 +19302,58 @@ var ClaudeCliControlPlane = class {
     }
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
-    args.push("--settings", path10.join(settingsDir, "settings.json"));
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
+    args.push("--settings", path11.join(settingsDir, "settings.json"));
     let registered = null;
     try {
-      const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
-      if (!dispatch.ok && await this.#findByName(options.name) === null) {
-        throw new ClaudeDispatchError(
-          `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + boundedEvidence(dispatch.stderr.trim() || dispatch.stdout.trim() || "claude --bg exited without a message")
-        );
-      }
-      const deadline = Date.now() + this.#dispatchTimeoutMs;
+      const dispatch = { result: null };
+      void this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd).then(
+        (result) => dispatch.result = result,
+        (error) => dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error) }
+      );
+      let deadline = null;
       for (; ; ) {
-        const handle = await this.#findByName(options.name);
-        if (handle !== null) {
-          registered = handle;
+        const found = await this.#findByName(options.name);
+        if (found !== null) {
+          registered = found.handle;
+          if (this.#scopes instanceof NoWorkerScopes) break;
+          const settled = Date.now() + this.#placementSettleMs;
+          let pid = found.pid;
+          for (; ; ) {
+            if (pid !== null) {
+              const outcome = await this.#place(registered, pid);
+              if (outcome.kind !== "refused") break;
+            }
+            if (Date.now() >= settled) break;
+            await delay(100);
+            pid = (await this.#findByName(options.name))?.pid ?? null;
+          }
           break;
         }
-        if (Date.now() >= deadline) {
-          throw new ClaudeRegistrationTimeoutError(
-            `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
-          );
+        if (dispatch.result !== null) {
+          if (!dispatch.result.ok) {
+            throw new ClaudeDispatchError(
+              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + boundedEvidence(dispatch.result.stderr.trim() || dispatch.result.stdout.trim() || "claude --bg exited without a message")
+            );
+          }
+          deadline ??= Date.now() + this.#dispatchTimeoutMs;
+          if (Date.now() >= deadline) {
+            throw new ClaudeRegistrationTimeoutError(
+              `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
+            );
+          }
         }
-        await delay(500);
+        await delay(dispatch.result === null ? 100 : 500);
       }
     } finally {
       if (registered === null) {
         await this.#removeSettingsDir(settingsDir);
       } else {
         this.#settingsDirs.set(registered.sessionId, settingsDir);
+        if (!(this.#scopes instanceof NoWorkerScopes)) {
+          this.#watchedSessions.set(registered.sessionId, registered);
+          this.#schedulePlacementWatch();
+        }
       }
     }
     if (registered === null) {
@@ -17410,20 +19372,19 @@ var ClaudeCliControlPlane = class {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName, permissionDenyRules, cacheTtl) {
+  async #writeWorkerSettings(dispatchName, permissionDenyRules) {
     const env = {
       ...this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {},
-      ...cacheTtl !== void 0 ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {},
       ...this.#workerEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
     const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
     const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
 `;
-    const dir = await mkdtemp(path10.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
+    const dir = await mkdtemp(path11.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
-      await writeFile5(path10.join(dir, OWNER_FILENAME), owner, { mode: 384 });
-      await writeFile5(path10.join(dir, "settings.json"), `${JSON.stringify(settings)}
+      await writeFile5(path11.join(dir, OWNER_FILENAME), owner, { mode: 384 });
+      await writeFile5(path11.join(dir, "settings.json"), `${JSON.stringify(settings)}
 `, {
         mode: 384
       });
@@ -17456,15 +19417,15 @@ var ClaudeCliControlPlane = class {
    */
   async #sweepOrphanedSettingsDirs() {
     const root = tmpdir();
-    const entries = await readdir4(root, { withFileTypes: true }).catch(() => []);
+    const entries = await readdir5(root, { withFileTypes: true }).catch(() => []);
     const host = hostname3();
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name.startsWith(SETTINGS_DIR_PREFIX)) {
         continue;
       }
-      const dir = path10.join(root, entry.name);
+      const dir = path11.join(root, entry.name);
       try {
-        const owner = JSON.parse(await readFile5(path10.join(dir, OWNER_FILENAME), "utf8"));
+        const owner = JSON.parse(await readFile6(path11.join(dir, OWNER_FILENAME), "utf8"));
         if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
           await this.#removeSettingsDir(dir);
         }
@@ -17481,6 +19442,10 @@ var ClaudeCliControlPlane = class {
     if (record === null) {
       return { status: "absent", state: "unknown", present: false };
     }
+    const previous = this.#placements.get(handle.sessionId);
+    if (typeof record.pid === "number" && (previous?.pid !== record.pid || previous.outcome.kind === "refused")) {
+      await this.#place(handle, record.pid);
+    }
     const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : void 0;
     return {
       status: typeof record.status === "string" ? record.status : "unknown",
@@ -17493,13 +19458,13 @@ var ClaudeCliControlPlane = class {
     const filename = `${handle.sessionId}.jsonl`;
     let projectDirs;
     try {
-      const entries = await readdir4(this.#projectsDir, { withFileTypes: true });
+      const entries = await readdir5(this.#projectsDir, { withFileTypes: true });
       projectDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     } catch {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path10.join(this.#projectsDir, dir, filename);
+      const candidate = path11.join(this.#projectsDir, dir, filename);
       try {
         await access(candidate);
         return candidate;
@@ -17516,12 +19481,12 @@ var ClaudeCliControlPlane = class {
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
     let socketDir;
     try {
-      socketDir = await mkdtemp(path10.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+      socketDir = await mkdtemp(path11.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
       return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
     }
-    const server = ["-S", path10.join(socketDir, "tmux.sock")];
+    const server = ["-S", path11.join(socketDir, "tmux.sock")];
     try {
       const created = await this.#run(this.#tmuxBin, [
         ...server,
@@ -17539,7 +19504,7 @@ var ClaudeCliControlPlane = class {
       await delay(this.#valveAttachSettleMs);
       const slices = valveSlices(message);
       for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", slice]);
+        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", "--", slice]);
         if (!typed.ok) {
           return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
         }
@@ -17556,8 +19521,81 @@ var ClaudeCliControlPlane = class {
       await rm4(socketDir, { recursive: true, force: true }).catch(() => void 0);
     }
   }
+  /**
+   * Place the session's process and its live descendants in the scope
+   * chosen by the run's grouping. The tree, not the pid alone: helpers the
+   * session forked before this moment (MCP servers, shells) would
+   * otherwise stay in the supervisor's cgroup. Best-effort — the outcome
+   * is recorded, never thrown.
+   */
+  async #place(handle, pid) {
+    const pending = (this.#placing.get(handle.sessionId) ?? Promise.resolve()).then(() => this.#placeInTurn(handle, pid));
+    this.#placing.set(handle.sessionId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.#placing.get(handle.sessionId) === pending) this.#placing.delete(handle.sessionId);
+    }
+  }
+  async #placeInTurn(handle, pid) {
+    const previous = this.#placements.get(handle.sessionId);
+    if (previous?.pid === pid && previous.outcome.kind !== "refused") return previous.outcome;
+    const outcome = await this.#scopes.place(this.#workerScope === "run" ? RUN_SCOPE_GROUP : handle.name, await processTree(pid, this.#procDir));
+    this.#placements.set(handle.sessionId, { pid, outcome });
+    const changedRefusal = outcome.kind === "refused" && (previous?.pid !== pid || previous.outcome.kind !== "refused" || previous.outcome.reason !== outcome.reason);
+    const recovered = outcome.kind === "placed" && previous?.outcome.kind === "refused";
+    if (changedRefusal || recovered) {
+      this.#onEvent?.({
+        method: "claude/workerScopePlacement",
+        params: {
+          sessionId: handle.sessionId,
+          name: handle.name,
+          pid,
+          kind: outcome.kind,
+          ...outcome.kind === "refused" ? { reason: boundedEvidence(outcome.reason) } : {},
+          ...outcome.kind === "placed" ? { unit: outcome.unit } : {}
+        },
+        receivedAt: Date.now()
+      });
+    }
+    return outcome;
+  }
+  /** One roster read serves every owned session, including those between turns. */
+  #schedulePlacementWatch() {
+    if (this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
+    this.#placementTimer = setTimeout(() => {
+      this.#placementTimer = null;
+      this.#placementSweep = this.#refreshPlacements().catch((error) => {
+        this.#onEvent?.({
+          method: "claude/workerScopeWatchError",
+          params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
+          receivedAt: Date.now()
+        });
+      }).finally(() => {
+        this.#placementSweep = null;
+        this.#schedulePlacementWatch();
+      });
+    }, this.#placementWatchIntervalMs);
+    this.#placementTimer.unref();
+  }
+  async #refreshPlacements() {
+    const roster = await this.#roster();
+    if (!roster.ok) return;
+    for (const handle of this.#watchedSessions.values()) {
+      const row = roster.rows.find((entry) => matchesHandle(entry, handle));
+      if (typeof row?.pid === "number") await this.#place(handle, row.pid);
+    }
+  }
   async stop(handle) {
+    this.#watchedSessions.delete(handle.sessionId);
+    if (this.#watchedSessions.size === 0 && this.#placementTimer !== null) {
+      clearTimeout(this.#placementTimer);
+      this.#placementTimer = null;
+    }
+    await this.#placementSweep;
+    await this.#placing.get(handle.sessionId);
     await this.#run(this.#claudeBin, ["stop", handle.id]);
+    this.#placements.delete(handle.sessionId);
     await this.#reapTaggedDescendants(handle.name);
     await this.#run(this.#claudeBin, ["rm", handle.id]);
     const settingsDir = this.#settingsDirs.get(handle.sessionId);
@@ -17598,7 +19636,7 @@ var ClaudeCliControlPlane = class {
     const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
     let entries;
     try {
-      entries = await readdir4(this.#procDir);
+      entries = await readdir5(this.#procDir);
     } catch {
       return [];
     }
@@ -17613,7 +19651,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile5(path10.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile6(path11.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -17626,6 +19664,7 @@ var ClaudeCliControlPlane = class {
   async tmuxAvailable() {
     return (await this.#run(this.#tmuxBin, ["-V"])).ok;
   }
+  /** The roster's row for a dispatch, as a handle plus the pid the row names (null until the supervisor reports one). */
   async #findByName(name) {
     const { rows } = await this.#roster();
     const match = rows.find(
@@ -17636,10 +19675,13 @@ var ClaudeCliControlPlane = class {
     }
     const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
     return {
-      id,
-      sessionId: match.sessionId,
-      name,
-      cwd: typeof match.cwd === "string" ? match.cwd : ""
+      handle: {
+        id,
+        sessionId: match.sessionId,
+        name,
+        cwd: typeof match.cwd === "string" ? match.cwd : ""
+      },
+      pid: typeof match.pid === "number" ? match.pid : null
     };
   }
   // `ok: false` means the query could not be performed (process error, empty or
@@ -17662,24 +19704,25 @@ var ClaudeCliControlPlane = class {
     return { ok: true, rows: parsed.filter((row) => typeof row === "object" && row !== null) };
   }
   #run(file, args, cwd) {
-    return new Promise((resolve) => {
-      execFile3(
-        file,
-        args,
-        { ...cwd !== void 0 ? { cwd } : {}, maxBuffer: 32 * 1024 * 1024, env: this.#env },
-        (error, stdout, stderr) => {
-          resolve({ ok: error === null, stdout, stderr });
-        }
-      );
-    });
+    return this.#launch(file, args, null, cwd);
   }
   #runWithInput(file, args, input, cwd) {
+    return this.#launch(file, args, input, cwd);
+  }
+  /**
+   * The one route every control-plane child takes: launched by the scope
+   * manager (outside the launcher's box, where a systemd user manager is
+   * reachable), under the spread `#env`, with its output collected and its
+   * exit status read as the verdict. `input` is streamed to stdin and the
+   * stream then closed; null closes it at once.
+   */
+  async #launch(file, args, input, cwd) {
+    const child = await this.#scopes.launch(file, args, {
+      ...cwd !== void 0 ? { cwd } : {},
+      env: this.#env,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
     return new Promise((resolve) => {
-      const child = spawn(file, args, {
-        ...cwd !== void 0 ? { cwd } : {},
-        env: this.#env,
-        stdio: ["pipe", "pipe", "pipe"]
-      });
       const stdout = [];
       const stderr = [];
       let settled = false;
@@ -17689,8 +19732,8 @@ var ClaudeCliControlPlane = class {
           resolve(result);
         }
       };
-      child.stdout.on("data", (chunk) => stdout.push(chunk));
-      child.stderr.on("data", (chunk) => stderr.push(chunk));
+      child.stdout?.on("data", (chunk) => stdout.push(chunk));
+      child.stderr?.on("data", (chunk) => stderr.push(chunk));
       child.on("error", (error) => {
         finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
       });
@@ -17701,8 +19744,8 @@ var ClaudeCliControlPlane = class {
           stderr: Buffer.concat(stderr).toString()
         });
       });
-      child.stdin.on("error", () => void 0);
-      child.stdin.end(input);
+      child.stdin?.on("error", () => void 0);
+      child.stdin?.end(input ?? void 0);
     });
   }
 };
@@ -17721,11 +19764,13 @@ function refused(step, result) {
   return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
 }
 function valveSlices(message) {
+  message = message.replace(/\r\n?/g, "\n").replaceAll("	", "    ");
   const slices = [];
   let current2 = "";
   let currentBytes = 0;
-  for (const character of message) {
-    const characterBytes = Buffer.byteLength(character, "utf8");
+  for (let index = 0; index < message.length; index += 1) {
+    const character = `\x1B[0;0;${message.charCodeAt(index)};1;0;1_`;
+    const characterBytes = character.length;
     if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
       slices.push(current2);
       current2 = "";
@@ -17749,7 +19794,7 @@ function delay(ms) {
 import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/claude-transcript.ts
-import { readFile as readFile6 } from "node:fs/promises";
+import { readFile as readFile7 } from "node:fs/promises";
 function parseTranscriptText(text) {
   const entries = [];
   for (const line of text.split("\n")) {
@@ -17763,14 +19808,14 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscriptFile(path15) {
+async function readTranscriptFile(path16) {
   let text;
   try {
-    text = await readFile6(path15, "utf8");
+    text = await readFile7(path16, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path15}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path16}`, { cause: error });
   }
-  return { path: path15, text, entries: parseTranscriptText(text) };
+  return { path: path16, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -18094,19 +20139,6 @@ var CAPABILITY_DENY_RULES = {
 function permissionDenyRulesFor(strip) {
   return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
 }
-var CLAUDE_MULTITURN_CACHE_TTL = "1h";
-function claudeCacheTtlToMs(value) {
-  const match = /^(\d+)([smh]?)$/.exec(value.trim());
-  if (match === null) {
-    return null;
-  }
-  const amount = Number(match[1]);
-  if (!Number.isSafeInteger(amount) || amount <= 0) {
-    return null;
-  }
-  const unit = match[2];
-  return amount * (unit === "h" ? 36e5 : unit === "m" ? 6e4 : 1e3);
-}
 var CLAUDE_NATIVE_EFFORT = {
   minimal: "low",
   low: "low",
@@ -18157,6 +20189,8 @@ var ClaudeEngineInvocation = class {
   #blockedRecoveryBound;
   #namePrefix;
   #handle = null;
+  #resolvedModel = null;
+  #resolvedEffort = null;
   #budgetEventCounter = 0;
   #abortController = new AbortController();
   #closed = false;
@@ -18195,13 +20229,20 @@ var ClaudeEngineInvocation = class {
     };
   }
   runAttempt(context) {
-    const settlement = this.#runAttempt(context);
+    const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#settlement === settlement) {
         this.#settlement = null;
       }
     });
+  }
+  #withObservedIdentity(result) {
+    return {
+      ...result,
+      ...result.resolvedModel === void 0 && this.#resolvedModel !== null ? { resolvedModel: this.#resolvedModel } : {},
+      ...result.resolvedEffort === void 0 && this.#resolvedEffort !== null ? { resolvedEffort: this.#resolvedEffort } : {}
+    };
   }
   async #runAttempt(context) {
     this.#assertOpen();
@@ -18212,14 +20253,14 @@ var ClaudeEngineInvocation = class {
       const previousFailure = context.previousFailure;
       if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
         const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
         this.#requireValve(await this.#controlPlane.tmuxAvailable());
         return await this.#sendTurnInSession(handle, fromIndex, context);
       }
       const correcting = previousFailure !== void 0 && this.#handle !== null;
       if (correcting && await this.#controlPlane.tmuxAvailable()) {
         const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
         return await this.#correctInSession(handle, previousFailure, fromIndex, context);
       }
       if (correcting && this.#multiTurn) {
@@ -18236,7 +20277,7 @@ var ClaudeEngineInvocation = class {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
       if (error instanceof EngineShutdownError && evidence !== null) {
-        attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+        attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       }
       if (error instanceof ClaudeWorkerError) {
         if (!this.#multiTurn) {
@@ -18263,6 +20304,12 @@ var ClaudeEngineInvocation = class {
     await this.#closePromise;
   }
   async #dispatchAndCollect(previousFailure, observers) {
+    this.#resolvedModel = null;
+    this.#resolvedEffort = null;
+    try {
+      observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null });
+    } catch {
+    }
     const denyRules = permissionDenyRulesFor(this.#options.strip);
     const handle = await this.#controlPlane.dispatch({
       prompt: this.#buildDispatchPrompt(previousFailure),
@@ -18270,10 +20317,7 @@ var ClaudeEngineInvocation = class {
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
-      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {},
-      // Loiter pricing: only a session meant to be resumed pays the
-      // 1-hour cache-write premium; one-shot workers keep the 5m default.
-      ...this.#multiTurn ? { cacheTtl: CLAUDE_MULTITURN_CACHE_TTL } : {}
+      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {}
     });
     this.#handle = handle;
     this.#turnDelivered = true;
@@ -18283,7 +20327,7 @@ var ClaudeEngineInvocation = class {
       if (evidence !== null) {
         this.#attachWorkerText(error, evidence, 0);
       }
-      attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+      attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       await this.#teardown();
       throw error;
     }
@@ -18296,7 +20340,7 @@ var ClaudeEngineInvocation = class {
     if (!delivery.delivered) {
       throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
     }
-    await this.#awaitReceipt(handle, fromIndex);
+    await this.#awaitReceipt(handle, fromIndex, observers);
     this.#turnDelivered = true;
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
@@ -18318,12 +20362,12 @@ var ClaudeEngineInvocation = class {
     if (!delivery.delivered) {
       throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
     }
-    await this.#awaitReceipt(handle, fromIndex);
+    await this.#awaitReceipt(handle, fromIndex, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
   /** Confirm the steered worker received the message (started generating, or the transcript grew). */
-  async #awaitReceipt(handle, mark) {
+  async #awaitReceipt(handle, mark, observers) {
     const deadline = Date.now() + this.#receiptTimeoutMs;
     for (; ; ) {
       this.#assertOpen();
@@ -18332,7 +20376,7 @@ var ClaudeEngineInvocation = class {
       if (status.status === "busy") {
         return;
       }
-      const transcript = await this.#tryReadTranscript(handle);
+      const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null && transcript.entries.length > mark) {
         return;
       }
@@ -18388,14 +20432,26 @@ var ClaudeEngineInvocation = class {
     let absences = 0;
     let settledPolls = 0;
     let evidenceReported = false;
+    let assistantEvidence = "";
     let waitingOn = null;
     let awaitingTask = false;
     for (; ; ) {
       this.#assertOpen();
-      const transcript = await this.#tryReadTranscript(handle);
+      const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null) {
         sawLife = true;
-        this.#reportUsage(handle, transcript.entries, fromIndex);
+        this.#reportUsage(handle, transcript.entries, fromIndex, observers);
+        try {
+          this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
+          this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
+          observers.onIdentity?.({ resolvedModel: this.#resolvedModel, resolvedEffort: this.#resolvedEffort });
+          const evidence = JSON.stringify(transcript.entries.slice(fromIndex).filter((entry) => entry.type === "assistant"));
+          if (evidence !== assistantEvidence && hasAssistantEntrySince(transcript.entries, fromIndex)) {
+            assistantEvidence = evidence;
+            observers.onOutput?.();
+          }
+        } catch {
+        }
         if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
           evidenceReported = true;
           try {
@@ -18439,12 +20495,12 @@ var ClaudeEngineInvocation = class {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         nudges += 1;
-        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
+        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
         const delivery = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
         if (!delivery.delivered) {
           throw new ClaudeValveError(`reply valve failed to inject the blocked-worker nudge: ${delivery.reason}`);
         }
-        await this.#awaitReceipt(handle, mark);
+        await this.#awaitReceipt(handle, mark, observers);
         continue;
       }
       if (sawLife && !awaitingTask && (status.state === "done" || status.status === "idle")) {
@@ -18528,17 +20584,22 @@ var ClaudeEngineInvocation = class {
       ]
     };
   }
-  async #readTranscript(handle) {
-    const path15 = await this.#controlPlane.transcriptPath(handle);
-    if (path15 === null) {
+  async #readTranscript(handle, observers) {
+    const path16 = await this.#controlPlane.transcriptPath(handle);
+    if (path16 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscriptFile(path15);
+    const transcript = await readTranscriptFile(path16);
+    try {
+      observers?.onTranscriptPath?.(path16);
+    } catch {
+    }
+    return transcript;
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
-  async #tryReadTranscript(handle) {
+  async #tryReadTranscript(handle, observers) {
     try {
-      return await this.#readTranscript(handle);
+      return await this.#readTranscript(handle, observers);
     } catch (error) {
       if (error instanceof ClaudeTranscriptError) {
         return null;
@@ -18599,7 +20660,7 @@ var ClaudeEngineInvocation = class {
    * and the archived event's `total` is the same figure the agent record's
    * usage summarises — budget and archive read one arithmetic.
    */
-  #reportUsage(handle, entries, fromIndex) {
+  #reportUsage(handle, entries, fromIndex, observers) {
     const total = usageSince(entries, fromIndex);
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
@@ -18609,6 +20670,10 @@ var ClaudeEngineInvocation = class {
     const event = this.#usageEvent(handle, last, total);
     if (event === null) {
       return;
+    }
+    try {
+      observers?.onUsage?.(event);
+    } catch {
     }
     this.#onEvent?.({
       method: "thread/tokenUsage/updated",
@@ -18785,1381 +20850,6 @@ function delay2(ms, signal, abortError) {
     }
     signal.addEventListener("abort", onAbort, { once: true });
   });
-}
-
-// src/progress.ts
-var MAX_AGENTS_IN_SNAPSHOT = 64;
-var RunProgress = class {
-  runId;
-  #budget;
-  #now;
-  #pid;
-  #workflow = null;
-  #currentPhase = null;
-  #state = "running";
-  #startedAt;
-  #updatedAt;
-  #finishedAt = null;
-  #nextAgentId = 0;
-  #live = /* @__PURE__ */ new Map();
-  #openHolds = /* @__PURE__ */ new Map();
-  #engines = /* @__PURE__ */ new Map();
-  #reportedSpend = /* @__PURE__ */ new Map();
-  #listeners = /* @__PURE__ */ new Set();
-  constructor(options) {
-    this.runId = options.runId;
-    this.#budget = options.budget;
-    this.#now = options.now ?? (() => Date.now());
-    this.#pid = options.pid ?? process.pid;
-    this.#startedAt = this.#now();
-    this.#updatedAt = this.#startedAt;
-  }
-  /** An open hold joins the snapshot the moment it is raised. */
-  noteHoldRaised(hold) {
-    this.#openHolds.set(hold.id, {
-      id: hold.id,
-      content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}\u2026` : hold.content,
-      verdicts: [...hold.verdicts],
-      raisedAtMs: this.#now()
-    });
-    this.#touch();
-  }
-  /** Settled holds — answered, timed out, or abandoned — leave the snapshot. */
-  noteHoldSettled(id) {
-    if (this.#openHolds.delete(id)) {
-      this.#touch();
-    }
-  }
-  /** Records an engine's concurrency cap so the snapshot can show saturation. */
-  registerEngine(engine, cap) {
-    this.#counters(engine).cap = cap;
-    this.#touch();
-  }
-  setWorkflow(name) {
-    this.#workflow = name;
-    this.#touch();
-  }
-  setPhase(title) {
-    this.#currentPhase = title;
-    this.#touch();
-  }
-  /**
-   * Registers a worker as queued and returns its id. The phase is captured at
-   * queue time: an explicit `phase` wins, otherwise the run's current phase.
-   */
-  queueAgent(input) {
-    const id = this.#nextAgentId += 1;
-    this.#live.set(id, {
-      id,
-      engine: input.engine,
-      label: input.label,
-      phase: input.phase ?? this.#currentPhase,
-      state: "queued",
-      attempt: 1,
-      startedAt: null,
-      firstEvidenceAt: null,
-      waitingOn: null
-    });
-    this.#counters(input.engine).queued += 1;
-    this.#touch();
-    return id;
-  }
-  /**
-   * Returns a running worker to the queue on another engine: a fallback
-   * chain step across engines releases the refused engine's slot and
-   * waits for admission on the next, and the live view says so — the leg
-   * reads queued on its new engine, its evidence timestamps reset for the
-   * fresh dispatch, its earlier engine's counters restored.
-   */
-  requeueAgent(id, engine) {
-    const record = this.#live.get(id);
-    if (record === void 0) {
-      return;
-    }
-    const previous = this.#counters(record.engine);
-    if (record.state === "running") {
-      previous.active -= 1;
-    } else {
-      previous.queued -= 1;
-    }
-    record.engine = engine;
-    record.state = "queued";
-    record.startedAt = null;
-    record.firstEvidenceAt = null;
-    record.waitingOn = null;
-    this.#counters(engine).queued += 1;
-    this.#touch();
-  }
-  /** Moves a queued worker into the running state (a scheduler slot freed up). */
-  startAgent(id) {
-    const record = this.#live.get(id);
-    if (record === void 0 || record.state !== "queued") {
-      return;
-    }
-    record.state = "running";
-    record.startedAt = this.#now();
-    const counters = this.#counters(record.engine);
-    counters.queued -= 1;
-    counters.active += 1;
-    this.#touch();
-  }
-  /**
-   * Records the first observed sign of worker output for a live agent.
-   * Idempotent — the earliest observation wins — so engines may report on
-   * every attempt without the consumer losing the original timestamp.
-   */
-  noteAgentEvidence(id) {
-    const record = this.#live.get(id);
-    if (record === void 0 || record.firstEvidenceAt !== null) {
-      return;
-    }
-    record.firstEvidenceAt = this.#now();
-    this.#touch();
-  }
-  /**
-   * Records what a live worker is waiting on — a background task its
-   * session started — or that it no longer is (`null`). Last write wins:
-   * the engine reports each change as it observes it.
-   */
-  noteAgentWaiting(id, wait) {
-    const record = this.#live.get(id);
-    if (record === void 0 || record.waitingOn === null && wait === null) {
-      return;
-    }
-    record.waitingOn = wait;
-    this.#touch();
-  }
-  /** Updates a running worker's attempt number (retry / in-session correction); a fresh attempt waits on nothing yet. */
-  noteAttempt(id, attempt) {
-    const record = this.#live.get(id);
-    if (record === void 0 || record.attempt === attempt) {
-      return;
-    }
-    record.attempt = attempt;
-    record.waitingOn = null;
-    this.#touch();
-  }
-  /** Retires a worker, tallying it as done or failed and freeing its slot. */
-  settleAgent(id, outcome) {
-    const record = this.#live.get(id);
-    if (record === void 0) {
-      return;
-    }
-    this.#live.delete(id);
-    const counters = this.#counters(record.engine);
-    if (record.state === "running") {
-      counters.active -= 1;
-    } else {
-      counters.queued -= 1;
-    }
-    if (outcome === "done") {
-      counters.done += 1;
-    } else {
-      counters.failed += 1;
-    }
-    this.#touch();
-  }
-  /** Marks the run finished. The serialiser writes one final snapshot after. */
-  finish() {
-    if (this.#state === "finished") {
-      return;
-    }
-    this.#state = "finished";
-    this.#finishedAt = this.#now();
-    this.#touch();
-  }
-  /**
-   * Publishes a changed per-engine spend figure to live consumers. Repeated
-   * reports of the same value are deliberately inert: accounting producers
-   * may observe the same running turn more than once.
-   */
-  noteEngineSpend(engine) {
-    const spent = this.#budget.spent(engine);
-    if (this.#reportedSpend.get(engine) === spent) {
-      return;
-    }
-    this.#reportedSpend.set(engine, spent);
-    this.#touch();
-  }
-  /** Refreshes the live snapshot without changing its modelled state. */
-  markChanged() {
-    this.#touch();
-  }
-  onChange(listener) {
-    this.#listeners.add(listener);
-    return () => {
-      this.#listeners.delete(listener);
-    };
-  }
-  snapshot() {
-    const engines = {};
-    const totals = { active: 0, queued: 0, done: 0, failed: 0 };
-    for (const engine of this.#engines.keys()) {
-      const counters = this.#counters(engine);
-      const remaining = this.#budget.remaining(engine);
-      engines[engine] = {
-        cap: counters.cap,
-        active: counters.active,
-        queued: counters.queued,
-        done: counters.done,
-        failed: counters.failed,
-        spent: this.#budget.spent(engine),
-        ceiling: this.#budget.ceilings[engine] ?? null,
-        remaining: Number.isFinite(remaining) ? remaining : null
-      };
-      totals.active += counters.active;
-      totals.queued += counters.queued;
-      totals.done += counters.done;
-      totals.failed += counters.failed;
-    }
-    return {
-      schema: 2,
-      runId: this.runId,
-      pid: this.#pid,
-      workflow: this.#workflow,
-      state: this.#state,
-      startedAt: this.#startedAt,
-      updatedAt: this.#updatedAt,
-      finishedAt: this.#finishedAt,
-      currentPhase: this.#currentPhase,
-      totals,
-      engines,
-      agents: this.#liveAgents(),
-      holds: [...this.#openHolds.values()]
-    };
-  }
-  #liveAgents() {
-    const records = [...this.#live.values()];
-    records.sort((a, b) => rank(a.state) - rank(b.state) || a.id - b.id);
-    return records.slice(0, MAX_AGENTS_IN_SNAPSHOT).map((record) => ({
-      id: record.id,
-      engine: record.engine,
-      label: record.label,
-      phase: record.phase,
-      state: record.state,
-      attempt: record.attempt,
-      startedAtMs: record.startedAt,
-      firstEvidenceAtMs: record.firstEvidenceAt,
-      waitingOn: record.waitingOn
-    }));
-  }
-  #counters(engine) {
-    const counters = this.#engines.get(engine);
-    if (counters === void 0) {
-      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0 };
-      this.#engines.set(engine, fresh);
-      return fresh;
-    }
-    return counters;
-  }
-  #touch() {
-    this.#updatedAt = this.#now();
-    for (const listener of this.#listeners) {
-      listener();
-    }
-  }
-};
-function rank(state) {
-  return state === "running" ? 0 : 1;
-}
-
-// src/app-server.ts
-import { spawn as spawn2 } from "node:child_process";
-import { createInterface } from "node:readline";
-var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
-var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
-var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
-var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
-var STDIN_CLOSE_EXIT_GRACE_MS = 500;
-var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
-var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
-var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
-var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
-var SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1e3;
-var MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
-var SKILL_DISCOVERY_DEADLINE_MS = 3e4;
-var MAX_REMEMBERED_SETTLED_TURN_IDS = 256;
-var LazyCodexAppServerTransport = class {
-  cwd;
-  #options;
-  #transportPromise;
-  #closed = false;
-  constructor(options) {
-    this.cwd = options.cwd;
-    this.#options = options;
-  }
-  async openThread(options) {
-    const transport = await this.#transport();
-    return transport.openThread(options);
-  }
-  async listSkills(cwd) {
-    const transport = await this.#transport();
-    return transport.listSkills(cwd);
-  }
-  async runTurn(threadId, prompt, options) {
-    const transport = await this.#transport();
-    return transport.runTurn(threadId, prompt, options);
-  }
-  async close() {
-    this.#closed = true;
-    if (this.#transportPromise === void 0) {
-      return;
-    }
-    let transport;
-    try {
-      transport = await this.#transportPromise;
-    } catch {
-      return;
-    }
-    await transport.close();
-  }
-  #transport() {
-    if (this.#closed) {
-      return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
-    }
-    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
-    return this.#transportPromise;
-  }
-};
-var CodexAppServerTransport = class _CodexAppServerTransport {
-  cwd;
-  #process;
-  #requestTimeoutMs;
-  #retryPromiseSilenceTimeoutMs;
-  #firstOutputTimeoutMs;
-  #startupHandshakeTimeoutMs;
-  #skillDiscoveryStabilityIntervalMs;
-  #skillDiscoveryDeadlineMs;
-  #nextId = 0;
-  #pending = /* @__PURE__ */ new Map();
-  #turns = /* @__PURE__ */ new Map();
-  #transcripts = /* @__PURE__ */ new Map();
-  /**
-   * Each open thread's served identity as its `thread/start` answer reported
-   * it — the model and reasoning effort the thread runs at for its whole
-   * life. `#completeTurn` prunes a turn's transcript buffer, so a held
-   * session's later turns re-register from here rather than from nothing:
-   * the engine confirmed the identity once, and every turn on the thread is
-   * served under it.
-   */
-  #threadIdentity = /* @__PURE__ */ new Map();
-  /** Ids of turns this transport has settled, insertion-ordered so the bound evicts the oldest. */
-  #settledTurnIds = /* @__PURE__ */ new Set();
-  #stderrTail = [];
-  #exitStatus = null;
-  #hasExited = false;
-  #stdinFailureGrace;
-  #terminalError;
-  #writeFailureWaiters = /* @__PURE__ */ new Set();
-  #onEvent;
-  constructor(options) {
-    this.cwd = options.cwd;
-    this.#requestTimeoutMs = options.requestTimeoutMs;
-    this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
-    this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
-    this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
-    this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
-    this.#skillDiscoveryDeadlineMs = options.skillDiscoveryDeadlineMs ?? SKILL_DISCOVERY_DEADLINE_MS;
-    this.#onEvent = options.onEvent;
-    this.#process = spawn2(options.codexBin, ["app-server"], {
-      cwd: options.cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      // Declared variables sit above inherited ones; everything undeclared
-      // still inherits, so a configured parent keeps working unchanged.
-      env: { ...process.env, ...options.workerEnv }
-    });
-    this.#wireReader();
-    this.#wireStderr();
-    this.#process.stdin.on("error", () => {
-      this.#scheduleStdinFailure();
-    });
-    this.#process.once("exit", (code, signal) => {
-      this.#exitStatus = { exitCode: code, signal };
-      this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
-    });
-    this.#process.once("error", (error) => {
-      this.#failAll(new AppServerExitedError(`codex app-server process error: ${error.message}`));
-    });
-  }
-  static async start(options) {
-    const transport = new _CodexAppServerTransport(options);
-    try {
-      await transport.#handshake(options.clientName, options.clientVersion);
-    } catch (error) {
-      await transport.close();
-      throw error;
-    }
-    return transport;
-  }
-  async openThread(options) {
-    const config = threadStartConfig(options);
-    const requestParams = {
-      cwd: options.cwd ?? this.cwd,
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-      ephemeral: true,
-      ...options.model !== void 0 ? { model: options.model } : {},
-      ...config !== void 0 ? { config } : {}
-    };
-    const result = await this.#request("thread/start", requestParams);
-    const resultObject = asJsonObject(result);
-    const directThreadId = resultObject?.threadId;
-    const nestedThread = asJsonObject(resultObject?.thread);
-    const nestedThreadId = nestedThread?.id;
-    const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
-    if (threadId !== null) {
-      const resolvedModel = resultObject?.model;
-      const resolvedEffort = resultObject?.reasoningEffort;
-      const identity = {
-        resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
-        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null
-      };
-      this.#threadIdentity.set(threadId, identity);
-      this.#transcripts.set(threadId, {
-        ...identity,
-        events: [
-          {
-            direction: "client",
-            method: "thread/start",
-            params: requestParams,
-            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-          },
-          {
-            direction: "server",
-            method: "thread/start/result",
-            result,
-            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-          }
-        ]
-      });
-      return threadId;
-    }
-    throw new AppServerRequestError("thread/start", {
-      code: void 0,
-      message: "response did not contain result.thread.id or result.threadId",
-      data: result
-    });
-  }
-  async listSkills(cwd = this.cwd) {
-    const startedAt = Date.now();
-    let previousNames;
-    let observedExpansion = false;
-    let unchangedSinceFirstSample = true;
-    for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
-      const names = await this.#listSkillsOnce(cwd);
-      if (observedExpansion && previousNames !== void 0 && sameStrings(previousNames, names)) {
-        return names;
-      }
-      if (previousNames !== void 0) {
-        if (!sameStrings(previousNames, names)) {
-          unchangedSinceFirstSample = false;
-        }
-        if (strictlyContainsAll(names, previousNames)) {
-          observedExpansion = true;
-        } else if (!sameStrings(previousNames, names)) {
-          observedExpansion = false;
-        }
-      }
-      if (unchangedSinceFirstSample && attempt === MAX_SKILL_DISCOVERY_ATTEMPTS) {
-        return names;
-      }
-      previousNames = names;
-      if (Date.now() - startedAt >= this.#skillDiscoveryDeadlineMs) {
-        throw new AppServerRequestError("skills/list", {
-          code: "discovery_deadline",
-          message: `skill discovery exceeded its ${this.#skillDiscoveryDeadlineMs}ms aggregate bound before stabilising`
-        });
-      }
-      if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
-      }
-    }
-    throw new AppServerRequestError("skills/list", {
-      code: "unstable_discovery",
-      message: `skill discovery observed neither a growing set followed by stability nor one set unchanged across all ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
-    });
-  }
-  async #listSkillsOnce(cwd) {
-    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
-    const entries = result?.data;
-    if (!Array.isArray(entries)) {
-      throw new AppServerRequestError("skills/list", {
-        code: "invalid_response",
-        message: "response omitted the discovered skill entries"
-      });
-    }
-    const names = /* @__PURE__ */ new Set();
-    for (const entry of entries) {
-      const entryObject = asJsonObject(entry);
-      const errors = entryObject?.errors;
-      const skills = entryObject?.skills;
-      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
-        throw new AppServerRequestError("skills/list", {
-          code: "incomplete_discovery",
-          message: "could not establish the complete discovered skill set"
-        });
-      }
-      for (const skill of skills) {
-        const name = asJsonObject(skill)?.name;
-        if (typeof name !== "string" || name.length === 0) {
-          throw new AppServerRequestError("skills/list", {
-            code: "invalid_response",
-            message: "response included a skill without a name"
-          });
-        }
-        names.add(name);
-      }
-    }
-    return [...names].sort();
-  }
-  async runTurn(threadId, prompt, options) {
-    if (!this.#transcripts.has(threadId)) {
-      this.#transcripts.set(threadId, {
-        ...this.#threadIdentity.get(threadId) ?? { resolvedModel: null, resolvedEffort: null },
-        events: []
-      });
-    }
-    const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
-    this.#turns.set(threadId, state);
-    state.promise.catch(() => void 0);
-    try {
-      const params = {
-        threadId,
-        input: [{ type: "text", text: prompt }],
-        sandboxPolicy: { type: "dangerFullAccess" }
-      };
-      if (options.schema !== void 0) {
-        params.outputSchema = options.schema;
-      }
-      if (options.model !== void 0) {
-        params.model = options.model;
-      }
-      this.#appendTranscript(threadId, {
-        direction: "client",
-        method: "turn/start",
-        params,
-        recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
-      const result = asJsonObject(await this.#request("turn/start", params));
-      const startedTurn = asJsonObject(result?.turn);
-      if (typeof startedTurn?.id === "string") {
-        state.turnId = startedTurn.id;
-      }
-      return await state.promise;
-    } catch (error) {
-      if (this.#turns.get(threadId) === state) {
-        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
-        throw error;
-      }
-      return await state.promise;
-    }
-  }
-  /** Number of thread transcripts currently held in memory. Observability for tests. */
-  openTranscripts() {
-    return this.#transcripts.size;
-  }
-  async close() {
-    if (!this.#hasExited) {
-      this.#failAll(new AppServerExitedError("codex app-server closed"));
-    }
-    this.#threadIdentity.clear();
-    this.#transcripts.clear();
-    if (this.#exitStatus !== null || this.#process.pid === void 0) {
-      return;
-    }
-    this.#process.stdin.end();
-    this.#process.kill("SIGTERM");
-    await new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        this.#process.kill("SIGKILL");
-        resolve();
-      }, 5e3);
-      this.#process.once("exit", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-    });
-  }
-  async #handshake(clientName, clientVersion) {
-    try {
-      await this.#request(
-        "initialize",
-        {
-          clientInfo: {
-            name: clientName,
-            version: clientVersion
-          }
-        },
-        this.#startupHandshakeTimeoutMs
-      );
-    } catch (error) {
-      if (error instanceof TurnTimeoutError) {
-        throw new AppServerStartupTimeoutError(this.#startupHandshakeTimeoutMs);
-      }
-      throw error;
-    }
-    this.#sendNotification("initialized", {});
-  }
-  #request(method, params, timeoutMs = this.#requestTimeoutMs) {
-    const id = this.#nextId + 1;
-    this.#nextId = id;
-    const payload = JSON.stringify({ id, method, params });
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.#pending.delete(id);
-        reject(
-          new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`, {
-            kind: "request",
-            timeoutMs,
-            method
-          })
-        );
-      }, timeoutMs);
-      this.#pending.set(id, { method, resolve, reject, timeout });
-      this.#writeLine(payload).catch((error) => {
-        this.#pending.delete(id);
-        clearTimeout(timeout);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      });
-    });
-  }
-  #sendNotification(method, params) {
-    void this.#writeLine(JSON.stringify({ method, params })).catch(() => {
-    });
-  }
-  /** Sends a request through stdin without retaining or awaiting its response. */
-  async #sendUnacknowledgedRequest(method, params) {
-    const id = this.#nextId + 1;
-    this.#nextId = id;
-    await this.#writeLine(JSON.stringify({ id, method, params }));
-  }
-  async #writeLine(line) {
-    if (this.#hasExited) {
-      const failure = new AppServerExitedError(this.#terminalError?.message ?? "codex app-server is not running");
-      if (this.#exitStatus !== null) {
-        attachWorkerExitStatus(failure, this.#exitStatus);
-      }
-      throw failure;
-    }
-    const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
-    await new Promise((resolve, reject) => {
-      this.#process.stdin.write(`${framedLine}
-`, (error) => {
-        if (error !== null && error !== void 0) {
-          this.#scheduleStdinFailure();
-          if (this.#terminalError !== void 0) {
-            reject(this.#terminalError);
-          } else {
-            this.#writeFailureWaiters.add(reject);
-          }
-          return;
-        }
-        resolve();
-      });
-    });
-  }
-  #wireReader() {
-    let chunks = [];
-    let byteLength = 0;
-    let prefix = Buffer.alloc(0);
-    let discardingOversizedLine = false;
-    let oversizedLineByteLength = 0;
-    const resetLine = () => {
-      chunks = [];
-      byteLength = 0;
-      prefix = Buffer.alloc(0);
-      discardingOversizedLine = false;
-      oversizedLineByteLength = 0;
-    };
-    const retain = (chunk) => {
-      if (chunk.length === 0) {
-        return;
-      }
-      chunks.push(chunk);
-      byteLength += chunk.length;
-      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
-        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
-      }
-    };
-    const reportOversizedLine = () => {
-      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
-    };
-    const handleRetainedLine = () => {
-      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-      resetLine();
-      this.#handleLine(line);
-    };
-    this.#process.stdout.on("data", (chunk) => {
-      let offset2 = 0;
-      while (offset2 < chunk.length) {
-        const newline = chunk.indexOf(10, offset2);
-        const end = newline === -1 ? chunk.length : newline;
-        const segment = chunk.subarray(offset2, end);
-        if (discardingOversizedLine) {
-          oversizedLineByteLength += segment.length;
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
-          retain(segment);
-          if (newline !== -1) {
-            handleRetainedLine();
-          }
-        } else {
-          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
-          retain(segment.subarray(0, retainedBytes));
-          discardingOversizedLine = true;
-          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        }
-        offset2 = newline === -1 ? chunk.length : newline + 1;
-      }
-    });
-    this.#process.stdout.once("end", () => {
-      if (discardingOversizedLine) {
-        reportOversizedLine();
-        resetLine();
-      } else if (byteLength > 0) {
-        handleRetainedLine();
-      }
-      if (this.#hasExited) {
-        return;
-      }
-      const grace = setTimeout(() => {
-        this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
-      }, STDOUT_CLOSE_EXIT_GRACE_MS);
-      grace.unref();
-      this.#process.once("exit", () => {
-        clearTimeout(grace);
-      });
-    });
-  }
-  #wireStderr() {
-    const reader = createInterface({ input: this.#process.stderr });
-    reader.on("line", (line) => {
-      this.#stderrTail.push(line);
-      if (this.#stderrTail.length > 50) {
-        this.#stderrTail.shift();
-      }
-    });
-  }
-  #handleLine(line) {
-    if (line.trim().length === 0) {
-      return;
-    }
-    const parsed = parseRpcMessage(line);
-    if (parsed === null) {
-      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_CHARACTERS));
-      return;
-    }
-    const id = typeof parsed.id === "number" ? parsed.id : null;
-    const method = typeof parsed.method === "string" ? parsed.method : null;
-    if (id !== null && method !== null) {
-      this.#onEvent?.({
-        method: "server/request/denied",
-        params: { requestId: id, requestMethod: method },
-        receivedAt: Date.now()
-      });
-      const requestParams = asJsonObject(parsed.params);
-      if (requestParams !== null) {
-        const turn = this.#turnCorrelatedBy(requestParams);
-        if (turn !== void 0) {
-          this.#disarmRetryPromiseSilenceDeadline(turn);
-          this.#disarmFirstOutputDeadline(turn);
-          this.#noteTurnFirstOutput(turn);
-        }
-      }
-      this.#sendApprovalDenial(id);
-      return;
-    }
-    if (id !== null && ("result" in parsed || "error" in parsed)) {
-      this.#handleResponse(id, parsed);
-      return;
-    }
-    if (method !== null) {
-      this.#handleNotification(method, asJsonObject(parsed.params) ?? {});
-    }
-  }
-  #reportDecodeFailure(byteLength, linePrefix) {
-    this.#onEvent?.({
-      method: "transport/decodeFailed",
-      params: { byteLength, linePrefix },
-      receivedAt: Date.now()
-    });
-  }
-  #handleResponse(id, message) {
-    const pending = this.#pending.get(id);
-    if (pending === void 0) {
-      return;
-    }
-    this.#pending.delete(id);
-    clearTimeout(pending.timeout);
-    if (message.error !== void 0) {
-      pending.reject(appServerErrorFromPayload(pending.method, asRpcError(message.error)));
-      return;
-    }
-    pending.resolve(message.result);
-  }
-  #handleNotification(method, params) {
-    this.#onEvent?.({ method, params, receivedAt: Date.now() });
-    const threadId = params.threadId;
-    if (typeof threadId !== "string") {
-      return;
-    }
-    this.#appendTranscript(threadId, {
-      direction: "server",
-      method,
-      params,
-      recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-    const turn = this.#turns.get(threadId);
-    if (turn === void 0) {
-      return;
-    }
-    const speaksForTurn = this.#correlatesWithTurn(turn, params);
-    if (speaksForTurn) {
-      this.#disarmRetryPromiseSilenceDeadline(turn);
-      if (isOutputBearingTurnFrame(method)) {
-        this.#disarmFirstOutputDeadline(turn);
-        this.#noteTurnFirstOutput(turn);
-      }
-    }
-    const now = Date.now();
-    if (isTurnProgressNotification(method)) {
-      turn.consecutiveRetryPromises = 0;
-    }
-    if (method === "turn/started") {
-      return;
-    }
-    if (method === "model/rerouted") {
-      if (!speaksForTurn) {
-        return;
-      }
-      const toModel = params.toModel;
-      const transcript = this.#transcripts.get(threadId);
-      if (transcript !== void 0 && typeof toModel === "string" && toModel.length > 0) {
-        transcript.resolvedModel = toModel;
-      }
-      return;
-    }
-    if (method === "item/started") {
-      const item = asJsonObject(params.item);
-      const itemType = itemTypeFromItem(item);
-      turn.items.set(itemType, (turn.items.get(itemType) ?? 0) + 1);
-      return;
-    }
-    if (method === "item/agentMessage/delta") {
-      if (turn.firstDeltaAt === null) {
-        turn.firstDeltaAt = now;
-      }
-      if (typeof params.delta === "string") {
-        turn.deltaText += params.delta;
-      }
-      return;
-    }
-    if (method === "item/completed") {
-      const item = asJsonObject(params.item);
-      const itemType = itemTypeFromItem(item);
-      if (itemType === "agentMessage" && typeof item?.text === "string") {
-        turn.itemText = item.text;
-      }
-      return;
-    }
-    if (method === "thread/tokenUsage/updated") {
-      const event = tokenUsageEventFromParams(params);
-      if (event !== null) {
-        turn.tokenUsageEvents.push(event);
-      }
-      return;
-    }
-    if (method === "thread/status/changed") {
-      const status = asJsonObject(params.status);
-      if (status?.type === "systemError") {
-        this.#armSystemErrorDiagnosticGrace(threadId, turn, method, params);
-      }
-      return;
-    }
-    if (method === "turn/completed") {
-      if (!speaksForTurn) {
-        return;
-      }
-      turn.completedAt = now;
-      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
-        return;
-      }
-      this.#completeTurn(threadId, turn);
-      return;
-    }
-    if (method === "error") {
-      if (!speaksForTurn) {
-        return;
-      }
-      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-        void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
-        return;
-      }
-      if (params.willRetry === true) {
-        turn.consecutiveRetryPromises += 1;
-        if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
-          const diagnostic = errorPayloadFromNotification(params);
-          void this.#rejectTurn(
-            threadId,
-            turn,
-            attachAppServerDiagnostic(
-              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
-              appServerDiagnosticFromPayload(diagnostic)
-            )
-          );
-          return;
-        }
-        this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
-        return;
-      }
-      void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
-    }
-  }
-  /**
-   * Whether an inbound frame speaks for the live turn on its thread. Thread
-   * identity has already matched; a frame naming a different turn (a
-   * straggler from an abandoned turn on a recycled thread) must neither
-   * disarm the live turn's deadline, settle it, nor stamp its served model.
-   * Frames carrying no turn identity are thread-scoped and count: ephemeral
-   * threads run one turn, so the thread speaking is the turn's server
-   * speaking.
-   *
-   * A turn learns its id from the first correlated frame when the
-   * `turn/start` response has not yet named it — except that an id this
-   * transport has already settled is never learned: a straggler arriving in
-   * that window would otherwise teach the live turn the abandoned turn's
-   * identity, and every later straggler would correlate.
-   */
-  #correlatesWithTurn(turn, params) {
-    const turnId = turnIdFromParams(params);
-    if (turnId === void 0) {
-      return true;
-    }
-    if (turn.turnId === void 0) {
-      if (this.#settledTurnIds.has(turnId)) {
-        return false;
-      }
-      turn.turnId = turnId;
-      return true;
-    }
-    return turn.turnId === turnId;
-  }
-  /** Remember a settled turn's id so its stragglers can never be learned as a later turn's identity. */
-  #rememberSettledTurn(turn) {
-    if (turn.turnId === void 0) {
-      return;
-    }
-    this.#settledTurnIds.add(turn.turnId);
-    if (this.#settledTurnIds.size > MAX_REMEMBERED_SETTLED_TURN_IDS) {
-      const oldest = this.#settledTurnIds.values().next().value;
-      if (oldest !== void 0) {
-        this.#settledTurnIds.delete(oldest);
-      }
-    }
-  }
-  /** Resolves an inbound frame's params to the live turn they speak for, if any. */
-  #turnCorrelatedBy(params) {
-    const threadId = params.threadId;
-    if (typeof threadId !== "string") {
-      return void 0;
-    }
-    const turn = this.#turns.get(threadId);
-    if (turn === void 0 || !this.#correlatesWithTurn(turn, params)) {
-      return void 0;
-    }
-    return turn;
-  }
-  #disarmRetryPromiseSilenceDeadline(turn) {
-    if (turn.retryPromiseSilenceDeadline !== void 0) {
-      clearTimeout(turn.retryPromiseSilenceDeadline);
-      turn.retryPromiseSilenceDeadline = void 0;
-    }
-  }
-  #disarmSystemErrorDiagnosticGrace(turn) {
-    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-      clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
-      turn.systemErrorDiagnosticGraceDeadline = void 0;
-    }
-  }
-  #armSystemErrorDiagnosticGrace(threadId, turn, method, statusParams) {
-    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-      return;
-    }
-    const diagnostic = {
-      code: void 0,
-      message: "Codex app-server reported terminal systemError without a diagnostic",
-      data: statusParams
-    };
-    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
-      new AppServerSystemError(method, diagnostic),
-      appServerDiagnosticFromPayload(diagnostic)
-    );
-    turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
-    }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
-  }
-  #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
-    const diagnostic = errorPayloadFromNotification(promiseParams);
-    turn.retryPromiseSilenceDeadline = setTimeout(() => {
-      void this.#rejectTurn(
-        threadId,
-        turn,
-        attachAppServerDiagnostic(
-          new AppServerRetryPromiseBrokenError(
-            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
-            diagnostic
-          ),
-          appServerDiagnosticFromPayload(diagnostic)
-        )
-      );
-    }, this.#retryPromiseSilenceTimeoutMs);
-  }
-  #disarmFirstOutputDeadline(turn) {
-    if (turn.firstOutputDeadline !== void 0) {
-      clearTimeout(turn.firstOutputDeadline);
-      turn.firstOutputDeadline = void 0;
-    }
-  }
-  /**
-   * Fire the supervisor-facing first-output callback, once per turn. Called
-   * only from the frame-driven sites (an output-bearing notification, a
-   * turn-scoped server request) — never from the completion/rejection
-   * teardown, which also disarms the deadline but proves nothing about
-   * output. The callback is observability: a throw inside it must never
-   * affect the turn.
-   */
-  #noteTurnFirstOutput(turn) {
-    if (turn.firstOutputSeen) {
-      return;
-    }
-    turn.firstOutputSeen = true;
-    try {
-      turn.onFirstOutput?.();
-    } catch {
-    }
-  }
-  #armFirstOutputDeadline(threadId, turn) {
-    turn.firstOutputDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstOutputTimeoutMs));
-    }, this.#firstOutputTimeoutMs);
-  }
-  /**
-   * The single terminal path for a failing turn. Every way a turn can end
-   * short of completion — error notification, retry-promise bound,
-   * systemError, per-turn timeout, transport close, process death — comes
-   * through here, so the terminalisation invariant is enforced once: the
-   * worker's accumulated text rides the rejection instead of being deleted
-   * with the turn state.
-   */
-  #rejectTurn(threadId, turn, error) {
-    this.#turns.delete(threadId);
-    if (turn.firstDeltaAt !== null) {
-      attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
-    }
-    const transcript = this.#transcripts.get(threadId);
-    if (transcript?.events.some((event) => event.direction === "server")) {
-      attachPartialTranscript(error, {
-        filename: "transcript.codex.jsonl",
-        format: "jsonl",
-        source: "codex-app-server-events",
-        threadId,
-        content: this.#transcriptText(threadId),
-        partial: true
-      });
-    }
-    this.#transcripts.delete(threadId);
-    this.#rememberSettledTurn(turn);
-    clearTimeout(turn.timeout);
-    this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmSystemErrorDiagnosticGrace(turn);
-    this.#disarmFirstOutputDeadline(turn);
-    if (turn.turnId !== void 0) {
-      void this.#sendUnacknowledgedRequest("turn/interrupt", {
-        threadId,
-        turnId: turn.turnId
-      }).catch(() => {
-      });
-    }
-    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
-  }
-  #completeTurn(threadId, turn) {
-    this.#turns.delete(threadId);
-    this.#rememberSettledTurn(turn);
-    clearTimeout(turn.timeout);
-    this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmSystemErrorDiagnosticGrace(turn);
-    this.#disarmFirstOutputDeadline(turn);
-    const text = turn.itemText ?? turn.deltaText;
-    const transcript = this.#transcripts.get(threadId);
-    const result = {
-      text,
-      ...transcript?.resolvedModel !== null && transcript?.resolvedModel !== void 0 ? { resolvedModel: transcript.resolvedModel } : {},
-      ...transcript?.resolvedEffort !== null && transcript?.resolvedEffort !== void 0 ? { resolvedEffort: transcript.resolvedEffort } : {},
-      deltaText: turn.deltaText,
-      durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
-      firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
-      items: Object.fromEntries(turn.items),
-      tokenUsageEvents: turn.tokenUsageEvents,
-      transcriptCapture: transcript === void 0 ? "lost" : "retained",
-      transcripts: [
-        {
-          filename: "transcript.codex.jsonl",
-          format: "jsonl",
-          source: "codex-app-server-events",
-          threadId,
-          content: this.#transcriptText(threadId)
-        }
-      ]
-    };
-    if (turn.itemText !== void 0) {
-      result.itemText = turn.itemText;
-    }
-    this.#transcripts.delete(threadId);
-    turn.resolve(result);
-  }
-  #appendTranscript(threadId, event) {
-    const transcript = this.#transcripts.get(threadId);
-    if (transcript === void 0) {
-      return;
-    }
-    transcript.events.push(event);
-  }
-  #transcriptText(threadId) {
-    const transcript = this.#transcripts.get(threadId);
-    if (transcript === void 0) {
-      return "";
-    }
-    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}
-`;
-  }
-  #createTurnState(threadId, timeoutMs, onFirstOutput) {
-    let resolveTurn = () => void 0;
-    let rejectTurn = () => void 0;
-    const promise = new Promise((resolve, reject) => {
-      resolveTurn = resolve;
-      rejectTurn = reject;
-    });
-    const state = {
-      threadId,
-      turnId: void 0,
-      startedAt: Date.now(),
-      firstDeltaAt: null,
-      firstOutputSeen: false,
-      onFirstOutput,
-      completedAt: null,
-      deltaText: "",
-      items: /* @__PURE__ */ new Map(),
-      tokenUsageEvents: [],
-      consecutiveRetryPromises: 0,
-      retryPromiseSilenceDeadline: void 0,
-      systemErrorDiagnosticGraceDeadline: void 0,
-      systemErrorDiagnosticFallback: void 0,
-      firstOutputDeadline: void 0,
-      promise,
-      resolve: resolveTurn,
-      reject: rejectTurn,
-      // No timeoutMs → no per-turn deadline; the turn runs until it completes or
-      // the run is stopped. A backstop is the orchestrator's responsibility.
-      timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
-        void this.#rejectTurn(
-          threadId,
-          state,
-          new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`, {
-            kind: "turn",
-            timeoutMs,
-            threadId
-          })
-        );
-      }, timeoutMs)
-    };
-    this.#armFirstOutputDeadline(threadId, state);
-    return state;
-  }
-  #sendApprovalDenial(id) {
-    void this.#writeLine(
-      JSON.stringify({
-        id,
-        result: {
-          decision: "denied",
-          reason: "Ensemble workers run with approvalPolicy never"
-        }
-      })
-    ).catch(() => {
-    });
-  }
-  #scheduleStdinFailure() {
-    if (this.#hasExited || this.#stdinFailureGrace !== void 0) {
-      return;
-    }
-    this.#stdinFailureGrace = setTimeout(() => {
-      this.#failAll(new AppServerExitedError("codex app-server stdin closed unexpectedly"));
-    }, STDIN_CLOSE_EXIT_GRACE_MS);
-    this.#stdinFailureGrace.unref();
-  }
-  #failAll(error) {
-    if (this.#hasExited) {
-      return;
-    }
-    this.#hasExited = true;
-    if (this.#stdinFailureGrace !== void 0) {
-      clearTimeout(this.#stdinFailureGrace);
-      this.#stdinFailureGrace = void 0;
-    }
-    const stderr = this.#stderrTail.length > 0 ? `
-Recent stderr:
-${this.#stderrTail.join("\n")}` : "";
-    const wrapped = new AppServerExitedError(`${error.message}${stderr}`);
-    this.#terminalError = wrapped;
-    if (this.#exitStatus !== null) {
-      attachWorkerExitStatus(wrapped, this.#exitStatus);
-    }
-    for (const reject of this.#writeFailureWaiters) {
-      reject(wrapped);
-    }
-    this.#writeFailureWaiters.clear();
-    for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(wrapped);
-    }
-    this.#pending.clear();
-    for (const [threadId, turn] of [...this.#turns]) {
-      const perTurn = new AppServerExitedError(wrapped.message);
-      if (this.#exitStatus !== null) {
-        attachWorkerExitStatus(perTurn, this.#exitStatus);
-      }
-      void this.#rejectTurn(threadId, turn, perTurn);
-    }
-    this.#turns.clear();
-    this.#transcripts.clear();
-  }
-};
-function appServerErrorFromPayload(method, errorPayload) {
-  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
-  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
-  return attachAppServerDiagnostic(error, diagnostic);
-}
-function appServerErrorFromNotification(params) {
-  const errorPayload = errorPayloadFromNotification(params);
-  if (errorPayload.code === "serverOverloaded") {
-    return attachAppServerDiagnostic(
-      new AppServerOverloadedError("turn notification", errorPayload),
-      appServerDiagnosticFromPayload(errorPayload)
-    );
-  }
-  return appServerErrorFromPayload("turn notification", errorPayload);
-}
-function appServerDiagnosticFromPayload(payload) {
-  return {
-    code: payload.code ?? null,
-    message: payload.message ?? "unknown app-server error",
-    payload: renderPayloadSafely(payload.data)
-  };
-}
-function errorPayloadFromNotification(params) {
-  const turnError = asJsonObject(params.error);
-  const codexErrorInfo = turnError?.codexErrorInfo;
-  const code = typeof codexErrorInfo === "string" ? codexErrorInfo : void 0;
-  const errorInfo = code ?? (asJsonObject(codexErrorInfo) === null ? void 0 : renderPayloadSafely(codexErrorInfo));
-  const message = typeof turnError?.message === "string" ? turnError.message : void 0;
-  const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
-  const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
-  return {
-    code,
-    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
-    data: params
-  };
-}
-function renderPayloadSafely(payload) {
-  try {
-    return JSON.stringify(payload) ?? "undefined";
-  } catch (error) {
-    return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
-  }
-}
-function isTurnProgressNotification(method) {
-  return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || // MCP progress is a tool saying it is alive, not the response stream
-  // resuming — the reset set's rationale. Counting it would let a
-  // promise/heartbeat alternation defeat the consecutive-promise bound.
-  method.startsWith("item/") && method !== "item/mcpToolCall/progress";
-}
-function isOutputBearingTurnFrame(method) {
-  return method !== "turn/started";
-}
-function turnIdFromParams(params) {
-  if (typeof params.turnId === "string") {
-    return params.turnId;
-  }
-  const turn = asJsonObject(params.turn);
-  return typeof turn?.id === "string" ? turn.id : void 0;
-}
-var MAX_INBOUND_PAYLOAD_DEPTH = 64;
-function payloadContainsInvalidJsonSchema(value, depth = 0) {
-  if (depth >= MAX_INBOUND_PAYLOAD_DEPTH) {
-    return false;
-  }
-  if (typeof value === "string") {
-    return value.includes("invalid_json_schema");
-  }
-  if (Array.isArray(value)) {
-    return value.some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
-  }
-  const object = asJsonObject(value);
-  if (object === null) {
-    return false;
-  }
-  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
-}
-function parseRpcMessage(line) {
-  try {
-    const parsed = JSON.parse(line);
-    return asJsonObject(parsed);
-  } catch {
-    return null;
-  }
-}
-function threadStartConfig(options) {
-  if (options.threadConfig === void 0 && options.effort === void 0) {
-    return void 0;
-  }
-  return {
-    ...options.threadConfig,
-    ...options.effort !== void 0 ? { model_reasoning_effort: options.effort } : {}
-  };
-}
-function asJsonObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-}
-function sameStrings(left, right) {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-function strictlyContainsAll(candidate, baseline) {
-  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
-}
-function asRpcError(value) {
-  const object = asJsonObject(value);
-  if (object === null) {
-    return { code: void 0, message: String(value) };
-  }
-  return {
-    code: typeof object.code === "number" ? object.code : void 0,
-    message: typeof object.message === "string" ? object.message : void 0,
-    data: object.data
-  };
-}
-function itemTypeFromItem(item) {
-  if (item === null) {
-    return "?";
-  }
-  const itemType = item.itemType ?? item.type;
-  return typeof itemType === "string" ? itemType : "?";
 }
 
 // src/opencode-engine.ts
@@ -20925,14 +21615,14 @@ function assertCompilableSchema(schema) {
 }
 function findLocalReferenceCycle(schema) {
   const seenObjects = /* @__PURE__ */ new Set();
-  const visit = (value, path15) => {
+  const visit = (value, path16) => {
     if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
     seenObjects.add(value);
     const object = value;
     if (typeof object.$ref === "string") {
-      const seenRefs = /* @__PURE__ */ new Set([path15]);
+      const seenRefs = /* @__PURE__ */ new Set([path16]);
       let current2 = object;
-      let currentPath = path15;
+      let currentPath = path16;
       while (typeof current2.$ref === "string") {
         const targetPath = current2.$ref;
         const target = localPointerTarget(schema, targetPath);
@@ -20944,7 +21634,7 @@ function findLocalReferenceCycle(schema) {
       }
     }
     for (const [key, child] of Object.entries(object)) {
-      const cycle = visit(child, `${path15}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      const cycle = visit(child, `${path16}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
       if (cycle !== null) return cycle;
     }
     return null;
@@ -20969,14 +21659,14 @@ function normaliseForCodexOutputSchema(schema) {
 function assertAcyclicSchemaObject(schema) {
   const active = /* @__PURE__ */ new Map();
   const visited = /* @__PURE__ */ new Set();
-  const walk = (value, path15) => {
+  const walk = (value, path16) => {
     if (typeof value !== "object" || value === null) return;
     const firstSeenAt = active.get(value);
-    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path15, firstSeenAt);
+    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path16, firstSeenAt);
     if (visited.has(value)) return;
-    active.set(value, path15);
+    active.set(value, path16);
     for (const [key, child] of Object.entries(value)) {
-      walk(child, `${path15}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      walk(child, `${path16}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
     }
     active.delete(value);
     visited.add(value);
@@ -21237,10 +21927,13 @@ function classifyDescendants(source, region) {
 // src/engines.ts
 var EngineRegistry = class {
   #engines = /* @__PURE__ */ new Map();
-  constructor(engines) {
+  /** Resources the engines share and the registry therefore owns, closed after every engine has. */
+  #shared;
+  constructor(engines, shared = []) {
     for (const engine of engines) {
       this.#engines.set(engine.name, engine);
     }
+    this.#shared = shared;
   }
   get(name) {
     return this.#engines.get(name);
@@ -21250,6 +21943,7 @@ var EngineRegistry = class {
   }
   async close() {
     const results = await Promise.allSettled([...this.#engines.values()].map(async (engine) => engine.close()));
+    await Promise.allSettled(this.#shared.map(async (resource) => resource.close()));
     const failures = results.filter((result) => result.status === "rejected");
     if (failures.length === 1) {
       throw failures[0].reason;
@@ -21391,7 +22085,9 @@ var CodexWorkerSession = class {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...schema !== void 0 ? { schema: normaliseForCodexOutputSchema(schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {}
+      ...codexProgressObservers(context),
+      ...context.onTranscriptEvent !== void 0 ? { onTranscriptEvent: context.onTranscriptEvent } : {},
+      ...context.onTranscriptPath !== void 0 ? { onTranscriptPath: context.onTranscriptPath } : {}
     });
   }
   /**
@@ -21430,18 +22126,28 @@ var CodexEngineInvocation = class {
   }
   async runAttempt(context) {
     const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
-    return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
+    return this.#runTurnInCwd(prompt, this.#options.cwd, context);
   }
-  async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
+  async #runTurnInCwd(prompt, cwd, context) {
     const threadId = await openCodexThread(this.#transport, this.#options, cwd);
     return this.#transport.runTurn(threadId, prompt, {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...onLiveEvidence !== void 0 ? { onFirstOutput: onLiveEvidence } : {}
+      ...codexProgressObservers(context),
+      ...context.onTranscriptEvent !== void 0 ? { onTranscriptEvent: context.onTranscriptEvent } : {},
+      ...context.onTranscriptPath !== void 0 ? { onTranscriptPath: context.onTranscriptPath } : {}
     });
   }
 };
+function codexProgressObservers(context) {
+  return {
+    ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {},
+    ...context.onOutput !== void 0 ? { onOutput: context.onOutput } : {},
+    ...context.onIdentity !== void 0 ? { onIdentity: context.onIdentity } : {},
+    ...context.onUsage !== void 0 ? { onUsage: context.onUsage } : {}
+  };
+}
 var ClaudeEngineAdapter = class {
   name = "claude";
   concurrency;
@@ -21613,9 +22319,14 @@ var OpenCodeEngineAdapter = class {
   }
 };
 async function createDefaultEngineRegistry(options) {
+  const grouping = parseWorkerScopeGrouping(options.workerScope ?? "worker", "workerScope");
+  const ownsScopes = options.workerScopes === void 0;
+  const workerScopes = options.workerScopes ?? await createWorkerScopes({ label: `${process.pid}-${randomUUID5()}` });
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
+    scopes: workerScopes,
+    scopeGroup: grouping === "run" ? RUN_SCOPE_GROUP : "codex",
     ...options.workerEnvironment?.codex !== void 0 ? { workerEnv: options.workerEnvironment.codex } : {},
     requestTimeoutMs: options.requestTimeoutMs,
     ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
@@ -21625,31 +22336,37 @@ async function createDefaultEngineRegistry(options) {
     clientVersion: options.clientVersion,
     onEvent: options.onEvent
   });
-  return new EngineRegistry([
-    new CodexEngineAdapter({
-      transport,
-      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
-    }),
-    new ClaudeEngineAdapter({
-      cwd: options.cwd,
-      controlPlane: new ClaudeCliControlPlane({
-        ...options.workerEnvironment?.claude !== void 0 ? { workerEnv: options.workerEnvironment.claude } : {},
-        ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {}
+  return new EngineRegistry(
+    [
+      new CodexEngineAdapter({
+        transport,
+        concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
       }),
-      ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
-      // Claude deliberately emits the same usage event shape as Codex. Keep the
-      // adapter sink labelled so accounting never has to infer engine from payload.
-      onEvent: options.onClaudeEvent
-    }),
-    new OpenCodeEngineAdapter({
-      cwd: options.cwd,
-      ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
-      ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
-      ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
-      ...options.openCodeModels !== void 0 ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {},
-      onEvent: options.onOpenCodeEvent
-    })
-  ]);
+      new ClaudeEngineAdapter({
+        cwd: options.cwd,
+        controlPlane: new ClaudeCliControlPlane({
+          ...options.workerEnvironment?.claude !== void 0 ? { workerEnv: options.workerEnvironment.claude } : {},
+          ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {},
+          scopes: workerScopes,
+          workerScope: grouping,
+          ...options.onClaudeEvent !== void 0 ? { onEvent: options.onClaudeEvent } : {}
+        }),
+        ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
+        // Claude deliberately emits the same usage event shape as Codex. Keep the
+        // adapter sink labelled so accounting never has to infer engine from payload.
+        onEvent: options.onClaudeEvent
+      }),
+      new OpenCodeEngineAdapter({
+        cwd: options.cwd,
+        ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
+        ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
+        ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
+        ...options.openCodeModels !== void 0 ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {},
+        onEvent: options.onOpenCodeEvent
+      })
+    ],
+    ownsScopes ? [workerScopes] : []
+  );
 }
 async function openCodexThread(transport, options, cwd) {
   try {
@@ -21762,9 +22479,7 @@ var WorkerSession = class {
   }
   /**
    * The idle gap at which this session reads stale: the resolved runtime
-   * option, or — on Claude — the machine-declared cache TTL when one
-   * overrides the injected default, so the mark and the cache expire on
-   * one clock.
+   * option, or the engine's default advisory threshold.
    */
   get staleAfterMs() {
     return this.#state.stalenessThresholdMs;
@@ -21772,7 +22487,7 @@ var WorkerSession = class {
   /**
    * The advisory staleness mark: true once the idle gap since the
    * last settled turn has outlived the session's cache economics — the
-   * configured TTL cliff on Claude, the measured idle threshold on Codex.
+   * subscription cache TTL on Claude, the measured idle threshold on Codex.
    * Always false while marking is disabled, before the first turn, and
    * mid-turn. Advisory only: the runtime never blocks or reroutes a send
    * on it — a fresh session cannot inherit the old transcript, so only the
@@ -21862,7 +22577,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#strip = options.strip ?? [];
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
-      runId: options.runId ?? randomUUID5(),
+      runId: options.runId ?? randomUUID6(),
       budget: this.budget,
       ...options.now !== void 0 ? { now: options.now } : {}
     });
@@ -21917,6 +22632,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd,
       codexBin: options.codexBin ?? "codex",
       holdScope,
+      ...options.workerScope !== void 0 ? { workerScope: options.workerScope } : {},
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
       ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
       ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
@@ -21947,11 +22663,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {},
       ...options.holdPollIntervalMs !== void 0 ? { holdPollIntervalMs: options.holdPollIntervalMs } : {},
       ...options.strip !== void 0 ? { strip: options.strip } : {},
-      // The staleness cliff tracks the *effective* TTL: an explicit option
-      // wins, else a machine-declared TTL for the Claude workers (which
-      // outranks the injected 1h in the settings file) sets the cliff, else
-      // the injected default's hour — never two silently different clocks.
-      ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : declaredClaudeTtlMs(options.workerEnvironment) !== null ? { claudeSessionStaleAfterMs: declaredClaudeTtlMs(options.workerEnvironment) } : {},
+      ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : {},
       ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {}
     });
     return runtime;
@@ -21964,6 +22676,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   setRunRecorder(recorder) {
     this.#runRecorder = recorder;
+    this.progress.setArchiveDir(recorder?.archiveDir ?? null);
   }
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
   notePhase(title) {
@@ -22171,7 +22884,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       resolvedEffort: null,
       stripRoutes,
       // The mark's threshold is per engine shape: Claude's is the cliff at
-      // its configured (injected) cache TTL, Codex's the measured coin-flip
+      // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
       stalenessThresholdMs: engine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs,
       markStaleness: sessionOptions.stalenessMark ?? true,
@@ -22303,6 +23016,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new SessionClosedError();
     }
     agentRecord.resolvedCwd = state.placement.cwd;
+    this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
     agentRecord.isolation = options.isolation ?? null;
     const createSession = state.engine.createSession;
     if (createSession === void 0) {
@@ -22460,6 +23174,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
               return new ChainAdvance(target.engine);
             }
             agentRecord.concurrencyGroup = admittedEngine.name;
+            if (position.next > 0) {
+              this.progress.requeueAgent(agentId, admittedEngine.name);
+              this.progress.startAgent(agentId);
+              agentRecord.resolvedModel = null;
+              agentRecord.resolvedEffort = null;
+              this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
+              this.progress.noteAgentWorktree(agentId, null);
+            }
             const settled = await runTarget(target, admittedEngine, ledger, position.next + 1 < targets.length);
             if (settled.status !== "refused") {
               return settled;
@@ -22473,6 +23195,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
       admittedEngine = this.#engineFor(outcome.engine);
       readmitting = true;
+      const lastAttempt = agentRecord.attempts.at(-1)?.attempt;
+      if (lastAttempt !== void 0) {
+        await this.#recordArchiveWriteSafely(agentId, async () => {
+          await this.#runRecorder?.recordAttemptEnd(agentId, lastAttempt);
+        });
+      }
       this.progress.requeueAgent(agentId, admittedEngine.name);
       queuedAt = Date.now();
     }
@@ -22501,7 +23229,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
       );
     } catch (error) {
       if (!started) {
-        this.progress.settleAgent(agentId, "failed");
         this.#settleTerminalStatus(agentRecord, error, "queued");
         agentRecord.queuedMs += Math.max(0, Date.now() - queuedAt);
         await this.#recordSettlementSafely(agentId, agentRecord);
@@ -22526,7 +23253,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const executionEndedAt = Date.now();
       agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
-      this.progress.settleAgent(agentId, outcome);
       if (outcome === "done") {
         agentRecord.status = "complete";
       } else {
@@ -22553,7 +23279,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const executionEndedAt = Date.now();
       agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
-      this.progress.settleAgent(agentId, "failed");
       this.#settleTerminalStatus(agentRecord, error);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
@@ -22690,17 +23415,150 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * surface as an event the CLI logs to stderr.
    */
   async #recordAgentSafely(record) {
-    try {
+    this.progress.noteAgentIdentity(record.id, {
+      requestedModel: record.model,
+      requestedEffort: record.effort,
+      resolvedModel: record.resolvedModel,
+      resolvedEffort: record.resolvedEffort
+    });
+    if (record.status !== "in-progress") {
+      this.progress.settleAgent(
+        record.id,
+        record.status === "complete" ? "done" : "failed",
+        record.terminationCause ?? attemptedFailureAccount(record)
+      );
+    }
+    await this.#recordArchiveWriteSafely(record.id, async () => {
       await this.#runRecorder?.recordAgent(record);
+    });
+  }
+  /** Archive writes share one best-effort error-reporting contract. */
+  async #recordArchiveWriteSafely(agentId, write) {
+    try {
+      await write();
     } catch (error) {
       this.#emitEvent({
         method: "runRecord/writeFailed",
-        params: {
-          agentId: record.id,
-          message: error instanceof Error ? error.message : String(error)
-        },
+        params: { agentId, message: error instanceof Error ? error.message : String(error) },
         receivedAt: Date.now()
       });
+    }
+  }
+  /** Bind transcript callbacks to one attempt and drain them before its outcome is recorded. */
+  async #runRecordedAttempt(engine, invocation, context, agentId, startedAt) {
+    const recorder = this.#runRecorder;
+    const record = this.#unsettledAgentRecords.get(agentId)?.record;
+    const previousSpend = record?.attempts.flatMap((attempt) => attempt.tokenUsageEvents).reduce((sum, event) => sum + event.last.totalTokens, 0) ?? 0;
+    let attemptSpend = 0;
+    const observedUsage = [];
+    let observedModel = null;
+    let observedEffort = null;
+    let result;
+    let active = true;
+    let transcriptPath;
+    const pending = /* @__PURE__ */ new Set();
+    const enqueue = (write) => {
+      if (!active) return;
+      const operation = this.#recordArchiveWriteSafely(agentId, write);
+      pending.add(operation);
+      void operation.then(() => pending.delete(operation));
+    };
+    if (recorder !== null && engine !== "opencode") {
+      await this.#recordArchiveWriteSafely(agentId, () => recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
+    }
+    this.progress.noteAgentTranscript(agentId, null);
+    if (record?.session === null && engine !== "claude") {
+      this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
+    }
+    try {
+      result = await invocation.runAttempt({
+        ...context,
+        onLiveEvidence: () => {
+          if (active) context.onLiveEvidence?.();
+        },
+        onWaiting: (wait) => {
+          if (active) context.onWaiting?.(wait);
+        },
+        onOutput: () => {
+          if (active) this.progress.noteAgentEvidence(agentId);
+        },
+        onIdentity: (identity) => {
+          if (!active) return;
+          observedModel = identity.resolvedModel;
+          observedEffort = identity.resolvedEffort;
+          this.progress.noteAgentIdentity(agentId, identity);
+        },
+        onUsage: (event) => {
+          if (!active) return;
+          observedUsage.push(event);
+          attemptSpend += event.last.totalTokens;
+          this.progress.noteAgentSpend(agentId, previousSpend + attemptSpend);
+        },
+        ...engine === "codex" && recorder !== null ? {
+          onTranscriptEvent: (event) => enqueue(async () => {
+            const path16 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            if (path16 != null) this.progress.noteAgentTranscript(agentId, path16);
+          })
+        } : engine === "claude" ? {
+          onTranscriptPath: (path16) => {
+            if (path16 === transcriptPath || !active) return;
+            transcriptPath = path16;
+            if (recorder === null) {
+              this.progress.noteAgentTranscript(agentId, path16);
+              return;
+            }
+            enqueue(async () => {
+              try {
+                await recorder.recordClaudeTranscript(agentId, context.attempt, path16);
+                this.progress.noteAgentTranscript(agentId, path16);
+              } catch (error) {
+                transcriptPath = void 0;
+                throw error;
+              }
+            });
+          }
+        } : {}
+      });
+      return result;
+    } catch (error) {
+      result = failedTurnResultOf(error) ?? void 0;
+      if (result === void 0 && error instanceof Error && (observedUsage.length > 0 || observedModel !== null || observedEffort !== null)) {
+        const transcript = partialTranscriptOf(error);
+        const text = partialWorkerTextOf(error) ?? "";
+        result = {
+          text,
+          deltaText: text,
+          durationMs: null,
+          firstDeltaMs: firstDeltaMsOf(error),
+          items: {},
+          tokenUsageEvents: observedUsage,
+          ...observedModel === null ? {} : { resolvedModel: observedModel },
+          ...observedEffort === null ? {} : { resolvedEffort: observedEffort },
+          ...transcript === null ? {} : { transcripts: [transcript] }
+        };
+        attachFailedTurnResult(error, result);
+      }
+      throw error;
+    } finally {
+      active = false;
+      await Promise.all(pending);
+      try {
+        if (result !== void 0) {
+          if (result.tokenUsageEvents.length === 0 && observedUsage.length > 0) {
+            result.tokenUsageEvents = [...observedUsage];
+          }
+          if (record !== void 0) {
+            this.progress.noteAgentIdentity(agentId, {
+              resolvedModel: result.resolvedModel ?? (record.session === null ? null : record.resolvedModel),
+              resolvedEffort: result.resolvedEffort ?? (record.session === null ? null : record.resolvedEffort)
+            });
+          }
+          if (result.tokenUsageEvents.length > 0) {
+            this.progress.noteAgentSpend(agentId, previousSpend + result.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0));
+          }
+        }
+      } catch {
+      }
     }
   }
   async #recordSettlementSafely(agentId, record) {
@@ -22899,6 +23757,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   async #runAgent(engine, prompt, options, agentId, agentRecord, target, ledger, chainRemains) {
     const placement = await this.#placement.open(options);
     agentRecord.resolvedCwd = placement.cwd;
+    this.progress.noteAgentWorktree(agentId, placement.worktree?.path ?? null);
     agentRecord.isolation = options.isolation ?? null;
     this.#recordStripRoutesFor(agentRecord, engine, options.strip);
     let invocation;
@@ -23019,12 +23878,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await invocation.runAttempt({
+        const result = await this.#runRecordedAttempt(engine, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
-        });
+        }, agentId, startedAt);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -23083,12 +23942,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await invocation.runAttempt({
+        const result = await this.#runRecordedAttempt(engine, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
-        });
+        }, agentId, startedAt);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -23409,10 +24268,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
 async function createRuntime(options = {}) {
   return EnsembleRuntime.create(options);
 }
-function declaredClaudeTtlMs(workerEnvironment) {
-  const declared = workerEnvironment?.claude?.[CLAUDE_CACHE_TTL_VARIABLE];
-  return declared === void 0 ? null : claudeCacheTtlToMs(declared);
-}
 function requireTransport(transport) {
   if (transport === void 0) {
     throw new Error("EnsembleRuntime requires either engines or a Codex transport");
@@ -23472,11 +24327,11 @@ function rejectBlankHoldScope(holdScope) {
   }
 }
 function recordTurnMetadata(record, result) {
-  if (result.resolvedModel !== void 0) {
-    record.resolvedModel = result.resolvedModel;
+  if (result.resolvedModel !== void 0 || record.session === null) {
+    record.resolvedModel = result.resolvedModel ?? null;
   }
-  if (result.resolvedEffort !== void 0) {
-    record.resolvedEffort = result.resolvedEffort;
+  if (result.resolvedEffort !== void 0 || record.session === null) {
+    record.resolvedEffort = result.resolvedEffort ?? null;
   }
   if (result.transcriptCapture !== void 0) {
     record.transcriptCapture = result.transcriptCapture;
@@ -23707,9 +24562,9 @@ function describeWorkerFailure(error) {
 // src/script-runner.ts
 import vm from "node:vm";
 import { createHash as createHash3 } from "node:crypto";
-import { readFile as readFile8 } from "node:fs/promises";
+import { readFile as readFile9 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
-import path12 from "node:path";
+import path13 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -29404,9 +30259,9 @@ var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 
 // src/workflow-registry.ts
 import { constants } from "node:fs";
-import { access as access2, readdir as readdir5, readFile as readFile7 } from "node:fs/promises";
+import { access as access2, readdir as readdir6, readFile as readFile8 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
-import path11 from "node:path";
+import path12 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
 };
 var NestedWorkflowError = class extends WorkflowResolutionError {
@@ -29415,10 +30270,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path11.join(homedir4(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path12.join(homedir4(), ".local", "share");
   return {
-    project: path11.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path11.join(dataHome2, "ensemble", "workflows")
+    project: path12.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path12.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -29428,7 +30283,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path11.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path12.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access2(scriptPath, constants.R_OK);
   } catch (error) {
@@ -29485,7 +30340,7 @@ async function resolveWorkflowName(name, options) {
 async function listRegistryDir(dir, scope, readMeta) {
   let directoryEntries;
   try {
-    directoryEntries = await readdir5(dir, { withFileTypes: true });
+    directoryEntries = await readdir6(dir, { withFileTypes: true });
   } catch (error) {
     if (isMissingDirectory(error)) {
       return { entries: [], notes: [] };
@@ -29501,9 +30356,9 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path11.join(dir, entry.name);
+    const scriptPath = path12.join(dir, entry.name);
     try {
-      const source = await readFile7(scriptPath, "utf8");
+      const source = await readFile8(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -29566,14 +30421,14 @@ function assertJsonSerialisable(value, label, pathRoot) {
     throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
   }
 }
-function findUnserialisable(value, path15, ancestors, honourToJson) {
+function findUnserialisable(value, path16, ancestors, honourToJson) {
   switch (typeof value) {
     case "function":
-      return `${path15} is a function`;
+      return `${path16} is a function`;
     case "symbol":
-      return `${path15} is a symbol`;
+      return `${path16} is a symbol`;
     case "bigint":
-      return `${path15} is a BigInt`;
+      return `${path16} is a BigInt`;
     case "object":
       break;
     default:
@@ -29584,16 +30439,16 @@ function findUnserialisable(value, path15, ancestors, honourToJson) {
   }
   const toJson = value.toJSON;
   if (honourToJson && typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path15, ancestors, false);
+    return findUnserialisable(toJson.call(value), path16, ancestors, false);
   }
   if (ancestors.has(value)) {
-    return `${path15} closes a cycle`;
+    return `${path16} closes a cycle`;
   }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path15}[${index}]`, ancestors, true);
+        const offence = findUnserialisable(value[index], `${path16}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -29601,7 +30456,7 @@ function findUnserialisable(value, path15, ancestors, honourToJson) {
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path15}.${key}`, ancestors, true);
+      const offence = findUnserialisable(entry, `${path16}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -29644,8 +30499,8 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
-  const resolvedFilename = path12.resolve(options.filename);
-  const cwd = options.cwd ?? path12.dirname(resolvedFilename);
+  const resolvedFilename = path13.resolve(options.filename);
+  const cwd = options.cwd ?? path13.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -30068,7 +30923,7 @@ function acornSyntaxErrorPosition(wrappedSource) {
 }
 async function readWorkflowScript(scriptPath) {
   try {
-    return await readFile8(scriptPath, "utf8");
+    return await readFile9(scriptPath, "utf8");
   } catch (error) {
     const code = error.code;
     const reason = code === "ENOENT" ? "no file exists at this path" : code === "EISDIR" ? "the path is a directory, not a script file" : code === "EACCES" ? "the file is not readable" : error instanceof Error ? error.message : String(error);
@@ -30403,7 +31258,8 @@ var AGENT_INVOCATION_OPTIONS = {
   concurrency: { type: "string", multiple: true },
   timeout: { type: "string" },
   "caller-identity": { type: "string" },
-  "hold-scope": { type: "string" }
+  "hold-scope": { type: "string" },
+  "worker-scope": { type: "string" }
 };
 async function runEnsembleCli(argv, options = {}) {
   const stdin = options.stdin ?? process.stdin;
@@ -30577,6 +31433,7 @@ async function runEnsembleCli(argv, options = {}) {
       env,
       cwd,
       flags: {
+        ...invocation.workerScope !== void 0 ? { workerScope: invocation.workerScope } : {},
         ...invocation.agentCeiling !== void 0 ? { agentCeiling: invocation.agentCeiling } : {},
         ...invocation.concurrencyCaps !== void 0 ? { concurrencyCaps: invocation.concurrencyCaps } : {}
       }
@@ -30617,6 +31474,7 @@ async function runEnsembleCli(argv, options = {}) {
     const holdScope = resolveHoldScope(invocation.holdScope, env);
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
+      workerScope: ambientSettings.workerScope.value,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
       ...holdScope !== null ? { holdScope } : {},
       ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
@@ -30652,6 +31510,7 @@ async function runEnsembleCli(argv, options = {}) {
         cliFlags: cliFlags(invocation),
         ...callerIdentity !== void 0 ? { callerIdentity } : {},
         concurrency: recordConcurrency(ambientSettings, progress),
+        workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
       });
       runtime.setRunRecorder?.(runRecordWriter);
@@ -30662,13 +31521,46 @@ async function runEnsembleCli(argv, options = {}) {
       statusWriter = new StatusFileWriter({
         progress,
         dir: statusDir,
+        createDirectory: options.statusDir === void 0 && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
 `);
         }
       });
+      if (await statusWriter.ready()) {
+        try {
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: runtimeRunId, status_path: statusWriter.path })}
+`);
+        } catch {
+        }
+      }
     }
     runtime.onEvent((event) => {
+      if (event.method === "claude/workerScopeWatchError") {
+        stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
+`);
+        return;
+      }
+      if (event.method === "codex/workerScopePlacement") {
+        if (event.params.kind === "refused") {
+          const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
+          stderr.write(`[codex] app-server (pid ${pid}) scope placement refused: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
+`);
+        }
+        return;
+      }
+      if (event.method === "claude/workerScopePlacement") {
+        const name = boundedEvidence(String(event.params.name ?? "unknown"));
+        const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
+        if (event.params.kind === "refused") {
+          stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement refused; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
+`);
+        } else if (event.params.kind === "placed") {
+          stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement recovered in ${boundedEvidence(String(event.params.unit ?? "unknown scope"))}
+`);
+        }
+        return;
+      }
       if (event.method === "claude/unpinnedModel") {
         const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
@@ -30848,9 +31740,6 @@ async function runEnsembleCli(argv, options = {}) {
     try {
       try {
         progress?.finish();
-        if (statusWriter !== null) {
-          await statusWriter.close();
-        }
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
           await runtime.close(
@@ -30865,6 +31754,9 @@ async function runEnsembleCli(argv, options = {}) {
         teardownError = describeError(error);
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError2(error)}
 `);
+      }
+      if (statusWriter !== null) {
+        await statusWriter.close();
       }
       teardownError ??= judgeLateEnding();
       try {
@@ -30935,7 +31827,7 @@ function workflowName(meta) {
 async function prepareRun(invocation, cwd) {
   if (invocation.kind === "agent") {
     if (invocation.agentOptions.cwd !== void 0) {
-      const requestedCwd = path13.resolve(cwd, invocation.agentOptions.cwd);
+      const requestedCwd = path14.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
         isDirectory2 = (await stat4(requestedCwd)).isDirectory();
@@ -30947,7 +31839,7 @@ async function prepareRun(invocation, cwd) {
       }
     }
     return {
-      workflowPath: path13.join(cwd, "<ensemble-agent>"),
+      workflowPath: path14.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
       runnerArgs: [],
       recordArgs: {
@@ -30959,7 +31851,7 @@ async function prepareRun(invocation, cwd) {
   if (invocation.scriptArg === void 0) {
     throw new Error("workflow invocation has no script path");
   }
-  const workflowPath = path13.resolve(cwd, invocation.scriptArg);
+  const workflowPath = path14.resolve(cwd, invocation.scriptArg);
   return {
     workflowPath,
     source: await readWorkflowScript(workflowPath),
@@ -30983,6 +31875,7 @@ function cliFlags(invocation) {
   return {
     ...invocation.budgetCeilings !== void 0 ? { budget: invocation.budgetCeilings } : {},
     ...invocation.agentCeiling !== void 0 ? { agentCeiling: invocation.agentCeiling } : {},
+    ...invocation.workerScope !== void 0 ? { workerScope: invocation.workerScope } : {},
     ...invocation.concurrencyCaps !== void 0 ? { concurrency: invocation.concurrencyCaps } : {},
     ...invocation.timeoutMs !== void 0 ? { timeoutMs: invocation.timeoutMs } : {},
     ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
@@ -31193,7 +32086,8 @@ async function parseWorkflowInvocation(argv, cwd, program) {
         timeout: { type: "string" },
         strip: { type: "string", multiple: true },
         "caller-identity": { type: "string" },
-        "hold-scope": { type: "string" }
+        "hold-scope": { type: "string" },
+        "worker-scope": { type: "string" }
       },
       strict: true,
       allowPositionals: false
@@ -31212,6 +32106,7 @@ async function parseWorkflowInvocation(argv, cwd, program) {
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const workerScope = parsed.values["worker-scope"] === void 0 ? void 0 : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
   return {
     kind: "workflow",
     scriptArg: split.scriptArg,
@@ -31223,6 +32118,7 @@ async function parseWorkflowInvocation(argv, cwd, program) {
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
     ...strip !== void 0 ? { strip } : {},
     ...callerIdentity !== void 0 ? { callerIdentity } : {},
+    ...workerScope !== void 0 ? { workerScope } : {},
     ...holdScope !== void 0 ? { holdScope } : {}
   };
 }
@@ -31273,6 +32169,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const workerScope = parsed.values["worker-scope"] === void 0 ? void 0 : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
   const agentOptions = {
     engine,
     ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
@@ -31296,6 +32193,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
     ...callerIdentity !== void 0 ? { callerIdentity } : {},
+    ...workerScope !== void 0 ? { workerScope } : {},
     ...holdScope !== void 0 ? { holdScope } : {}
   };
 }
@@ -31445,10 +32343,10 @@ function isBooleanAgentFlag(value) {
   return AGENT_INVOCATION_OPTIONS[name].type === "boolean";
 }
 function isKnownOption(value) {
-  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity" || value === "--hold-scope";
+  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity" || value === "--worker-scope" || value === "--hold-scope";
 }
 function isKnownInlineOption(value) {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=") || value.startsWith("--hold-scope=");
+  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=") || value.startsWith("--worker-scope=") || value.startsWith("--hold-scope=");
 }
 async function parseJsonArgs(value, cwd) {
   return parseJsonValue(value, cwd, "--json-args");
@@ -31461,10 +32359,10 @@ async function parseJsonValue(value, cwd, flagName) {
     if (filename.length === 0) {
       throw new CliUsageError(`${flagName} @file requires a file path`);
     }
-    const filePath = path13.resolve(cwd, filename);
+    const filePath = path14.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
-      source = await readFile9(filePath, "utf8");
+      source = await readFile10(filePath, "utf8");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new CliUsageError(`${flagName} could not read ${filePath}: ${message}`);
@@ -31699,7 +32597,7 @@ function programNameFor(scriptPath) {
   if (scriptPath === void 0 || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
-  const file = path13.basename(scriptPath);
+  const file = path14.basename(scriptPath);
   return /\.(?:mjs|cjs|js)$/.test(file) ? `node ${file}` : file;
 }
 var USAGE_WIDTH = 80;
@@ -31712,7 +32610,8 @@ var RUN_OPTION_SYNOPSES = [
   "--timeout ms",
   "--strip capability",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--worker-scope worker|run"
 ];
 var AGENT_OPTION_SYNOPSES = [
   "--model <model>",
@@ -31731,7 +32630,8 @@ var AGENT_OPTION_SYNOPSES = [
   "--concurrency engine=N",
   "--timeout ms",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--worker-scope worker|run"
 ];
 function usage(program) {
   const forms = [
@@ -31805,7 +32705,7 @@ function isError(error) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path14.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path15.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
 function flushed(stream) {
   return new Promise((resolve) => {
     stream.write("", () => resolve());

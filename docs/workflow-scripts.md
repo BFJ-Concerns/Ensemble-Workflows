@@ -362,8 +362,9 @@ engine's own diagnostic:
 
 - **availability** — the engine refused or lost the worker before it
   answered: Codex's `usageLimitExceeded`, `rateLimitExceeded`, or
-  `serverOverloaded`, a refused connection, or an app-server that died or
-  never started; a Claude API refusal carrying a 429, 503, or 529, a dispatch
+  `serverOverloaded`, a refused connection, Codex running out of its own
+  retries (`responseTooManyFailedAttempts`) on a 429 or 5xx, or an app-server
+  that died or never started; a Claude API refusal carrying a 429, 503, or 529, a dispatch
   Claude Code refused, a dispatch the daemon never registered, or a session
   that never showed life. Only this class advances a fallback chain.
 - **output** — the worker answered badly: empty, unparseable, or off-schema.
@@ -476,26 +477,22 @@ await builder.close();
 - **Concurrency and budget are per turn:** a turn holds its engine slot from
   dispatch to settlement, an idle session holds nothing, and each turn's
   budget check happens at its own dispatch.
-- **Prompt caching:** a Claude session's worker is dispatched with the
-  one-hour prompt-cache TTL (`CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`; a
-  value declared in `worker_environment` wins). Ensemble sets no TTL for
-  one-shot Claude workers, which keep Claude Code's default. Codex has no TTL
-  setting. The TTL governs how long Claude Code asks the provider to retain
-  cache writes; it does not guarantee a cache read on the next turn. Claude
-  Code places cache breakpoints in the continued request. A follow-up can
-  re-create part of the prefix depending on that placement, even when it
-  reaches the same held session immediately. The run record reports the reads
-  and writes the engine reports for each turn (`cacheReadTokens` and
-  `cacheCreationTokens`), so use those figures when judging the cost of a
-  held worker.
+- **Prompt caching:** Claude Code fixes the subscription prompt-cache TTL at
+  one hour. Ensemble does not request a TTL for Claude workers. That lifetime
+  does not guarantee a cache read on the next turn. Claude Code places cache
+  breakpoints in the continued request; observed follow-ups with different
+  breakpoint placements have re-created different amounts of the prefix,
+  even when sent to the same held session immediately. The request records
+  do not expose the provider's cache decisions. Judge a held worker's cost
+  from the run record's per-turn `cacheReadTokens` and `cacheCreationTokens`
+  figures, which reflect the engine's reported reads and writes.
 - **Staleness:** `handle.stale` becomes `true` once the idle time since the
-  last turn outlasts the cache — the TTL on Claude, 60 idle minutes on
+  last turn reaches the threshold — one idle hour on Claude, 60 idle minutes on
   Codex — and `handle.idleMs` gives the idle time. It is advisory: a send to a
   stale session still runs, and the script decides whether to pay for the
   re-read or start a fresh worker. `stalenessMark: false` turns the mark off
-  for that session, and `handle.staleAfterMs` gives the threshold in use. An
-  unmarked Claude session is within its declared TTL, but may still miss the
-  prompt cache.
+  for that session, and `handle.staleAfterMs` gives the threshold in use. A
+  Claude session below this idle threshold may still miss the prompt cache.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.
@@ -503,9 +500,13 @@ await builder.close();
   `session: { id, turn }` field. A session using `isolation: "worktree"` works
   in one worktree for its whole life, finalised when the session closes.
 - **Claude follow-ups need tmux:** follow-up turns are typed into the held
-  session through tmux, in bounded slices so that a follow-up of any size
-  arrives intact. Each injection uses a private tmux server that loads no
-  tmux configuration and does not appear among your own sessions. Without
+  session through tmux as individual terminal key records, batched without
+  splitting a record. Follow-ups stay typed even when the reader pauses,
+  so a leading `/skill` line expands. Unicode and LF line breaks are preserved;
+  tabs become four spaces and CR or CRLF line endings become LF, matching
+  Claude Code's paste-handler conversions. The turn is submitted once, after
+  all records arrive. Each injection uses a private tmux server that loads
+  no tmux configuration and does not appear among your own sessions. Without
   tmux, a follow-up or correction fails with a `claude-valve-error` naming
   the tmux step that failed, rather than silently starting a fresh worker.
 

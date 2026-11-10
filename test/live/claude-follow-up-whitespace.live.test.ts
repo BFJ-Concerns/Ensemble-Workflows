@@ -10,7 +10,7 @@ import { findOnlyFile, runNode } from "../integration/estate-process.js";
 const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 test("built Claude follow-up preserves leading and trailing whitespace in one exact native turn", {
-  skip: process.env.ENSEMBLE_LIVE !== "1", timeout: 360_000
+  skip: process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false, timeout: 360_000
 }, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-follow-up-whitespace-"));
   try {

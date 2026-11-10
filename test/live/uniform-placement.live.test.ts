@@ -24,7 +24,7 @@ const engines: Array<{ name: string; scriptOptions: string }> = [
 
 test(
   "live per-call cwd places Codex, Claude, and opencode workers in the same requested directory",
-  { skip: !isLive, timeout: 900_000 },
+  { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 900_000 },
   async (t) => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-uniform-cwd-"));
     const markerDir = path.join(directory, "target");
@@ -78,7 +78,7 @@ test(
 
 test(
   "live worktree placement preserves a branch carrying each engine's commit",
-  { skip: !isLive, timeout: 1_200_000 },
+  { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 1_200_000 },
   async (t) => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-uniform-worktree-"));
     const repo = path.join(directory, "repo");

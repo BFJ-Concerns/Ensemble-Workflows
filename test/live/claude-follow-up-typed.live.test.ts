@@ -27,7 +27,7 @@ interface AgentRecord {
 // The public session journey uses the shared daemon, touches only its own
 // session, and judges delivery from Claude's native input rows.
 test("built Claude follow-ups arrive typed, exact and expanded through the prompt editor", {
-  skip: process.env.ENSEMBLE_LIVE !== "1", timeout: 900_000
+  skip: process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false, timeout: 900_000
 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-typed-follow-up-"));
   try {

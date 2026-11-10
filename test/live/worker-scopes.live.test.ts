@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import test, { after, before } from "node:test";
+import test from "node:test";
 import { promisify } from "node:util";
 
 import { assertFixedClaudeVersion, daemonStatus, selectClaudeExecutable, supervisorLifecycle, supervisorSnapshot } from "./claude-proof-support.js";
@@ -19,11 +19,6 @@ const exec = promisify(execFile);
 const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const live = process.env.ENSEMBLE_LIVE === "1";
 const claudeModel = process.env.ENSEMBLE_LIVE_CLAUDE_MODEL ?? "haiku";
-let claude: Awaited<ReturnType<typeof selectClaudeExecutable>>;
-before(async () => {
-  if (live) claude = await selectClaudeExecutable(path.join(homedir(), ".local/bin/claude"), tmpdir());
-});
-after(async () => { await claude?.dispose(); });
 
 type Grouping = "worker" | "run";
 interface Scenario {
@@ -52,13 +47,15 @@ const scenarios: Scenario[] = [
 ];
 
 for (const scenario of scenarios) {
-  test(`built launcher scopes: ${scenario.name}`, { skip: !live, timeout: 1_200_000 }, async (t) => {
+  test(`built launcher scopes: ${scenario.name}`, { skip: !live ? "ENSEMBLE_LIVE must be 1" : false, timeout: 1_200_000 }, async (t) => {
     assert.ok(process.env.ENSEMBLE_LIVE_CODEX_MODEL || scenario.direct === "claude",
       "UNPROVEN: ENSEMBLE_LIVE_CODEX_MODEL is required for real Codex dispatch");
     await exec("systemctl", ["--user", "show-environment"]).catch((error: unknown) => {
       throw new Error("UNPROVEN: a reachable systemd user manager is required", { cause: error });
     });
     const machineEnvironment = resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment;
+    const claude = scenario.direct === "codex" ? undefined : await selectClaudeExecutable("claude", tmpdir());
+    t.after(async () => { await claude?.dispose(); });
     const root = await mkdtemp(path.join(tmpdir(), "ensemble-worker-scopes-live-"));
     const config = path.join(root, "claude");
     const xdg = path.join(root, "config");
@@ -75,7 +72,7 @@ for (const scenario of scenarios) {
     }));
     const sibling: HeldProbe = { paths: probePaths(root, "outside-sibling"), evidence: { kind: "cgroup" }, token: `SIBLING_${randomUUID()}` };
     const units = new Set<string>();
-    const observations: Record<string, unknown> = { claudeExecutable: claude.executable, selectedClaudeVersion: claude.version };
+    const observations: Record<string, unknown> = claude ? { claudeExecutable: claude.executable, selectedClaudeVersion: claude.version } : {};
     let run: ReturnType<typeof launch> | undefined;
     let supervisor: number | null = null;
     let supervisorState: Awaited<ReturnType<typeof supervisorSnapshot>> | undefined;
@@ -83,7 +80,7 @@ for (const scenario of scenarios) {
     let siblingPlane: ClaudeCliControlPlane | undefined;
     let siblingHandle: ClaudeSessionHandle | undefined;
     const env: NodeJS.ProcessEnv = {
-      ...claude.env, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SANDBOXED: "1",
+      ...(claude?.env ?? process.env), CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SANDBOXED: "1",
       XDG_CONFIG_HOME: xdg, ENSEMBLE_RUN_RECORD: "on", ENSEMBLE_CONCURRENCY_CLAUDE: "2", ENSEMBLE_CONCURRENCY_CODEX: "2", ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records"),
       ENSEMBLE_STATUS_DIR: path.join(root, "status")
     };
@@ -100,10 +97,10 @@ for (const scenario of scenarios) {
         ...(scenario.config ? { worker_scope: scenario.config } : {}),
         worker_environment: {
           ...machineEnvironment,
-          claude: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: config, PATH: claude.env.PATH! }
+          ...(claude ? { claude: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: config, PATH: claude.env.PATH! } } : {})
         }
       }), { mode: 0o600 });
-      assert.equal((await daemonStatus(claude.executable, env)).pid, null, "the private config directory already had a daemon");
+      if (claude) assert.equal((await daemonStatus(claude.executable, env)).pid, null, "the private config directory already had a daemon");
       const flags = scenario.flag ? [`--worker-scope=${scenario.flag}`] : [];
       let args: string[];
       if (scenario.direct) {
@@ -124,7 +121,7 @@ for (const scenario of scenarios) {
       run = launch(["--user", "--scope", "--quiet", "--collect", `--unit=${box}`, `--slice=${slice}`, "--", ...childEnv, process.execPath, launcher, ...args], env);
       const firstPaths = await observe(probes, run, engines, env, slice, box, scenario.fallback === true, units);
       observations.first = firstPaths;
-      if (engines.includes("claude") && !scenario.fallback) {
+      if (claude && engines.includes("claude") && !scenario.fallback) {
         supervisorState = await supervisorSnapshot(claude.executable, env);
         observations.supervisorStartStatus = supervisorState;
         supervisor = supervisorState.identity.pid;
@@ -159,7 +156,7 @@ for (const scenario of scenarios) {
         observations.outsideSibling = { sessionId: siblingHandle.sessionId, cgroup: siblingGroup };
         assert.equal(run.settled, false, "launcher settled before supervisor observation");
       }
-      if (engines.includes("claude") && scenario.fallback) {
+      if (claude && engines.includes("claude") && scenario.fallback) {
         const fallbackSupervisor = await supervisorSnapshot(claude.executable, env);
         observations.fallbackSupervisor = fallbackSupervisor;
         assert.equal(fallbackSupervisor.selectedVersion, claude.version);
@@ -204,7 +201,7 @@ for (const scenario of scenarios) {
       else assert.equal(Object.hasOwn(manifest.cli_flags, "workerScope"), false);
       observations.manifestSettings = { schema_version: manifest.schema_version, worker_scope: manifest.worker_scope, cli_flags: manifest.cli_flags };
       for (const unit of units) await waitInactive(unit);
-      if (supervisor !== null) {
+      if (claude && supervisor !== null) {
         const after = await supervisorSnapshot(claude.executable, env);
         observations.supervisorAfterTeardown = after;
         observations.afterTeardownTransition = assertFixedClaudeVersion(supervisorState!, after, "worker teardown");
@@ -227,7 +224,7 @@ for (const scenario of scenarios) {
     } finally {
       // Capture before releasing held workers or stopping proof-owned units:
       // teardown would otherwise hide why the original supervisor ended.
-      if (supervisor !== null) {
+      if (claude && supervisor !== null) {
         observations.supervisorBeforeCleanup = await daemonStatus(claude.executable, env);
         observations.originalSupervisorBeforeCleanup = await knownProcess(supervisor);
         observations.lifecycleBeforeCleanup = await supervisorLifecycle(config);
@@ -238,7 +235,7 @@ for (const scenario of scenarios) {
       if (run) observations.result = await run.result;
       if (siblingPlane && siblingHandle) await siblingPlane.stop(siblingHandle);
       if (siblingScopes) await siblingScopes.close();
-      await exec(claude.executable, ["daemon", "stop", "--any"], { env }).catch(() => undefined);
+      if (claude) await exec(claude.executable, ["daemon", "stop", "--any"], { env }).catch(() => undefined);
       await exec("systemctl", ["--user", "stop", slice, parent]).catch(() => undefined);
       t.diagnostic(JSON.stringify(observations));
       await rm(root, { recursive: true, force: true });
@@ -280,7 +277,7 @@ async function observe(probes: HeldProbe[], run: ReturnType<typeof launch>, engi
     assert.equal(await property(unit, "ActiveState"), "active");
   }
   if (engines.includes("claude")) {
-    const { stdout } = await exec(claude.executable, ["agents", "--json"], { env, maxBuffer: 32 * 1024 * 1024 });
+    const { stdout } = await exec("claude", ["agents", "--json"], { env, maxBuffer: 32 * 1024 * 1024 });
     const rows = JSON.parse(stdout) as { pid?: number; kind?: string }[];
     const memberships = await Promise.all(rows.filter((row) => row.kind === "background" && typeof row.pid === "number").map(async (row) => ({ pid: row.pid!, group: (await readFile(`/proc/${row.pid}/cgroup`, "utf8")).trim().slice(3) })));
     assert.ok(memberships.length >= engines.filter((engine) => engine === "claude").length, "roster is missing concurrent Claude workers");

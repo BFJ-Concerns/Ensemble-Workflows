@@ -15,7 +15,7 @@ const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensem
 
 test(
   "live built Codex consumer rejects an exhausted next call without transport, progress, or durable dispatch evidence",
-  { skip: !isLive, timeout: 240_000 },
+  { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 240_000 },
   async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-budget-ordering-"));
     const workflow = path.join(directory, "workflow.js");

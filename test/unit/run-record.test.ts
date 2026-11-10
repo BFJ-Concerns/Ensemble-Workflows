@@ -71,7 +71,7 @@ test("a rejected hold event preserves its submitted verdict, or explicitly says 
 
   await writer.recordHoldEvent({
     method: "hold/answerRejected",
-    params: { holdId: "hold-1", reason: "invalid-verdict", attemptedVerdict: "later", attemptedVerdictState: "submitted" },
+    params: { holdId: "hold-1", reason: "invalid-verdict", attemptedVerdict: "later", attemptedVerdictState: "submitted", answeredBy: "writer-7" },
     receivedAt: 0
   });
   await writer.recordHoldEvent({
@@ -92,7 +92,7 @@ test("a rejected hold event preserves its submitted verdict, or explicitly says 
       reason: "invalid-verdict",
       attempted_verdict: "later",
       attempted_verdict_state: "submitted",
-      answered_by: null,
+      answered_by: "writer-7",
       note: null,
       at: new Date(0).toISOString()
     },

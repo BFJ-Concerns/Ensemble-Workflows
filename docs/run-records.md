@@ -18,8 +18,8 @@ Where these files live, and how to turn them off, is covered in
 ## Live status
 
 While a run is active it publishes a JSON snapshot of what it is doing —
-current phase, per-engine active/queued/done/failed counts, per-engine token
-spend, and every queued, running and finished worker — to its own
+current phase, per-engine counts of live workers and of finished workers by
+disposition, per-engine token spend, and every queued, running and finished worker — to its own
 file in the status directory. By default it creates
 `$XDG_DATA_HOME/ensemble/status` (`~/.local/share/ensemble/status` by default)
 and writes there, independently of the working directory and any `.claude`
@@ -29,7 +29,12 @@ are atomic, so a reader never sees a half-written file.
 After the first successful write and before workflow execution, the CLI prints
 `[status-file] {"run_id":…, "status_path":…}` on stderr. A supervisor can
 follow that path without knowing the working directory's layout or searching
-the archive. Disable publication with `ENSEMBLE_STATUS=off`; directory
+the archive. Its `run_id` is the public `cwd:<namespace-hash>:<run-uuid>`
+identity, identical to the archive announcement and manifest when recording is
+on, and namespaced the same way when recording is off. The snapshot's `runId`
+and the filename use only `<run-uuid>`.
+
+Disable publication with `ENSEMBLE_STATUS=off`; directory
 overrides and machine settings are described in [Configuration](configuration.md).
 
 Each run has its own file, so concurrent runs sharing a status directory are each
@@ -60,14 +65,26 @@ evidence, in this order:
 A consumer with no proc filesystem to judge from applies rule 2 alone.
 Per-engine spend is never summed: the engines count tokens under different
 rules, and a token on one engine does not cost the same as on another.
+Spend advances when usage evidence arrives, including while a worker is
+running: Codex emits usage notifications, Claude is measured by transcript
+polls, and opencode is measured from its streamed step events. These are
+usage updates, not a token-by-token meter. Engines start at `spent: 0`, and a
+worker's `spent` stays `null` until its own usage is observed. On opencode,
+engine spend advances during execution while worker spend appears at
+settlement. Neither an engine's zero nor a worker's `null` proves that an
+active worker has consumed no tokens. Final attempt usage updates the
+worker's subtotal at settlement.
 
 ### `ensemble.<run-uuid>.local.json` schema
 
-Schema 3 retains finished workers in `agents` and permits `done` and `failed` states. Schema 2 contains only live workers. Consumers must check the schema before interpreting the worker list.
+Schema 4 finishes every worker with one of four dispositions and counts each.
+Schema 3 finished workers as `done` or `failed` only, so a worker the run's
+ending tore down read as failed; schema 2 contains only live workers. Consumers
+must check the schema before interpreting the worker list or the counts.
 
 Each status file contains one JSON object with these fields:
 
-- `schema`: `3`.
+- `schema`: `4`.
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
 - `archiveDir`: string or `null`, the run archive directory when published.
@@ -80,17 +97,18 @@ Each status file contains one JSON object with these fields:
 - `finishedAt`: number or `null`, Unix epoch milliseconds when the run has
   finished.
 - `currentPhase`: string or `null`.
-- `totals`: object with numeric `active`, `queued`, `done`, and `failed` counts.
+- `totals`: object with numeric `active`, `queued`, `done`, `failed`,
+  `cutShort`, and `unsettled` counts.
 - `engines`: object keyed by registered engine name (`codex`, `claude`, and
-  `opencode`). Each entry has numeric `active`, `queued`, `done`, `failed`, and
-  `spent`; `cap`, `ceiling`, and `remaining` are numbers or `null`. Spend and
-  ceilings are per-engine and are never summed.
+  `opencode`). Each entry has numeric `active`, `queued`, `done`, `failed`,
+  `cutShort`, `unsettled`, and `spent`; `cap`, `ceiling`, and `remaining` are
+  numbers or `null`. Spend and ceilings are per-engine and are never summed.
 - `agents`: array of every worker: running first, then queued (oldest
   first within each), then finished (newest registered first). Each object has
   `id`, `attempt`, `engine` (codex, claude or opencode), `state` (queued,
-  running, done or failed), nullable strings `label`, `phase`, `requestedModel`,
-  `requestedEffort`, `resolvedModel`, `resolvedEffort`, `transcript`, and
-  `worktree`; nullable numeric `spent`, `startedAtMs`, `firstEvidenceAtMs`,
+  running, done, failed, cut-short or unsettled), nullable strings `label`,
+  `phase`, `requestedModel`, `requestedEffort`, `resolvedModel`,
+  `resolvedEffort`, `transcript`, and `worktree`; nullable numeric `spent`, `startedAtMs`, `firstEvidenceAtMs`,
   `lastEvidenceAtMs`, and `finishedAtMs`; and nullable `failure` and `waitingOn`.
 
 Worker spend is cumulative across attempts and fallback targets; null means
@@ -101,7 +119,29 @@ current attempt: archive-relative for Codex, absolute native paths for
 Claude. Resolve relative paths against archiveDir. A settled Claude record
 archives a copy of the native transcript; the status entry retains its
 live path.
-Failure is an object with kind and message, or null when unavailable or successful.
+
+A finished worker's state is its disposition, and each disposition has the
+count of the same name (`cut-short` counts under `cutShort`):
+
+- `done` — the worker settled on its own account, successfully.
+- `failed` — the worker settled on its own account, with a failure.
+- `cut-short` — the run's ending tore the worker down, whether its turn was at
+  an engine or still waiting for admission. Its agent record carries the
+  `run-<status>` termination cause naming the run's shutdown status.
+- `unsettled` — the run ended before any outcome was observed; its agent
+  record reads `abandoned`.
+
+A worker that settles on its own account while the run is shutting down keeps
+that account, `done` or `failed`. Each worker's state is published when it
+settles and never changes afterwards, so the finished snapshot's counts match
+the completion sentinel's worker tally (`cut_short` there, `cutShort` here).
+The library export `workerDisposition` maps an agent record's status and
+termination cause to its disposition.
+
+Failure is the `{ kind, message }` account the worker's record carries, or
+null when unavailable or successful. A `cut-short` or `unsettled` worker's
+failure is the run's own cause, never a failure of the worker.
+
 Finished time is the settlement observation time. All timestamps are epoch
 milliseconds. First evidence stays fixed across same-target retries, while last
 evidence advances on each output observation. A fallback clears both evidence
@@ -113,7 +153,7 @@ Queued and settled workers ignore output observations. waitingOn is null or the
 background-task object described by the engine (taskId, description, sinceMs).
 Every worker remains listed until the run ends; neither live nor finished
 entries are evicted or omitted from the snapshot. Finished entries have
-state done or failed and no outstanding wait. Repeated settlement is inert.
+a disposition state and no outstanding wait. Repeated settlement is inert.
 
 - `holds`: array of open decision holds, empty when the run is not waiting.
   Each object has string `id`, string `content` (cut to 500 characters plus
@@ -128,7 +168,7 @@ Example:
 
 ```json
 {
-  "schema": 3,
+  "schema": 4,
   "runId": "run-01HZY7V4Q8P2",
   "pid": 43122,
   "archiveDir": null,
@@ -138,7 +178,7 @@ Example:
   "updatedAt": 1766491214500,
   "finishedAt": null,
   "currentPhase": "Verify",
-  "totals": { "active": 1, "queued": 0, "done": 12, "failed": 1 },
+  "totals": { "active": 1, "queued": 0, "done": 12, "failed": 1, "cutShort": 0, "unsettled": 0 },
   "engines": {
     "codex": {
       "cap": 12,
@@ -146,6 +186,8 @@ Example:
       "queued": 0,
       "done": 8,
       "failed": 0,
+      "cutShort": 0,
+      "unsettled": 0,
       "spent": 48000,
       "ceiling": 100000,
       "remaining": 52000
@@ -156,6 +198,8 @@ Example:
       "queued": 0,
       "done": 4,
       "failed": 1,
+      "cutShort": 0,
+      "unsettled": 0,
       "spent": 6500,
       "ceiling": null,
       "remaining": null
@@ -166,6 +210,8 @@ Example:
       "queued": 0,
       "done": 0,
       "failed": 0,
+      "cutShort": 0,
+      "unsettled": 0,
       "spent": 0,
       "ceiling": 20000,
       "remaining": 20000
@@ -445,8 +491,9 @@ families with their own schema versions (`3` and `3`), described above.
 - `hold_events`: the run's hold lifecycle — raise, accepted answer, rejected
   answer, timeout, and retirements of dead raisers this run observed — in
   event order. Each entry carries `hold_id`, `event`, `verdict` or `reason`
-  where applicable, and a timestamp. An `answered` entry also carries
-  `answered_by` (the answerer the decision file named, or `null`) and the
+  where applicable, and a timestamp. Both `answered` and `answer-rejected`
+  entries carry `answered_by` (the answerer the decision file named, or
+  `null` when absent or unreadable). An `answered` entry also carries the
   decider's `note` (or `null`).
 - `tallies`: `name -> number`, the counts the script recorded with `tally()`,
   stored verbatim (last write per name wins) and written as each is recorded,
@@ -484,6 +531,47 @@ families with their own schema versions (`3` and `3`), described above.
   `files_lost` — one `{ path, reason }` entry, sorted by path, for each
   declared file that was `missing` or a `size-mismatch` at the seal. Empty on
   a whole archive.
+
+### Argument records
+
+The root's `args.json` and each composed child's
+`workflows/<zero-padded-ordinal>/args.json` are descriptive envelopes:
+
+| Field | Root (`run_args`) | Child (`workflow_args`) |
+|---|---|---|
+| `schema_version` | `4` | `4` |
+| `kind` | `"run_args"` | `"workflow_args"` |
+| `value` | For a workflow, a positional string array or the JSON value supplied with `--json-args`; for a direct `agent` invocation, `{ prompt, options }` with the prompt string and parsed agent options | The JSON value passed as the child's arguments to `workflow()` |
+
+Each envelope has a separate `args.canonical.json` alongside it. Hash that
+file's exact UTF-8 bytes to check the corresponding manifest entry's
+`args.sha256`; hashing the envelope includes its metadata and gives a
+different digest. The canonical file contains the arguments alone, using the
+canonical JSON recipe under [Integrity](#integrity), with no trailing newline.
+
+### Result record
+
+`result.json` is written when the run ends through a path the launcher can
+handle. A run killed before it seals can have no result file. Its fields are:
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | `4` |
+| `kind` | `"run_result"` |
+| `status` | `"complete"`, `"failed"`, `"timed-out"`, or `"interrupted"`: the run's outcome, independent of the archive's integrity |
+| `exit_code` | Numeric process exit code: normally `0` on success, `1` on failure or timeout, `130` on SIGINT, or `143` on SIGTERM |
+| `error` | `{ kind, message }` naming the terminal error, or `null` when the run ended cleanly |
+| `value` | The serialised workflow return value (or direct agent result) on success; a partial-result envelope when the body fails, times out or is interrupted |
+
+A partial-result envelope has `partial: true`, `reason` (`"failed"`,
+`"timed-out"`, or `"interrupted"`), `error` (`{ kind, message }`), and
+`completed`: an array of `{ id, engine, label, phase, output }` for workers
+that finished successfully, in completion order. `label` and `phase` can be
+`null`; `output` is the worker's validated value or text. The script's
+unfinished return value cannot be recovered from this envelope. A teardown
+failure after a successful body can leave that body's value in `value` while
+`status`, `exit_code` and `error` report the teardown failure. Use those
+fields to determine the outcome.
 
 ### Agent records
 
@@ -674,7 +762,13 @@ The fields present throughout a record's lifetime are:
   that died or never started — the one class that advances a fallback chain,
   consuming no attempt when it does), `"output"` (the worker answered badly: empty,
   unparseable, off-schema — retried in place), or `"unclassified"` (including
-  a Codex rejection of the authored schema before generation). `rule` names
+  rejected credentials and a Codex rejection of the authored schema before
+  generation). Credential failures use kind `authentication-failure` and rule
+  `<engine>.authentication-failure`; Codex unknown-model failures use kind
+  `model-not-found` and rule `codex.model-not-found`. Both keep the engine's
+  diagnostic and add a recovery step to `failure.message`. An explicit
+  provider HTTP 401 remains `authentication-failure` when Codex's
+  retry-promise bound wraps that diagnostic. `rule` names
   the classifier rule that matched (`codex.usage-limit`, `claude.rate-limit`,
   `codex.substrate-dead`, `engine-shutdown`, `run-settlement`, …) and is `null`
   only when no rule recognised the diagnostic — a sign that an engine's error wording is not
@@ -737,6 +831,43 @@ repeat the call's usage, so rows sharing a message id are counted once, and
 every figure is summed across the turn's calls. A held session's later turn
 counts only the calls it made. The engine-native usage events stay on each
 attempt, unmodified.
+
+Each attempt's `token_usage_events` is an array of objects with `threadId`
+and `turnId` (strings), `last` and `total` (token breakdowns), and `raw` (the
+engine payload, or the adapter's derived payload). A breakdown has numeric
+`inputTokens`, `cachedInputTokens`, `outputTokens` and `totalTokens`, plus
+optional numeric `reasoningOutputTokens` and `cacheCreationInputTokens`.
+An absent optional field means the engine did not separate that class.
+These native breakdowns retain each engine's inclusion rules; they are not
+the disjoint summary vocabulary above.
+
+| Engine | `last` and `total` in the archived event | `raw` shape and native mapping |
+|---|---|---|
+| Codex | `last` is the usage increment reported by the notification; `total` is cumulative across the thread, including earlier turns of a held session. There can be several notifications in one attempt. | The `thread/tokenUsage/updated` parameters: `{ threadId, turnId, tokenUsage: { last, total, … }, … }`. Breakdown names match the fields above; input includes cached input, and output includes reasoning when reported. |
+| Claude | A settled attempt normally has one derived event with `last` equal to `total`: usage across that attempt's API calls, excluding usage already accounted for by earlier attempts or held-session turns. If only live observations survive a failed attempt, there can instead be several incremental `last` values with attempt-cumulative `total`. | `{ threadId, turnId, tokenUsage: { last, total } }`. `threadId` is the Claude session id; `turnId` is synthetic (`<session-id>:claude-<counter>`). The transcript's `input_tokens` and `output_tokens` become `inputTokens` and `outputTokens`; `cache_read_input_tokens + cache_creation_input_tokens` becomes `cachedInputTokens`, with creation also in `cacheCreationInputTokens`. `totalTokens` sums input, combined cache and output. No reasoning split is reported. |
+| opencode | At most one derived event, with `last` equal to `total`, aggregated for that attempt. These are attempt totals, not cumulative session totals. | `{ threadId, turnId, model, providerModel, tokenUsage: { last, total }, cost }`. `model` is the configured registry key; `providerModel` is its provider route; `cost` is the reported figure or `null`. `threadId` is the session id (a synthetic id if missing); `turnId` is synthetic (`<session-id>:opencode-<counter>`). Native `input`, `output`, `reasoning` and `cache.read`/`cache.write` map to the corresponding breakdown fields, with cache reads and writes combined. Input, cache, output and reasoning are disjoint. |
+
+To reproduce an attempt's summary, sum its events' `last` breakdowns and
+apply the engine's inclusion rule. For Codex, never sum `total` across
+notifications or agent records: a held thread's later turn includes earlier
+turns in that figure. Alternatively, subtract the previous total for the
+same thread from its latest total, using the thread's total before the turn
+as the baseline. For example, consecutive turns with cumulative totals of
+13,980 and 29,368 tokens account for 13,980 and 15,388 tokens, not 13,980 and
+29,368. Keep thread identities separate when retrying or falling back.
+
+The Claude adapter deduplicates transcript rows by assistant message id
+before aggregating API calls. When a session export is available, the
+opencode adapter uses its assistant-message token snapshots, falling back
+to `info.tokens` if those contain no usable usage. Only when no export is
+available does it use streamed `step_finish` events' `part.tokens`. Across
+those snapshots it takes input/cache once from the last usable snapshot
+and sums output/reasoning increments. A
+snapshot carrying only `total` contributes that figure as unclassified
+spend. In an opencode breakdown, `cacheCreationInputTokens` is the write
+share when reported, and `totalTokens` sums the disjoint classes plus any
+unclassified spend. The opencode adapter fills an omitted native reasoning
+count with `0`.
 
 `cost_rollup` keys spend per engine and per *served* model. An agent whose
 fallback chain crossed engines books each attempt under the engine that ran

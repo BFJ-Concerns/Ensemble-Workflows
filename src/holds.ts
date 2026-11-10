@@ -128,6 +128,8 @@ export interface HoldAnswerRejection {
   /** Explains a null attempted verdict instead of silently discarding what was knowable. */
   attempted_verdict_state: "submitted" | "missing-or-non-string" | "unparseable";
   rejected_at: string;
+  /** The answerer named by the decision file, or null when unavailable. */
+  answered_by?: string | null;
 }
 
 /** One enumerated open hold. */
@@ -373,6 +375,9 @@ export class HoldManager {
           answeredBy: typeof parsed.answered_by === "string" ? parsed.answered_by : null
         };
       }
+      if (rejection !== null) {
+        rejection.answered_by = typeof parsed.answered_by === "string" ? parsed.answered_by : null;
+      }
     } catch {
       if (grace.lastUnparseable !== raw) {
         // First sighting (or still changing): possibly a write in flight —
@@ -402,7 +407,8 @@ export class HoldManager {
         holdId: record.hold_id,
         reason: rejection.reason,
         attemptedVerdict: rejection.attempted_verdict,
-        attemptedVerdictState: rejection.attempted_verdict_state
+        attemptedVerdictState: rejection.attempted_verdict_state,
+        answeredBy: rejection.answered_by ?? null
       });
       return null;
     }

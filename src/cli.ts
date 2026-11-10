@@ -14,7 +14,7 @@ import { boundedEvidence, presentOperationalError, presentTerminalError } from "
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
-import { RunRecordWriter } from "./run-record.js";
+import { resolveRunId, RunRecordWriter } from "./run-record.js";
 import { judgeResources } from "./resource-preflight.js";
 
 import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
@@ -439,7 +439,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       });
       if (await statusWriter.ready()) {
         try {
-          stderr.write(`[status-file] ${JSON.stringify({ run_id: runtimeRunId, status_path: statusWriter.path })}\n`);
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: runRecordWriter?.manifest.run_id ?? await resolveRunId(cwd, runtimeRunId), status_path: statusWriter.path })}\n`);
         } catch {
           // A broken supervision stream cannot fail a run that published status.
         }
@@ -447,6 +447,28 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     }
 
     runtime.onEvent((event) => {
+      if (event.method === "hold/raised") {
+        const holdId = String(event.params.holdId);
+        const verdicts = event.params.verdicts as string[];
+        // JSON keeps opaque verdicts on one terminal line; single-quoted
+        // shell arguments preserve their exact spelling in answer commands.
+        const answerCommands = verdicts.map((verdict) =>
+          `${program} holds answer '${holdId.replaceAll("'", "'\"'\"'")}' --verdict='${verdict.replaceAll("'", "'\"'\"'")}'`
+        );
+        stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, event: "raised", verdicts, answer_commands: answerCommands })}\n`);
+        return;
+      }
+      if (event.method === "hold/answerRejected") {
+        stderr.write(`[hold] ${JSON.stringify({
+          hold_id: event.params.holdId,
+          event: "answer-rejected",
+          reason: event.params.reason,
+          attempted_verdict: event.params.attemptedVerdict,
+          attempted_verdict_state: event.params.attemptedVerdictState,
+          answered_by: event.params.answeredBy ?? null
+        })}\n`);
+        return;
+      }
       if (event.method === "claude/workerScopeWatchError") {
         stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
         return;
@@ -644,7 +666,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         ? (result as { output: unknown }).output
         : result;
     if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
-      throw new SingleAgentFailedError();
+      throw new SingleAgentFailedError(runtime.lastAgentRecord?.()?.attempts.at(-1)?.failure ?? null);
     }
 
     const serialised = serialiseResult(result);
@@ -659,7 +681,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // the exit code stays non-zero, so callers that gate on it are unaffected.
     const status =
       error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
-    terminalError = describeError(error);
+    terminalError = error instanceof SingleAgentFailedError && error.failure !== null
+      ? error.failure : describeError(error);
     // The envelope carries what ended the run: a consumer capturing stdout,
     // as the contract directs, must not have to scrape stderr to learn why.
     const partial = partialResult(runtime, status, terminalError);
@@ -1309,8 +1332,8 @@ function watchRunEndings(): RunEndingWatch {
 }
 
 class SingleAgentFailedError extends Error {
-  constructor() {
-    super("Agent exhausted its attempts without producing a result");
+  constructor(readonly failure: { kind: string; message: string } | null) {
+    super(failure?.message ?? "Agent failed without producing a result");
     this.name = new.target.name;
   }
 }

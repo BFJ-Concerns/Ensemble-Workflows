@@ -5,7 +5,7 @@ import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
-import { classifyAttemptFailure } from "./failure-classification.js";
+import { classifyAttemptFailure, diagnoseAttemptFailure } from "./failure-classification.js";
 
 import type { DischargedEnforcement } from "./capability-stripping.js";
 import { harnessVersion } from "./harness-version.js";
@@ -45,7 +45,7 @@ import {
 } from "./errors.js";
 import { HoldManager, defaultHoldsDirectory, resolveHoldScope } from "./holds.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
-import { RunProgress } from "./progress.js";
+import { RunProgress, workerDisposition } from "./progress.js";
 import { EngineResourceGate } from "./resource-preflight.js";
 
 import type { HoldDecision } from "./holds.js";
@@ -1713,8 +1713,9 @@ export class EnsembleRuntime {
       requestedModel: record.model, requestedEffort: record.effort,
       resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort
     });
-    if (record.status !== "in-progress") {
-      this.progress.settleAgent(record.id, record.status === "complete" ? "done" : "failed",
+    const disposition = workerDisposition(record, this.#closed ? this.#shutdownAgentStatus : null);
+    if (disposition !== null) {
+      this.progress.settleAgent(record.id, disposition,
         record.terminationCause ?? attemptedFailureAccount(record));
     }
     await this.#recordArchiveWriteSafely(record.id, async () => {
@@ -1974,19 +1975,19 @@ export class EnsembleRuntime {
     // wait's own cleanup removes its published hold file.
     this.#holdManager?.close();
     this.#admission.close();
-    await Promise.all(
-      abandoning.map(async (record) => {
-        // The harness knows only that this leg outlived the run. Keep the
-        // dispatch evidence and name that absence of an observed outcome —
-        // and why the run closed, since the record has no attempt to say.
-        this.#abandonedAgentIds.add(record.id);
-        // Keep the dispatch record's evidence (including its empty attempts)
-        // and overwrite that one record through the normal writer path.
-        record.status = "abandoned";
-        record.terminationCause = this.#closeCause("dispatching");
-        await this.#recordAgentSafely(record);
-      })
-    );
+    const abandonedEvidence = abandoning.map((record) => {
+      // The harness knows only that this leg outlived the run. Keep the
+      // dispatch evidence and name that absence of an observed outcome —
+      // and why the run closed, since the record has no attempt to say.
+      this.#abandonedAgentIds.add(record.id);
+      record.status = "abandoned";
+      record.terminationCause = this.#closeCause("dispatching");
+      // A late dispatch continuation can mutate the in-memory record, but
+      // cannot publish another settlement. Count the evidence being
+      // archived here, matching progress's final first settlement.
+      return { id: record.id, label: record.label, status: record.status, terminationCause: record.terminationCause };
+    });
+    await Promise.all(abandoning.map((record) => this.#recordAgentSafely(record)));
     // Teardown failures are collected, never thrown mid-cleanup: cleanup
     // runs to completion first, then close() rejects carrying every cause —
     // a silently discarded engine or session teardown failure would leave
@@ -2010,19 +2011,30 @@ export class EnsembleRuntime {
     await settlementBarrier;
     let done = totalsAtClose.done;
     let failed = totalsAtClose.failed;
-    let cutShort = 0;
-    const unfinished: UnfinishedLeg[] = abandoning.map((record) => ({ id: record.id, label: record.label, disposition: "abandoned" }));
-    for (const [, { record }] of closing) {
-      if (record.status === "complete") {
-        done += 1;
-      } else if (record.terminationCause?.kind === runEndingFailureKind(status)) {
-        cutShort += 1;
-        unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
-      } else {
-        failed += 1;
+    let cutShort = totalsAtClose.cutShort;
+    let unsettled = totalsAtClose.unsettled;
+    const unfinished: UnfinishedLeg[] = [];
+    for (const record of [...abandonedEvidence, ...closing.map(([, { record }]) => record)]) {
+      switch (workerDisposition(record, status)) {
+        case "done":
+          done += 1;
+          break;
+        case "failed":
+          failed += 1;
+          break;
+        case "cut-short":
+          cutShort += 1;
+          unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
+          break;
+        case "unsettled":
+          unsettled += 1;
+          unfinished.push({ id: record.id, label: record.label, disposition: "abandoned" });
+          break;
+        case null:
+          throw new Error(`agent ${record.id} remained in progress after run teardown`);
       }
     }
-    this.#shutdownTally = { done, failed, cutShort, unsettled: abandoning.length };
+    this.#shutdownTally = { done, failed, cutShort, unsettled };
     this.#unfinishedLegs = unfinished;
     if (teardownFailures.length === 1) {
       throw teardownFailures[0];
@@ -2341,11 +2353,8 @@ export class EnsembleRuntime {
           throw error;
         }
         if (error instanceof CodexSchemaSubsetUnsupportedError) {
-          // The backend judged the call's own schema, which no retry can
-          // change: it costs one thread start with no generation, so the
-          // call ends as a value with the one attempt it spent — the rule's
-          // one exemption beside the availability refusal a chain entry
-          // answers.
+          // The backend rejected the schema before generation: the contract
+          // exempts this failure from retries.
           return { status: "failed", value: null, cause: error };
         }
         // A dispatched worker's thrown failure — a deadline, a transport
@@ -2451,11 +2460,8 @@ export class EnsembleRuntime {
           throw error;
         }
         if (error instanceof CodexSchemaSubsetUnsupportedError) {
-          // The backend judged the call's own schema, which no retry can
-          // change: it costs one thread start with no generation, so the
-          // call ends as a value with the one attempt it spent — the rule's
-          // one exemption beside the availability refusal a chain entry
-          // answers.
+          // The backend rejected the schema before generation: the contract
+          // exempts this failure from retries.
           return { status: "failed", value: null, cause: error };
         }
         // A dispatched worker's thrown failure — a deadline, a transport
@@ -2525,11 +2531,17 @@ export class EnsembleRuntime {
     startedAt: number,
     result: EngineAttemptResult,
     attempts: TargetAttempts
-  ): { failure: EngineAttemptFailure; refused: boolean } | undefined {
+  ): { failure: PreviousAttemptFailure; refused: boolean } | undefined {
     if (result.attemptFailure === undefined) {
       return undefined;
     }
-    const classification = this.#classify(attempts.target.engine, result.attemptFailure, null, result.diagnostics);
+    const failure = diagnoseAttemptFailure({
+      engine: attempts.target.engine,
+      failure: result.attemptFailure,
+      appServerDiagnostic: null,
+      diagnostics: result.diagnostics
+    });
+    const classification = this.#classify(attempts.target.engine, failure, null, result.diagnostics);
     const refused = classification.class === "availability" && attempts.chainRemains;
     if (!refused) {
       attempts.ledger.answered += 1;
@@ -2540,7 +2552,7 @@ export class EnsembleRuntime {
         attempt,
         attempts.target,
         "failed",
-        result.attemptFailure,
+        failure,
         // Returned operational failures use empty text when the worker
         // produced nothing; an answered empty string takes the output path.
         result.text === "" ? null : result.text,
@@ -2554,7 +2566,7 @@ export class EnsembleRuntime {
         chainDecisionAfter(attempts, classification, !refused && boundRemains(attempts.ledger))
       )
     );
-    return { failure: result.attemptFailure, refused };
+    return { failure, refused };
   }
 
   /**
@@ -2570,7 +2582,12 @@ export class EnsembleRuntime {
     startedAt: number,
     attempts: TargetAttempts
   ): { refused: boolean; failure: PreviousAttemptFailure } {
-    const observed = failureFromError(error);
+    const observed = diagnoseAttemptFailure({
+      engine: attempts.target.engine,
+      failure: failureFromError(error),
+      appServerDiagnostic: appServerDiagnosticOf(error),
+      diagnostics: failedTurnResultOf(error)?.diagnostics
+    });
     const failedResult = failedTurnResultOf(error);
     if (failedResult !== null) {
       recordTurnMetadata(record, failedResult);

@@ -2563,6 +2563,16 @@ test("a close names its occasion on every record it settles: the run ending, or 
     assert.deepEqual(abandoned?.terminationCause, { kind: "run-interrupted", message: wording[occasion].dispatching }, occasion);
     assert.deepEqual(abandoned?.attempts, [], occasion);
     assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 2, unsettled: 1 }, occasion);
+    const snapshot = runtime.progress.snapshot();
+    assert.deepEqual(snapshot.totals, { active: 0, queued: 0, done: 0, failed: 0, cutShort: 2, unsettled: 1 }, occasion);
+    assert.equal(snapshot.engines.codex?.failed, 0, occasion);
+    assert.equal(snapshot.engines.codex?.cutShort, 2, occasion);
+    assert.equal(snapshot.engines.codex?.unsettled, 1, occasion);
+    for (const record of [straggler, queuedRecord, abandoned]) {
+      const worker = snapshot.agents.find((agent) => agent.id === record?.id);
+      assert.equal(worker?.state, record?.status === "abandoned" ? "unsettled" : "cut-short", occasion);
+      assert.deepEqual(worker?.failure, record?.terminationCause, occasion);
+    }
   }
 });
 
@@ -2599,6 +2609,8 @@ test("a leg that settles on its own account during teardown is tallied by its re
 
   assert.equal(await agent, "finished anyway");
   assert.deepEqual(runtime.shutdownTally(), { done: 1, failed: 0, cutShort: 0, unsettled: 0 });
+  assert.deepEqual(runtime.progress.snapshot().totals, { active: 0, queued: 0, done: 1, failed: 0, cutShort: 0, unsettled: 0 });
+  assert.equal(runtime.progress.snapshot().agents[0]?.state, "done");
 });
 
 test("a queued leg the run's end cancels is recorded as queued, and still counts cut short", async () => {
@@ -2648,10 +2660,14 @@ test("a queued leg the run's end cancels is recorded as queued, and still counts
   assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 3, unsettled: 0 });
 
   // close() is latched: a second call joins the first and must not rebuild
-  // the tally from post-teardown progress totals, which count run-caused
-  // settlements as failures.
+  // the tally or reclassify already settled workers under a different
+  // shutdown status.
+  const snapshot = runtime.progress.snapshot();
+  assert.deepEqual(snapshot.totals, { active: 0, queued: 0, done: 0, failed: 0, cutShort: 3, unsettled: 0 });
+  assert.deepEqual(snapshot.agents.map((agent) => agent.state), ["cut-short", "cut-short", "cut-short"]);
   await runtime.close("failed");
   assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 3, unsettled: 0 });
+  assert.deepEqual(runtime.progress.snapshot(), snapshot);
 });
 
 test("a failed engine teardown rejects close() after cleanup completes, never silently", async () => {
@@ -2675,7 +2691,7 @@ test("a failed engine teardown rejects close() after cleanup completes, never si
 
 test("genuine shutdown errors inherit the runtime shutdown status", async () => {
   for (const error of [new EngineShutdownError("codex"), new AppServerExitedError("transport closed")]) {
-    for (const status of ["timed-out", "interrupted"] as const) {
+    for (const status of ["failed", "timed-out", "interrupted"] as const) {
       const records: RuntimeAgentRecord[] = [];
       const transport = new ClosingTransport(error);
       const runtime = new EnsembleRuntime({
@@ -2699,6 +2715,11 @@ test("genuine shutdown errors inherit the runtime shutdown status", async () => 
       assert.equal(records.length, 2);
       assert.equal(records[0]?.status, "in-progress");
       assert.equal(records[1]?.status, status);
+      const snapshot = runtime.progress.snapshot();
+      assert.deepEqual(snapshot.totals, { active: 0, queued: 0, done: 0, failed: 0, cutShort: 1, unsettled: 0 }, status);
+      assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 1, unsettled: 0 }, status);
+      assert.equal(snapshot.agents[0]?.state, "cut-short", status);
+      assert.deepEqual(snapshot.agents[0]?.failure, records[1]?.terminationCause, status);
     }
   }
 });
@@ -2786,8 +2807,13 @@ test("runtime close terminalises an unsettled dispatch record", async () => {
   // no outcome was ever observed for it — and that is what `unsettled`
   // counts, distinct from a leg teardown cut short with a record.
   assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 0, unsettled: 1 });
+  const snapshot = runtime.progress.snapshot();
+  assert.deepEqual(snapshot.totals, { active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 1 });
+  assert.equal(snapshot.agents[0]?.state, "unsettled");
+  assert.deepEqual(snapshot.agents[0]?.failure, recorder.records[1]?.terminationCause);
   recorder.releaseDispatch();
   await assert.rejects(agent, EngineShutdownError);
+  assert.deepEqual(runtime.progress.snapshot(), snapshot);
 });
 
 // The Claude engine is now implemented; it is driven through the runtime with a
@@ -2986,7 +3012,7 @@ test("a codex skills strip denies the stabilised discovery set; an unstripped ca
         skills: {
           route: "config",
           detail:
-            "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, or stands unchanged across every sample, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
+            "provider-wire boundary tested on codex-cli 0.160.0 and 0.167.0: thread/start disables bundled skills and denies every discovered name, removing the skill listing and invoked body; discovery grows then repeats or stays unchanged across every sample, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
         }
       }
     });
@@ -3083,7 +3109,7 @@ test("a Codex agents-only strip keeps skills untouched", async () => {
         agents: {
           route: "config",
           detail:
-            "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+            "provider-wire boundary tested on codex-cli 0.160.0 and 0.167.0: thread/start config overlay agents.enabled=false removes the multi_agent_v1 tool group"
         }
       }
     });
@@ -4340,6 +4366,35 @@ test("a Codex substrate refusal advances the chain to a Claude target, costing n
   await runtime.close();
 });
 
+test("credential text in substrate failures still advances the fallback chain", async () => {
+  for (const engine of ["codex", "claude"] as const) {
+    for (const schema of [false, true]) {
+      const failure = engine === "codex"
+        ? new AppServerExitedError("Recent stderr: 401 Unauthorized")
+        : new ClaudeDispatchError("launch refused: authentication failed");
+      const failing = new ChainEngine(engine, [async () => { throw failure; }]);
+      const fallbackEngine = engine === "codex" ? "claude" : "codex";
+      const fallback = new ChainEngine(fallbackEngine, [answers(schema ? '{"answer":"fallback"}' : "fallback")]);
+      const { runtime, records } = chainRuntime([failing, fallback], 1);
+      try {
+        const output = await runtime.agent("work", {
+          engine,
+          ...(schema ? { schema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } } : {}),
+          fallback: [{ engine: fallbackEngine, model: "fallback-model" }]
+        });
+        assert.deepEqual(output, schema ? { answer: "fallback" } : "fallback");
+        const settled = records.at(-1)!;
+        assert.equal(settled.attempts[0]?.failure?.message, failure.message);
+        assert.equal(settled.attempts[0]?.classification?.class, "availability");
+        assert.equal(settled.answeredBy?.engine, fallbackEngine);
+        assert.equal(settled.attempts.length, 2);
+      } finally {
+        await runtime.close();
+      }
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------
 // The chain made visible: each failed attempt's recorded decision, and the
 // notices that carry the record's account of the chain to the terminal.
@@ -5230,6 +5285,9 @@ test("a worker failure settled before shutdown keeps its account through invocat
         if (closeDuringCleanup) {
           assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 1, cutShort: 0, unsettled: 0 });
         }
+        assert.deepEqual(runtime.progress.snapshot().totals,
+          { active: 0, queued: 0, done: 0, failed: 1, cutShort: 0, unsettled: 0 });
+        assert.equal(runtime.progress.snapshot().agents[0]?.state, "failed");
       } finally {
         releaseClose?.();
         await runtime.close();

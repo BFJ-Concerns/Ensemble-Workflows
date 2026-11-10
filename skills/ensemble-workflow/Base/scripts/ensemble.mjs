@@ -15035,6 +15035,9 @@ var HoldManager = class {
           answeredBy: typeof parsed.answered_by === "string" ? parsed.answered_by : null
         };
       }
+      if (rejection !== null) {
+        rejection.answered_by = typeof parsed.answered_by === "string" ? parsed.answered_by : null;
+      }
     } catch {
       if (grace.lastUnparseable !== raw) {
         grace.lastUnparseable = raw;
@@ -15058,7 +15061,8 @@ var HoldManager = class {
         holdId: record.hold_id,
         reason: rejection.reason,
         attemptedVerdict: rejection.attempted_verdict,
-        attemptedVerdictState: rejection.attempted_verdict_state
+        attemptedVerdictState: rejection.attempted_verdict_state,
+        answeredBy: rejection.answered_by ?? null
       });
       return null;
     }
@@ -16241,7 +16245,7 @@ var RunRecordWriter = class _RunRecordWriter {
       reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
       attempted_verdict: kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string" ? event.params.attemptedVerdict : null,
       attempted_verdict_state: kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState) ? event.params.attemptedVerdictState : null,
-      answered_by: kind === "answered" && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
+      answered_by: (kind === "answered" || kind === "answer-rejected") && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
       note: kind === "answered" && typeof event.params.note === "string" ? event.params.note : null,
       at: new Date(event.receivedAt).toISOString()
     };
@@ -16695,6 +16699,9 @@ function substratesNeverStarted(record) {
 }
 async function resolveRunDirectory(storeDir, cwd, runUuid) {
   return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
+}
+async function resolveRunId(cwd, runUuid) {
+  return `${(await deriveNamespace(cwd)).id}:${runUuid}`;
 }
 async function reapAbandonedRuns(options) {
   const procDir = options.procDir ?? "/proc";
@@ -17154,8 +17161,10 @@ function diagnose(error, context) {
     return [error.message];
   }
   if (error instanceof Error && error.name === "SingleAgentFailedError") {
-    const lines = [error.message];
-    for (const attempt of context.lastAgentRecord?.attempts ?? []) {
+    const attempts = context.lastAgentRecord?.attempts ?? [];
+    const repeatsAttempt = attempts.some((attempt) => attempt.failure?.message === error.message);
+    const lines = [repeatsAttempt ? "Agent failed without producing a result" : bounded(error.message)];
+    for (const attempt of attempts) {
       if (attempt.failure !== null) {
         const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
         const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;
@@ -17642,6 +17651,23 @@ function isJsonObject(value) {
 }
 
 // src/failure-classification.ts
+function diagnoseAttemptFailure(evidence) {
+  const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
+  const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
+  const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
+  if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
+    return failure;
+  }
+  const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
+  if (authentication) {
+    const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude" ? "Run `claude auth login`." : "Run `opencode auth login` for the provider you selected.";
+    return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${failure.message}` };
+  }
+  if (engine === "codex" && appServerDiagnostic?.code === "modelNotFound") {
+    return { kind: "model-not-found", message: `Codex modelNotFound: choose a model available to your account (run \`codex\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
+  }
+  return failure;
+}
 var OUTPUT_FAILURE_KINDS = /* @__PURE__ */ new Set(["empty-output", "invalid-json", "schema-validation"]);
 var CODEX_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
   ["usageLimitExceeded", "codex.usage-limit"],
@@ -17714,6 +17740,9 @@ var OPENCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
 ]);
 function classifyAttemptFailure(evidence) {
   const { kind } = evidence.failure;
+  if (kind === "authentication-failure" || kind === "model-not-found") {
+    return { class: "unclassified", rule: `${evidence.engine}.${kind}` };
+  }
   if (OUTPUT_FAILURE_KINDS.has(kind)) {
     return { class: "output", rule: "output" };
   }
@@ -17777,6 +17806,24 @@ function claudeApiErrorOf(diagnostics) {
 }
 
 // src/progress.ts
+function workerDisposition(record, shutdownStatus) {
+  switch (record.status) {
+    case "in-progress":
+      return null;
+    case "abandoned":
+      return "unsettled";
+    case "complete":
+      return "done";
+    default:
+      return shutdownStatus !== null && record.terminationCause?.kind === `run-${shutdownStatus}` ? "cut-short" : "failed";
+  }
+}
+var DISPOSITION_COUNTER = {
+  done: "done",
+  failed: "failed",
+  "cut-short": "cutShort",
+  unsettled: "unsettled"
+};
 var RunProgress = class {
   runId;
   #budget;
@@ -17982,8 +18029,13 @@ var RunProgress = class {
     record.waitingOn = null;
     this.#touch();
   }
-  /** Retires a worker, tallying it as done or failed and freeing its slot. */
-  settleAgent(id, outcome, failure = null) {
+  /**
+   * Retires a worker with its disposition, counting it and freeing its slot.
+   * `failure` is the account its record carries — kept for every disposition
+   * but `done`. The first settlement is final: later calls are inert, so a
+   * worker is never reclassified once published.
+   */
+  settleAgent(id, disposition, failure = null) {
     const record = this.#live.get(id);
     if (record === void 0) {
       return;
@@ -17995,14 +18047,10 @@ var RunProgress = class {
     } else {
       counters.queued -= 1;
     }
-    if (outcome === "done") {
-      counters.done += 1;
-    } else {
-      counters.failed += 1;
-    }
-    record.state = outcome;
+    counters[DISPOSITION_COUNTER[disposition]] += 1;
+    record.state = disposition;
     record.finishedAtMs = this.#now();
-    record.failure = outcome === "failed" && failure !== null ? { ...failure } : null;
+    record.failure = disposition !== "done" && failure !== null ? { ...failure } : null;
     record.waitingOn = null;
     this.#finished.set(id, record);
     this.#touch();
@@ -18041,7 +18089,7 @@ var RunProgress = class {
   }
   snapshot() {
     const engines = {};
-    const totals = { active: 0, queued: 0, done: 0, failed: 0 };
+    const totals = { active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 0 };
     for (const engine of this.#engines.keys()) {
       const counters = this.#counters(engine);
       const remaining = this.#budget.remaining(engine);
@@ -18051,6 +18099,8 @@ var RunProgress = class {
         queued: counters.queued,
         done: counters.done,
         failed: counters.failed,
+        cutShort: counters.cutShort,
+        unsettled: counters.unsettled,
         spent: this.#budget.spent(engine),
         ceiling: this.#budget.ceilings[engine] ?? null,
         remaining: Number.isFinite(remaining) ? remaining : null
@@ -18059,9 +18109,11 @@ var RunProgress = class {
       totals.queued += counters.queued;
       totals.done += counters.done;
       totals.failed += counters.failed;
+      totals.cutShort += counters.cutShort;
+      totals.unsettled += counters.unsettled;
     }
     return {
-      schema: 3,
+      schema: 4,
       runId: this.runId,
       pid: this.#pid,
       archiveDir: this.#archiveDir,
@@ -18105,7 +18157,7 @@ var RunProgress = class {
   #counters(engine) {
     const counters = this.#engines.get(engine);
     if (counters === void 0) {
-      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0 };
+      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 0 };
       this.#engines.set(engine, fresh);
       return fresh;
     }
@@ -23012,42 +23064,34 @@ var CodexEngineAdapter = class {
   name = "codex";
   concurrency;
   /**
-   * Measured 2026-08-28 on codex-cli 0.149.1, at Codex's own wire to the
-   * model provider:
+   * Provider-wire boundary coverage on codex-cli 0.160.0 and 0.167.0:
+   * test/integration/codex-strip-boundary-estate.test.ts dispatches real
+   * Codex workers against a credential-free capture provider. Unstripped
+   * siblings before and after a stripped thread establish the controls;
+   * each request is matched to its archived thread and turn.
    *
-   * - `agents` strips through the per-thread `thread/start` config overlay:
-   *   `{ agents: { enabled: false } }` removes the entire `collaboration`
-   *   tool namespace from the tool schema Codex sends the model, per
-   *   thread, without leaking between sibling threads on one app-server
-   *   process. The key is `--strict-config`-validated but undocumented,
-   *   and its failure mode on a Codex rename would be silent — a live test
-   *   against a real worker is what re-checks this judgement per release.
-   * - `skills` strips through the same per-thread overlay, measured
-   *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
-   *   growing filesystem-and-plugin set and then repeat it, or one set
-   *   unchanged across every sample — discovery complete at the first call,
-   *   observed 2026-10-05 on a fresh seeded CODEX_HOME (sampled up to
-   *   10 times at 1000 ms spacing by default; the transport's discovery
-   *   deadline, checked between samples, stops the loop once its elapsed
-   *   budget is spent — each call itself is bounded by the request
-   *   timeout). The measured cold race resolved within one interval, so a
-   *   cold state that repeats and then grows inside the window is rejected
-   *   rather than mistaken for complete discovery; bundled skills are
-   *   disabled and every accepted name gets an exact `skills.config` deny.
-   *   Discovery has no protocol-level completion signal — the
-   *   acceptance heuristic is a measured judgement of one release's
-   *   timing, so **re-verify it on every codex-cli upgrade**: a future
-   *   multi-stage or slower-than-interval discovery would stabilise early
-   *   and silently under-strip.
+   * - `agents`: the per-thread `agents.enabled=false` overlay removes the
+   *   `multi_agent_v1` tool group, including spawn and messaging tools.
+   * - `skills`: there is no dedicated skill tool on these versions. Skills
+   *   appear as an instruction listing; a `$name` mention invokes a skill
+   *   by injecting its body. Disabling bundled skills and every discovered
+   *   name removes both the listing and the invoked body, including a
+   *   seeded body token. Shell reads are outside this capability boundary.
+   *
+   * Discovery still has no protocol-level completion signal. Fresh
+   * `skills/list` calls must grow then repeat, or remain unchanged across
+   * every sample (up to 10 at 1000 ms spacing). A shrink after growth is
+   * rejected. This timing heuristic can under-strip a future multi-stage
+   * discovery; the boundary test must keep running on Codex upgrades.
    */
   capabilities = {
     skills: {
       route: "config",
-      detail: "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, or stands unchanged across every sample, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
+      detail: "provider-wire boundary tested on codex-cli 0.160.0 and 0.167.0: thread/start disables bundled skills and denies every discovered name, removing the skill listing and invoked body; discovery grows then repeats or stays unchanged across every sample, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
     },
     agents: {
       route: "config",
-      detail: "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+      detail: "provider-wire boundary tested on codex-cli 0.160.0 and 0.167.0: thread/start config overlay agents.enabled=false removes the multi_agent_v1 tool group"
     }
   };
   #transport;
@@ -24477,10 +24521,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       resolvedModel: record.resolvedModel,
       resolvedEffort: record.resolvedEffort
     });
-    if (record.status !== "in-progress") {
+    const disposition = workerDisposition(record, this.#closed ? this.#shutdownAgentStatus : null);
+    if (disposition !== null) {
       this.progress.settleAgent(
         record.id,
-        record.status === "complete" ? "done" : "failed",
+        disposition,
         record.terminationCause ?? attemptedFailureAccount(record)
       );
     }
@@ -24689,14 +24734,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     this.#holdManager?.close();
     this.#admission.close();
-    await Promise.all(
-      abandoning.map(async (record) => {
-        this.#abandonedAgentIds.add(record.id);
-        record.status = "abandoned";
-        record.terminationCause = this.#closeCause("dispatching");
-        await this.#recordAgentSafely(record);
-      })
-    );
+    const abandonedEvidence = abandoning.map((record) => {
+      this.#abandonedAgentIds.add(record.id);
+      record.status = "abandoned";
+      record.terminationCause = this.#closeCause("dispatching");
+      return { id: record.id, label: record.label, status: record.status, terminationCause: record.terminationCause };
+    });
+    await Promise.all(abandoning.map((record) => this.#recordAgentSafely(record)));
     const teardownFailures = [];
     try {
       await this.#engines.close();
@@ -24712,19 +24756,30 @@ var EnsembleRuntime = class _EnsembleRuntime {
     await settlementBarrier;
     let done = totalsAtClose.done;
     let failed = totalsAtClose.failed;
-    let cutShort = 0;
-    const unfinished = abandoning.map((record) => ({ id: record.id, label: record.label, disposition: "abandoned" }));
-    for (const [, { record }] of closing) {
-      if (record.status === "complete") {
-        done += 1;
-      } else if (record.terminationCause?.kind === runEndingFailureKind(status)) {
-        cutShort += 1;
-        unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
-      } else {
-        failed += 1;
+    let cutShort = totalsAtClose.cutShort;
+    let unsettled = totalsAtClose.unsettled;
+    const unfinished = [];
+    for (const record of [...abandonedEvidence, ...closing.map(([, { record: record2 }]) => record2)]) {
+      switch (workerDisposition(record, status)) {
+        case "done":
+          done += 1;
+          break;
+        case "failed":
+          failed += 1;
+          break;
+        case "cut-short":
+          cutShort += 1;
+          unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
+          break;
+        case "unsettled":
+          unsettled += 1;
+          unfinished.push({ id: record.id, label: record.label, disposition: "abandoned" });
+          break;
+        case null:
+          throw new Error(`agent ${record.id} remained in progress after run teardown`);
       }
     }
-    this.#shutdownTally = { done, failed, cutShort, unsettled: abandoning.length };
+    this.#shutdownTally = { done, failed, cutShort, unsettled };
     this.#unfinishedLegs = unfinished;
     if (teardownFailures.length === 1) {
       throw teardownFailures[0];
@@ -25130,7 +25185,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (result.attemptFailure === void 0) {
       return void 0;
     }
-    const classification = this.#classify(attempts.target.engine, result.attemptFailure, null, result.diagnostics);
+    const failure = diagnoseAttemptFailure({
+      engine: attempts.target.engine,
+      failure: result.attemptFailure,
+      appServerDiagnostic: null,
+      diagnostics: result.diagnostics
+    });
+    const classification = this.#classify(attempts.target.engine, failure, null, result.diagnostics);
     const refused2 = classification.class === "availability" && attempts.chainRemains;
     if (!refused2) {
       attempts.ledger.answered += 1;
@@ -25141,7 +25202,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         attempt,
         attempts.target,
         "failed",
-        result.attemptFailure,
+        failure,
         // Returned operational failures use empty text when the worker
         // produced nothing; an answered empty string takes the output path.
         result.text === "" ? null : result.text,
@@ -25155,7 +25216,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         chainDecisionAfter(attempts, classification, !refused2 && boundRemains(attempts.ledger))
       )
     );
-    return { failure: result.attemptFailure, refused: refused2 };
+    return { failure, refused: refused2 };
   }
   /**
    * A thrown failure (the Codex transport's shape, and any engine's
@@ -25164,7 +25225,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * the run is ending, not the target.
    */
   #recordThrownFailure(record, attempt, error, startedAt, attempts) {
-    const observed = failureFromError(error);
+    const observed = diagnoseAttemptFailure({
+      engine: attempts.target.engine,
+      failure: failureFromError(error),
+      appServerDiagnostic: appServerDiagnosticOf(error),
+      diagnostics: failedTurnResultOf(error)?.diagnostics
+    });
     const failedResult = failedTurnResultOf(error);
     if (failedResult !== null) {
       recordTurnMetadata(record, failedResult);
@@ -25558,7 +25624,7 @@ async function parallel(thunks, log, presentError) {
       try {
         return await thunk();
       } catch (error) {
-        if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
+        if (error instanceof PreSpawnAuthorError || error instanceof BudgetExceededError || isRunEnding(error)) {
           throw error;
         }
         presentError?.(error);
@@ -25589,7 +25655,7 @@ async function pipeline(items, stages, log, presentError) {
         try {
           previous = await stage(previous, item, index);
         } catch (error) {
-          if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
+          if (error instanceof PreSpawnAuthorError || error instanceof BudgetExceededError || isRunEnding(error)) {
             throw error;
           }
           presentError?.(error);
@@ -32752,13 +32818,35 @@ async function runEnsembleCli(argv, options = {}) {
       });
       if (await statusWriter.ready()) {
         try {
-          stderr.write(`[status-file] ${JSON.stringify({ run_id: runtimeRunId, status_path: statusWriter.path })}
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: runRecordWriter?.manifest.run_id ?? await resolveRunId(cwd, runtimeRunId), status_path: statusWriter.path })}
 `);
         } catch {
         }
       }
     }
     runtime.onEvent((event) => {
+      if (event.method === "hold/raised") {
+        const holdId = String(event.params.holdId);
+        const verdicts = event.params.verdicts;
+        const answerCommands = verdicts.map(
+          (verdict) => `${program} holds answer '${holdId.replaceAll("'", `'"'"'`)}' --verdict='${verdict.replaceAll("'", `'"'"'`)}'`
+        );
+        stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, event: "raised", verdicts, answer_commands: answerCommands })}
+`);
+        return;
+      }
+      if (event.method === "hold/answerRejected") {
+        stderr.write(`[hold] ${JSON.stringify({
+          hold_id: event.params.holdId,
+          event: "answer-rejected",
+          reason: event.params.reason,
+          attempted_verdict: event.params.attemptedVerdict,
+          attempted_verdict_state: event.params.attemptedVerdictState,
+          answered_by: event.params.answeredBy ?? null
+        })}
+`);
+        return;
+      }
       if (event.method === "claude/workerScopeWatchError") {
         stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
 `);
@@ -32935,7 +33023,7 @@ async function runEnsembleCli(argv, options = {}) {
     const { result } = raced;
     const directAgentOutput = invocation.kind === "agent" && invocation.agentOptions.identity === true && result !== null ? result.output : result;
     if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
-      throw new SingleAgentFailedError();
+      throw new SingleAgentFailedError(runtime.lastAgentRecord?.()?.attempts.at(-1)?.failure ?? null);
     }
     const serialised = serialiseResult(result);
     stdout.write(`${serialised}
@@ -32944,7 +33032,7 @@ async function runEnsembleCli(argv, options = {}) {
     exitCode = 0;
   } catch (error) {
     const status = error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
-    terminalError = describeError(error);
+    terminalError = error instanceof SingleAgentFailedError && error.failure !== null ? error.failure : describeError(error);
     const partial = partialResult(runtime, status, terminalError);
     const serialised = serialiseResult(partial);
     stdout.write(`${serialised}
@@ -33304,10 +33392,12 @@ function watchRunEndings() {
   };
 }
 var SingleAgentFailedError = class extends Error {
-  constructor() {
-    super("Agent exhausted its attempts without producing a result");
+  constructor(failure) {
+    super(failure?.message ?? "Agent failed without producing a result");
+    this.failure = failure;
     this.name = new.target.name;
   }
+  failure;
 };
 async function parseInvocation(argv, cwd, stdin, program) {
   if (argv[0] === "agent") {

@@ -24,7 +24,7 @@ const liveSchema = {
 
 test(
   "live Claude background worker returns a client-validated object",
-  { skip: !isLive, timeout: 300_000 },
+  { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 300_000 },
   async () => {
     // A Claude-only runtime — no Codex app-server is spawned for this journey.
     let runtime: EnsembleRuntime | null = null;

@@ -40,6 +40,32 @@ export interface AttemptFailureEvidence {
   diagnostics: JsonObject | undefined;
 }
 
+/** Preserve the provider's cause and add the engine's recovery step. */
+export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): AttemptFailureEvidence["failure"] {
+  const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
+  const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
+  const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
+  // Substrate failures may quote credential errors from recent stderr.
+  // Words alone must not override availability. An explicit provider 401
+  // identifies authentication even when retry-promise bounds wrap the error.
+  if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
+    return failure;
+  }
+  // An explicit status outranks incidental error words in a gateway message.
+  const authentication = status != null ? status === 401 :
+    apiError?.code === "authentication_error" || apiError?.code === "invalid_api_key" ||
+    /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
+  if (authentication) {
+    const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude"
+      ? "Run `claude auth login`." : "Run `opencode auth login` for the provider you selected.";
+    return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${failure.message}` };
+  }
+  if (engine === "codex" && appServerDiagnostic?.code === "modelNotFound") {
+    return { kind: "model-not-found", message: `Codex modelNotFound: choose a model available to your account (run \`codex\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
+  }
+  return failure;
+}
+
 const OUTPUT_FAILURE_KINDS = new Set(["empty-output", "invalid-json", "schema-validation"]);
 
 /**
@@ -162,6 +188,9 @@ const OPENCODE_FAILURE_KINDS = new Map<string, FailureClassification>([
  */
 export function classifyAttemptFailure(evidence: AttemptFailureEvidence): FailureClassification {
   const { kind } = evidence.failure;
+  if (kind === "authentication-failure" || kind === "model-not-found") {
+    return { class: "unclassified", rule: `${evidence.engine}.${kind}` };
+  }
   if (OUTPUT_FAILURE_KINDS.has(kind)) {
     return { class: "output", rule: "output" };
   }

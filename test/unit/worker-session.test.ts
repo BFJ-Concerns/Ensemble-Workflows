@@ -7,6 +7,7 @@ import test from "node:test";
 import { ClaudeEngineAdapter, CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
   BudgetExceededError,
+  agentIdentityOf,
   FallbackTargetRejectedError,
   InvalidAgentOptionValueError,
   MultiTurnUnsupportedError,
@@ -457,7 +458,7 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
   await runtime.close();
 });
 
-test("identified session budget refusals keep their envelope through combinators before and after opening", async () => {
+test("session budget refusals propagate through combinators before and after opening", async () => {
   for (const opened of [false, true]) {
     for (const [identity, phase] of [[true, "build"], [true, undefined], [false, undefined]] as const) {
       const transport = new ScriptedTransport([turnResult("first answer")]);
@@ -477,12 +478,17 @@ test("identified session budget refusals keep their envelope through combinators
           const currentPhase = `refused through ${combinator}`;
           runtime.notePhase(currentPhase);
           const send = () => session.send("blocked turn");
-          const result = combinator === "parallel"
-            ? await parallel([send], () => {})
-            : await pipeline(["go"], [send], () => {});
-          assert.deepEqual(result, [identity ? {
-            label: "held", phase: phase ?? currentPhase, output: null, failure: { message }
-          } : null]);
+          await assert.rejects(
+            () => combinator === "parallel"
+              ? parallel([send], () => {})
+              : pipeline(["go"], [send], () => {}),
+            (error: unknown) => {
+              assert.ok(error instanceof BudgetExceededError);
+              assert.equal(error.message, message);
+              assert.deepEqual(agentIdentityOf(error), identity ? { label: "held", phase: phase ?? currentPhase } : null);
+              return true;
+            }
+          );
         }
         // Direct sends still reject, and admission never opens or records a turn.
         await assert.rejects(session.send("blocked directly"), (error: unknown) => {

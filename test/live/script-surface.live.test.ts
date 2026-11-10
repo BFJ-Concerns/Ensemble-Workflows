@@ -12,7 +12,7 @@ import { liveCodexModel, liveCodexScriptOptions, liveOpenCodeModel } from "./liv
 
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 const codexModelSkip = liveCodexModel === undefined ? "ENSEMBLE_LIVE_CODEX_MODEL is unset" : false;
-const liveOptions = { skip: !isLive };
+const liveOptions = { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false };
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const execFileAsync = promisify(execFile);
 
@@ -96,7 +96,7 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
   ]);
 });
 
-test("live built CLI runs a current Codex model with unusual open-domain metadata", { skip: !isLive || codexModelSkip, timeout: 240_000 }, async () => {
+test("live built CLI runs a current Codex model with unusual open-domain metadata", { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : codexModelSkip, timeout: 240_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-open-domain-options-"));
   const script = path.join(directory, "workflow.js");
   const token = `LIVE_OPEN_DOMAIN_${randomUUID()}`;
@@ -150,7 +150,7 @@ test("live built CLI runs a current Codex model with unusual open-domain metadat
   }
 });
 
-test("live built CLI honours the maximum faithful per-turn timeout as a long deadline", { skip: !isLive, timeout: 240_000 }, async () => {
+test("live built CLI honours the maximum faithful per-turn timeout as a long deadline", { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 240_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-large-turn-timeout-"));
   const script = path.join(directory, "workflow.js");
   const token = `LIVE_LARGE_TIMEOUT_${randomUUID()}`;
@@ -196,7 +196,7 @@ test("live built CLI honours the maximum faithful per-turn timeout as a long dea
   }
 });
 
-test("live CLI runs Codex findings through Claude verification", { skip: !isLive, timeout: 420_000 }, async (t) => {
+test("live CLI runs Codex findings through Claude verification", { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 420_000 }, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-cross-engine-"));
   const script = path.join(directory, "workflow.js");
   const recordStore = path.join(directory, "records");
@@ -297,7 +297,7 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
   }
 });
 
-test("live CLI accepts prose-wrapped schema output from a real Claude worker", { skip: !isLive, timeout: 420_000 }, async (t) => {
+test("live CLI accepts prose-wrapped schema output from a real Claude worker", { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 420_000 }, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-tolerant-parse-"));
   const script = path.join(directory, "workflow.js");
   const maxProseRuns = 3;
@@ -372,7 +372,7 @@ test("live CLI accepts prose-wrapped schema output from a real Claude worker", {
   }
 });
 
-test("live built CLI gives Codex workers unrestricted filesystem and network access", { skip: !isLive, timeout: 240_000 }, async () => {
+test("live built CLI gives Codex workers unrestricted filesystem and network access", { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 240_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-unrestricted-"));
   const script = path.join(directory, "workflow.js");
   const recordStore = path.join(directory, "records");
@@ -426,7 +426,7 @@ test("live built CLI gives Codex workers unrestricted filesystem and network acc
   }
 });
 
-test("live CLI gives a real Codex worker unrestricted filesystem and network access", { skip: !isLive, timeout: 240_000 }, async () => {
+test("live CLI gives a real Codex worker unrestricted filesystem and network access", { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 240_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-unrestricted-estate-"));
   const cacheDirectory = path.join(homedir(), ".cache");
   await mkdir(cacheDirectory, { recursive: true });
@@ -488,13 +488,12 @@ test("live CLI gives a real Codex worker unrestricted filesystem and network acc
 const placementScenarios = [
   { engine: "codex", scriptOptions: liveCodexScriptOptions() },
   { engine: "claude", scriptOptions: "" },
-  ...(liveOpenCodeModel !== undefined
-    ? [{ engine: "opencode", scriptOptions: `model: ${JSON.stringify(liveOpenCodeModel)},` }]
-    : [])
+  { engine: "opencode", scriptOptions: `model: ${JSON.stringify(liveOpenCodeModel)},` }
 ] as const;
 
 for (const scenario of placementScenarios) {
-  test(`live bundled CLI starts a real ${scenario.engine} worker in its per-call cwd`, { skip: !isLive, timeout: 420_000 }, async () => {
+  test(`live bundled CLI starts a real ${scenario.engine} worker in its per-call cwd`, { skip: !isLive ? "ENSEMBLE_LIVE must be 1"
+    : scenario.engine === "opencode" && liveOpenCodeModel === undefined ? "ENSEMBLE_LIVE_OPENCODE_MODEL is unset" : false, timeout: 420_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-cwd-"));
   const targetCwd = path.join(directory, "target");
   const script = path.join(directory, "workflow.js");
@@ -546,7 +545,8 @@ for (const scenario of placementScenarios) {
 }
 
 for (const scenario of placementScenarios) {
-  test(`live bundled CLI preserves a real ${scenario.engine} worker-created commit`, { skip: !isLive, timeout: 420_000 }, async () => {
+  test(`live bundled CLI preserves a real ${scenario.engine} worker-created commit`, { skip: !isLive ? "ENSEMBLE_LIVE must be 1"
+    : scenario.engine === "opencode" && liveOpenCodeModel === undefined ? "ENSEMBLE_LIVE_OPENCODE_MODEL is unset" : false, timeout: 420_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-worktree-commit-"));
   const repo = path.join(directory, "repo");
   const script = path.join(repo, "workflow.js");

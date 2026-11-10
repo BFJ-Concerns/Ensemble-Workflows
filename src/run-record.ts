@@ -923,7 +923,7 @@ export class RunRecordWriter {
         kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState)
           ? event.params.attemptedVerdictState
           : null,
-      answered_by: kind === "answered" && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
+      answered_by: (kind === "answered" || kind === "answer-rejected") && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
       note: kind === "answered" && typeof event.params.note === "string" ? event.params.note : null,
       at: new Date(event.receivedAt).toISOString()
     };
@@ -1486,6 +1486,11 @@ function substratesNeverStarted(record: RuntimeAgentRecord): boolean {
  */
 export async function resolveRunDirectory(storeDir: string, cwd: string, runUuid: string): Promise<string> {
   return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
+}
+
+/** The public run identity, including when archive recording is disabled. */
+export async function resolveRunId(cwd: string, runUuid: string): Promise<string> {
+  return `${(await deriveNamespace(cwd)).id}:${runUuid}`;
 }
 
 export interface ReapAbandonedRunsOptions {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { access, glob, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, glob, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -73,6 +73,49 @@ function announcedRunRecord(stderr: string): { run_id: string; archive_path: str
   assert.equal(lines.length, 1, `expected exactly one run-record announcement, got:\n${stderr}`);
   return JSON.parse(lines[0]!.slice("[run-record-archive] ".length)) as { run_id: string; archive_path: string };
 }
+
+test("startup run IDs join status to archives for both CLI forms, with recording on or off", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-public-id-"));
+  try {
+    await execFileAsync("git", ["init", "--quiet", directory]);
+    const nested = path.join(directory, "nested");
+    const linked = path.join(directory, "linked");
+    await mkdir(nested);
+    await symlink(nested, linked);
+    const script = path.join(nested, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "public-run-id" }; return "done";');
+    const namespace = createHash("sha256").update(await realpath(directory)).digest("hex").slice(0, 24);
+    for (const recording of [true, false]) {
+      for (const argv of [[script], ["agent", "--engine", "codex", "hello"]]) {
+        const stderr = new CaptureStream();
+        const runtime = fixedEngineRuntime(new FixedResponseEngine("codex", "done"));
+        const code = await runEnsembleCli(argv, {
+          cwd: linked, stdout: new CaptureStream(), stderr,
+          runRecordDir: recording ? path.join(directory, "records") : null,
+          env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
+          createRuntime: async () => runtime
+        });
+        assert.equal(code, 0, stderr.text());
+        const statusLines = stderr.text().split("\n").filter((line) => line.startsWith("[status-file] "));
+        assert.equal(statusLines.length, 1);
+        const status = JSON.parse(statusLines[0]!.slice("[status-file] ".length));
+        const expectedId = `cwd:${namespace}:${runtime.progress.runId}`;
+        assert.equal(status.run_id, expectedId);
+        assert.equal(path.basename(status.status_path), `ensemble.${runtime.progress.runId}.local.json`);
+        if (recording) {
+          const archive = announcedRunRecord(stderr.text());
+          const manifest = JSON.parse(await readFile(path.join(archive.archive_path, "manifest.json"), "utf8"));
+          assert.equal(archive.run_id, expectedId);
+          assert.equal(manifest.run_id, expectedId);
+        } else {
+          assert.doesNotMatch(stderr.text(), /\[run-record-archive\]/);
+        }
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("caller identity links each workflow archive to its invoking session", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-caller-identity-"));
@@ -896,9 +939,9 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
   assert.equal(exitCode, 1);
   assert.equal(
     stdout.text(),
-    '{"partial":true,"reason":"failed","error":{"kind":"SingleAgentFailedError","message":"Agent exhausted its attempts without producing a result"},"completed":[]}\n'
+    '{"partial":true,"reason":"failed","error":{"kind":"SingleAgentFailedError","message":"Agent failed without producing a result"},"completed":[]}\n'
   );
-  assert.match(stderr.text(), /Agent exhausted its attempts without producing a result/);
+  assert.match(stderr.text(), /Agent failed without producing a result/);
   const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
   assert.ok(announced, "a no-dispatch failure must retain the announced wake signal");
   const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
@@ -926,7 +969,7 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
     workers: null,
     error: {
       kind: "SingleAgentFailedError",
-      message: "Agent exhausted its attempts without producing a result"
+      message: "Agent failed without producing a result"
     },
     // A failed run still seals its archive, so the sentinel can attest it.
     manifest: { sha256: sealed.integrity.manifest_sha256 },
@@ -956,12 +999,10 @@ test("ensemble agent turns schema retry exhaustion into a failed-run envelope", 
   );
 
   assert.equal(exitCode, 1);
-  assert.equal(
-    stdout.text(),
-    '{"partial":true,"reason":"failed","error":{"kind":"SingleAgentFailedError","message":"Agent exhausted its attempts without producing a result"},"completed":[]}\n'
-  );
+  const envelope = JSON.parse(stdout.text());
+  assert.deepEqual(envelope.error, { kind: "invalid-json", message: "agent output did not contain parseable JSON" });
   assert.doesNotMatch(stdout.text(), /^null/m);
-  assert.match(stderr.text(), /Agent exhausted its attempts without producing a result/);
+  assert.match(stderr.text(), /agent output did not contain parseable JSON/);
   assert.equal(engine.attempts, 2);
 });
 
@@ -3368,7 +3409,7 @@ test("a direct agent whose --cwd is missing is rejected the same way, before any
 });
 
 test("the durable surfaces name what ended a failed run, discriminating one cause from another", async () => {
-  // Four causes that all read as bare `failed` on status alone. Each must
+  // Different causes all read as bare `failed` on status alone. Each must
   // be told apart by a consumer holding only the archive.
   const cases = [
     {
@@ -3386,6 +3427,22 @@ test("the durable surfaces name what ended a failed run, discriminating one caus
     {
       name: "budget-refusal",
       source: `export const meta = { name: "cause-budget" };\nawait agent("hi", { engine: "codex" });`,
+      kind: "BudgetExceededError",
+      message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
+    },
+    {
+      name: "budget-refusal-parallel",
+      source: `export const meta = { name: "cause-budget-parallel" };
+await parallel([() => agent("hi", { engine: "codex", label: "blocked", identity: true })]);
+return { continuedAfterBudgetRefusal: true };`,
+      kind: "BudgetExceededError",
+      message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
+    },
+    {
+      name: "budget-refusal-pipeline",
+      source: `export const meta = { name: "cause-budget-pipeline" };
+await pipeline(["hi"], (prompt) => agent(prompt, { engine: "codex", label: "blocked" }));
+return { continuedAfterBudgetRefusal: true };`,
       kind: "BudgetExceededError",
       message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
     }
@@ -3410,11 +3467,16 @@ test("the durable surfaces name what ended a failed run, discriminating one caus
           defaultMaxAttempts: 1,
           // A zero ceiling refuses the first codex dispatch outright; the
           // other two cases never reach the budget.
-          ...(terminal.name === "budget-refusal" ? { budgetCeilings: { codex: 0 } } : {})
+          ...(terminal.name.startsWith("budget-refusal") ? { budgetCeilings: { codex: 0 } } : {})
         })
     });
 
     assert.equal(exitCode, 1, `${terminal.name}: ${stderr.text()}`);
+    const envelope = JSON.parse(stdout.text()) as { partial: boolean; reason: string; error: { kind: string; message: string } };
+    assert.equal(envelope.partial, true, terminal.name);
+    assert.equal(envelope.reason, "failed", terminal.name);
+    assert.equal(envelope.error.kind, terminal.kind, `${terminal.name} stdout kind`);
+    assert.match(envelope.error.message, terminal.message, `${terminal.name} stdout message`);
 
     const archive = announcedRunRecord(stderr.text()).archive_path;
     const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8")) as {
@@ -3437,9 +3499,14 @@ test("the durable surfaces name what ended a failed run, discriminating one caus
     const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
       outcome: string;
       error: { kind: string; message: string } | null;
+      workers: { done: number; failed: number; cut_short: number; unsettled: number };
     };
     assert.equal(sentinel.outcome, "failed", terminal.name);
     assert.equal(sentinel.error?.kind, terminal.kind, `${terminal.name} sentinel kind`);
+    assert.match(sentinel.error?.message ?? "", terminal.message, `${terminal.name} sentinel message`);
+    if (terminal.name.startsWith("budget-refusal")) {
+      assert.deepEqual(sentinel.workers, { done: 0, failed: 0, cut_short: 0, unsettled: 0 });
+    }
   }
 });
 
@@ -3519,7 +3586,7 @@ test("a workflow's failed worker is announced on stderr under its engine tag, wi
   });
   assert.equal(directExit, 1);
   assert.doesNotMatch(directStderr.text(), /failed after 1 attempt —/);
-  assert.match(directStderr.text(), /Agent exhausted its attempts without producing a result/);
+  assert.match(directStderr.text(), /engine refused the turn/);
 });
 
 async function runChainScript(
@@ -3959,24 +4026,19 @@ for (const claudeEntry of ["absent", "directory", "file"]) {
 test(`CLI publishes and announces automatic status before execution with .claude ${claudeEntry}`, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-auto-status-"));
   try {
+    const runtime = new EnsembleRuntime({ engines: new EngineRegistry([new ScheduledTextEngine("codex", 1)]), defaultMaxAttempts: 1 });
     const script = path.join(directory, "workflow.js");
     if (claudeEntry === "directory") await mkdir(path.join(directory, ".claude"));
     if (claudeEntry === "file") await writeFile(path.join(directory, ".claude"), "file");
     const statusDir = path.join(directory, "data", "ensemble", "status");
-    // An atomic update may have a temporary file alongside the published one.
-    // Keep that interleaving present without depending on filesystem timing.
-    const pendingSnapshot = `ensemble.pending.local.json.${process.pid}.1.tmp`;
+    const statusPath = path.join(statusDir, `ensemble.${runtime.progress.runId}.local.json`);
     await writeFile(script, `
       export const meta = { name: "automatic-status" };
-      const { readdir, readFile, writeFile } = require("node:fs/promises");
-      const dir = ${JSON.stringify(statusDir)};
-      await writeFile(dir + "/" + ${JSON.stringify(pendingSnapshot)}, "unfinished snapshot");
-      // The final filename is the atomic publication signal; .tmp entries
-      // belong to updates that have not completed their rename yet.
-      const files = (await readdir(dir)).filter((file) => file.startsWith("ensemble.") && file.endsWith(".local.json"));
-      if (files.length !== 1) throw new Error("status missing before execution");
-      const snapshot = JSON.parse(await readFile(dir + "/" + files[0], "utf8"));
-      if (!snapshot.runId || files[0] !== "ensemble." + snapshot.runId + ".local.json") throw new Error("invalid initial status");
+      const { readFile } = require("node:fs/promises");
+      // Directory enumeration can miss an entry replaced during its scan.
+      // Read this run's exact path as the first operation in the body.
+      const snapshot = JSON.parse(await readFile(${JSON.stringify(statusPath)}, "utf8"));
+      if (snapshot.runId !== ${JSON.stringify(runtime.progress.runId)}) throw new Error("invalid initial status");
       log("workflow-started");
       return "ok";
     `);
@@ -3985,16 +4047,21 @@ test(`CLI publishes and announces automatic status before execution with .claude
       cwd: directory, stdout: new CaptureStream(), stderr,
       env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
       runRecordDir: null,
-      createRuntime: async () => new EnsembleRuntime({ engines: new EngineRegistry([new ScheduledTextEngine("codex", 1)]), defaultMaxAttempts: 1 })
+      createRuntime: async () => runtime
     });
     assert.equal(exitCode, 0, stderr.text());
     const line = stderr.text().split("\n").find((entry) => entry.startsWith("[status-file] "));
     assert.ok(line);
     assert.ok(stderr.text().indexOf(line) < stderr.text().indexOf("workflow-started"));
     const announcement = JSON.parse(line.slice("[status-file] ".length)) as { run_id: string; status_path: string };
-    assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${announcement.run_id}.local.json`));
+    const publicId = /^cwd:([0-9a-f]{24}):([0-9a-f-]{36})$/.exec(announcement.run_id);
+    assert.ok(publicId, announcement.run_id);
+    const expectedNamespace = createHash("sha256").update(await realpath(directory)).digest("hex").slice(0, 24);
+    assert.equal(publicId[1], expectedNamespace);
+    assert.equal(publicId[2], runtime.progress.runId);
+    assert.equal(announcement.status_path, statusPath);
     await assert.rejects(access(announcement.status_path));
-    assert.deepEqual(await readdir(path.dirname(announcement.status_path)), [pendingSnapshot]);
+    assert.deepEqual(await readdir(path.dirname(announcement.status_path)), []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -4092,6 +4159,105 @@ test("CLI renders Codex app-server placement refusals as bounded notices", async
     assert.equal(code, 0, stderr.text());
     assert.match(stderr.text(), /\[codex\] app-server \(pid 123\) scope placement refused: manager refused\n/);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("returned credential failures retry text and schema calls within the bound and reach stdout", async () => {
+  for (const engineName of ["claude", "opencode"] as const) {
+    for (const schema of [false, true]) {
+      let attempts = 0;
+      const rejectCredentials = async (): Promise<EngineAttemptResult> => {
+        attempts += 1;
+        return {
+        text: "", deltaText: "", durationMs: 1, firstDeltaMs: null, items: {}, tokenUsageEvents: [],
+        attemptFailure: { kind: engineName === "claude" ? "claude-worker-diagnostic" : "opencode-run-error", message: "HTTP 401: rejected credential" },
+        diagnostics: engineName === "claude" ? { apiError: { status: 401, code: "authentication_error" } } : {}
+        };
+      };
+      const engine = new ChainEngine(engineName, Array.from({ length: 3 }, () => rejectCredentials));
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exit = await runEnsembleCli(["agent", `--engine=${engineName}`, ...(schema ? ['--schema={"type":"object"}'] : []), "hello"], {
+        stdout, stderr, runRecordDir: null, statusDir: null,
+        createRuntime: async () => fixedEngineRuntime(engine, 3)
+      });
+      assert.equal(exit, 1, stderr.text());
+      const envelope = JSON.parse(stdout.text());
+      assert.equal(envelope.error.kind, "authentication-failure");
+      assert.match(envelope.error.message, /HTTP 401: rejected credential/);
+      assert.match(envelope.error.message, engineName === "claude" ? /claude auth login/ : /opencode auth login/);
+      assert.equal(attempts, 3);
+      assert.match(stderr.text(), /attempt 3/);
+      assert.doesNotMatch(stderr.text(), /Agent exhausted its attempts/);
+    }
+  }
+});
+
+
+test("a raising CLI announces holds and every rejected answer without polling the listing", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-hold-notices-"));
+  const script = path.join(directory, "workflow.js");
+  const verdicts = ["approve", "don't expand $HOME or `printf injected`\nnext line"];
+  await writeFile(script, `export const meta = { name: "hold-notices" };\nreturn await hold({ content: "which route?", verdicts: ${JSON.stringify(verdicts)} });`);
+  const stderr = new CaptureStream();
+  const stdout = new CaptureStream();
+  const holdsDir = path.join(directory, "holds");
+  let runtime: EnsembleRuntime | undefined;
+  const running = runEnsembleCli([script], {
+    cwd: directory, stdout, stderr, programName: "capture", timeoutMs: 5000,
+    runRecordDir: path.join(directory, "records"), statusDir: null,
+    env: { XDG_CONFIG_HOME: path.join(directory, "config") },
+    createRuntime: async (options) => {
+      runtime = new EnsembleRuntime({ ...options, defaultMaxAttempts: 1, engines: new EngineRegistry([]), holdsDir, holdPollIntervalMs: 5 });
+      return runtime;
+    }
+  });
+  const notices = (): Array<Record<string, unknown>> => stderr.text().split("\n")
+    .filter((line) => line.startsWith("[hold] ")).map((line) => JSON.parse(line.slice(7)) as Record<string, unknown>);
+  const waitForNotice = async (count: number): Promise<void> => {
+    for (let attempt = 0; attempt < 1000; attempt += 1) {
+      if (notices().length >= count) return;
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    assert.fail(`missing hold notice ${count}: ${stderr.text()}`);
+  };
+  try {
+    await waitForNotice(1);
+    const raised = notices()[0]!;
+    assert.equal(raised.event, "raised");
+    assert.deepEqual(raised.verdicts, verdicts);
+    const record = (await enumerateHolds(holdsDir)).holds[0]!.record;
+    assert.equal(raised.hold_id, record.hold_id);
+    const commands = raised.answer_commands as string[];
+    assert.equal(commands.length, verdicts.length);
+    for (const [index, command] of commands.entries()) {
+      const captured = await execFileAsync("bash", ["-c", `capture() { printf '%s\\0' "$@"; }\n${command}`]);
+      assert.deepEqual(captured.stdout.split("\0"), ["holds", "answer", record.hold_id, `--verdict=${verdicts[index]}`, ""]);
+    }
+    await writeFile(record.decision_path, JSON.stringify({ nonce: "stale", verdict: "approve", answered_by: "decider-1" }));
+    await waitForNotice(2);
+    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "maybe", answered_by: "decider-2" }));
+    await waitForNotice(3);
+    await writeFile(record.decision_path, "not-json");
+    await waitForNotice(4);
+    assert.deepEqual(notices().slice(1).map((notice) => [notice.hold_id, notice.event, notice.reason, notice.answered_by]), [
+      [record.hold_id, "answer-rejected", "stale-nonce", "decider-1"],
+      [record.hold_id, "answer-rejected", "invalid-verdict", "decider-2"],
+      [record.hold_id, "answer-rejected", "malformed", null]
+    ]);
+    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "approve" }));
+    assert.equal(await running, 0, stderr.text());
+    assert.doesNotMatch(stdout.text(), /\[hold\]/);
+    const archive = announcedRunRecord(stderr.text());
+    const manifest = JSON.parse(await readFile(path.join(archive.archive_path, "manifest.json"), "utf8")) as {
+      hold_events: Array<{ event: string; answered_by: string | null }>;
+    };
+    assert.deepEqual(manifest.hold_events.filter((event) => event.event === "answer-rejected").map((event) => event.answered_by),
+      ["decider-1", "decider-2", null]);
+  } finally {
+    await runtime?.close();
+    await running;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("relative record stores use the launcher directory for preflight, archive and sentinel", async () => {

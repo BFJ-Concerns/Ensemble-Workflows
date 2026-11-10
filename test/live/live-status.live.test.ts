@@ -17,7 +17,8 @@ const consumer = path.resolve("test/consumers/read-live-status.mjs");
 
 for (const engine of ["claude", "codex"] as const) {
   test(`live ${engine} status alone supervises queued, isolated and held workers`, {
-    skip: process.env.ENSEMBLE_LIVE !== "1" || (engine === "codex" && liveCodexModel === undefined),
+    skip: process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1"
+      : engine === "codex" && liveCodexModel === undefined ? "ENSEMBLE_LIVE_CODEX_MODEL is unset" : false,
     timeout: 1_200_000
   }, async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-status-"));

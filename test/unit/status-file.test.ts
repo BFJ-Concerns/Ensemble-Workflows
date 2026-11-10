@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -99,13 +99,67 @@ test("the status file is named by the run, under the local-file convention", () 
   assert.equal(isStatusFileName("settings.local.json"), false);
 });
 
+test("ready waits for publication and the snapshot stays readable during replacement", { timeout: 30_000 }, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-publication-"));
+  const progress = newProgress();
+  const initialRename = Promise.withResolvers<void>();
+  const releaseInitial = Promise.withResolvers<void>();
+  const updateRename = Promise.withResolvers<void>();
+  const releaseUpdate = Promise.withResolvers<void>();
+  let renames = 0;
+  const writer = new StatusFileWriter({ progress, dir, heartbeatMs: 60_000, fileOperations: {
+    rename: async (source, destination) => {
+      renames += 1;
+      if (renames === 1) {
+        initialRename.resolve();
+        await releaseInitial.promise;
+      } else if (renames === 2) {
+        updateRename.resolve();
+        await releaseUpdate.promise;
+      }
+      await rename(source, destination);
+    }
+  } });
+  try {
+    let readySettled = false;
+    const ready = writer.ready().then((published) => {
+      readySettled = true;
+      return published;
+    });
+    await initialRename.promise;
+    await assert.rejects(access(writer.path), { code: "ENOENT" });
+    assert.equal(readySettled, false, "readiness must wait for the initial rename");
+
+    releaseInitial.resolve();
+    assert.equal(await ready, true);
+    const initial = JSON.parse(await readFile(writer.path, "utf8")) as ProgressSnapshot;
+    assert.equal(initial.runId, progress.runId);
+    assert.equal(initial.currentPhase, null);
+
+    progress.setPhase("workflow-started");
+    await updateRename.promise;
+    assert.deepEqual(JSON.parse(await readFile(writer.path, "utf8")), initial);
+    releaseUpdate.resolve();
+    assert.equal(await writer.ready(), true);
+    assert.equal(JSON.parse(await readFile(writer.path, "utf8")).currentPhase, "workflow-started");
+
+    await writer.close();
+    await assert.rejects(access(writer.path), { code: "ENOENT" });
+  } finally {
+    releaseInitial.resolve();
+    releaseUpdate.resolve();
+    await writer.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("every published snapshot carries the writer's own liveness evidence and the schema version", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-owner-"));
   const writer = new StatusFileWriter({ progress: newProgress(), dir });
   try {
     const raw = await waitForFile(writer.path);
     const published = JSON.parse(raw) as { schema: number; owner?: { host: string; pid: number; start_ticks: string | null } };
-    assert.equal(published.schema, 3);
+    assert.equal(published.schema, 4);
     // The pid + start-ticks discipline the archive manifest's owner block
     // uses: a poller refutes a snapshot a killed run left behind instead of
     // trusting cleanup-by-cooperation.

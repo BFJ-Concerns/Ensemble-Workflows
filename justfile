@@ -55,6 +55,9 @@ version-bump version:
 # The live tests, which reach real engines. Not part of the gate. Legs that
 # must name a model read it from ENSEMBLE_LIVE_CODEX_MODEL or
 # ENSEMBLE_LIVE_OPENCODE_MODEL (a key from the machine config's
-# opencode_models) and skip while it is unset.
+# opencode_models) and skip while it is unset. Every skip states its reason
+# in TAP. Partial-output failure-evidence legs also require
+# ENSEMBLE_LIVE_FAILURE_EVIDENCE=1: they terminate their own real workers.
+# Run them with: ENSEMBLE_LIVE_FAILURE_EVIDENCE=1 just test-live
 test-live:
     npm run test:live

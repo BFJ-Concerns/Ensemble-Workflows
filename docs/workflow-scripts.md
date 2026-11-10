@@ -143,12 +143,17 @@ A failed worker is already its call's `null`. A thunk or stage that throws for
 any other reason also becomes `null` in the results, and is logged. Check
 fan-in results for `null`.
 
-Two things propagate instead. One is errors in how the script was written,
-raised before any worker spawns: a rejected `agent()` option, a malformed
-schema, an unresolvable `workflow()` reference or non-JSON `workflow()`
+Three kinds of error propagate instead. One is errors in how the script was
+written, raised before any worker spawns: a rejected `agent()` option, a
+malformed schema, an unresolvable `workflow()` reference or non-JSON `workflow()`
 arguments, a nesting violation, and a child workflow's load-time error (when
 several of a call's options fail the option check, one error names them all).
-The other is the run's own ending — an interrupt, the whole-run timeout, the
+
+A budget refusal (`BudgetExceededError`) also propagates when a dispatch or
+session turn is not admitted. If uncaught, it fails the run; the manifest and
+completion sentinel record the refusal as the run's error.
+
+The third is the run's own ending — an interrupt, the whole-run timeout, the
 launcher closing the run under a leg still in flight — which throws through
 `parallel()` and `pipeline()` as it does through a bare `await`, so a body
 never resumes past the combinator to run further code (commit, push, write a
@@ -379,7 +384,10 @@ cannot pass silently:
 - Errors raised before a worker exists: an invalid option, a placement that
   could not be opened, an engine refusing the dispatch itself
   (`ClaudeDispatchError`, `CodexSubstrateRefusedError`), a strip that cannot
-  be enforced, or a budget refusal. Before an engine's first attempt in a
+  be enforced, or a budget refusal (`BudgetExceededError`). A budget refusal
+  propagates through `parallel()` and `pipeline()` too, including a refused
+  session turn; if uncaught, the run fails and the manifest and completion
+  sentinel record it as the run's error. Before an engine's first attempt in a
   run, the runtime also checks that it can use the directories that engine
   needs, resolved from the environment that engine is launched with:
   Codex's `CODEX_HOME` (else `$HOME/.codex`); Claude's `CLAUDE_CONFIG_DIR`
@@ -456,11 +464,24 @@ and model context still bound prompt size.
 
 ### Retries
 
-Each attempt that fails is retried, up to `maxAttempts`, with the failure fed
+Except for Codex output-schema rejections, each
+attempt that fails is retried, up to `maxAttempts`, with the failure fed
 back to the worker. Claude corrects in the same session through the prompt
 editor. If tmux becomes unavailable, a one-shot correction starts a fresh session, whose
 opening delivery also requires tmux.
 Codex and opencode retry with the failure appended to the prompt.
+
+Rejected credentials on a started worker consume an attempt and retry within
+the same bound. A dead or unstartable substrate retains its availability
+classification even when its diagnostic mentions credentials.
+An explicit provider HTTP 401 on a started turn records authentication
+failure even when Codex's retry-promise bound ends the turn.
+The attempt records `authentication-failure`, the engine's
+diagnostic, and a sign-in step: `codex login`, `claude auth login`, or
+`opencode auth login`. These failures are `unclassified`, with a named
+engine-specific authentication rule. Codex `modelNotFound` errors record
+`model-not-found` with a hint to choose an available model, and retain the
+normal attempt bound.
 
 Operational failures — a Claude session that never registered or died, a
 transcript that could not be read, an opencode subprocess killed at its
@@ -751,6 +772,14 @@ the machine-wide listing always does. The scope is never inferred from the
 working directory or process ancestry, and the nonce, not the scope, is what
 makes an answer valid.
 
+The raising CLI announces each hold on stderr as a `[hold]` JSON line with
+`hold_id`, `event: "raised"`, the accepted `verdicts`, and `answer_commands`
+(one shell command per verdict). Each rejected answer produces another
+`[hold]` line with `event: "answer-rejected"`, the hold id, rejection reason,
+attempted verdict and its availability state, and `answered_by` (or `null`
+when the decision file does not name an answerer). Stdout remains the run's
+result envelope. Read command strings as JSON before executing them.
+
 ### Answering a hold
 
 `ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]` is the
@@ -784,6 +813,6 @@ provably dead is retired by whichever listing or run observes it and reported
 as `retired`, so the listing only shows holds that can still be answered.
 
 Every raise, answer, rejected answer, and timeout is recorded in the raising
-run's `hold_events`, including who answered and their note. A retirement is
+run's `hold_events`, including who answered; accepted answers also carry their note. A retirement is
 recorded by the run whose startup sweep observed it; one observed by a
 listing is not recorded.

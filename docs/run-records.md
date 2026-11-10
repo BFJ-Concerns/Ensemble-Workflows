@@ -578,6 +578,12 @@ The fields present throughout a record's lifetime are:
     `observed_failure` keeps the symptom the turn saw (a closed app-server, an
     aborted poll); `null` when the engine's own failure is the cause.
   - `diagnostics` and `token_usage_events` (the engine-native usage events).
+    Claude's `diagnostics.worktrees` lists `{ path, branch }` for each native
+    worktree its transcript proves the session entered, including trees it
+    later left; `branch` is `null` when unreported (for example, a hook-created
+    tree). An empty list means no native worktree entry was observed in the
+    available transcript. These are separate from the top-level `worktree`,
+    which describes Ensemble's `isolation: "worktree"` placement.
     When pending Claude work spans attempts, each attempt accounts only for
     growth since the previous attempt's session total, even if its transcript
     reference repeats earlier API calls. Summing attempts never charges that

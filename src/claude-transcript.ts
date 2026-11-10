@@ -22,6 +22,8 @@ export interface TranscriptEntry {
   isCompactSummary?: boolean;
   origin?: { kind?: unknown };
   message?: TranscriptMessage;
+  /** Claude Code's persisted EnterWorktree state, or null after exiting it. */
+  worktreeSession?: unknown;
   /**
    * Claude Code's record of a queued prompt absorbed into a turn already
    * in flight (`attachment.type === "queued_command"`, the prompt in
@@ -142,6 +144,28 @@ export function parseTranscriptText(text: string): TranscriptEntry[] {
     }
   }
   return entries;
+}
+
+/**
+ * Worktrees the session entered, including ones it later left. Read native
+ * state rows rather than tool requests or prose: a requested move may fail.
+ * Repeated state snapshots name one visit; hook-created trees may have no
+ * branch. The history spans turns so a held session keeps its placement
+ * evidence even when its current turn did not enter the tree.
+ */
+export function enteredWorktrees(entries: TranscriptEntry[]): Array<{ path: string; branch: string | null }> {
+  const worktrees: Array<{ path: string; branch: string | null }> = [];
+  for (const entry of entries) {
+    if (entry.type !== "worktree-state" || entry.worktreeSession === null ||
+      typeof entry.worktreeSession !== "object" || Array.isArray(entry.worktreeSession)) continue;
+    const state = entry.worktreeSession as Record<string, unknown>;
+    if (typeof state.worktreePath !== "string" || state.worktreePath.length === 0) continue;
+    const branch = typeof state.worktreeBranch === "string" && state.worktreeBranch.length > 0 ? state.worktreeBranch : null;
+    if (!worktrees.some((tree) => tree.path === state.worktreePath && tree.branch === branch)) {
+      worktrees.push({ path: state.worktreePath, branch });
+    }
+  }
+  return worktrees;
 }
 
 /** Read and parse a transcript file. Missing/unreadable file → a worker error. */

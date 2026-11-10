@@ -1164,18 +1164,21 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     if (previousFailure !== undefined) {
       lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
+    lines.push("", this.#framedTask());
+    return lines.join("\n");
+  }
+
+  #framedTask(): string {
     // The closing tag keeps the caller's trailing whitespace inside the
     // message: native submission trims the message's end. Choose a tag name
     // absent from the task so even literal boundary examples remain intact.
     let tagIndex = 0;
     while (this.#turnPrompt.includes(`ensemble_task_${tagIndex}`)) tagIndex += 1;
     const taskTag = `ensemble_task_${tagIndex}`;
-    lines.push(
-      "",
+    return [
       `Carry out the task enclosed by <${taskTag}> and </${taskTag}>. The tags mark its boundaries.`,
       `<${taskTag}>${this.#turnPrompt}</${taskTag}>`
-    );
-    return lines.join("\n");
+    ].join("\n");
   }
 
   /**
@@ -1192,7 +1195,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         ""
       );
     }
-    lines.push(this.#turnPrompt);
+    // Keep native command handling for tasks with no boundary whitespace.
+    // Otherwise use the opening's literal boundary so native trimming is inert.
+    lines.push(this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask());
     return lines.join("\n");
   }
 

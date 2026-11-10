@@ -21000,15 +21000,17 @@ var ClaudeEngineInvocation = class {
     if (previousFailure !== void 0) {
       lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
+    lines.push("", this.#framedTask());
+    return lines.join("\n");
+  }
+  #framedTask() {
     let tagIndex = 0;
     while (this.#turnPrompt.includes(`ensemble_task_${tagIndex}`)) tagIndex += 1;
     const taskTag = `ensemble_task_${tagIndex}`;
-    lines.push(
-      "",
+    return [
       `Carry out the task enclosed by <${taskTag}> and </${taskTag}>. The tags mark its boundaries.`,
       `<${taskTag}>${this.#turnPrompt}</${taskTag}>`
-    );
-    return lines.join("\n");
+    ].join("\n");
   }
   /**
    * A follow-up turn's valve message: the session already holds the
@@ -21024,7 +21026,7 @@ var ClaudeEngineInvocation = class {
         ""
       );
     }
-    lines.push(this.#turnPrompt);
+    lines.push(this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask());
     return lines.join("\n");
   }
   /**

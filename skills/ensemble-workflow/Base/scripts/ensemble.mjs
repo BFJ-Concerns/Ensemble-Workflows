@@ -16191,6 +16191,7 @@ var RunRecordWriter = class _RunRecordWriter {
       }
     }
     const agentJsonPath = `${agentDir}/agent.json`;
+    const unsettledTiming = record.status === "in-progress" || record.status === "abandoned";
     await this.#writeJson(agentJsonPath, {
       ...this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id) } } : {},
       schema_version: SCHEMA_VERSION,
@@ -16239,8 +16240,8 @@ var RunRecordWriter = class _RunRecordWriter {
       // none — an agent with no usage data must be legible as "unknown for
       // this reason", never indistinguishable from zero spend.
       usage: agentUsage(record),
-      queued_ms: record.status === "in-progress" && record.queuedMs === 0 ? null : record.queuedMs,
-      execution_ms: record.status === "in-progress" && record.executionMs === 0 ? null : record.executionMs,
+      queued_ms: unsettledTiming && record.queuedMs === 0 ? null : record.queuedMs,
+      execution_ms: unsettledTiming && record.executionMs === 0 ? null : record.executionMs,
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,
@@ -17389,7 +17390,7 @@ function classifyAttemptFailure(evidence) {
     return { class: "unclassified", rule: "run-settlement" };
   }
   if (kind === "EngineShutdownError") {
-    return { class: "unclassified", rule: "run-settlement" };
+    return { class: "unclassified", rule: "engine-shutdown" };
   }
   switch (evidence.engine) {
     case "codex":
@@ -23301,7 +23302,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (outcome === "done") {
         agentRecord.status = "complete";
       } else {
-        this.#settleTerminalStatus(agentRecord, execution.cause ?? null);
+        this.#settleWorkerFailure(agentRecord, execution.cause ?? null);
       }
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
@@ -23779,6 +23780,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       record.terminationCause = settlement;
       return;
     }
+    this.#settleWorkerFailure(record, error);
+  }
+  /** Settle the worker's own failure without consulting a later run ending. */
+  #settleWorkerFailure(record, error) {
     if (error instanceof TurnTimeoutError) {
       record.status = "timed-out";
       record.terminationCause = {

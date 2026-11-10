@@ -5182,3 +5182,59 @@ test("thrown Codex turns retain observed identity with and without streamed usag
     } finally { await runtime.close(); }
   }
 });
+
+
+test("a worker failure settled before shutdown keeps its account through invocation cleanup", async () => {
+  for (const error of [
+    new TurnTimeoutError("attempt reached its deadline", { kind: "turn", timeoutMs: 50, threadId: "thread-1" }),
+    new EngineShutdownError("codex")
+  ]) {
+    for (const closeDuringCleanup of [false, true]) {
+      let markClosing: (() => void) | undefined;
+      let releaseClose: (() => void) | undefined;
+      const closing = new Promise<void>((resolve) => { markClosing = resolve; });
+      const closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
+      const engine: EngineAdapter = {
+        name: "codex", concurrency: 1, schedule: async (task) => task(),
+        createInvocation: () => ({
+          runAttempt: async () => { throw error; },
+          close: async () => { markClosing?.(); await closeGate; }
+        }),
+        close: async () => { releaseClose?.(); }
+      };
+      const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+      const notices = chainNotices(runtime);
+      const worker = runtime.agent("work", { engine: "codex", identity: true });
+      try {
+        await closing;
+        if (closeDuringCleanup) {
+          await runtime.close("interrupted");
+        } else {
+          releaseClose?.();
+        }
+        const output = await worker;
+        assert.deepEqual(output, {
+          label: null, phase: null, output: null,
+          failure: { message: `${error.name}: ${error.message}` }
+        });
+        const record = runtime.lastAgentRecord()!;
+        assert.equal(record.status, error instanceof TurnTimeoutError ? "timed-out" : "failed");
+        assert.equal(record.attempts[0]?.failure?.kind, error.name);
+        assert.deepEqual(notices.find((notice) => notice.method.endsWith("/agentFailed"))?.params.failure,
+          { kind: error.name, message: error.message });
+        if (error instanceof TurnTimeoutError) {
+          assert.deepEqual(record.terminationCause, { kind: "turn-timeout", message: error.message });
+        } else {
+          assert.equal(record.terminationCause, null);
+        }
+        if (closeDuringCleanup) {
+          assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 1, cutShort: 0, unsettled: 0 });
+        }
+      } finally {
+        releaseClose?.();
+        await runtime.close();
+        await worker.catch(() => undefined);
+      }
+    }
+  }
+});

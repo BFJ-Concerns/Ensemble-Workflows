@@ -1007,6 +1007,7 @@ export class RunRecordWriter {
     }
 
     const agentJsonPath = `${agentDir}/agent.json`;
+    const unsettledTiming = record.status === "in-progress" || record.status === "abandoned";
     await this.#writeJson(agentJsonPath, {
       ...(this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id)! } } : {}),
       schema_version: SCHEMA_VERSION,
@@ -1063,8 +1064,8 @@ export class RunRecordWriter {
       // none — an agent with no usage data must be legible as "unknown for
       // this reason", never indistinguishable from zero spend.
       usage: agentUsage(record),
-      queued_ms: record.status === "in-progress" && record.queuedMs === 0 ? null : record.queuedMs,
-      execution_ms: record.status === "in-progress" && record.executionMs === 0 ? null : record.executionMs,
+      queued_ms: unsettledTiming && record.queuedMs === 0 ? null : record.queuedMs,
+      execution_ms: unsettledTiming && record.executionMs === 0 ? null : record.executionMs,
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,

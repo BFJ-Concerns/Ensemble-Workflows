@@ -2590,3 +2590,53 @@ test("settlement restores complete Codex capture after a failed live append", as
     assert.equal(writer.manifest.files.find((file) => file.path === transcript)?.sha256, sha256(Buffer.from(content)));
   } finally { await rm(store, { recursive: true, force: true }); }
 });
+
+
+test("runtime abandonment during the dispatch write leaves unmeasured archive timing unknown", async () => {
+  const cwd = await gitRepo("ensemble-abandoned-timing-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-abandoned-timing-store-"));
+  let markWriting: (() => void) | undefined;
+  let releaseWrite: (() => void) | undefined;
+  const writing = new Promise<void>((resolve) => { markWriting = resolve; });
+  const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  const engine: EngineAdapter = {
+    name: "codex", concurrency: 1, schedule: async (task) => task(),
+    createInvocation: () => { throw new Error("an abandoned dispatch must not start"); },
+    close: async () => {}
+  };
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), cwd, defaultMaxAttempts: 1 });
+  let worker: Promise<unknown> | undefined;
+  try {
+    const writer = await RunRecordWriter.start({
+      storeDir: store, cwd, runUuid: "run-abandoned-timing", workflowPath: path.join(cwd, "workflow.js"),
+      workflowSource: "return true;\n", args: [], cliFlags: { jsonArgs: false }
+    });
+    runtime.setRunRecorder({
+      archiveDir: writer.archiveDir,
+      recordAgent: async (record: RuntimeAgentRecord) => {
+        await writer.recordAgent(record);
+        if (record.status === "in-progress") {
+          markWriting?.();
+          await writeGate;
+        }
+      }
+    } as RunRecordWriter);
+    worker = runtime.agent("work", { engine: "codex" });
+    worker.catch(() => undefined);
+    await writing;
+    await runtime.close("interrupted");
+    const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+      status: string; queued_ms: number | null; execution_ms: number | null;
+    };
+    assert.equal(record.status, "abandoned");
+    assert.equal(record.queued_ms, null);
+    assert.equal(record.execution_ms, null);
+    releaseWrite?.();
+    await assert.rejects(worker, EngineShutdownError);
+  } finally {
+    releaseWrite?.();
+    await runtime.close();
+    await worker?.catch(() => undefined);
+    await rm(store, { recursive: true, force: true });
+  }
+});

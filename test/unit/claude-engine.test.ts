@@ -2038,7 +2038,7 @@ test("closing a held Claude session mid-turn stays a worker failure through comb
         markPolled?.();
         return status;
       };
-      const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 3 });
       const session = runtime.createWorkerSession({ engine: "claude", model: "opus" });
       try {
         const send = () => session.send("work");
@@ -2050,6 +2050,10 @@ test("closing a held Claude session mid-turn stays a worker failure through comb
         assert.deepEqual(await result, [null], shape);
         assert.equal(runtime.lastAgentRecord()?.status, "failed");
         assert.equal(runtime.lastAgentRecord()?.attempts[0]?.failure?.kind, "EngineShutdownError");
+        assert.equal(runtime.lastAgentRecord()?.attempts.length, 3);
+        assert.ok(runtime.lastAgentRecord()?.attempts.every((attempt) =>
+          attempt.classification?.rule === "engine-shutdown"));
+        assert.equal(controlPlane.dispatchCount, 1, "retry accounting never starts another worker");
       } finally {
         await runtime.close();
       }

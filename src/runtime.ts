@@ -1466,7 +1466,10 @@ export class EnsembleRuntime {
       if (outcome === "done") {
         agentRecord.status = "complete";
       } else {
-        this.#settleTerminalStatus(agentRecord, execution.cause ?? null);
+        // A returned failure was settled by the attempt loop before
+        // invocation and placement cleanup. Shutdown during that cleanup
+        // cannot turn the worker's own failure into the run's ending.
+        this.#settleWorkerFailure(agentRecord, execution.cause ?? null);
       }
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
@@ -2054,6 +2057,11 @@ export class EnsembleRuntime {
       record.terminationCause = settlement;
       return;
     }
+    this.#settleWorkerFailure(record, error);
+  }
+
+  /** Settle the worker's own failure without consulting a later run ending. */
+  #settleWorkerFailure(record: RuntimeAgentRecord, error: unknown): void {
     if (error instanceof TurnTimeoutError) {
       record.status = "timed-out";
       record.terminationCause = {

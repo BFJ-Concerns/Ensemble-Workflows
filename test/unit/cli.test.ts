@@ -939,9 +939,9 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
   assert.equal(exitCode, 1);
   assert.equal(
     stdout.text(),
-    '{"partial":true,"reason":"failed","error":{"kind":"SingleAgentFailedError","message":"Agent exhausted its attempts without producing a result"},"completed":[]}\n'
+    '{"partial":true,"reason":"failed","error":{"kind":"SingleAgentFailedError","message":"Agent failed without producing a result"},"completed":[]}\n'
   );
-  assert.match(stderr.text(), /Agent exhausted its attempts without producing a result/);
+  assert.match(stderr.text(), /Agent failed without producing a result/);
   const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
   assert.ok(announced, "a no-dispatch failure must retain the announced wake signal");
   const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
@@ -969,7 +969,7 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
     workers: null,
     error: {
       kind: "SingleAgentFailedError",
-      message: "Agent exhausted its attempts without producing a result"
+      message: "Agent failed without producing a result"
     },
     // A failed run still seals its archive, so the sentinel can attest it.
     manifest: { sha256: sealed.integrity.manifest_sha256 },
@@ -999,12 +999,10 @@ test("ensemble agent turns schema retry exhaustion into a failed-run envelope", 
   );
 
   assert.equal(exitCode, 1);
-  assert.equal(
-    stdout.text(),
-    '{"partial":true,"reason":"failed","error":{"kind":"SingleAgentFailedError","message":"Agent exhausted its attempts without producing a result"},"completed":[]}\n'
-  );
+  const envelope = JSON.parse(stdout.text());
+  assert.deepEqual(envelope.error, { kind: "invalid-json", message: "agent output did not contain parseable JSON" });
   assert.doesNotMatch(stdout.text(), /^null/m);
-  assert.match(stderr.text(), /Agent exhausted its attempts without producing a result/);
+  assert.match(stderr.text(), /agent output did not contain parseable JSON/);
   assert.equal(engine.attempts, 2);
 });
 
@@ -3588,7 +3586,7 @@ test("a workflow's failed worker is announced on stderr under its engine tag, wi
   });
   assert.equal(directExit, 1);
   assert.doesNotMatch(directStderr.text(), /failed after 1 attempt —/);
-  assert.match(directStderr.text(), /Agent exhausted its attempts without producing a result/);
+  assert.match(directStderr.text(), /engine refused the turn/);
 });
 
 async function runChainScript(
@@ -4161,6 +4159,37 @@ test("CLI renders Codex app-server placement refusals as bounded notices", async
     assert.equal(code, 0, stderr.text());
     assert.match(stderr.text(), /\[codex\] app-server \(pid 123\) scope placement refused: manager refused\n/);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("returned credential failures retry text and schema calls within the bound and reach stdout", async () => {
+  for (const engineName of ["claude", "opencode"] as const) {
+    for (const schema of [false, true]) {
+      let attempts = 0;
+      const rejectCredentials = async (): Promise<EngineAttemptResult> => {
+        attempts += 1;
+        return {
+        text: "", deltaText: "", durationMs: 1, firstDeltaMs: null, items: {}, tokenUsageEvents: [],
+        attemptFailure: { kind: engineName === "claude" ? "claude-worker-diagnostic" : "opencode-run-error", message: "HTTP 401: rejected credential" },
+        diagnostics: engineName === "claude" ? { apiError: { status: 401, code: "authentication_error" } } : {}
+        };
+      };
+      const engine = new ChainEngine(engineName, Array.from({ length: 3 }, () => rejectCredentials));
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exit = await runEnsembleCli(["agent", `--engine=${engineName}`, ...(schema ? ['--schema={"type":"object"}'] : []), "hello"], {
+        stdout, stderr, runRecordDir: null, statusDir: null,
+        createRuntime: async () => fixedEngineRuntime(engine, 3)
+      });
+      assert.equal(exit, 1, stderr.text());
+      const envelope = JSON.parse(stdout.text());
+      assert.equal(envelope.error.kind, "authentication-failure");
+      assert.match(envelope.error.message, /HTTP 401: rejected credential/);
+      assert.match(envelope.error.message, engineName === "claude" ? /claude auth login/ : /opencode auth login/);
+      assert.equal(attempts, 3);
+      assert.match(stderr.text(), /attempt 3/);
+      assert.doesNotMatch(stderr.text(), /Agent exhausted its attempts/);
+    }
+  }
 });
 
 

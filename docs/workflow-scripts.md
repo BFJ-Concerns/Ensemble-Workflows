@@ -464,11 +464,24 @@ and model context still bound prompt size.
 
 ### Retries
 
-Each attempt that fails is retried, up to `maxAttempts`, with the failure fed
+Except for Codex output-schema rejections, each
+attempt that fails is retried, up to `maxAttempts`, with the failure fed
 back to the worker. Claude corrects in the same session through the prompt
 editor. If tmux becomes unavailable, a one-shot correction starts a fresh session, whose
 opening delivery also requires tmux.
 Codex and opencode retry with the failure appended to the prompt.
+
+Rejected credentials on a started worker consume an attempt and retry within
+the same bound. A dead or unstartable substrate retains its availability
+classification even when its diagnostic mentions credentials.
+An explicit provider HTTP 401 on a started turn records authentication
+failure even when Codex's retry-promise bound ends the turn.
+The attempt records `authentication-failure`, the engine's
+diagnostic, and a sign-in step: `codex login`, `claude auth login`, or
+`opencode auth login`. These failures are `unclassified`, with a named
+engine-specific authentication rule. Codex `modelNotFound` errors record
+`model-not-found` with a hint to choose an available model, and retain the
+normal attempt bound.
 
 Operational failures — a Claude session that never registered or died, a
 transcript that could not be read, an opencode subprocess killed at its

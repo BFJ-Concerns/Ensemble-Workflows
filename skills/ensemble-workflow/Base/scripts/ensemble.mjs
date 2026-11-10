@@ -16903,8 +16903,10 @@ function diagnose(error, context) {
     return [error.message];
   }
   if (error instanceof Error && error.name === "SingleAgentFailedError") {
-    const lines = [error.message];
-    for (const attempt of context.lastAgentRecord?.attempts ?? []) {
+    const attempts = context.lastAgentRecord?.attempts ?? [];
+    const repeatsAttempt = attempts.some((attempt) => attempt.failure?.message === error.message);
+    const lines = [repeatsAttempt ? "Agent failed without producing a result" : bounded(error.message)];
+    for (const attempt of attempts) {
       if (attempt.failure !== null) {
         const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
         const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;
@@ -17391,6 +17393,23 @@ function isJsonObject(value) {
 }
 
 // src/failure-classification.ts
+function diagnoseAttemptFailure(evidence) {
+  const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
+  const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
+  const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
+  if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
+    return failure;
+  }
+  const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
+  if (authentication) {
+    const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude" ? "Run `claude auth login`." : "Run `opencode auth login` for the provider you selected.";
+    return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${failure.message}` };
+  }
+  if (engine === "codex" && appServerDiagnostic?.code === "modelNotFound") {
+    return { kind: "model-not-found", message: `Codex modelNotFound: choose a model available to your account (run \`codex\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
+  }
+  return failure;
+}
 var OUTPUT_FAILURE_KINDS = /* @__PURE__ */ new Set(["empty-output", "invalid-json", "schema-validation"]);
 var CODEX_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
   ["usageLimitExceeded", "codex.usage-limit"],
@@ -17463,6 +17482,9 @@ var OPENCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
 ]);
 function classifyAttemptFailure(evidence) {
   const { kind } = evidence.failure;
+  if (kind === "authentication-failure" || kind === "model-not-found") {
+    return { class: "unclassified", rule: `${evidence.engine}.${kind}` };
+  }
   if (OUTPUT_FAILURE_KINDS.has(kind)) {
     return { class: "output", rule: "output" };
   }
@@ -24888,7 +24910,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (result.attemptFailure === void 0) {
       return void 0;
     }
-    const classification = this.#classify(attempts.target.engine, result.attemptFailure, null, result.diagnostics);
+    const failure = diagnoseAttemptFailure({
+      engine: attempts.target.engine,
+      failure: result.attemptFailure,
+      appServerDiagnostic: null,
+      diagnostics: result.diagnostics
+    });
+    const classification = this.#classify(attempts.target.engine, failure, null, result.diagnostics);
     const refused2 = classification.class === "availability" && attempts.chainRemains;
     if (!refused2) {
       attempts.ledger.answered += 1;
@@ -24899,7 +24927,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         attempt,
         attempts.target,
         "failed",
-        result.attemptFailure,
+        failure,
         // Returned operational failures use empty text when the worker
         // produced nothing; an answered empty string takes the output path.
         result.text === "" ? null : result.text,
@@ -24913,7 +24941,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         chainDecisionAfter(attempts, classification, !refused2 && boundRemains(attempts.ledger))
       )
     );
-    return { failure: result.attemptFailure, refused: refused2 };
+    return { failure, refused: refused2 };
   }
   /**
    * A thrown failure (the Codex transport's shape, and any engine's
@@ -24922,7 +24950,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * the run is ending, not the target.
    */
   #recordThrownFailure(record, attempt, error, startedAt, attempts) {
-    const observed = failureFromError(error);
+    const observed = diagnoseAttemptFailure({
+      engine: attempts.target.engine,
+      failure: failureFromError(error),
+      appServerDiagnostic: appServerDiagnosticOf(error),
+      diagnostics: failedTurnResultOf(error)?.diagnostics
+    });
     const failedResult = failedTurnResultOf(error);
     if (failedResult !== null) {
       recordTurnMetadata(record, failedResult);
@@ -32715,7 +32748,7 @@ async function runEnsembleCli(argv, options = {}) {
     const { result } = raced;
     const directAgentOutput = invocation.kind === "agent" && invocation.agentOptions.identity === true && result !== null ? result.output : result;
     if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
-      throw new SingleAgentFailedError();
+      throw new SingleAgentFailedError(runtime.lastAgentRecord?.()?.attempts.at(-1)?.failure ?? null);
     }
     const serialised = serialiseResult(result);
     stdout.write(`${serialised}
@@ -32724,7 +32757,7 @@ async function runEnsembleCli(argv, options = {}) {
     exitCode = 0;
   } catch (error) {
     const status = error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
-    terminalError = describeError(error);
+    terminalError = error instanceof SingleAgentFailedError && error.failure !== null ? error.failure : describeError(error);
     const partial = partialResult(runtime, status, terminalError);
     const serialised = serialiseResult(partial);
     stdout.write(`${serialised}
@@ -33084,10 +33117,12 @@ function watchRunEndings() {
   };
 }
 var SingleAgentFailedError = class extends Error {
-  constructor() {
-    super("Agent exhausted its attempts without producing a result");
+  constructor(failure) {
+    super(failure?.message ?? "Agent failed without producing a result");
+    this.failure = failure;
     this.name = new.target.name;
   }
+  failure;
 };
 async function parseInvocation(argv, cwd, stdin, program) {
   if (argv[0] === "agent") {

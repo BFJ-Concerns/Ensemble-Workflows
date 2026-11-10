@@ -82,8 +82,10 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
     // The archive holds precise per-attempt failures and the worker's own
     // diagnosis; withholding them behind a bare class name made the
     // operator open the archive to learn what stderr already knew.
-    const lines = [error.message];
-    for (const attempt of context.lastAgentRecord?.attempts ?? []) {
+    const attempts = context.lastAgentRecord?.attempts ?? [];
+    const repeatsAttempt = attempts.some(attempt => attempt.failure?.message === error.message);
+    const lines = [repeatsAttempt ? "Agent failed without producing a result" : bounded(error.message)];
+    for (const attempt of attempts) {
       if (attempt.failure !== null) {
         const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
         const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;

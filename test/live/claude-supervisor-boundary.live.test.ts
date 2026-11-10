@@ -33,7 +33,7 @@ after(async () => { await claude?.dispose(); });
  * and the supervisor serves the sibling through completion. Only a logged
  * upgrade may explain a replacement supervisor.
  */
-test("the built launcher preserves an owned supervisor and sibling while moving workers", { skip: !isLive, timeout: 900_000 }, async (t) => {
+test("the built launcher preserves an owned supervisor and sibling while moving workers", { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 900_000 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "ensemble-supervisor-boundary-"));
   const env = await ownedSupervisorEnvironment(root);
   const first: HeldProbe = { paths: probePaths(root, "first"), evidence: { kind: "cgroup" }, token: `FIRST_${randomUUID()}` };
@@ -161,7 +161,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
 
 /** A held session remains owned after its last turn, so its replacement must
  * move without a new send() or a test calling a control-plane poll. */
-test("the built launcher re-places an idle held session after respawn without another turn", { skip: !isLive, timeout: 600_000 }, async (t) => {
+test("the built launcher re-places an idle held session after respawn without another turn", { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 600_000 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "ensemble-supervisor-replacement-"));
   const env = await ownedSupervisorEnvironment(root);
   const slice = containingSlice(await readFile("/proc/self/cgroup", "utf8"));

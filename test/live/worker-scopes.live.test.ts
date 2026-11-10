@@ -47,7 +47,7 @@ const scenarios: Scenario[] = [
 ];
 
 for (const scenario of scenarios) {
-  test(`built launcher scopes: ${scenario.name}`, { skip: !live, timeout: 1_200_000 }, async (t) => {
+  test(`built launcher scopes: ${scenario.name}`, { skip: !live ? "ENSEMBLE_LIVE must be 1" : false, timeout: 1_200_000 }, async (t) => {
     assert.ok(process.env.ENSEMBLE_LIVE_CODEX_MODEL || scenario.direct === "claude",
       "UNPROVEN: ENSEMBLE_LIVE_CODEX_MODEL is required for real Codex dispatch");
     await exec("systemctl", ["--user", "show-environment"]).catch((error: unknown) => {

@@ -15,7 +15,7 @@ const exec = promisify(execFile);
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 
 test("live Claude edits its placed checkout, subdirectory and Ensemble worktree", {
-  skip: !isLive, timeout: 900_000
+  skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 900_000
 }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "claude-placed-edits-"));
   const repo = path.join(root, "repo");

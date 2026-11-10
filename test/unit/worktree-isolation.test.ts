@@ -163,23 +163,33 @@ test("a linked checkout creates worktrees beside the main checkout", async () =>
   }
 });
 
-test("a submodule stores isolated worktrees beside its checkout", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-submodule-"));
-  const source = path.join(directory, "source");
-  const superproject = path.join(directory, "superproject");
-  await initialiseRepo(source);
-  await initialiseRepo(superproject);
-  await git(superproject, ["-c", "protocol.file.allow=always", "submodule", "add", source, "module"]);
+for (const sparse of [false, true]) {
+  test(`submodule checkouts share the main checkout's container with sparse checkout ${sparse ? "enabled" : "disabled"}`, async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-submodule-"));
+    const source = path.join(directory, "source");
+    const superproject = path.join(directory, "superproject");
+    await initialiseRepo(source);
+    await initialiseRepo(superproject);
+    await git(superproject, ["-c", "protocol.file.allow=always", "submodule", "add", source, "module"]);
+    const module = path.join(superproject, "module");
+    if (sparse) await git(module, ["sparse-checkout", "init"]);
+    const linked = path.join(directory, "linked-module");
+    await git(module, ["worktree", "add", "-b", "linked", linked]);
 
-  try {
-    const manager = new GitWorktreeIsolationManager();
-    const worktree = await manager.create(path.join(superproject, "module"));
-    assert.equal(path.dirname(worktree.path), path.join(superproject, "module.ensemble-workflows-worktrees"));
-    await manager.finish(worktree);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
+    try {
+      const created = [];
+      for (const checkout of [module, linked]) {
+        const manager = new GitWorktreeIsolationManager();
+        const worktree = await manager.create(checkout);
+        created.push({ manager, worktree });
+        assert.equal(path.dirname(worktree.path), path.join(superproject, "module.ensemble-workflows-worktrees"));
+      }
+      for (const { manager, worktree } of created) await manager.finish(worktree);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
 
 test("linked checkouts of a bare repository share a container beside the repository", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-bare-"));

@@ -121,7 +121,9 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
   async #resolveRepoRoots(cwd: string): Promise<RepositoryRoots> {
     const checkout = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
     const common = path.resolve(cwd, (await git(cwd, ["rev-parse", "--git-common-dir"])).trim());
-    const worktree = (await git(cwd, ["config", "--get", "--default", "", "core.worktree"])).trim();
+    // Address the main Git directory so config.worktree is read from there,
+    // rather than from the linked checkout that happens to dispatch this call.
+    const worktree = (await git(cwd, ["--git-dir", common, "config", "--get", "--default", "", "core.worktree"])).trim();
     // Placement depends only on shared metadata, including when no main
     // checkout is recorded (bare repositories and separate git directories).
     // A .git directory places the container beside its parent;

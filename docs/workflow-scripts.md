@@ -594,7 +594,10 @@ await builder.close();
 - **Identified turns:** `identity: true` at creation makes every `send()`
   resolve `{ label, phase, output, failure }`. `failure` is `null` for a
   successful answer, including a valid JSON `null`; a failed turn carries
-  its recorded failure message. The option cannot vary per turn.
+  its recorded failure message. A budget refusal retains the explicit session
+  phase, or the current `phase()` title at `send()` when no phase was set,
+  without creating a queued worker or an agent record. The option cannot vary
+  per turn.
 - **Turns are sequential:** calling `send()` while a previous send is
   unsettled throws, as does `send()` after `close()` or after the run ends.
 - **Concurrency and budget are per turn:** a turn holds its engine slot from

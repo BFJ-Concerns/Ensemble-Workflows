@@ -23397,7 +23397,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
-    let phase = options.phase ?? null;
+    let phase = options.phase ?? this.progress.snapshot().currentPhase;
     state.inFlight = true;
     try {
       this.budget.assertCanStart(engine.name, `session turn ${state.turnCount + 1}`);

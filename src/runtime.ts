@@ -1025,7 +1025,7 @@ export class EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
-    let phase = options.phase ?? null;
+    let phase = options.phase ?? this.progress.snapshot().currentPhase;
     state.inFlight = true;
     try {
       // Each turn is its own dispatch: budget admission is judged here, at

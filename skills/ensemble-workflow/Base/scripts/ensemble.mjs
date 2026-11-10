@@ -16641,14 +16641,14 @@ async function toolVersions() {
   const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
-    commandVersion("claude", ["--version"]),
+    commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
     commandVersion("opencode", ["--version"])
   ]);
   return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
 }
-async function commandVersion(command, args) {
+async function commandVersion(command, args, env) {
   try {
-    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5e3 });
+    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5e3, env });
     return (stdout || stderr).trim() || null;
   } catch {
     return null;
@@ -21254,15 +21254,17 @@ var ClaudeEngineInvocation = class {
     if (previousFailure !== void 0) {
       lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
+    lines.push("", this.#framedTask());
+    return lines.join("\n");
+  }
+  #framedTask() {
     let tagIndex = 0;
     while (this.#turnPrompt.includes(`ensemble_task_${tagIndex}`)) tagIndex += 1;
     const taskTag = `ensemble_task_${tagIndex}`;
-    lines.push(
-      "",
+    return [
       `Carry out the task enclosed by <${taskTag}> and </${taskTag}>. The tags mark its boundaries.`,
       `<${taskTag}>${this.#turnPrompt}</${taskTag}>`
-    );
-    return lines.join("\n");
+    ].join("\n");
   }
   /**
    * A follow-up turn's valve message: the session already holds the
@@ -21278,7 +21280,7 @@ var ClaudeEngineInvocation = class {
         ""
       );
     }
-    lines.push(this.#turnPrompt);
+    lines.push(this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask());
     return lines.join("\n");
   }
   /**
@@ -33348,6 +33350,9 @@ function flushed(stream) {
   });
 }
 if (isMain) {
+  process.stdout.on("error", (error) => {
+    if (error.code !== "EPIPE") throw error;
+  });
   const versionError = nodeVersionError();
   if (versionError !== null) {
     process.stderr.write(`${versionError}

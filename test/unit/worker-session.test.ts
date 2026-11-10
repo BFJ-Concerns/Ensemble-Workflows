@@ -794,6 +794,61 @@ test("a claude session's follow-up turn steers the created session, never a fres
   });
 });
 
+for (const prompt of [
+  "\n\t wanted fixture\r\n \t\n",
+  "\uFEFF\u00A0wanted fixture\u2028\u2003",
+  "\t wanted fixture",
+  "wanted fixture\n",
+  "\n<ensemble_task_0>literal</ensemble_task_0> ensemble_task_1\n"
+]) {
+  for (const schema of [undefined, { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }]) {
+    test(`a Claude follow-up preserves edge whitespace in one attempt: ${JSON.stringify(prompt)}, schema ${schema !== undefined}`, async () => {
+      await withClaudeRuntime(
+        [{ text: "first reply" }, { text: '{"ok":true}', arrival: sent => sent.trim() }],
+        async (runtime, controlPlane) => {
+          const records = captureRecords(runtime);
+          const held = runtime.createWorkerSession({ engine: "claude" });
+          await held.send("orient yourself");
+          assert.deepEqual(await held.send(prompt, schema === undefined ? {} : { schema }), schema === undefined ? '{"ok":true}' : { ok: true });
+          const sent = controlPlane.steered[0]!;
+          assert.equal(sent.trim(), sent);
+          const boundary = /\n<(ensemble_task_\d+)>/.exec(sent);
+          assert.ok(boundary);
+          const tag = boundary[1]!;
+          assert.equal(prompt.includes(tag), false);
+          assert.deepEqual(Buffer.from(sent.slice(boundary.index + boundary[0].length, -`</${tag}>`.length)), Buffer.from(prompt));
+          assert.equal(records.at(-1)?.attempts.length, 1);
+          assert.equal(records.at(-1)?.attempts[0]?.failure, null);
+          assert.equal(controlPlane.steered.length, 1);
+          assert.equal(controlPlane.dispatchCount, 1);
+          await runtime.close();
+        }
+      );
+    });
+  }
+}
+
+test("a whitespace follow-up's replacement retains its boundary under native trimming", async () => {
+  await withClaudeRuntime(
+    [{ text: "first reply" }, { text: "altered reply", arrival: sent => sent.replace("wanted", "warped"), busyPolls: 3 },
+      { text: "replacement reply", arrival: sent => sent.trim() }],
+    async (runtime, controlPlane) => {
+      const records = captureRecords(runtime);
+      const held = runtime.createWorkerSession({ engine: "claude" });
+      await held.send("orient yourself");
+      const prompt = "\n\t wanted fixture \n";
+      assert.equal(await held.send(prompt), "replacement reply");
+      assert.equal(controlPlane.steered.length, 2);
+      assert.match(controlPlane.steered[1]!, REPLACEMENT);
+      assert.ok(controlPlane.steered[1]!.endsWith(`\n\n${controlPlane.steered[0]}`));
+      assert.ok(controlPlane.steered[1]!.includes(prompt));
+      assert.deepEqual(controlPlane.steeredMidTurn, [false, false]);
+      assert.deepEqual(records.at(-1)?.attempts.map(attempt => attempt.failure?.kind ?? null), ["claude-delivery-error", null]);
+      await runtime.close();
+    }
+  );
+});
+
 test("Claude sessions and one-shot workers dispatch without a cache TTL", async () => {
   await withClaudeRuntime([{ text: "session reply" }, { text: "one-shot reply" }], async (runtime, controlPlane) => {
     const session = runtime.createWorkerSession({ engine: "claude" });
@@ -888,14 +943,13 @@ function captureRecords(
 const REPLACEMENT = /^An earlier copy of the message below was submitted to you but did not arrive as sent/;
 
 test("a follow-up the session received altered is never submitted again as it was: its turn ends first, then a replacement goes", async () => {
-  // Every copy arrives with its trailing space gone, as a session that
-  // trims its input records it, so no attempt can verify.
-  const trimmed = (sent: string): string => sent.trimEnd();
+  // Alter the task content, rather than the native submission boundary.
+  const altered = (sent: string): string => sent.replace("wanted", "warped");
   await withClaudeRuntime(
     [
       { text: "first reply" },
-      { text: "reply to the altered copy", arrival: trimmed, busyPolls: 3 },
-      { text: "reply to the altered replacement", arrival: trimmed, busyPolls: 3 },
+      { text: "reply to the altered copy", arrival: altered, busyPolls: 3 },
+      { text: "reply to the altered replacement", arrival: altered, busyPolls: 3 },
       { text: "third reply" }
     ],
     async (runtime, controlPlane) => {
@@ -905,14 +959,14 @@ test("a follow-up the session received altered is never submitted again as it wa
 
       // The session answered both copies, and neither reply is the turn's
       // value: a reply to text nobody sent answers nothing.
-      assert.equal(await session.send("wanted fixture "), null);
+      assert.equal(await session.send("wanted fixture"), null);
 
       // The discriminating assertions. Two submissions, and the second is
       // not the first again: it says it replaces an earlier copy.
       assert.equal(controlPlane.steered.length, 2);
-      assert.equal(controlPlane.steered[0], "wanted fixture ");
+      assert.equal(controlPlane.steered[0], "wanted fixture");
       assert.match(controlPlane.steered[1] ?? "", REPLACEMENT);
-      assert.ok(controlPlane.steered[1]?.endsWith("\n\nwanted fixture "));
+      assert.ok(controlPlane.steered[1]?.endsWith("\n\nwanted fixture"));
       // And nothing was submitted into a turn still running: the altered
       // turn was followed to its end before the retry sent anything.
       assert.deepEqual(controlPlane.steeredMidTurn, [false, false]);
@@ -924,7 +978,7 @@ test("a follow-up the session received altered is never submitted again as it wa
       assert.deepEqual(settled?.attempts.map((attempt) => attempt.rawOutput), ["reply to the altered copy", "reply to the altered replacement"]);
       assert.match(
         settled?.attempts[0]?.failure?.message ?? "",
-        /^the follow-up turn was submitted, but the session received different text: sent 15 UTF-8 bytes, sha256 [0-9a-f]{64}; received 14 UTF-8 bytes, sha256 [0-9a-f]{64}$/
+        /^the follow-up turn was submitted, but the session received different text: sent 14 UTF-8 bytes, sha256 [0-9a-f]{64}; received 14 UTF-8 bytes, sha256 [0-9a-f]{64}$/
       );
 
       // The session is at a turn boundary and takes its next turn as usual.

@@ -644,7 +644,7 @@ test("permission deny rules join the per-dispatch settings file beside the env b
   }
 });
 
-test("stop reaps a surviving process tagged with the dispatch's marker", async () => {
+test("stop reaps a surviving process tagged with the dispatch's marker", async (context) => {
   // The failure this closes: descendants of a daemon-hosted worker reparent
   // to the user session when the worker dies, and nothing in the harness
   // could reach them. The tag inherits through every spawn, so stop() can.
@@ -697,17 +697,23 @@ test("stop reaps a surviving process tagged with the dispatch's marker", async (
     );
     const exited = new Promise<void>((resolve) => straggler.once("exit", () => resolve()));
     const stubbornExited = new Promise<void>((resolve) => stubborn.once("exit", () => resolve()));
+    context.after(async () => {
+      straggler.kill("SIGKILL");
+      stubborn.kill("SIGKILL");
+      await Promise.all([exited, stubbornExited]);
+    });
     await new Promise<void>((resolve) => straggler.once("spawn", () => resolve()));
-    // The TERM handler must be installed before the reap fires, or the
-    // default disposition kills the child and the escalation goes untested.
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      try {
-        await readFile(readyPath, "utf8");
-        break;
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-    }
+    // The child publishes this marker after installing its TERM handler.
+    // Exhausting the hang guard must fail here, before stop() can send TERM.
+    await waitForCondition(
+      async () => (await readFile(readyPath, "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return "";
+        throw error;
+      })) === "ready",
+      "the surviving process to install its SIGTERM handler",
+      60_000,
+      25
+    );
 
     const controlPlane = new DeliveryStubControlPlane({
       claudeBin: stubPath,
@@ -1215,6 +1221,7 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
     const queriesPath = path.join(dir, "roster-queries");
     const replacementPath = path.join(dir, "replacement-pid");
     const settingsPathFile = path.join(dir, "settings-path");
+    const settingsReadyPath = path.join(dir, "settings-ready");
     const lateSettingsPath = path.join(dir, "late-settings.json");
     const sessionId = "00000000-0000-4000-8000-00000000000b";
     const name = "placement-probe";
@@ -1240,6 +1247,8 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
           for await (const chunk of process.stdin) void chunk;
           const settingsPath = args[args.indexOf("--settings") + 1];
           await writeFile(${JSON.stringify(settingsPathFile)}, settingsPath);
+          // Publish only after the settings-path capture is complete.
+          await writeFile(${JSON.stringify(settingsReadyPath)}, "");
           const deadline = Date.now() + 120_000;
           while (!(await exists(${JSON.stringify(releasePath)}))) {
             if (Date.now() >= deadline) {
@@ -1315,7 +1324,7 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
     assert.equal(placed[0]!.bgStillRunning, true, "the session was placed only after `claude --bg` returned");
     assert.ok(placed[0]!.rosterQueries >= 3, `the roster was read ${placed[0]!.rosterQueries} time(s) before placement; the two pid-less answers were never seen`);
     assert.equal(await fileExists(bgExitedPath), false, "placement waited for the held background command");
-    await waitForCondition(() => fileExists(settingsPathFile), "the background command to publish its settings path", 60_000, 25);
+    await waitForCondition(() => fileExists(settingsReadyPath), "the background command to finish writing its settings path", 60_000, 25);
     const settingsPath = await readFile(settingsPathFile, "utf8");
     assert.equal(await fileExists(settingsPath), true, "registration removed the live session's settings");
     await writeFile(releasePath, "");

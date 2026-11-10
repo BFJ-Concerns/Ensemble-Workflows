@@ -3242,8 +3242,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path16) {
-      let input = path16;
+    function removeDotSegments(path19) {
+      let input = path19;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3495,8 +3495,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path16, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path16 && path16 !== "/" ? path16 : void 0;
+        const [path19, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path19 && path19 !== "/" ? path19 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -13834,13 +13834,13 @@ var require_acorn_globals = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path15 from "node:path";
+import path18 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile10, stat as stat4 } from "node:fs/promises";
+import { readFile as readFile10, stat as stat5 } from "node:fs/promises";
 import { hostname as hostname4 } from "node:os";
-import path14 from "node:path";
+import path17 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/ambient-settings.ts
@@ -14090,10 +14090,9 @@ var BudgetExceededError = class extends EnsembleError {
   engine;
   total;
   spent;
-  constructor(engine, total, spent) {
-    super(
-      total === 0 ? `Token budget for ${engine} is 0, which admits no agent: this agent was not started` : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`
-    );
+  constructor(engine, total, spent, admission = "dispatch") {
+    const reason = total === 0 ? `Token budget for ${engine} is 0, which admits no dispatch` : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`;
+    super(`${reason}; refused ${admission}`);
     this.engine = engine;
     this.total = total;
     this.spent = spent;
@@ -14649,7 +14648,7 @@ function isStatusFileName(name) {
   return name.startsWith(STATUS_FILE_PREFIX) && name.endsWith(STATUS_FILE_SUFFIX) && name.length > STATUS_FILE_PREFIX.length + STATUS_FILE_SUFFIX.length;
 }
 var DEFAULT_HEARTBEAT_MS = 1e4;
-var STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.[1-9]\d*\.tmp$/;
+var STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.(?:(\d+|unknown)\.)?[1-9]\d*\.tmp$/;
 async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
   if (owner === void 0 || typeof owner.pid !== "number" || owner.host !== host) {
     return false;
@@ -14772,8 +14771,9 @@ var StatusFileWriter = class {
   }
   async #writeAtomic(snapshot) {
     if (!await this.#initialSweep) return;
-    const tmp = `${this.#target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
-    const published = { ...snapshot, owner: await this.#ownerEvidence };
+    const owner = await this.#ownerEvidence;
+    const tmp = `${this.#target}.${owner.pid}.${owner.start_ticks ?? "unknown"}.${this.#tmpSeq += 1}.tmp`;
+    const published = { ...snapshot, owner };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
 `, "utf8");
     await this.#fileOperations.rename(tmp, this.#target);
@@ -14783,7 +14783,7 @@ var StatusFileWriter = class {
    * The new-writer trigger for what a killed run left behind (the same
    * discipline as the archive reaper): every status file in the directory
    * whose owner is *provably* gone is removed, and a temp file whose writer
-   * pid is dead with it. The judgement is the owner evidence, never age —
+   * identity is refuted with it. The judgement is the owner evidence, never age —
    * a slow run is not an orphan, an unparseable file is not this writer's
    * to destroy, and a file with no evidence is left for its owner.
    */
@@ -14802,7 +14802,7 @@ var StatusFileWriter = class {
       const temp = STATUS_TEMP_SUFFIX_PATTERN.exec(entry);
       if (temp !== null) {
         const ownerPid = Number(temp[1]);
-        if (isStatusFileName(entry.slice(0, -temp[0].length)) && Number.isSafeInteger(ownerPid) && await this.#writerGone(ownerPid)) {
+        if (isStatusFileName(entry.slice(0, -temp[0].length)) && Number.isSafeInteger(ownerPid) && await this.#writerGone(ownerPid, temp[2])) {
           await this.#unlinkQuietly(file);
         }
         continue;
@@ -14822,11 +14822,18 @@ var StatusFileWriter = class {
     }
   }
   /**
-   * A temp file names only its writer's pid, so the judgement is the proc
-   * filesystem's: the pid absent where this process can read its own stat
-   * is death evidence; an unreadable proc filesystem decides nothing.
+   * New temp files carry the same start identity as snapshots. Legacy names
+   * only support judging an absent pid; unreadable proc evidence never
+   * proves death for either format.
    */
-  async #writerGone(pid) {
+  async #writerGone(pid, startTicks) {
+    if (startTicks !== void 0) {
+      return snapshotOwnerGone({
+        host: hostname(),
+        pid,
+        start_ticks: startTicks === "unknown" ? null : startTicks
+      }, this.#procDir);
+    }
     if (await readProcessStartTicks(this.#procDir, pid) !== null) {
       return false;
     }
@@ -17307,11 +17314,11 @@ var TokenBudget = class {
     }
     return Math.max(0, ceiling - this.spent(engine));
   }
-  assertCanStart(engine) {
+  assertCanStart(engine, admission = "dispatch") {
     const ceiling = this.ceilings[engine] ?? null;
     const spent = this.spent(engine);
     if (ceiling !== null && spent >= ceiling) {
-      throw new BudgetExceededError(engine, ceiling, spent);
+      throw new BudgetExceededError(engine, ceiling, spent, admission);
     }
   }
   record(engine, event) {
@@ -17446,6 +17453,12 @@ function classifyAttemptFailure(evidence) {
   if (kind === "EngineShutdownError") {
     return { class: "unclassified", rule: "engine-shutdown" };
   }
+  if (kind === "SubstrateRefusedError") {
+    return { class: "availability", rule: "substrate.refused" };
+  }
+  if (kind === "ResourcePreflightRefusedError") {
+    return { class: "availability", rule: "preflight.resource-denied" };
+  }
   switch (evidence.engine) {
     case "codex":
       return classifyCodexFailure(kind, evidence.appServerDiagnostic);
@@ -17542,8 +17555,8 @@ var RunProgress = class {
     this.#counters(engine).cap = cap;
     this.#touch();
   }
-  setArchiveDir(path16) {
-    this.#archiveDir = path16;
+  setArchiveDir(path19) {
+    this.#archiveDir = path19;
     this.#touch();
   }
   /** Publishes only observed identity; served values must not echo the request. */
@@ -17553,16 +17566,16 @@ var RunProgress = class {
     Object.assign(record, identity);
     this.#touch();
   }
-  noteAgentTranscript(id, path16) {
+  noteAgentTranscript(id, path19) {
     const record = this.#live.get(id);
     if (record === void 0) return;
-    record.transcript = path16;
+    record.transcript = path19;
     this.#touch();
   }
-  noteAgentWorktree(id, path16) {
+  noteAgentWorktree(id, path19) {
     const record = this.#live.get(id);
     if (record === void 0) return;
-    record.worktree = path16;
+    record.worktree = path19;
     this.#touch();
   }
   /** Cumulative worker tokens across attempts and targets; null means unobserved. */
@@ -17839,12 +17852,190 @@ function rank(state) {
   return state === "running" ? 0 : state === "queued" ? 1 : 2;
 }
 
+// src/resource-preflight.ts
+import { randomBytes } from "node:crypto";
+import { mkdtemp, rm as rm4, stat as stat4 } from "node:fs/promises";
+import { createServer } from "node:net";
+import path10 from "node:path";
+var CALLER_SANDBOX_RULES = [
+  {
+    // Codex workspace-write marks disabled networking or an active network
+    // proxy. Either identifies Codex, not its filesystem policy, so a
+    // filesystem or socket denial is also required.
+    name: "Codex",
+    lift: 'launch Ensemble with sandbox_mode="danger-full-access", or a permission profile granting these paths and Unix socket access',
+    detect: (env, denials) => {
+      const marker = ["CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_NETWORK_PROXY_ACTIVE"].find((key) => env[key] === "1");
+      return marker !== void 0 && denials.some((denial) => ["EROFS", "EACCES", "EPERM"].includes(denial.code)) ? `${marker}=1; filesystem or socket access denied` : null;
+    }
+  }
+];
+function diagnoseCallerSandbox(env, denials, rules = CALLER_SANDBOX_RULES) {
+  for (const rule of rules) {
+    const evidence = rule.detect(env, denials);
+    if (evidence !== null) {
+      return { name: rule.name, evidence, lift: rule.lift };
+    }
+  }
+  return null;
+}
+var ResourcePreflightRefusedError = class extends SubstrateRefusedError {
+  constructor(denials, sandbox) {
+    super(refusalMessage(denials, sandbox));
+    this.denials = denials;
+    this.sandbox = sandbox;
+  }
+  denials;
+  sandbox;
+};
+function refusalMessage(denials, sandbox) {
+  const denied = denials.map((denial) => {
+    const { requirement } = denial;
+    const verb = requirement.access === "bind-socket" ? "bind a socket under" : "create entries in";
+    const where = denial.probedPath === requirement.path ? "" : ` (probed at ${denial.probedPath})`;
+    const who = requirement.owner === "launcher" ? "the launcher" : `the ${requirement.owner} engine`;
+    return `cannot ${verb} ${requirement.path}${where}, ${who}'s ${requirement.role} (from ${requirement.resolvedFrom}): ${denial.code}`;
+  });
+  const cause = sandbox === null ? "no sandbox around the launching process was identified; grant it this access, or move the path by the setting named" : `the launching process runs inside the ${sandbox.name} sandbox (${sandbox.evidence}), and access was denied; ${sandbox.lift}`;
+  return `${denied.join("; ")} \u2014 ${cause}`;
+}
+async function probeResources(requirements) {
+  const outcomes = await Promise.all(requirements.map((requirement) => probeResource(requirement)));
+  return outcomes.filter((denial) => denial !== null);
+}
+async function judgeResources(requirements, env = process.env) {
+  const denials = await probeResources(requirements);
+  if (denials.length > 0) {
+    throw new ResourcePreflightRefusedError(denials, diagnoseCallerSandbox(env, denials));
+  }
+}
+async function probeResource(requirement) {
+  const located = await nearestExistingDirectory(requirement.path);
+  if ("code" in located) {
+    return { requirement, probedPath: located.path, code: located.code, message: located.message };
+  }
+  return requirement.access === "bind-socket" ? probeSocketBinding(requirement, located.path) : probeEntryCreation(requirement, located.path);
+}
+async function probeEntryCreation(requirement, dir) {
+  let scratch;
+  try {
+    scratch = await mkdtemp(path10.join(dir, ".ensemble-probe-"));
+  } catch (error) {
+    return denialOf(requirement, dir, error);
+  }
+  await rm4(scratch, { recursive: true, force: true });
+  return null;
+}
+async function probeSocketBinding(requirement, dir) {
+  const socketPath = path10.join(dir, `.ep-${randomBytes(4).toString("hex")}`);
+  if (Buffer.byteLength(socketPath) > MAX_SOCKET_PATH_BYTES) {
+    return {
+      requirement,
+      probedPath: dir,
+      code: "ENAMETOOLONG",
+      message: `a socket path under ${dir} exceeds the ${MAX_SOCKET_PATH_BYTES}-byte limit for a Unix socket`
+    };
+  }
+  try {
+    await listenOnce(socketPath);
+  } catch (error) {
+    return denialOf(requirement, dir, error);
+  }
+  await rm4(socketPath, { force: true });
+  return null;
+}
+var MAX_SOCKET_PATH_BYTES = 107;
+async function nearestExistingDirectory(target) {
+  let current2 = path10.resolve(target);
+  for (; ; ) {
+    try {
+      const entry = await stat4(current2);
+      if (entry.isDirectory()) {
+        return { path: current2 };
+      }
+      return { path: current2, code: "ENOTDIR", message: `${current2} exists and is not a directory` };
+    } catch (error) {
+      const code = errnoOf(error);
+      const parent = path10.dirname(current2);
+      if (code !== "ENOENT" || parent === current2) {
+        return { path: current2, code, message: messageOf(error) };
+      }
+      current2 = parent;
+    }
+  }
+}
+function listenOnce(socketPath) {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      server.close((error) => error === void 0 ? resolve() : reject(error));
+    });
+  });
+}
+function denialOf(requirement, probedPath, error) {
+  return { requirement, probedPath, code: errnoOf(error), message: messageOf(error) };
+}
+function errnoOf(error) {
+  const code = error?.code;
+  return typeof code === "string" ? code : "unknown";
+}
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+var EngineResourceGate = class {
+  #requirementsOf;
+  #env;
+  #judged = /* @__PURE__ */ new Map();
+  constructor(requirementsOf, env = process.env) {
+    this.#requirementsOf = requirementsOf;
+    this.#env = env;
+  }
+  async require(engine, cwd = process.cwd()) {
+    const requirements = this.#requirementsOf(engine, cwd);
+    const key = JSON.stringify([engine, requirements]);
+    let judged = this.#judged.get(key);
+    if (judged === void 0) {
+      judged = probeResources(requirements).catch((error) => {
+        this.#judged.delete(key);
+        throw error;
+      });
+      this.#judged.set(key, judged);
+    }
+    let denials;
+    try {
+      denials = await judged;
+    } catch (error) {
+      throw new SubstrateRefusedError(`resource preflight for ${engine} could not finish: ${messageOf(error)}`, { cause: error });
+    }
+    if (denials.length > 0) {
+      throw new ResourcePreflightRefusedError(denials, diagnoseCallerSandbox(this.#env, denials));
+    }
+  }
+};
+
 // src/engines.ts
 import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/app-server.ts
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+
+// src/engine-environment.ts
+import path11 from "node:path";
+var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
+function launchEnvironment(engine, declared, inherited = process.env) {
+  if (engine === "claude") {
+    const env = { ...withoutRunScopedVariables(inherited), ...declared, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
+    if (env.CLAUDE_CONFIG_DIR) {
+      env.CLAUDE_CONFIG_DIR = path11.resolve(env.CLAUDE_CONFIG_DIR.normalize("NFC"));
+    }
+    return env;
+  }
+  return { ...inherited, ...declared };
+}
+
+// src/app-server.ts
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
@@ -17943,9 +18134,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      // Declared variables sit above inherited ones; everything undeclared
-      // still inherits, so a configured parent keeps working unchanged.
-      env: { ...process.env, ...options.workerEnv }
+      env: launchEnvironment("codex", options.workerEnv)
     });
     this.#wireReader();
     this.#wireStderr();
@@ -19007,14 +19196,84 @@ function itemTypeFromItem(item) {
 }
 
 // src/claude-control-plane.ts
-import { access, mkdtemp, readFile as readFile6, readdir as readdir5, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
-import { homedir as homedir3, hostname as hostname3, tmpdir } from "node:os";
-import path11 from "node:path";
+import { access, mkdtemp as mkdtemp2, readFile as readFile6, readdir as readdir5, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
+import { hostname as hostname3 } from "node:os";
+import path14 from "node:path";
+
+// src/engine-resources.ts
+import { createHash as createHash3 } from "node:crypto";
+import { homedir as homedir3 } from "node:os";
+import path12 from "node:path";
+function codexResources(env) {
+  const declared = env.worker.CODEX_HOME;
+  const home = declared !== void 0 && declared.length > 0 ? { path: path12.resolve(env.cwd, declared), from: "CODEX_HOME" } : { path: path12.resolve(env.cwd, homeOf(env.worker), ".codex"), from: "default: $HOME/.codex" };
+  return [{ owner: "codex", role: "Codex home", path: home.path, access: "create-entries", resolvedFrom: home.from }];
+}
+function claudeResources(env) {
+  const config = claudeConfigDirectory(env.worker, env.cwd);
+  const uid = process.getuid?.() ?? 0;
+  const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path12.join(env.worker.PREFIX, "tmp") : "/tmp";
+  const daemon = path12.join(daemonRoot, `cc-daemon-${uid}`, createHash3("sha256").update(config).digest("hex").slice(0, 8));
+  const configFrom = env.worker.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "default: $HOME/.claude";
+  const scratch = temporaryDirectory(env.launcher, process.cwd());
+  const valve = claudeValveDirectory(env.launcher);
+  const workerScratch = env.worker.CLAUDE_CODE_TMPDIR ? { path: path12.resolve(env.cwd, env.worker.CLAUDE_CODE_TMPDIR), from: "CLAUDE_CODE_TMPDIR" } : temporaryDirectory(env.worker, env.cwd);
+  return [
+    { owner: "claude", role: "Claude home", path: config, access: "create-entries", resolvedFrom: configFrom },
+    { owner: "claude", role: "Claude global configuration", path: env.worker.CLAUDE_CONFIG_DIR ? config : path12.resolve(env.cwd, homeOf(env.worker)), access: "create-entries", resolvedFrom: env.worker.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "HOME (.claude.json)" },
+    { owner: "claude", role: "daemon sockets", path: daemon, access: "bind-socket", resolvedFrom: `${configFrom}; daemon default: ${daemonRoot}/cc-daemon-<uid>/<config hash>` },
+    { owner: "claude", role: "dispatch settings scratch files", path: scratch.path, access: "create-entries", resolvedFrom: `launcher ${scratch.from}` },
+    { owner: "claude", role: "reply valve sockets", path: valve, access: "bind-socket", resolvedFrom: env.launcher.TMUX_TMPDIR ? "launcher TMUX_TMPDIR" : "launcher default: /tmp" },
+    { owner: "claude", role: "Claude scratch files", path: path12.join(workerScratch.path, `claude-${uid}`), access: "create-entries", resolvedFrom: workerScratch.from }
+  ];
+}
+function openCodeResources(env) {
+  const homes = [
+    ["XDG_DATA_HOME", ".local/share", "data"],
+    ["XDG_CONFIG_HOME", ".config", "configuration"],
+    ["XDG_STATE_HOME", ".local/state", "state"],
+    ["XDG_CACHE_HOME", ".cache", "cache"]
+  ];
+  const scratch = temporaryDirectory(env.worker, env.cwd);
+  return [
+    ...homes.map(([key, fallback, role]) => ({
+      owner: "opencode",
+      role: `opencode ${role}`,
+      access: "create-entries",
+      path: path12.resolve(env.cwd, env.worker[key] || path12.join(homeOf(env.worker), fallback), "opencode"),
+      resolvedFrom: env.worker[key] ? key : `default: $HOME/${fallback}`
+    })),
+    { owner: "opencode", role: "opencode scratch files", path: path12.join(scratch.path, "opencode"), access: "create-entries", resolvedFrom: scratch.from }
+  ];
+}
+function claudeConfigDirectory(env, cwd) {
+  return path12.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path12.join(homeOf(env), ".claude")).normalize("NFC"));
+}
+function claudeValveDirectory(env) {
+  return path12.resolve(env.TMUX_TMPDIR || "/tmp");
+}
+function temporaryDirectory(env, cwd) {
+  for (const key of ["TMPDIR", "TMP", "TEMP"]) {
+    if (env[key]) return { path: path12.resolve(cwd, env[key]), from: key };
+  }
+  return { path: "/tmp", from: "default: /tmp" };
+}
+var ENGINE_RESOURCE_RESOLVERS = {
+  codex: codexResources,
+  claude: claudeResources,
+  opencode: openCodeResources
+};
+function engineResourceRequirements(engine, declared, cwd, launcher = process.env) {
+  return ENGINE_RESOURCE_RESOLVERS[engine]({ worker: launchEnvironment(engine, declared, launcher), launcher, cwd });
+}
+function homeOf(env) {
+  return env.HOME !== void 0 && env.HOME.length > 0 ? env.HOME : homedir3();
+}
 
 // src/worker-scopes.ts
 import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
 import { readFile as readFile5, readdir as readdir4 } from "node:fs/promises";
-import path10 from "node:path";
+import path13 from "node:path";
 var RUN_SCOPE_GROUP = "run";
 var SystemdWorkerScopes = class {
   slice;
@@ -19117,7 +19376,7 @@ var SystemdWorkerScopes = class {
     const deadline = Date.now() + this.#moveTimeoutMs;
     for (; ; ) {
       const lines = await Promise.all(
-        pids.map((pid) => readFile5(path10.join(this.#procDir, String(pid), "cgroup"), "utf8").catch(() => null))
+        pids.map((pid) => readFile5(path13.join(this.#procDir, String(pid), "cgroup"), "utf8").catch(() => null))
       );
       if (lines.every((line) => line === null || line.trimEnd().endsWith(`/${unit}`))) {
         return true;
@@ -19214,7 +19473,7 @@ async function createWorkerScopes(options = {}) {
   if (!await userManagerAnswers(systemd.busctlBin ?? "busctl", env)) {
     return new NoWorkerScopes();
   }
-  const cgroup = await readFile5(path10.join(procDir, "self", "cgroup"), "utf8").catch(() => "");
+  const cgroup = await readFile5(path13.join(procDir, "self", "cgroup"), "utf8").catch(() => "");
   return new SystemdWorkerScopes({ ...systemd, slice: containingSlice(cgroup) });
 }
 function containingSlice(cgroupFile) {
@@ -19246,10 +19505,10 @@ async function processTree(pid, procDir = "/proc") {
   const queue = [pid];
   while (queue.length > 0) {
     const parent = queue.shift();
-    const taskDir = path10.join(procDir, String(parent), "task");
+    const taskDir = path13.join(procDir, String(parent), "task");
     const tasks = await readdir4(taskDir).catch(() => []);
     for (const task of tasks) {
-      const children = await readFile5(path10.join(taskDir, task, "children"), "utf8").catch(() => "");
+      const children = await readFile5(path13.join(taskDir, task, "children"), "utf8").catch(() => "");
       for (const child of children.split(/\s+/).filter((entry) => /^\d+$/.test(entry)).map(Number)) {
         if (!seen.has(child)) {
           seen.add(child);
@@ -19287,7 +19546,6 @@ var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
 var OWNER_FILENAME = "owner.json";
-var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
 var ClaudeCliControlPlane = class {
   #claudeBin;
   #tmuxBin;
@@ -19332,13 +19590,9 @@ var ClaudeCliControlPlane = class {
     this.#tmuxBin = options.tmuxBin ?? "tmux";
     this.#workerEnv = options.workerEnv ?? {};
     this.#holdScope = options.holdScope === void 0 ? resolveHoldScope(void 0, process.env) : options.holdScope;
-    this.#env = {
-      ...withoutRunScopedVariables(process.env),
-      ...this.#workerEnv,
-      [SANDBOXED_WORKSPACE_VARIABLE]: "1"
-    };
-    const configDir = this.#env.CLAUDE_CONFIG_DIR || path11.join(homedir3(), ".claude");
-    this.#projectsDir = options.projectsDir ?? path11.join(configDir, "projects");
+    this.#env = launchEnvironment("claude", this.#workerEnv);
+    const configDir = claudeConfigDirectory(this.#env, process.cwd());
+    this.#projectsDir = options.projectsDir ?? path14.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";
@@ -19346,7 +19600,7 @@ var ClaudeCliControlPlane = class {
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 0;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 0;
     this.#valveDeliveryTimeoutMs = options.valveDeliveryTimeoutMs ?? 3e4;
-    this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
+    this.#valveSocketRoot = claudeValveDirectory(process.env);
     this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
     this.#placementSettleMs = options.placementSettleMs ?? 1e4;
@@ -19371,7 +19625,7 @@ var ClaudeCliControlPlane = class {
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
     const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
-    args.push("--settings", path11.join(settingsDir, "settings.json"));
+    args.push("--settings", path14.join(settingsDir, "settings.json"));
     let registered = null;
     let candidate = null;
     const dispatch = { result: null };
@@ -19515,10 +19769,10 @@ var ClaudeCliControlPlane = class {
     };
     const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
 `;
-    const dir = await mkdtemp(path11.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
+    const dir = await mkdtemp2(path14.join(temporaryDirectory(process.env, process.cwd()).path, `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
-      await writeFile5(path11.join(dir, OWNER_FILENAME), owner, { mode: 384 });
-      await writeFile5(path11.join(dir, "settings.json"), `${JSON.stringify(settings)}
+      await writeFile5(path14.join(dir, OWNER_FILENAME), owner, { mode: 384 });
+      await writeFile5(path14.join(dir, "settings.json"), `${JSON.stringify(settings)}
 `, {
         mode: 384
       });
@@ -19529,7 +19783,7 @@ var ClaudeCliControlPlane = class {
     return dir;
   }
   async #removeSettingsDir(dir) {
-    await rm4(dir, { recursive: true, force: true }).catch(() => void 0);
+    await rm5(dir, { recursive: true, force: true }).catch(() => void 0);
   }
   /**
    * Remove every per-dispatch settings directory whose recorded owner is
@@ -19550,16 +19804,16 @@ var ClaudeCliControlPlane = class {
    * here may fail or delay a dispatch on its own account.
    */
   async #sweepOrphanedSettingsDirs() {
-    const root = tmpdir();
+    const root = temporaryDirectory(process.env, process.cwd()).path;
     const entries = await readdir5(root, { withFileTypes: true }).catch(() => []);
     const host = hostname3();
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name.startsWith(SETTINGS_DIR_PREFIX)) {
         continue;
       }
-      const dir = path11.join(root, entry.name);
+      const dir = path14.join(root, entry.name);
       try {
-        const owner = JSON.parse(await readFile6(path11.join(dir, OWNER_FILENAME), "utf8"));
+        const owner = JSON.parse(await readFile6(path14.join(dir, OWNER_FILENAME), "utf8"));
         if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
           await this.#removeSettingsDir(dir);
         }
@@ -19598,7 +19852,7 @@ var ClaudeCliControlPlane = class {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path11.join(this.#projectsDir, dir, filename);
+      const candidate = path14.join(this.#projectsDir, dir, filename);
       try {
         await access(candidate);
         return candidate;
@@ -19615,17 +19869,17 @@ var ClaudeCliControlPlane = class {
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
     let socketDir;
     try {
-      socketDir = await mkdtemp(path11.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+      socketDir = await mkdtemp2(path14.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
       return { submitted: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
     }
-    const server = ["-S", path11.join(socketDir, "tmux.sock")];
+    const server = ["-S", path14.join(socketDir, "tmux.sock")];
     let submitAttempted = false;
     try {
-      const payload = path11.join(socketDir, "prompt.txt");
-      const editor = path11.join(socketDir, "editor.cjs");
-      const copied = path11.join(socketDir, "copied");
+      const payload = path14.join(socketDir, "prompt.txt");
+      const editor = path14.join(socketDir, "editor.cjs");
+      const copied = path14.join(socketDir, "copied");
       await writeFile5(payload, message, { mode: 384 });
       await writeFile5(editor, `#!${process.execPath}
         const fs = require("node:fs");
@@ -19673,7 +19927,7 @@ var ClaudeCliControlPlane = class {
       };
     } finally {
       await this.#run(this.#tmuxBin, [...server, "kill-server"]);
-      await rm4(socketDir, { recursive: true, force: true }).catch(() => void 0);
+      await rm5(socketDir, { recursive: true, force: true }).catch(() => void 0);
     }
   }
   /**
@@ -19812,7 +20066,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile6(path11.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile6(path14.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -19939,7 +20193,7 @@ function delay(ms) {
 }
 
 // src/claude-engine.ts
-import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash4, randomUUID as randomUUID3 } from "node:crypto";
 
 // src/claude-transcript.ts
 import { readFile as readFile7 } from "node:fs/promises";
@@ -19990,14 +20244,14 @@ function enteredWorktrees(entries) {
   }
   return worktrees;
 }
-async function readTranscriptFile(path16) {
+async function readTranscriptFile(path19) {
   let text;
   try {
-    text = await readFile7(path16, "utf8");
+    text = await readFile7(path19, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path16}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path19}`, { cause: error });
   }
-  return { path: path16, text, entries: parseTranscriptText(text) };
+  return { path: path19, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -20125,6 +20379,7 @@ function usageSince(entries, fromIndex = 0) {
 }
 var BACKGROUND_TASK_STARTS = [
   { pattern: /Command running in background with ID: ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /^Workflow launched in background\. Task ID: ([A-Za-z0-9_-]+)/, from: (call) => call.tool === "Workflow" },
   { pattern: /Monitor started \(task ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
   { pattern: /^Command did not complete within its \S+ timeout and was moved to the background \(ID: ([A-Za-z0-9_-]+)\)/, from: (call) => call.tool === "Bash" }
 ];
@@ -20316,7 +20571,7 @@ function zeroUsage() {
 // src/claude-engine.ts
 var CAPABILITY_DENY_RULES = {
   skills: ["Skill"],
-  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
+  agents: ["Task", "Agent", "ListAgents", "SendMessage", "Workflow"]
 };
 function permissionDenyRulesFor(strip) {
   return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
@@ -20927,13 +21182,13 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle, observers) {
-    const path16 = await this.#controlPlane.transcriptPath(handle);
-    if (path16 === null) {
+    const path19 = await this.#controlPlane.transcriptPath(handle);
+    if (path19 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    const transcript = await readTranscriptFile(path16);
+    const transcript = await readTranscriptFile(path19);
     try {
-      observers?.onTranscriptPath?.(path16);
+      observers?.onTranscriptPath?.(path19);
     } catch {
     }
     return transcript;
@@ -21221,7 +21476,7 @@ function claudeAttemptFailure(error) {
   return { kind: "claude-worker-error", message: error.message };
 }
 function textIdentity(text) {
-  return `${Buffer.byteLength(text, "utf8")} UTF-8 bytes, sha256 ${createHash3("sha256").update(text).digest("hex")}`;
+  return `${Buffer.byteLength(text, "utf8")} UTF-8 bytes, sha256 ${createHash4("sha256").update(text).digest("hex")}`;
 }
 function differenceAccount(sent, received) {
   return `sent ${textIdentity(sent)}; received ${textIdentity(received)}`;
@@ -21262,7 +21517,7 @@ var OpenCodeCliRunner = class {
   constructor(bin = "opencode", options = {}) {
     this.#bin = bin;
     this.#killGraceMs = options.killGraceMs ?? 5e3;
-    this.#env = { ...process.env, ...options.workerEnv };
+    this.#env = launchEnvironment("opencode", options.workerEnv);
   }
   async run(options) {
     const args = [
@@ -22061,14 +22316,14 @@ function assertCompilableSchema(schema) {
 }
 function findLocalReferenceCycle(schema) {
   const seenObjects = /* @__PURE__ */ new Set();
-  const visit = (value, path16) => {
+  const visit = (value, path19) => {
     if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
     seenObjects.add(value);
     const object = value;
     if (typeof object.$ref === "string") {
-      const seenRefs = /* @__PURE__ */ new Set([path16]);
+      const seenRefs = /* @__PURE__ */ new Set([path19]);
       let current2 = object;
-      let currentPath = path16;
+      let currentPath = path19;
       while (typeof current2.$ref === "string") {
         const targetPath = current2.$ref;
         const target = localPointerTarget(schema, targetPath);
@@ -22080,7 +22335,7 @@ function findLocalReferenceCycle(schema) {
       }
     }
     for (const [key, child] of Object.entries(object)) {
-      const cycle = visit(child, `${path16}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      const cycle = visit(child, `${path19}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
       if (cycle !== null) return cycle;
     }
     return null;
@@ -22105,14 +22360,14 @@ function normaliseForCodexOutputSchema(schema) {
 function assertAcyclicSchemaObject(schema) {
   const active = /* @__PURE__ */ new Map();
   const visited = /* @__PURE__ */ new Set();
-  const walk = (value, path16) => {
+  const walk = (value, path19) => {
     if (typeof value !== "object" || value === null) return;
     const firstSeenAt = active.get(value);
-    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path16, firstSeenAt);
+    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path19, firstSeenAt);
     if (visited.has(value)) return;
-    active.set(value, path16);
+    active.set(value, path19);
     for (const [key, child] of Object.entries(value)) {
-      walk(child, `${path16}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      walk(child, `${path19}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
     }
     active.delete(value);
     visited.add(value);
@@ -22375,14 +22630,27 @@ var EngineRegistry = class {
   #engines = /* @__PURE__ */ new Map();
   /** Resources the engines share and the registry therefore owns, closed after every engine has. */
   #shared;
-  constructor(engines, shared = []) {
+  /** What each engine needs at the attempt's resolved placement, judged before dispatch (`EngineResourceGate`). */
+  #resources;
+  /**
+   * `resources` resolves an engine's filesystem requirements at each
+   * attempt's resolved placement, so a run resolves only the engines it
+   * uses. Omitted, no engine declares any, which is what a registry of
+   * test doubles wants; the default registry declares every engine's
+   * (`createDefaultEngineRegistry`).
+   */
+  constructor(engines, shared = [], resources = () => []) {
     for (const engine of engines) {
       this.#engines.set(engine.name, engine);
     }
     this.#shared = shared;
+    this.#resources = resources;
   }
   get(name) {
     return this.#engines.get(name);
+  }
+  resourceRequirements(name, cwd) {
+    return this.#resources(name, cwd);
   }
   names() {
     return [...this.#engines.keys()];
@@ -22597,27 +22865,15 @@ function codexProgressObservers(context) {
 var ClaudeEngineAdapter = class {
   name = "claude";
   concurrency;
-  /**
-   * Claude strips both named minimum capabilities mechanically: permission
-   * deny rules ride the per-dispatch settings file the control plane already
-   * writes (the one surface measured to reach the daemon-served session).
-   * Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used
-   * `mcp__`-prefixed names; that session's skills pair showed the bare `Skill`
-   * deny working (`Skill` absent under a skills strip, present in the
-   * baseline). The agents deny set was witnessed 2026-08-30 on Claude Code
-   * 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker,
-   * while the unstripped control demonstrated discovery and messaging.
-   * `Agent` was also absent, but the witness cannot isolate it from the
-   * machine-wide `Agent` deny. `Task` remains in the delivered deny set, which
-   * the exact-set regression proves. Deny rules outrank every allow layer and
-   * permission mode, `--dangerously-skip-permissions` included — a live test
-   * asserts that at the worker itself.
-   */
+  /** The archive names the configured rules, without claiming a tool-inventory measurement. */
   capabilities = {
-    skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
+    skills: {
+      route: "config",
+      detail: `permissions.deny ${JSON.stringify(permissionDenyRulesFor(["skills"]))} in the per-dispatch settings file`
+    },
     agents: {
       route: "config",
-      detail: "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: ListAgents and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. Agent was also absent, but the witness cannot isolate it from the machine-wide Agent deny. Task remains in the delivered deny set, which the exact-set regression proves."
+      detail: `permissions.deny ${JSON.stringify(permissionDenyRulesFor(["agents"]))} in the per-dispatch settings file`
     }
   };
   #scheduler;
@@ -22811,7 +23067,10 @@ async function createDefaultEngineRegistry(options) {
         onEvent: options.onOpenCodeEvent
       })
     ],
-    ownsScopes ? [workerScopes] : []
+    ownsScopes ? [workerScopes] : [],
+    // The Codex app-server is shared and starts in the run base; Claude
+    // and opencode launch a process in each invocation's placement.
+    (engine, cwd) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], engine === "codex" ? options.cwd : cwd)
   );
 }
 async function openCodexThread(transport, options, cwd) {
@@ -22978,6 +23237,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /** Live, in-memory view of what the run is doing. Always maintained; persisting it is opt-in at the CLI. */
   progress;
   #engines;
+  /** Judges each engine's filesystem requirements before its first attempt. */
+  #resourceGate;
   #admission;
   #placement;
   #defaultTurnTimeoutMs;
@@ -23071,6 +23332,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {}
       })
     ]);
+    const engines = this.#engines;
+    this.#resourceGate = new EngineResourceGate((engine, cwd) => engines.resourceRequirements(engine, cwd));
     this.#admission = new AdmissionController({
       ceiling: options.agentCeiling ?? null,
       caps: this.#engineCaps()
@@ -23409,10 +23672,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
-    let phase = options.phase ?? null;
+    let phase = options.phase ?? this.progress.snapshot().currentPhase;
     state.inFlight = true;
     try {
-      this.budget.assertCanStart(engine.name);
+      this.budget.assertCanStart(engine.name, `session turn ${state.turnCount + 1}`);
       const queuedAt = Date.now();
       const agentId = this.progress.queueAgent({
         engine: engine.name,
@@ -23707,7 +23970,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let started = false;
     try {
       if (readmitting) {
-        this.budget.assertCanStart(engine.name);
+        this.budget.assertCanStart(engine.name, `fallback dispatch for agent ${agentId}`);
       }
       return await this.#admission.admit(
         engine.name,
@@ -23941,7 +24204,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
   }
   /** Bind transcript callbacks to one attempt and drain them before its outcome is recorded. */
-  async #runRecordedAttempt(engine, invocation, context, agentId, startedAt) {
+  async #runRecordedAttempt(engine, invocation, context, agentId, startedAt, cwd) {
     const recorder = this.#runRecorder;
     const record = this.#unsettledAgentRecords.get(agentId)?.record;
     const previousSpend = record?.attempts.flatMap((attempt) => attempt.tokenUsageEvents).reduce((sum, event) => sum + event.last.totalTokens, 0) ?? 0;
@@ -23967,6 +24230,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
     }
     try {
+      await this.#resourceGate.require(engine, cwd);
       result = await invocation.runAttempt({
         ...context,
         onLiveEvidence: () => {
@@ -23992,21 +24256,21 @@ var EnsembleRuntime = class _EnsembleRuntime {
         },
         ...engine === "codex" && recorder !== null ? {
           onTranscriptEvent: (event) => enqueue(async () => {
-            const path16 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
-            if (path16 != null) this.progress.noteAgentTranscript(agentId, path16);
+            const path19 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            if (path19 != null) this.progress.noteAgentTranscript(agentId, path19);
           })
         } : engine === "claude" ? {
-          onTranscriptPath: (path16) => {
-            if (path16 === transcriptPath || !active) return;
-            transcriptPath = path16;
+          onTranscriptPath: (path19) => {
+            if (path19 === transcriptPath || !active) return;
+            transcriptPath = path19;
             if (recorder === null) {
-              this.progress.noteAgentTranscript(agentId, path16);
+              this.progress.noteAgentTranscript(agentId, path19);
               return;
             }
             enqueue(async () => {
               try {
-                await recorder.recordClaudeTranscript(agentId, context.attempt, path16);
-                this.progress.noteAgentTranscript(agentId, path16);
+                await recorder.recordClaudeTranscript(agentId, context.attempt, path19);
+                this.progress.noteAgentTranscript(agentId, path19);
               } catch (error) {
                 transcriptPath = void 0;
                 throw error;
@@ -24383,7 +24647,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
-        }, agentId, startedAt);
+        }, agentId, startedAt, agentRecord.resolvedCwd);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -24447,7 +24711,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
-        }, agentId, startedAt);
+        }, agentId, startedAt, agentRecord.resolvedCwd);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -25073,10 +25337,10 @@ function describeWorkerFailure(error) {
 
 // src/script-runner.ts
 import vm from "node:vm";
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { readFile as readFile9 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
-import path13 from "node:path";
+import path16 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -30776,7 +31040,7 @@ var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 import { constants } from "node:fs";
 import { access as access2, readdir as readdir6, readFile as readFile8 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
-import path12 from "node:path";
+import path15 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
 };
 var NestedWorkflowError = class extends WorkflowResolutionError {
@@ -30785,10 +31049,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path12.join(homedir4(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path15.join(homedir4(), ".local", "share");
   return {
-    project: path12.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path12.join(dataHome2, "ensemble", "workflows")
+    project: path15.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path15.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -30798,7 +31062,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path12.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path15.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access2(scriptPath, constants.R_OK);
   } catch (error) {
@@ -30871,7 +31135,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path12.join(dir, entry.name);
+    const scriptPath = path15.join(dir, entry.name);
     try {
       const source = await readFile8(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
@@ -30936,14 +31200,14 @@ function assertJsonSerialisable(value, label, pathRoot) {
     throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
   }
 }
-function findUnserialisable(value, path16, ancestors, honourToJson) {
+function findUnserialisable(value, path19, ancestors, honourToJson) {
   switch (typeof value) {
     case "function":
-      return `${path16} is a function`;
+      return `${path19} is a function`;
     case "symbol":
-      return `${path16} is a symbol`;
+      return `${path19} is a symbol`;
     case "bigint":
-      return `${path16} is a BigInt`;
+      return `${path19} is a BigInt`;
     case "object":
       break;
     default:
@@ -30954,16 +31218,16 @@ function findUnserialisable(value, path16, ancestors, honourToJson) {
   }
   const toJson = value.toJSON;
   if (honourToJson && typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path16, ancestors, false);
+    return findUnserialisable(toJson.call(value), path19, ancestors, false);
   }
   if (ancestors.has(value)) {
-    return `${path16} closes a cycle`;
+    return `${path19} closes a cycle`;
   }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path16}[${index}]`, ancestors, true);
+        const offence = findUnserialisable(value[index], `${path19}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -30971,7 +31235,7 @@ function findUnserialisable(value, path16, ancestors, honourToJson) {
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path16}.${key}`, ancestors, true);
+      const offence = findUnserialisable(entry, `${path19}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -31014,8 +31278,8 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
-  const resolvedFilename = path13.resolve(options.filename);
-  const cwd = options.cwd ?? path13.dirname(resolvedFilename);
+  const resolvedFilename = path16.resolve(options.filename);
+  const cwd = options.cwd ?? path16.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -31329,7 +31593,7 @@ function ensureWorkflowModuleLoader() {
 }
 async function importWrappedModule(wrappedSource, filename, workflow) {
   ensureWorkflowModuleLoader();
-  const digest = createHash4("sha256").update(wrappedSource).digest("hex");
+  const digest = createHash5("sha256").update(wrappedSource).digest("hex");
   const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
   registeredWorkflowModules.set(url, wrappedSource);
   workflowModuleOrigins.set(url, workflowModuleOrigin(workflow, filename));
@@ -32089,9 +32353,14 @@ async function runEnsembleCli(argv, options = {}) {
     stderr.write(usage(program));
     return 2;
   }
+  const configuredRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
+  const runRecordDir = configuredRecordDir ? path17.resolve(configuredRecordDir) : configuredRecordDir;
+  const configuredSentinelDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
+  const sentinelStoreDir = configuredSentinelDir ? path17.resolve(configuredSentinelDir) : configuredSentinelDir;
   let prepared;
   try {
     prepared = await prepareRun(invocation, cwd);
+    await judgeResources(launcherResourceRequirements(runRecordDir, options.runRecordDir !== void 0, ambientSettings), env);
   } catch (error) {
     stderr.write(`${presentOperationalError(error) ?? formatError2(error)}
 `);
@@ -32126,11 +32395,9 @@ async function runEnsembleCli(argv, options = {}) {
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     progress = runtime.progress;
-    const runRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
     recordingEnabled = runRecordDir !== null && runRecordDir.length > 0;
     const runtimeRunId = progress?.runId ?? "unknown-run";
     const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
-    const sentinelStoreDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
     if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
       const sentinelPath = await sentinel.prepare(
         { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
@@ -32469,10 +32736,10 @@ function workflowName(meta) {
 async function prepareRun(invocation, cwd) {
   if (invocation.kind === "agent") {
     if (invocation.agentOptions.cwd !== void 0) {
-      const requestedCwd = path14.resolve(cwd, invocation.agentOptions.cwd);
+      const requestedCwd = path17.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
-        isDirectory2 = (await stat4(requestedCwd)).isDirectory();
+        isDirectory2 = (await stat5(requestedCwd)).isDirectory();
       } catch {
         isDirectory2 = false;
       }
@@ -32481,7 +32748,7 @@ async function prepareRun(invocation, cwd) {
       }
     }
     return {
-      workflowPath: path14.join(cwd, "<ensemble-agent>"),
+      workflowPath: path17.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
       runnerArgs: [],
       recordArgs: {
@@ -32493,13 +32760,34 @@ async function prepareRun(invocation, cwd) {
   if (invocation.scriptArg === void 0) {
     throw new Error("workflow invocation has no script path");
   }
-  const workflowPath = path14.resolve(cwd, invocation.scriptArg);
+  const workflowPath = path17.resolve(cwd, invocation.scriptArg);
   return {
     workflowPath,
     source: await readWorkflowScript(workflowPath),
     runnerArgs: invocation.args,
     recordArgs: invocation.args
   };
+}
+function launcherResourceRequirements(recordDir, injectedRecordDir, settings) {
+  if (recordDir === null || recordDir.length === 0) {
+    return [];
+  }
+  const from = injectedRecordDir ? "the runRecordDir option" : settingSource(settings.runRecordDir.layer, RUN_RECORD_DIR_ENV, "run_record.dir", settings.configFile);
+  return [
+    { owner: "launcher", role: "run record store", path: recordDir, access: "create-entries", resolvedFrom: from }
+  ];
+}
+function settingSource(layer, envKey, fileKey, configFile) {
+  switch (layer) {
+    case "flag":
+      return "the command line";
+    case "env":
+      return envKey;
+    case "config-file":
+      return `${fileKey} in ${configFile}`;
+    case "default":
+      return `the default; ${envKey}, or ${fileKey} in ${configFile}, moves it`;
+  }
 }
 function singleAgentWorkflowSource(invocation) {
   const meta = {
@@ -33001,7 +33289,7 @@ async function parseJsonValue(value, cwd, flagName) {
     if (filename.length === 0) {
       throw new CliUsageError(`${flagName} @file requires a file path`);
     }
-    const filePath = path14.resolve(cwd, filename);
+    const filePath = path17.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
       source = await readFile10(filePath, "utf8");
@@ -33239,7 +33527,7 @@ function programNameFor(scriptPath) {
   if (scriptPath === void 0 || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
-  const absolutePath = path14.resolve(scriptPath);
+  const absolutePath = path17.resolve(scriptPath);
   const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : `'${absolutePath.replaceAll("'", `'"'"'`)}'`;
   return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
 }
@@ -33348,7 +33636,7 @@ function isError(error) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path15.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path18.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
 function flushed(stream) {
   return new Promise((resolve) => {
     stream.write("", () => resolve());

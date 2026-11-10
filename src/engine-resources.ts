@@ -1,0 +1,133 @@
+import { createHash } from "node:crypto";
+import { homedir } from "node:os";
+import path from "node:path";
+
+import { launchEnvironment } from "./engine-environment.js";
+
+import type { ResourceRequirement } from "./resource-preflight.js";
+import type { EngineName } from "./types.js";
+
+/**
+ * What each engine needs from the filesystem, declared as resource
+ * requirements the preflight probes before the engine's first attempt
+ * (`EngineResourceGate`). A resolver is pure path arithmetic over the
+ * environments below — no I/O; the gate does the probing — and is asked
+ * only when its engine is first used, so a run needs only the resolvers
+ * of the engines its script names.
+ */
+export interface EngineResourceEnvironment {
+  /**
+   * The environment the engine's process is launched with
+   * (`launchEnvironment`). Every path the engine itself chooses — its home,
+   * its config directory, its own sockets — resolves from this, never from
+   * the launcher's `process.env`, which a machine declaration can override.
+   */
+  worker: NodeJS.ProcessEnv;
+  /**
+   * The launcher's own environment. Paths the adapter creates on the
+   * engine's behalf from this process — temporary files under `tmpdir()`,
+   * socket directories under `TMUX_TMPDIR` — resolve from this, because
+   * the adapter makes them here and not in the engine's process.
+   */
+  launcher: NodeJS.ProcessEnv;
+  /** The directory the engine's process is launched in, against which a relative path resolves. */
+  cwd: string;
+}
+
+export type EngineResourceResolver = (env: EngineResourceEnvironment) => ResourceRequirement[];
+
+/**
+ * Codex keeps its whole state under one home: `CODEX_HOME` when the launch
+ * environment sets it, else `.codex` under that environment's `HOME`. A
+ * Codex caller in a sandbox that leaves that home read-only sees the
+ * app-server refuse with `Read-only file system` after the run has begun;
+ * this requirement turns that into a refusal before the app-server starts.
+ */
+export function codexResources(env: EngineResourceEnvironment): ResourceRequirement[] {
+  const declared = env.worker.CODEX_HOME;
+  const home =
+    declared !== undefined && declared.length > 0
+      ? { path: path.resolve(env.cwd, declared), from: "CODEX_HOME" }
+      : { path: path.resolve(env.cwd, homeOf(env.worker), ".codex"), from: "default: $HOME/.codex" };
+  return [{ owner: "codex", role: "Codex home", path: home.path, access: "create-entries", resolvedFrom: home.from }];
+}
+
+/** Claude Code 2.1.321: its daemon sockets are independent of TMPDIR. */
+export function claudeResources(env: EngineResourceEnvironment): ResourceRequirement[] {
+  const config = claudeConfigDirectory(env.worker, env.cwd);
+  const uid = process.getuid?.() ?? 0;
+  const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path.join(env.worker.PREFIX, "tmp") : "/tmp";
+  const daemon = path.join(daemonRoot, `cc-daemon-${uid}`, createHash("sha256").update(config).digest("hex").slice(0, 8));
+  const configFrom = env.worker.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "default: $HOME/.claude";
+  const scratch = temporaryDirectory(env.launcher, process.cwd());
+  const valve = claudeValveDirectory(env.launcher);
+  const workerScratch = env.worker.CLAUDE_CODE_TMPDIR
+    ? { path: path.resolve(env.cwd, env.worker.CLAUDE_CODE_TMPDIR), from: "CLAUDE_CODE_TMPDIR" }
+    : temporaryDirectory(env.worker, env.cwd);
+  return [
+    { owner: "claude", role: "Claude home", path: config, access: "create-entries", resolvedFrom: configFrom },
+    { owner: "claude", role: "Claude global configuration", path: env.worker.CLAUDE_CONFIG_DIR ? config : path.resolve(env.cwd, homeOf(env.worker)), access: "create-entries", resolvedFrom: env.worker.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "HOME (.claude.json)" },
+    { owner: "claude", role: "daemon sockets", path: daemon, access: "bind-socket", resolvedFrom: `${configFrom}; daemon default: ${daemonRoot}/cc-daemon-<uid>/<config hash>` },
+    { owner: "claude", role: "dispatch settings scratch files", path: scratch.path, access: "create-entries", resolvedFrom: `launcher ${scratch.from}` },
+    { owner: "claude", role: "reply valve sockets", path: valve, access: "bind-socket", resolvedFrom: env.launcher.TMUX_TMPDIR ? "launcher TMUX_TMPDIR" : "launcher default: /tmp" },
+    { owner: "claude", role: "Claude scratch files", path: path.join(workerScratch.path, `claude-${uid}`), access: "create-entries", resolvedFrom: workerScratch.from }
+  ];
+}
+
+/** opencode's XDG homes and temporary directory, as reported by `opencode debug paths`. */
+export function openCodeResources(env: EngineResourceEnvironment): ResourceRequirement[] {
+  const homes = [
+    ["XDG_DATA_HOME", ".local/share", "data"],
+    ["XDG_CONFIG_HOME", ".config", "configuration"],
+    ["XDG_STATE_HOME", ".local/state", "state"],
+    ["XDG_CACHE_HOME", ".cache", "cache"]
+  ] as const;
+  const scratch = temporaryDirectory(env.worker, env.cwd);
+  return [
+    ...homes.map(([key, fallback, role]): ResourceRequirement => ({
+      owner: "opencode", role: `opencode ${role}`, access: "create-entries",
+      path: path.resolve(env.cwd, env.worker[key] || path.join(homeOf(env.worker), fallback), "opencode"),
+      resolvedFrom: env.worker[key] ? key : `default: $HOME/${fallback}`
+    })),
+    { owner: "opencode", role: "opencode scratch files", path: path.join(scratch.path, "opencode"), access: "create-entries", resolvedFrom: scratch.from }
+  ];
+}
+
+/** Shared with the control plane so transcript reads and preflight use the same home. */
+export function claudeConfigDirectory(env: NodeJS.ProcessEnv, cwd: string): string {
+  return path.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path.join(homeOf(env), ".claude")).normalize("NFC"));
+}
+
+/** The launcher creates the tmux socket here, independently of the worker environment. */
+export function claudeValveDirectory(env: NodeJS.ProcessEnv): string {
+  return path.resolve(env.TMUX_TMPDIR || "/tmp");
+}
+
+/** Node's Unix tmpdir selection; relative declarations resolve where the process starts. */
+export function temporaryDirectory(env: NodeJS.ProcessEnv, cwd: string): { path: string; from: string } {
+  for (const key of ["TMPDIR", "TMP", "TEMP"]) {
+    if (env[key]) return { path: path.resolve(cwd, env[key]), from: key };
+  }
+  return { path: "/tmp", from: "default: /tmp" };
+}
+
+/** One resolver per engine: a new engine cannot be added without declaring what it needs. */
+export const ENGINE_RESOURCE_RESOLVERS: Readonly<Record<EngineName, EngineResourceResolver>> = {
+  codex: codexResources,
+  claude: claudeResources,
+  opencode: openCodeResources
+};
+
+/** An engine's requirements under the environment its adapter launches it with. */
+export function engineResourceRequirements(
+  engine: EngineName,
+  declared: Readonly<Record<string, string>> | undefined,
+  cwd: string,
+  launcher: NodeJS.ProcessEnv = process.env
+): ResourceRequirement[] {
+  return ENGINE_RESOURCE_RESOLVERS[engine]({ worker: launchEnvironment(engine, declared, launcher), launcher, cwd });
+}
+
+function homeOf(env: NodeJS.ProcessEnv): string {
+  return env.HOME !== undefined && env.HOME.length > 0 ? env.HOME : homedir();
+}

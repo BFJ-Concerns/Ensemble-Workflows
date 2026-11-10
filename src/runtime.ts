@@ -792,14 +792,15 @@ export class EnsembleRuntime {
       throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
-    // Read from the object the caller passed: the snapshot below is a new
-    // object, and a hand-off does not follow a copy.
-    const fallbackSource = fallbackSourceOf(options);
+    // Kept for its identity alone: the snapshot below is a new object, and
+    // a fallback-source hand-off does not follow a copy.
+    const passedOptions = options;
     // `cwd` is read here and nowhere else on this path: what follows works
     // from the snapshot this returns, so the value the placement check
     // judges is the value the dispatch record and the opened placement use.
     options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
+    const fallbackSource = fallbackSourceOf(passedOptions, options);
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.
       assertCompilableSchema(options.schema);
@@ -959,7 +960,7 @@ export class EnsembleRuntime {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
-    const fallbackSource = fallbackSourceOf(options);
+    const fallbackSource = fallbackSourceOf(options, options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === undefined) {
       throw new MultiTurnUnsupportedError(engine.name);

@@ -17532,8 +17532,8 @@ function handOffFallbackSource(options, source) {
   handedOff.set(options, source);
   return options;
 }
-function fallbackSourceOf(options) {
-  return handedOff.get(options) ?? (options.fallback === void 0 ? { kind: "none" } : { kind: "call" });
+function fallbackSourceOf(passed, validated) {
+  return handedOff.get(passed) ?? (validated.fallback === void 0 ? { kind: "none" } : { kind: "call" });
 }
 function attributeMergedChain(merged, callFallback, engine) {
   if (callFallback !== void 0) {
@@ -23577,9 +23577,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
-    const fallbackSource = fallbackSourceOf(options);
+    const passedOptions = options;
     options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
+    const fallbackSource = fallbackSourceOf(passedOptions, options);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
     }
@@ -23691,7 +23692,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
-    const fallbackSource = fallbackSourceOf(options);
+    const fallbackSource = fallbackSourceOf(options, options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === void 0) {
       throw new MultiTurnUnsupportedError(engine.name);

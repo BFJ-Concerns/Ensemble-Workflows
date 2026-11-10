@@ -34,6 +34,7 @@ import {
   PreSpawnAuthorError,
   SessionBusyError,
   SessionClosedError,
+  attachFailedTurnResult,
   SubstrateRefusedError,
   TallyRejectedError,
   TurnTimeoutError,
@@ -80,6 +81,7 @@ import type {
 import type {
   EngineAdapter,
   EngineAttemptFailure,
+  EngineAttemptContext,
   PreviousAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
@@ -88,7 +90,7 @@ import type {
 } from "./engines.js";
 import type { AgentPlacement } from "./agent-placement.js";
 import type { StrippableCapability } from "./capability-stripping.js";
-import type { FailureClassification } from "./failure-classification.js";
+import type { AttemptFailureEvidence, FailureClassification } from "./failure-classification.js";
 import type {
   ChainDecision,
   RunRecordWriter,
@@ -592,6 +594,7 @@ export class EnsembleRuntime {
       cwd,
       codexBin: options.codexBin ?? "codex",
       holdScope,
+      ...(options.workerScope !== undefined ? { workerScope: options.workerScope } : {}),
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
       ...(options.retryPromiseSilenceTimeoutMs !== undefined
         ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs }
@@ -651,6 +654,7 @@ export class EnsembleRuntime {
 
   setRunRecorder(recorder: RunRecordWriter | null): void {
     this.#runRecorder = recorder;
+    this.progress.setArchiveDir(recorder?.archiveDir ?? null);
   }
 
   /**
@@ -1143,6 +1147,7 @@ export class EnsembleRuntime {
       throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
     agentRecord.resolvedCwd = state.placement.cwd;
+    this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
     agentRecord.isolation = options.isolation ?? null;
     const createSession = state.engine.createSession;
     if (createSession === undefined) {
@@ -1347,6 +1352,16 @@ export class EnsembleRuntime {
             // The admitted leg runs under this engine's cap. Keep the
             // record's group with the last target that actually entered it.
             agentRecord.concurrencyGroup = admittedEngine.name;
+            if (position.next > 0) {
+              // Same-engine fallbacks keep the scheduler slot but start a new
+              // target's evidence just as cross-engine re-admission does.
+              this.progress.requeueAgent(agentId, admittedEngine.name);
+              this.progress.startAgent(agentId);
+              agentRecord.resolvedModel = null;
+              agentRecord.resolvedEffort = null;
+              this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
+              this.progress.noteAgentWorktree(agentId, null);
+            }
             const settled = await runTarget(target, admittedEngine, ledger, position.next + 1 < targets.length);
             if (settled.status !== "refused") {
               return settled;
@@ -1363,6 +1378,12 @@ export class EnsembleRuntime {
       // the budget judged afresh at that dispatch, as for any call.
       admittedEngine = this.#engineFor(outcome.engine);
       readmitting = true;
+      const lastAttempt = agentRecord.attempts.at(-1)?.attempt;
+      if (lastAttempt !== undefined) {
+        await this.#recordArchiveWriteSafely(agentId, async () => {
+          await this.#runRecorder?.recordAttemptEnd(agentId, lastAttempt);
+        });
+      }
       this.progress.requeueAgent(agentId, admittedEngine.name);
       // The next step's queue time starts now; the execution time already
       // spent on the refused engine stays accumulated on the record.
@@ -1399,7 +1420,6 @@ export class EnsembleRuntime {
       );
     } catch (error) {
       if (!started) {
-        this.progress.settleAgent(agentId, "failed");
         // The task never started, so this leg was still queued — its
         // termination record must not claim an in-flight turn. Times
         // accumulate: a chained leg refused on one engine and rejected at
@@ -1444,7 +1464,6 @@ export class EnsembleRuntime {
       const executionEndedAt = Date.now();
       agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
-      this.progress.settleAgent(agentId, outcome);
       if (outcome === "done") {
         agentRecord.status = "complete";
       } else {
@@ -1474,7 +1493,6 @@ export class EnsembleRuntime {
       const executionEndedAt = Date.now();
       agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
-      this.progress.settleAgent(agentId, "failed");
       this.#settleTerminalStatus(agentRecord, error);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
@@ -1659,17 +1677,150 @@ export class EnsembleRuntime {
    * surface as an event the CLI logs to stderr.
    */
   async #recordAgentSafely(record: RuntimeAgentRecord): Promise<void> {
-    try {
+    this.progress.noteAgentIdentity(record.id, {
+      requestedModel: record.model, requestedEffort: record.effort,
+      resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort
+    });
+    if (record.status !== "in-progress") {
+      this.progress.settleAgent(record.id, record.status === "complete" ? "done" : "failed",
+        record.terminationCause ?? attemptedFailureAccount(record));
+    }
+    await this.#recordArchiveWriteSafely(record.id, async () => {
       await this.#runRecorder?.recordAgent(record);
+    });
+  }
+
+  /** Archive writes share one best-effort error-reporting contract. */
+  async #recordArchiveWriteSafely(agentId: number, write: () => Promise<void>): Promise<void> {
+    try {
+      await write();
     } catch (error) {
       this.#emitEvent({
         method: "runRecord/writeFailed",
-        params: {
-          agentId: record.id,
-          message: error instanceof Error ? error.message : String(error)
-        },
+        params: { agentId, message: error instanceof Error ? error.message : String(error) },
         receivedAt: Date.now()
       });
+    }
+  }
+
+  /** Bind transcript callbacks to one attempt and drain them before its outcome is recorded. */
+  async #runRecordedAttempt(
+    engine: EngineName,
+    invocation: EngineInvocation,
+    context: EngineAttemptContext,
+    agentId: number,
+    startedAt: number
+  ): Promise<EngineAttemptResult> {
+    const recorder = this.#runRecorder;
+    const record = this.#unsettledAgentRecords.get(agentId)?.record;
+    const previousSpend = record?.attempts.flatMap((attempt) => attempt.tokenUsageEvents)
+      .reduce((sum, event) => sum + event.last.totalTokens, 0) ?? 0;
+    let attemptSpend = 0;
+    const observedUsage: TokenUsageEvent[] = [];
+    let observedModel: string | null = null;
+    let observedEffort: string | null = null;
+    let result: EngineAttemptResult | undefined;
+    let active = true;
+    let transcriptPath: string | undefined;
+    const pending = new Set<Promise<void>>();
+    const enqueue = (write: () => Promise<void>): void => {
+      if (!active) return;
+      const operation = this.#recordArchiveWriteSafely(agentId, write);
+      pending.add(operation);
+      void operation.then(() => pending.delete(operation));
+    };
+    if (recorder !== null && engine !== "opencode") {
+      await this.#recordArchiveWriteSafely(agentId, () =>
+        recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
+    }
+    this.progress.noteAgentTranscript(agentId, null);
+    if (record?.session === null && engine !== "claude") {
+      this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
+    }
+    try {
+      result = await invocation.runAttempt({
+        ...context,
+        onLiveEvidence: () => { if (active) context.onLiveEvidence?.(); },
+        onWaiting: (wait) => { if (active) context.onWaiting?.(wait); },
+        onOutput: () => { if (active) this.progress.noteAgentEvidence(agentId); },
+        onIdentity: (identity) => {
+          if (!active) return;
+          observedModel = identity.resolvedModel;
+          observedEffort = identity.resolvedEffort;
+          this.progress.noteAgentIdentity(agentId, identity);
+        },
+        onUsage: (event) => {
+          if (!active) return;
+          observedUsage.push(event);
+          attemptSpend += event.last.totalTokens;
+          this.progress.noteAgentSpend(agentId, previousSpend + attemptSpend);
+        },
+        ...(engine === "codex" && recorder !== null ? {
+          onTranscriptEvent: (event: unknown) => enqueue(async () => {
+            const path = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            if (path != null) this.progress.noteAgentTranscript(agentId, path);
+          })
+        } : engine === "claude" ? {
+          onTranscriptPath: (path: string) => {
+            if (path === transcriptPath || !active) return;
+            transcriptPath = path;
+            if (recorder === null) {
+              this.progress.noteAgentTranscript(agentId, path);
+              return;
+            }
+            enqueue(async () => {
+              try {
+                await recorder.recordClaudeTranscript(agentId, context.attempt, path);
+                this.progress.noteAgentTranscript(agentId, path);
+              } catch (error) {
+                transcriptPath = undefined;
+                throw error;
+              }
+            });
+          }
+        } : {})
+      });
+      return result;
+    } catch (error) {
+      result = failedTurnResultOf(error) ?? undefined;
+      if (result === undefined && error instanceof Error &&
+        (observedUsage.length > 0 || observedModel !== null || observedEffort !== null)) {
+        const transcript = partialTranscriptOf(error);
+        const text = partialWorkerTextOf(error) ?? "";
+        result = {
+          text, deltaText: text, durationMs: null, firstDeltaMs: firstDeltaMsOf(error),
+          items: {}, tokenUsageEvents: observedUsage,
+          ...(observedModel === null ? {} : { resolvedModel: observedModel }),
+          ...(observedEffort === null ? {} : { resolvedEffort: observedEffort }),
+          ...(transcript === null ? {} : { transcripts: [transcript] })
+        };
+        attachFailedTurnResult(error, result);
+      }
+      throw error;
+    } finally {
+      active = false;
+      await Promise.all(pending);
+      try {
+        if (result !== undefined) {
+          // A final transcript read can fail after earlier polls reported usage.
+          // Keep that observed account on the result the archive will consume.
+          if (result.tokenUsageEvents.length === 0 && observedUsage.length > 0) {
+            result.tokenUsageEvents = [...observedUsage];
+          }
+          if (record !== undefined) {
+            this.progress.noteAgentIdentity(agentId, {
+              resolvedModel: result.resolvedModel ?? (record.session === null ? null : record.resolvedModel),
+              resolvedEffort: result.resolvedEffort ?? (record.session === null ? null : record.resolvedEffort)
+            });
+          }
+          // The final result is the archive's canonical per-attempt accounting.
+          // Replace the streamed subtotal instead of counting it twice.
+          if (result.tokenUsageEvents.length > 0) {
+            this.progress.noteAgentSpend(agentId, previousSpend + result.tokenUsageEvents
+              .reduce((sum, event) => sum + event.last.totalTokens, 0));
+          }
+        }
+      } catch { /* Observability cannot replace the attempt outcome. */ }
     }
   }
 
@@ -1949,6 +2100,7 @@ export class EnsembleRuntime {
   ): Promise<AgentExecutionOutcome> {
     const placement = await this.#placement.open(options);
     agentRecord.resolvedCwd = placement.cwd;
+    this.progress.noteAgentWorktree(agentId, placement.worktree?.path ?? null);
     agentRecord.isolation = options.isolation ?? null;
     this.#recordStripRoutesFor(agentRecord, engine, options.strip);
     let invocation: EngineInvocation | undefined;
@@ -2084,12 +2236,12 @@ export class EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await invocation.runAttempt({
+        const result = await this.#runRecordedAttempt(engine, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...(previousFailure !== undefined ? { previousFailure } : {})
-        });
+        }, agentId, startedAt);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -2168,12 +2320,12 @@ export class EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await invocation.runAttempt({
+        const result = await this.#runRecordedAttempt(engine, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...(previousFailure !== undefined ? { previousFailure } : {})
-        });
+        }, agentId, startedAt);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -2437,7 +2589,7 @@ export class EnsembleRuntime {
   #classify(
     engine: EngineName,
     failure: { kind: string; message: string },
-    appServerDiagnostic: { code: number | string | null } | null,
+    appServerDiagnostic: AttemptFailureEvidence["appServerDiagnostic"],
     diagnostics: JsonObject | undefined
   ): FailureClassification {
     return classifyAttemptFailure({ engine, failure, appServerDiagnostic, diagnostics });
@@ -2704,11 +2856,13 @@ function rejectBlankHoldScope(holdScope: string | undefined): void {
 }
 
 function recordTurnMetadata(record: RuntimeAgentRecord, result: TurnResult): void {
-  if (result.resolvedModel !== undefined) {
-    record.resolvedModel = result.resolvedModel;
+  // Engines that reuse a worker carry its observed identity on the result.
+  // A fresh worker's missing identity must not inherit an earlier worker's.
+  if (result.resolvedModel !== undefined || record.session === null) {
+    record.resolvedModel = result.resolvedModel ?? null;
   }
-  if (result.resolvedEffort !== undefined) {
-    record.resolvedEffort = result.resolvedEffort;
+  if (result.resolvedEffort !== undefined || record.session === null) {
+    record.resolvedEffort = result.resolvedEffort ?? null;
   }
   if (result.transcriptCapture !== undefined) {
     record.transcriptCapture = result.transcriptCapture;

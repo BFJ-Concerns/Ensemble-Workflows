@@ -219,6 +219,8 @@ export function failedTurnResultOf(error: unknown): EngineAttemptResult | null {
  */
 export interface AppServerDiagnostic {
   code: number | string | null;
+  /** The provider's HTTP status Codex forwarded with a turn's error, or null when it forwarded none. */
+  httpStatusCode: number | null;
   message: string;
   payload: string;
 }
@@ -510,9 +512,9 @@ export class ClaudeWorkerError extends EnsembleError {}
 
 /**
  * `claude --bg` exited non-zero and no session was registered under the
- * dispatch's name: Claude Code declined before a session existed. The
- * message names the placed directory and the declaration, and carries Claude
- * Code's own text bounded to one line, because the remedy lives in the
+ * dispatch's name: either the isolated launch or Claude Code failed before
+ * registration. The message names the directory and declaration and carries
+ * command stderr bounded to one line, because the remedy lives in the
  * launch environment — the operator reads it off the run's failure, never
  * off a `null`. A dispatch the daemon accepted but never registered is not
  * a refusal: see `ClaudeRegistrationTimeoutError`.

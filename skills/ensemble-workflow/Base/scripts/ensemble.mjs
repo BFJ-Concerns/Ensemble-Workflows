@@ -17676,6 +17676,9 @@ function diagnoseAttemptFailure(evidence) {
   if (engine === "codex" && appServerDiagnostic?.code === "modelNotFound") {
     return { kind: "model-not-found", message: `Codex modelNotFound: choose a model available to your account (run \`codex\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
   }
+  if (engine === "claude" && failure.kind === "claude-worker-diagnostic" && (status == null || status === 400 || status === 404) && /\bunknown provider for model\s+\S+/i.test(failure.message)) {
+    return { kind: "model-not-found", message: `Claude model not found: choose a model available to your account (run \`claude\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
+  }
   return failure;
 }
 var OUTPUT_FAILURE_KINDS = /* @__PURE__ */ new Set(["empty-output", "invalid-json", "schema-validation"]);
@@ -24553,6 +24556,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
         refused: declared.target,
         refusal: declared.failure,
         targetsRefused: advancesOf(agentRecord).length,
+        refusals: advancesOf(agentRecord).map((attempt) => ({
+          target: attempt.target,
+          failure: attempt.failure,
+          classification: attempt.classification
+        })),
         answeredBy
       },
       receivedAt: Date.now()
@@ -24579,6 +24587,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         attempt: attempt.attempt,
         target: attempt.target,
         failure: attempt.failure,
+        classification: attempt.classification,
         chainEntries: record.fallback?.length ?? 0
       },
       receivedAt: Date.now()
@@ -25504,7 +25513,7 @@ function chainDecisionAfter(attempts, classification, retries) {
   if (attempts.chainRemains && classification.class === "availability") {
     return "advanced";
   }
-  if (attempts.chainRemains && classification.class === "unclassified" && classification.rule === null) {
+  if (attempts.chainRemains && (classification.class === "unclassified" || !retries)) {
     return "chain-not-consulted";
   }
   return retries ? "retried-in-place" : "exhausted";
@@ -33007,13 +33016,17 @@ async function runEnsembleCli(argv, options = {}) {
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
         const answeredBy = event.params.answeredBy;
         const entry = typeof answeredBy?.entry === "number" ? answeredBy.entry : "?";
-        const refusal = event.params.refusal;
-        const kind = typeof refusal?.kind === "string" ? refusal.kind : "unknown";
-        const message = typeof refusal?.message === "string" ? boundedEvidence(refusal.message) : "";
-        const targetsRefused = typeof event.params.targetsRefused === "number" ? event.params.targetsRefused : 1;
-        const further = targetsRefused > 1 ? `; ${targetsRefused - 1} further chain entr${targetsRefused === 2 ? "y was" : "ies were"} refused too` : "";
+        const refusals = Array.isArray(event.params.refusals) ? event.params.refusals : [];
+        const accounts = refusals.map((value) => {
+          const refusal = value;
+          const kind = typeof refusal.failure?.kind === "string" ? boundedEvidence(refusal.failure.kind) : "unknown";
+          const rule = typeof refusal.classification?.rule === "string" ? boundedEvidence(refusal.classification.rule) : "unmatched";
+          const raw = typeof refusal.failure?.message === "string" ? refusal.failure.message : "";
+          const message = boundedEvidence(raw.replace(/Recent stderr:/g, "Engine stderr context:"));
+          return `${targetName(refusal.target)} (${rule}): ${kind}: ${message}`;
+        });
         stderr.write(
-          `[${engine}] agent ${agentId}${label} answered by fallback entry ${entry} (${targetName(answeredBy)}) \u2014 the declared target ${targetName(event.params.refused)} was refused: ${kind}: ${message}${further}
+          `[${engine}] agent ${agentId}${label} answered by fallback entry ${entry} (${targetName(answeredBy)}) \u2014 refused targets: ${accounts.join("; ")}
 `
         );
         return;
@@ -33026,9 +33039,12 @@ async function runEnsembleCli(argv, options = {}) {
         const failure = event.params.failure;
         const kind = typeof failure?.kind === "string" ? failure.kind : "unknown";
         const message = typeof failure?.message === "string" ? boundedEvidence(failure.message) : "";
+        const classification = event.params.classification;
+        const failureClass = classification?.class === "output" ? "output" : "unclassified";
+        const rule = typeof classification?.rule === "string" ? `; rule ${boundedEvidence(classification.rule)}` : "";
         const entries = typeof event.params.chainEntries === "number" ? event.params.chainEntries : 0;
         stderr.write(
-          `[${engine}] agent ${agentId}${label} fallback chain not consulted \u2014 attempt ${attempt} on ${targetName(event.params.target)} failed unclassified (${kind}: ${message}); the declared chain (${entries} entr${entries === 1 ? "y" : "ies"}) advances on availability failures only
+          `[${engine}] agent ${agentId}${label} fallback chain not consulted \u2014 attempt ${attempt} on ${targetName(event.params.target)} failed ${failureClass} (${kind}: ${message}${rule}); the declared chain (${entries} entr${entries === 1 ? "y" : "ies"}) advances on availability failures only
 `
         );
         return;

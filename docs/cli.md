@@ -201,9 +201,13 @@ Logs and diagnostics go to stderr. These lines are written there:
   reads `failed after N attempts across M chain targets — the last target's
   failure: <cause>`.
 - `[<engine>] agent <id> (<label>) answered by fallback entry <n> …` — a
-  fallback entry answered for a refused target.
-- `[<engine>] agent <id> (<label>) fallback chain not consulted — …` — a
-  failure the classifier did not recognise, so the declared chain was not used.
+  fallback entry answered. Each refused target is named with its engine,
+  model, classification rule and diagnostic; quoted engine stderr is labelled
+  as context.
+- `[<engine>] agent <id> (<label>) fallback chain not consulted — …` —
+  an unclassified failure (including a recognised client refusal), or a final
+  output failure, left declared entries untried. The line names the failure's
+  class and matching rule, if any; only availability failures advance the chain.
 - `[codex] app-server (pid <pid>) scope placement refused: <reason>` — the
   app-server could not be moved; its threads still dispatch, with the refusal
   also available through `codex/workerScopePlacement` runtime events.

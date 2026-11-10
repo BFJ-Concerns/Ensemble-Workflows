@@ -63,6 +63,11 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
   if (engine === "codex" && appServerDiagnostic?.code === "modelNotFound") {
     return { kind: "model-not-found", message: `Codex modelNotFound: choose a model available to your account (run \`codex\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
   }
+  if (engine === "claude" && failure.kind === "claude-worker-diagnostic" &&
+      (status == null || status === 400 || status === 404) &&
+      /\bunknown provider for model\s+\S+/i.test(failure.message)) {
+    return { kind: "model-not-found", message: `Claude model not found: choose a model available to your account (run \`claude\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
+  }
   return failure;
 }
 

@@ -39,7 +39,8 @@ return await agent("hello", {
     assert.equal(run.code, 0, run.stderr);
     assert.equal(run.stdout, "null\n");
     assert.equal(provider.requests().length, 2, "each retry must reach the real Codex provider boundary");
-    assert.doesNotMatch(run.stderr, /not consulted/);
+    assert.match(run.stderr, /fallback chain not consulted/);
+    assert.match(run.stderr, /rule codex.provider-request-rejected/);
     const entries = await readdir(recordStore, { recursive: true });
     const records = entries.filter((entry) => path.basename(entry) === "agent.json");
     assert.equal(records.length, 1);
@@ -52,11 +53,11 @@ return await agent("hello", {
       }>;
     };
     assert.equal(agent.attempts.length, 2);
-    for (const [index, attempt] of agent.attempts.entries()) {
+    for (const attempt of agent.attempts) {
       assert.equal(attempt.app_server_diagnostic.code, "other");
       assert.match(attempt.app_server_diagnostic.payload, /invalid_request_error/);
       assert.deepEqual(attempt.classification, { class: "unclassified", rule: "codex.provider-request-rejected" });
-      assert.equal(attempt.chain_decision, index === 0 ? "retried-in-place" : "exhausted");
+      assert.equal(attempt.chain_decision, "chain-not-consulted");
       assert.equal(attempt.target.model, null);
     }
   } finally {

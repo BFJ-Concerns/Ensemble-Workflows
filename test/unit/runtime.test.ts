@@ -4453,6 +4453,9 @@ test("an answer from a chain entry records each refused attempt as advanced and 
         refused: { engine: "codex", model: "gpt-6-sol" },
         refusal: settled.attempts[0]!.failure,
         targetsRefused: 2,
+        refusals: settled.attempts.slice(0, 2).map(attempt => ({
+          target: attempt.target, failure: attempt.failure, classification: attempt.classification
+        })),
         answeredBy: { entry: 1, engine: "claude", model: "opus" }
       }
     }
@@ -4461,7 +4464,7 @@ test("an answer from a chain entry records each refused attempt as advanced and 
   await runtime.close();
 });
 
-test("an output failure under a chain records retried-in-place then exhausted, and the failure notice counts one target", async () => {
+test("an output failure retries in place then leaves the remaining chain unconsulted", async () => {
   const codex = new ChainEngine("codex", [answers(""), answers("")]);
   const claude = new ChainEngine("claude", []);
   const { runtime, records } = chainRuntime([codex, claude], 2);
@@ -4477,14 +4480,14 @@ test("an output failure under a chain records retried-in-place then exhausted, a
     settled.attempts.map((attempt) => [attempt.classification?.class, attempt.chainDecision]),
     [
       ["output", "retried-in-place"],
-      ["output", "exhausted"]
+      ["output", "chain-not-consulted"]
     ]
   );
-  // No advance, no unconsulted chain: the failure notice alone, naming the
-  // one target the call ever reached.
+  // The final output failure cannot advance the chain; both notices name
+  // the one target the call reached.
   assert.deepEqual(
     notices.map((notice) => [notice.method, notice.params.attempts, notice.params.targetsTried]),
-    [["codex/agentFailed", 2, 1]]
+    [["codex/chainNotConsulted", undefined, undefined], ["codex/agentFailed", 2, 1]]
   );
   await runtime.close();
 });
@@ -4592,11 +4595,49 @@ test("an unrecognised failure with a chain entry remaining records chain-not-con
         attempt: 1,
         target: { engine: "codex", model: "gpt-6-sol" },
         failure: settled.attempts[0]!.failure,
+        classification: settled.attempts[0]!.classification,
         chainEntries: 1
       }
     }
   ]);
   assert.equal(settled.attempts[0]?.failure?.kind, "AppServerSystemError");
+  await runtime.close();
+});
+
+test("a recognised client refusal leaves untried fallback entries unconsulted, never exhausted", async () => {
+  for (const maxAttempts of [1, 2]) {
+    const claude = new ChainEngine("claude", Array.from({ length: maxAttempts }, () =>
+      claudeRefusal(400, "invalid_request", "API Error: 400 request rejected")));
+    const codex = new ChainEngine("codex", []);
+    const { runtime, records } = chainRuntime([claude, codex], maxAttempts);
+    const notices = chainNotices(runtime);
+    assert.equal(await runtime.agent("work", {
+      engine: "claude", model: "bad", fallback: [{ engine: "codex", model: "unused" }]
+    }), null);
+    const settled = records.at(-1)!;
+    assert.equal(codex.dispatches.length, 0);
+    assert.equal(settled.attempts.length, maxAttempts);
+    assert.ok(settled.attempts.every(attempt => attempt.chainDecision === "chain-not-consulted"));
+    assert.deepEqual(settled.attempts[0]?.classification, { class: "unclassified", rule: "claude.api-refusal" });
+    assert.equal(notices.filter(notice => notice.method.endsWith("/chainNotConsulted")).length, 1);
+    await runtime.close();
+  }
+});
+
+test("a failure on a fallback entry does not claim later entries were exhausted", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded"), answers("unused")]);
+  const claude = new ChainEngine("claude", [claudeRefusal(400, "invalid_request", "API Error: 400 unknown provider for model bad")]);
+  const { runtime, records } = chainRuntime([codex, claude], 1);
+  assert.equal(await runtime.agent("work", {
+    engine: "codex", model: "primary", fallback: [
+      { engine: "claude", model: "bad" }, { engine: "codex", model: "unused" }
+    ]
+  }), null);
+  const settled = records.at(-1)!;
+  assert.deepEqual(settled.attempts.map(attempt => attempt.chainDecision), ["advanced", "chain-not-consulted"]);
+  assert.equal(settled.attempts[1]?.failure?.kind, "model-not-found");
+  assert.equal(codex.dispatches.length, 1);
+  assert.equal(settled.answeredBy, null);
   await runtime.close();
 });
 

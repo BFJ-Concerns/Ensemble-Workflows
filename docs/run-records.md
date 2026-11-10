@@ -790,8 +790,9 @@ The fields present throughout a record's lifetime are:
   `codex.schema-rejected` even in this envelope and settles immediately
   without retrying. Other unrecognised `other` diagnostics keep a
   null rule. Credential failures use kind `authentication-failure` and rule
-  `<engine>.authentication-failure`; Codex unknown-model failures use kind
-  `model-not-found` and rule `codex.model-not-found`. Both keep the engine's
+  `<engine>.authentication-failure`; Codex `modelNotFound` and Claude's
+  `unknown provider for model` diagnostics use kind `model-not-found` and rule
+  `<engine>.model-not-found`. Both keep the engine's
   diagnostic and add a recovery step to `failure.message`. An explicit
   provider HTTP 401 remains `authentication-failure` when Codex's
   retry-promise bound wraps that diagnostic. `rule` names
@@ -807,8 +808,10 @@ The fields present throughout a record's lifetime are:
   a later entry remaining: the call moved to that entry, spending none of its
   attempt bound), `"retried-in-place"`, `"exhausted"` (nothing left to try:
   the call settles on this failure), or `"chain-not-consulted"` (the failure
-  matched no rule while a later entry remained, so the chain, which advances
-  on availability failures only, was not used). `null` on a complete attempt,
+  was unclassified, with or without a matching rule, or was an output failure
+  with no retry remaining, while a later entry remained untried). The chain
+  advances on availability failures only; an output failure with retries
+  remaining is `"retried-in-place"`. `null` on a complete attempt,
   on every attempt of a call with no chain, and on an attempt cut short by the
   run's own ending.
 - `transcripts`: array; each entry has `attempt`, `path`, `format`, `source`,

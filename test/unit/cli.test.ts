@@ -14,7 +14,7 @@ import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { programNameFor, runEnsembleCli } from "../../src/cli.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
-import { AppServerSystemError, EngineShutdownError } from "../../src/errors.js";
+import { AppServerExitedError, AppServerSystemError, CodexSubstrateRefusedError, EngineShutdownError } from "../../src/errors.js";
 import { HoldManager, enumerateHolds } from "../../src/holds.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
@@ -3723,8 +3723,9 @@ test("an answer from a fallback entry is announced naming the refused declared t
   assert.equal(result.stdout, '{"answer":"from opus"}\n');
   assert.equal(
     result.stderr,
-    "[claude] agent 1 (scout) answered by fallback entry 1 (claude/opus) — the declared target claude/haiku was refused: " +
-      "claude-worker-diagnostic: API Error: Request rejected (429) slow down; 1 further chain entry was refused too\n"
+    "[claude] agent 1 (scout) answered by fallback entry 1 (claude/opus) — refused targets: " +
+      "claude/haiku (claude.rate-limit): claude-worker-diagnostic: API Error: Request rejected (429) slow down; " +
+      "claude/sonnet (claude.overloaded): claude-worker-diagnostic: API Error: Request rejected (529)\n"
   );
 });
 
@@ -3756,6 +3757,42 @@ test("a declared chain left unconsulted by an unrecognised failure says so once,
       "(AppServerSystemError: turn notification failed (threadFailed): the thread failed); " +
       "the declared chain (1 entry) advances on availability failures only\n"
   );
+});
+
+test("a Claude unknown-model refusal names the unused chain, matched rule and model recovery", async () => {
+  const codex = new ChainEngine("codex", []);
+  const result = await runChainScript(`
+    export const meta = { name: "unknown-model-notice" };
+    return await agent("work", { engine: "claude", model: "bad", fallback: [{ engine: "codex", model: "unused" }] });
+  `, [new ChainEngine("claude", [claudeRefusal(400, "invalid_request", "API Error: 400 unknown provider for model bad")]), codex], 1);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.stdout, "null\n");
+  assert.equal(codex.dispatches.length, 0);
+  assert.match(result.stderr, /fallback chain not consulted/);
+  assert.match(result.stderr, /model-not-found: Claude model not found/);
+  assert.match(result.stderr, /rule claude.model-not-found/);
+  assert.match(result.stderr, /run `claude` and use \/model/);
+  assert.doesNotMatch(result.stderr, /exhausted/);
+});
+
+test("a fallback answer names every refusal and labels engine stderr as context", async () => {
+  const result = await runChainScript(`
+    export const meta = { name: "fallback-refusal-context" };
+    return await agent("work", { engine: "claude", model: "primary", fallback: [
+      { engine: "codex", model: "middle" }, { engine: "claude", model: "last" }
+    ] });
+  `, [
+    new ChainEngine("claude", [claudeRefusal(429, null), async () => turn("answer")]),
+    new ChainEngine("codex", [async () => {
+      throw new CodexSubstrateRefusedError(undefined, new AppServerExitedError("exited\nRecent stderr:\nwarning: PATH helper unavailable"));
+    }])
+  ], 1);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.stdout, '"answer"\n');
+  assert.match(result.stderr, /claude\/primary \(claude.rate-limit\)/);
+  assert.match(result.stderr, /codex\/middle \(codex.substrate-refused\): CodexSubstrateRefusedError/);
+  assert.match(result.stderr, /Engine stderr context: warning: PATH helper unavailable/);
+  assert.doesNotMatch(result.stderr, /further chain entry|Recent stderr/);
 });
 
 test("an exhausted chain's failure notice names the last target's own failure and how many targets were tried", async () => {

@@ -1695,6 +1695,9 @@ export class EnsembleRuntime {
         refused: declared.target,
         refusal: declared.failure,
         targetsRefused: advancesOf(agentRecord).length,
+        refusals: advancesOf(agentRecord).map(attempt => ({
+          target: attempt.target, failure: attempt.failure, classification: attempt.classification
+        })),
         answeredBy
       },
       receivedAt: Date.now()
@@ -1722,6 +1725,7 @@ export class EnsembleRuntime {
         attempt: attempt.attempt,
         target: attempt.target,
         failure: attempt.failure,
+        classification: attempt.classification,
         chainEntries: record.fallback?.length ?? 0
       },
       receivedAt: Date.now()
@@ -2893,7 +2897,7 @@ function chainDecisionAfter(
   if (attempts.chainRemains && classification.class === "availability") {
     return "advanced";
   }
-  if (attempts.chainRemains && classification.class === "unclassified" && classification.rule === null) {
+  if (attempts.chainRemains && (classification.class === "unclassified" || !retries)) {
     return "chain-not-consulted";
   }
   return retries ? "retried-in-place" : "exhausted";

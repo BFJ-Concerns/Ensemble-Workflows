@@ -1,4 +1,3 @@
-import { execFile, spawn } from "node:child_process";
 import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +7,8 @@ import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
+import type { RuntimeEvent } from "./types.js";
+import { NoWorkerScopes, RUN_SCOPE_GROUP, processTree, type WorkerScopeGrouping, type ScopePlacement, type WorkerScopes } from "./worker-scopes.js";
 
 /**
  * Per-dispatch ownership tag. The variable rides the same settings-file `env`
@@ -73,20 +74,7 @@ export interface ClaudeDispatchOptions {
    * until a live test observes it at a real worker.
    */
   permissionDenyRules?: string[];
-  /**
-   * Prompt-cache TTL for the worker session, in Claude Code's
-   * settings value format ("1h"). Rides the same settings-file `env` block
-   * as the declared worker environment, as
-   * `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` — and a machine-declared value
-   * for that variable wins over this one (the operator's word outranks the
-   * harness default; see the spread order in the writer). Absent means the
-   * engine's own default TTL.
-   */
-  cacheTtl?: string;
 }
-
-/** The settings-file variable Claude Code reads a background worker's prompt-cache TTL from. */
-export const CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 
 /**
  * Declares the workspace sandboxed to every `claude` process this control
@@ -189,7 +177,7 @@ export interface ClaudeCliControlPlaneOptions {
    * the resolved value, or the flag's precedence is silently lost here.
    */
   holdScope?: string | null;
-  /** Defaults to `~/.claude/projects`. */
+  /** Where Claude Code keeps session transcripts. Defaults to `projects` under `CLAUDE_CONFIG_DIR`, else `~/.claude/projects`. */
   projectsDir?: string;
   /** How long to wait for a dispatched session to register in the roster. */
   dispatchTimeoutMs?: number;
@@ -201,6 +189,37 @@ export interface ClaudeCliControlPlaneOptions {
   valveAttachSettleMs?: number;
   valveSubmitSettleMs?: number;
   valveKillSettleMs?: number;
+  /**
+   * Places each dispatched session in a worker scope and launches every
+   * `claude` and `tmux` process this control plane starts.
+   *
+   * Placement: the supervisor forks the session's process, so it starts in
+   * the supervisor's cgroup, outside the launcher's box. The roster names
+   * that process by `pid` shortly after the session registers; the moment
+   * it does, the process and its live descendants are placed in a scope
+   * named for the dispatch or shared by the run, according to `workerScope`.
+   * A run-owned roster watch re-places restarted sessions even between turns.
+   * Refusals are retried within the registration settle window and on later
+   * polls, even at the same pid; refusal and recovery emit runtime notices.
+   * Placement remains best-effort (`placementOf`): refusal does not fail dispatch.
+   *
+   * Launch: any `claude` command can start the per-user supervisor, which
+   * then serves every Claude session on the machine and must not sit in
+   * the launcher's own box — a memory limit or an ending there would take
+   * them all — so the systemd manager runs each command in a transient
+   * scope of its own, outside that box.
+   *
+   * Omitted, nothing is placed and commands are launched directly, as on a
+   * machine without a systemd user manager.
+   */
+  scopes?: WorkerScopes;
+  workerScope?: WorkerScopeGrouping;
+  /** How long after registration to wait for a pid and successful placement before leaving retries to the next poll. */
+  placementSettleMs?: number;
+  /** Control-plane roster-watch cadence; defaults to 1,000 ms. */
+  placementWatchIntervalMs?: number;
+  /** Placement refusal and recovery notices, delivered through the runtime event channel. */
+  onEvent?: (event: RuntimeEvent) => void;
 }
 
 interface ExecResult {
@@ -225,6 +244,18 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveAttachSettleMs: number;
   #valveSubmitSettleMs: number;
   #valveKillSettleMs: number;
+  #scopes: WorkerScopes;
+  #workerScope: WorkerScopeGrouping;
+  #placementSettleMs: number;
+  #placementWatchIntervalMs: number;
+  #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  /** Last placement attempt per session: refused attempts remain eligible at the same pid. */
+  #placements = new Map<string, { pid: number; outcome: ScopePlacement }>();
+  /** Session ownership lasts through idle gaps, independently of turn polling. */
+  #watchedSessions = new Map<string, ClaudeSessionHandle>();
+  #placementTimer: NodeJS.Timeout | null = null;
+  #placementSweep: Promise<void> | null = null;
+  #placing = new Map<string, Promise<ScopePlacement>>();
   #valveCounter = 0;
   /**
    * Where each valve's socket directory is made: where tmux keeps its own
@@ -262,7 +293,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       ...this.#workerEnv,
       [SANDBOXED_WORKSPACE_VARIABLE]: "1"
     };
-    this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
+    const configDir = this.#env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude");
+    this.#projectsDir = options.projectsDir ?? path.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
     this.#procDir = options.procDir ?? "/proc";
@@ -270,6 +302,19 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1_000;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2_000;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
+    this.#workerScope = options.workerScope ?? "worker";
+    this.#scopes = options.scopes ?? new NoWorkerScopes();
+    this.#placementSettleMs = options.placementSettleMs ?? 10_000;
+    this.#placementWatchIntervalMs = options.placementWatchIntervalMs ?? 1_000;
+    if (!Number.isInteger(this.#placementWatchIntervalMs) || this.#placementWatchIntervalMs < 1 || this.#placementWatchIntervalMs > 2_147_483_647) {
+      throw new RangeError("placementWatchIntervalMs must be an integer from 1 to 2147483647");
+    }
+    this.#onEvent = options.onEvent;
+  }
+
+  /** How the session's process was last placed, or null before the roster has named a pid for it. */
+  placementOf(handle: ClaudeSessionHandle): ScopePlacement | null {
+    return this.#placements.get(handle.sessionId)?.outcome ?? null;
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -294,47 +339,80 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // share the first one's sweep.
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
     args.push("--settings", path.join(settingsDir, "settings.json"));
     let registered: ClaudeSessionHandle | null = null;
     try {
       // Prompts routinely contain whole diffs and can exceed the platform's argv
       // ceiling. Claude's background mode accepts its initial prompt on stdin, so
       // keep argv small and stream the bytes without involving a shell.
-      const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
-      // `claude --bg` prints the short id and returns; if it failed outright there
-      // is no session to wait for, so surface immediately with its stderr.
-      if (!dispatch.ok && (await this.#findByName(options.name)) === null) {
-        // A refusal before any session exists: the directory is the
-        // fact the operator needs, Claude Code's own words are the reason,
-        // and the declaration is named so a refusal that survived it reads
-        // as the substrate's, not as a lift the harness forgot. The text is
-        // engine-controlled and lands on a one-line operator surface, so it
-        // takes the bounded-evidence discipline: control stripped,
-        // whitespace flattened, bounded.
-        throw new ClaudeDispatchError(
-          `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} ` +
-            `(workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` +
-            boundedEvidence(dispatch.stderr.trim() || dispatch.stdout.trim() || "claude --bg exited without a message")
-        );
-      }
+      //
+      // The roster is read while `claude --bg` is still running, not once it
+      // has returned: the row registers, and names its pid, seconds before
+      // the command exits (measured on Claude Code 2.1.318: pid at ~0.9 s,
+      // exit at ~4 s), and Linux never moves memory already charged when a
+      // process changes cgroup, so every moment the session spends outside
+      // its scope is memory charged to the supervisor's cgroup for good.
+      const dispatch: { result: ExecResult | null } = { result: null };
+      void this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd).then(
+        (result) => (dispatch.result = result),
+        (error: unknown) => (dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error) })
+      );
 
-      const deadline = Date.now() + this.#dispatchTimeoutMs;
+      // The registration window opens when `claude --bg` returns: a slow
+      // daemon start spends the command's own time, not the session's.
+      let deadline: number | null = null;
       for (;;) {
-        const handle = await this.#findByName(options.name);
-        if (handle !== null) {
-          registered = handle;
+        const found = await this.#findByName(options.name);
+        if (found !== null) {
+          registered = found.handle;
+          // The row registers before it carries a pid (measured: about half
+          // a second before), so the wait continues, bounded, for the pid
+          // and placement, and the session is placed the moment it is named; past
+          // the bound the next poll places it.
+          // A no-op manager cannot use a PID, so registration is enough.
+          if (this.#scopes instanceof NoWorkerScopes) break;
+          const settled = Date.now() + this.#placementSettleMs;
+          let pid = found.pid;
+          for (;;) {
+            if (pid !== null) {
+              const outcome = await this.#place(registered, pid);
+              if (outcome.kind !== "refused") break;
+            }
+            if (Date.now() >= settled) break;
+            await delay(100);
+            pid = (await this.#findByName(options.name))?.pid ?? null;
+          }
           break;
         }
-        if (Date.now() >= deadline) {
-          // The daemon took the dispatch and never surfaced the session: an
-          // operational failure the retry loop spends an attempt on, not a
-          // refusal — Claude Code did not decline.
-          throw new ClaudeRegistrationTimeoutError(
-            `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
-          );
+        if (dispatch.result !== null) {
+          // `claude --bg` prints the short id and returns; if it failed outright there
+          // is no session to wait for, so surface immediately with its stderr.
+          if (!dispatch.result.ok) {
+            // A refusal before any session exists: the directory is the
+            // fact the operator needs, the launch command's stderr is the reason,
+            // and the declaration is named so a refusal that survived it reads
+            // as the substrate's, not as a lift the harness forgot. The text is
+            // engine-controlled and lands on a one-line operator surface, so it
+            // takes the bounded-evidence discipline: control stripped,
+            // whitespace flattened, bounded.
+            throw new ClaudeDispatchError(
+              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} ` +
+                `(workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` +
+                boundedEvidence(dispatch.result.stderr.trim() || dispatch.result.stdout.trim() || "claude --bg exited without a message")
+            );
+          }
+          deadline ??= Date.now() + this.#dispatchTimeoutMs;
+          if (Date.now() >= deadline) {
+            // The daemon took the dispatch and never surfaced the session: an
+            // operational failure the retry loop spends an attempt on, not a
+            // refusal — Claude Code did not decline.
+            throw new ClaudeRegistrationTimeoutError(
+              `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
+            );
+          }
         }
-        await delay(500);
+        await delay(dispatch.result === null ? 100 : 500);
       }
     } finally {
       if (registered === null) {
@@ -349,6 +427,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         // would risk the daemon observing a mid-session removal of the
         // very variables the file exists to hold.
         this.#settingsDirs.set(registered.sessionId, settingsDir);
+        if (!(this.#scopes instanceof NoWorkerScopes)) {
+          this.#watchedSessions.set(registered.sessionId, registered);
+          this.#schedulePlacementWatch();
+        }
       }
     }
     if (registered === null) {
@@ -369,11 +451,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[], cacheTtl?: string): Promise<string> {
-    // Spread order is the precedence: the TTL is a harness default the
-    // dispatch asks for, so a machine-declared worker_environment value for
-    // the same variable (spread after it) wins, and the ownership tag —
-    // harness bookkeeping, not configuration — always lands last.
+  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[]): Promise<string> {
+    // The ownership tag is harness bookkeeping and always lands last.
     // The hold scope is per-lead coordination state whose contract is
     // inheritance by every nested invocation (`HOLD_SCOPE_ENV`). It is
     // withheld from control-plane children like every run-level setting —
@@ -384,7 +463,6 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // launcher took from `--hold-scope` exists nowhere in the environment.
     const env = {
       ...(this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {}),
-      ...(cacheTtl !== undefined ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {}),
       ...this.#workerEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
@@ -482,6 +560,13 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     if (record === null) {
       return { status: "absent", state: "unknown", present: false };
     }
+    // A session the supervisor restarted runs under a new pid, in the
+    // supervisor's cgroup again: place it again. A refused move is still
+    // pending even when the pid stays the same.
+    const previous = this.#placements.get(handle.sessionId);
+    if (typeof record.pid === "number" && (previous?.pid !== record.pid || previous.outcome.kind === "refused")) {
+      await this.#place(handle, record.pid);
+    }
     const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : undefined;
     return {
       status: typeof record.status === "string" ? record.status : "unknown",
@@ -559,15 +644,12 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
       // The TUI needs a beat to attach and take focus before input lands.
       await delay(this.#valveAttachSettleMs);
-      // `-l` sends the message literally — no key-name interpretation, no quoting
-      // hazards. Each call carries one bounded slice: a follow-up turn routinely
-      // holds whole diffs, and one command must fit both the platform's argv
-      // element cap and tmux's own client-message cap (see VALVE_SLICE_BYTES),
-      // so the bytes go to the same pane input in order across as many calls
-      // as the message needs. Submit follows as its own keystroke.
+      // Complete Win32 terminal key records stay typed even when the reader
+      // falls behind and coalesces input. Bound each literal send and never
+      // split a record; submit follows the final batch as its own keystroke.
       const slices = valveSlices(message);
       for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", slice]);
+        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", "--", slice]);
         if (!typed.ok) {
           return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
         }
@@ -587,10 +669,90 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
   }
 
+  /**
+   * Place the session's process and its live descendants in the scope
+   * chosen by the run's grouping. The tree, not the pid alone: helpers the
+   * session forked before this moment (MCP servers, shells) would
+   * otherwise stay in the supervisor's cgroup. Best-effort — the outcome
+   * is recorded, never thrown.
+   */
+  async #place(handle: ClaudeSessionHandle, pid: number): Promise<ScopePlacement> {
+    const pending = (this.#placing.get(handle.sessionId) ?? Promise.resolve()).then(() => this.#placeInTurn(handle, pid));
+    this.#placing.set(handle.sessionId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.#placing.get(handle.sessionId) === pending) this.#placing.delete(handle.sessionId);
+    }
+  }
+
+  async #placeInTurn(handle: ClaudeSessionHandle, pid: number): Promise<ScopePlacement> {
+    const previous = this.#placements.get(handle.sessionId);
+    if (previous?.pid === pid && previous.outcome.kind !== "refused") return previous.outcome;
+    const outcome = await this.#scopes.place(this.#workerScope === "run" ? RUN_SCOPE_GROUP : handle.name, await processTree(pid, this.#procDir));
+    this.#placements.set(handle.sessionId, { pid, outcome });
+    // Report a changed refusal once, and its recovery. Repeated polls still
+    // retry a refused pid without repeating the same notice indefinitely.
+    const changedRefusal = outcome.kind === "refused" &&
+      (previous?.pid !== pid || previous.outcome.kind !== "refused" || previous.outcome.reason !== outcome.reason);
+    const recovered = outcome.kind === "placed" && previous?.outcome.kind === "refused";
+    if (changedRefusal || recovered) {
+      this.#onEvent?.({
+        method: "claude/workerScopePlacement",
+        params: {
+          sessionId: handle.sessionId, name: handle.name, pid, kind: outcome.kind,
+          ...(outcome.kind === "refused" ? { reason: boundedEvidence(outcome.reason) } : {}),
+          ...(outcome.kind === "placed" ? { unit: outcome.unit } : {})
+        },
+        receivedAt: Date.now()
+      });
+    }
+    return outcome;
+  }
+
+  /** One roster read serves every owned session, including those between turns. */
+  #schedulePlacementWatch(): void {
+    if (this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
+    this.#placementTimer = setTimeout(() => {
+      this.#placementTimer = null;
+      this.#placementSweep = this.#refreshPlacements().catch((error: unknown) => {
+        this.#onEvent?.({
+          method: "claude/workerScopeWatchError",
+          params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
+          receivedAt: Date.now()
+        });
+      }).finally(() => {
+        this.#placementSweep = null;
+        this.#schedulePlacementWatch();
+      });
+    }, this.#placementWatchIntervalMs);
+    this.#placementTimer.unref();
+  }
+
+  async #refreshPlacements(): Promise<void> {
+    const roster = await this.#roster();
+    // An unavailable roster is not evidence that an owned session ended.
+    if (!roster.ok) return;
+    for (const handle of this.#watchedSessions.values()) {
+      const row = roster.rows.find((entry) => matchesHandle(entry, handle));
+      if (typeof row?.pid === "number") await this.#place(handle, row.pid);
+    }
+  }
+
   async stop(handle: ClaudeSessionHandle): Promise<void> {
+    this.#watchedSessions.delete(handle.sessionId);
+    if (this.#watchedSessions.size === 0 && this.#placementTimer !== null) {
+      clearTimeout(this.#placementTimer);
+      this.#placementTimer = null;
+    }
+    // A roster read or placement already in flight must finish before teardown
+    // removes session state or the registry closes its shared scope manager.
+    await this.#placementSweep;
+    await this.#placing.get(handle.sessionId);
     // Best-effort teardown; `stop`/`rm` can mishandle an already-exited session,
     // so failures are swallowed rather than allowed to mask the real result.
     await this.#run(this.#claudeBin, ["stop", handle.id]);
+    this.#placements.delete(handle.sessionId);
     // The session is over; anything still carrying its tag is a descendant
     // the daemon will never reap (they reparent to the user session, not to
     // the harness). Ownership means killing them here, not warning about them.
@@ -675,7 +837,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return (await this.#run(this.#tmuxBin, ["-V"])).ok;
   }
 
-  async #findByName(name: string): Promise<ClaudeSessionHandle | null> {
+  /** The roster's row for a dispatch, as a handle plus the pid the row names (null until the supervisor reports one). */
+  async #findByName(name: string): Promise<{ handle: ClaudeSessionHandle; pid: number | null } | null> {
     const { rows } = await this.#roster();
     const match = rows.find(
       (row) => row.kind === "background" && row.name === name && typeof row.sessionId === "string"
@@ -687,10 +850,13 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // daemon has not yet surfaced one.
     const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
     return {
-      id,
-      sessionId: match.sessionId,
-      name,
-      cwd: typeof match.cwd === "string" ? match.cwd : ""
+      handle: {
+        id,
+        sessionId: match.sessionId,
+        name,
+        cwd: typeof match.cwd === "string" ? match.cwd : ""
+      },
+      pid: typeof match.pid === "number" ? match.pid : null
     };
   }
 
@@ -715,25 +881,27 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   #run(file: string, args: string[], cwd?: string): Promise<ExecResult> {
-    return new Promise<ExecResult>((resolve) => {
-      execFile(
-        file,
-        args,
-        { ...(cwd !== undefined ? { cwd } : {}), maxBuffer: 32 * 1024 * 1024, env: this.#env },
-        (error, stdout, stderr) => {
-          resolve({ ok: error === null, stdout, stderr });
-        }
-      );
-    });
+    return this.#launch(file, args, null, cwd);
   }
 
   #runWithInput(file: string, args: string[], input: string, cwd?: string): Promise<ExecResult> {
+    return this.#launch(file, args, input, cwd);
+  }
+
+  /**
+   * The one route every control-plane child takes: launched by the scope
+   * manager (outside the launcher's box, where a systemd user manager is
+   * reachable), under the spread `#env`, with its output collected and its
+   * exit status read as the verdict. `input` is streamed to stdin and the
+   * stream then closed; null closes it at once.
+   */
+  async #launch(file: string, args: string[], input: string | null, cwd?: string): Promise<ExecResult> {
+    const child = await this.#scopes.launch(file, args, {
+      ...(cwd !== undefined ? { cwd } : {}),
+      env: this.#env,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
     return new Promise<ExecResult>((resolve) => {
-      const child = spawn(file, args, {
-        ...(cwd !== undefined ? { cwd } : {}),
-        env: this.#env,
-        stdio: ["pipe", "pipe", "pipe"]
-      });
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
       let settled = false;
@@ -744,8 +912,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         }
       };
 
-      child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-      child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+      child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+      child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
       child.on("error", (error) => {
         finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
       });
@@ -760,14 +928,16 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // A child that rejects input may close stdin before this write completes.
       // Its exit status/stderr above is the useful dispatch error; suppress the
       // stream's secondary EPIPE so it cannot become an unhandled exception.
-      child.stdin.on("error", () => undefined);
-      child.stdin.end(input);
+      child.stdin?.on("error", () => undefined);
+      child.stdin?.end(input ?? undefined);
     });
   }
 }
 
 interface RosterRow {
   id?: unknown;
+  /** The session's own process while it lives (Claude Code 2.1.318); absent for the first moments after registration. */
+  pid?: unknown;
   name?: unknown;
   kind?: unknown;
   status?: unknown;
@@ -809,16 +979,20 @@ function refused(step: string, result: ExecResult): ValveDelivery {
 
 /**
  * Split a valve message into `send-keys -l` arguments of at most
- * `VALVE_SLICE_BYTES` bytes each, cutting only between code points so no
- * character is torn across two sends. Exported for the delivery tests; a
- * message within the bound is one slice, and an empty message is none.
+ * `VALVE_SLICE_BYTES` bytes each, encoding each UTF-16 unit as a complete Win32
+ * terminal key record. Tabs become four spaces; CR and CRLF become LF.
+ * No record is torn across two sends. Exported for the delivery tests; an
+ * encoded message within the bound is one slice, and an empty message is none.
  */
 export function valveSlices(message: string): string[] {
+  message = message.replace(/\r\n?/g, "\n").replaceAll("\t", "    ");
   const slices: string[] = [];
   let current = "";
   let currentBytes = 0;
-  for (const character of message) {
-    const characterBytes = Buffer.byteLength(character, "utf8");
+  for (let index = 0; index < message.length; index += 1) {
+    // Vk;Sc;Unicode;KeyDown;ControlKeyState;RepeatCount, all ASCII.
+    const character = `\u001b[0;0;${message.charCodeAt(index)};1;0;1_`;
+    const characterBytes = character.length;
     if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
       slices.push(current);
       current = "";

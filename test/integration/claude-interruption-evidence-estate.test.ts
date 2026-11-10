@@ -166,8 +166,9 @@ async function runInterruptedCli(
 async function waitForDispatch(statePath: string, requirePoll: boolean): Promise<void> {
   for (let attempt = 0; attempt < readinessPollAttempts; attempt += 1) {
     try {
-      const state = JSON.parse(await readFile(statePath, "utf8")) as { sessions?: unknown[]; polls?: number };
-      if ((state.sessions?.length ?? 0) > 0 && (!requirePoll || (state.polls ?? 0) > 0)) {
+      const state = JSON.parse(await readFile(statePath, "utf8")) as { sessions?: unknown[] };
+      const polled = await readFile(`${statePath}.polled`).then(() => true, () => false);
+      if ((state.sessions?.length ?? 0) > 0 && (!requirePoll || polled)) {
         return;
       }
     } catch {

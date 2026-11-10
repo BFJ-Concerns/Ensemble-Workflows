@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import { appendFile, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+
+export function createAcknowledgementWriter(file) {
+  const acknowledged = new Set();
+  return {
+    hasAcknowledged: (marker) => acknowledged.has(marker),
+    async acknowledge(marker) {
+      if (acknowledged.has(marker)) return;
+      if (file !== undefined) await appendFile(file, `${marker}\n`);
+      acknowledged.add(marker);
+    }
+  };
+}
 
 export async function readJson(file) {
   return JSON.parse(await readFile(file, "utf8"));

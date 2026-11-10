@@ -15035,6 +15035,9 @@ var HoldManager = class {
           answeredBy: typeof parsed.answered_by === "string" ? parsed.answered_by : null
         };
       }
+      if (rejection !== null) {
+        rejection.answered_by = typeof parsed.answered_by === "string" ? parsed.answered_by : null;
+      }
     } catch {
       if (grace.lastUnparseable !== raw) {
         grace.lastUnparseable = raw;
@@ -15058,7 +15061,8 @@ var HoldManager = class {
         holdId: record.hold_id,
         reason: rejection.reason,
         attemptedVerdict: rejection.attempted_verdict,
-        attemptedVerdictState: rejection.attempted_verdict_state
+        attemptedVerdictState: rejection.attempted_verdict_state,
+        answeredBy: rejection.answered_by ?? null
       });
       return null;
     }
@@ -16095,7 +16099,7 @@ var RunRecordWriter = class _RunRecordWriter {
       reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
       attempted_verdict: kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string" ? event.params.attemptedVerdict : null,
       attempted_verdict_state: kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState) ? event.params.attemptedVerdictState : null,
-      answered_by: kind === "answered" && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
+      answered_by: (kind === "answered" || kind === "answer-rejected") && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
       note: kind === "answered" && typeof event.params.note === "string" ? event.params.note : null,
       at: new Date(event.receivedAt).toISOString()
     };
@@ -16550,6 +16554,9 @@ function addProviderCost(target, event) {
 }
 async function resolveRunDirectory(storeDir, cwd, runUuid) {
   return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
+}
+async function resolveRunId(cwd, runUuid) {
+  return `${(await deriveNamespace(cwd)).id}:${runUuid}`;
 }
 async function reapAbandonedRuns(options) {
   const procDir = options.procDir ?? "/proc";
@@ -32486,13 +32493,35 @@ async function runEnsembleCli(argv, options = {}) {
       });
       if (await statusWriter.ready()) {
         try {
-          stderr.write(`[status-file] ${JSON.stringify({ run_id: runtimeRunId, status_path: statusWriter.path })}
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: runRecordWriter?.manifest.run_id ?? await resolveRunId(cwd, runtimeRunId), status_path: statusWriter.path })}
 `);
         } catch {
         }
       }
     }
     runtime.onEvent((event) => {
+      if (event.method === "hold/raised") {
+        const holdId = String(event.params.holdId);
+        const verdicts = event.params.verdicts;
+        const answerCommands = verdicts.map(
+          (verdict) => `${program} holds answer '${holdId.replaceAll("'", `'"'"'`)}' --verdict='${verdict.replaceAll("'", `'"'"'`)}'`
+        );
+        stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, event: "raised", verdicts, answer_commands: answerCommands })}
+`);
+        return;
+      }
+      if (event.method === "hold/answerRejected") {
+        stderr.write(`[hold] ${JSON.stringify({
+          hold_id: event.params.holdId,
+          event: "answer-rejected",
+          reason: event.params.reason,
+          attempted_verdict: event.params.attemptedVerdict,
+          attempted_verdict_state: event.params.attemptedVerdictState,
+          answered_by: event.params.answeredBy ?? null
+        })}
+`);
+        return;
+      }
       if (event.method === "claude/workerScopeWatchError") {
         stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
 `);

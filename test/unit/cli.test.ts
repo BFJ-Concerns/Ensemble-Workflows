@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { access, glob, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, glob, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -73,6 +73,49 @@ function announcedRunRecord(stderr: string): { run_id: string; archive_path: str
   assert.equal(lines.length, 1, `expected exactly one run-record announcement, got:\n${stderr}`);
   return JSON.parse(lines[0]!.slice("[run-record-archive] ".length)) as { run_id: string; archive_path: string };
 }
+
+test("startup run IDs join status to archives for both CLI forms, with recording on or off", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-public-id-"));
+  try {
+    await execFileAsync("git", ["init", "--quiet", directory]);
+    const nested = path.join(directory, "nested");
+    const linked = path.join(directory, "linked");
+    await mkdir(nested);
+    await symlink(nested, linked);
+    const script = path.join(nested, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "public-run-id" }; return "done";');
+    const namespace = createHash("sha256").update(await realpath(directory)).digest("hex").slice(0, 24);
+    for (const recording of [true, false]) {
+      for (const argv of [[script], ["agent", "--engine", "codex", "hello"]]) {
+        const stderr = new CaptureStream();
+        const runtime = fixedEngineRuntime(new FixedResponseEngine("codex", "done"));
+        const code = await runEnsembleCli(argv, {
+          cwd: linked, stdout: new CaptureStream(), stderr,
+          runRecordDir: recording ? path.join(directory, "records") : null,
+          env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
+          createRuntime: async () => runtime
+        });
+        assert.equal(code, 0, stderr.text());
+        const statusLines = stderr.text().split("\n").filter((line) => line.startsWith("[status-file] "));
+        assert.equal(statusLines.length, 1);
+        const status = JSON.parse(statusLines[0]!.slice("[status-file] ".length));
+        const expectedId = `cwd:${namespace}:${runtime.progress.runId}`;
+        assert.equal(status.run_id, expectedId);
+        assert.equal(path.basename(status.status_path), `ensemble.${runtime.progress.runId}.local.json`);
+        if (recording) {
+          const archive = announcedRunRecord(stderr.text());
+          const manifest = JSON.parse(await readFile(path.join(archive.archive_path, "manifest.json"), "utf8"));
+          assert.equal(archive.run_id, expectedId);
+          assert.equal(manifest.run_id, expectedId);
+        } else {
+          assert.doesNotMatch(stderr.text(), /\[run-record-archive\]/);
+        }
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("caller identity links each workflow archive to its invoking session", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-caller-identity-"));
@@ -4073,7 +4116,11 @@ test(`CLI publishes and announces automatic status before execution with .claude
     assert.ok(line);
     assert.ok(stderr.text().indexOf(line) < stderr.text().indexOf("workflow-started"));
     const announcement = JSON.parse(line.slice("[status-file] ".length)) as { run_id: string; status_path: string };
-    assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${announcement.run_id}.local.json`));
+    const publicId = /^cwd:([0-9a-f]{24}):([0-9a-f-]{36})$/.exec(announcement.run_id);
+    assert.ok(publicId, announcement.run_id);
+    const expectedNamespace = createHash("sha256").update(await realpath(directory)).digest("hex").slice(0, 24);
+    assert.equal(publicId[1], expectedNamespace);
+    assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${publicId[2]}.local.json`));
     await assert.rejects(access(announcement.status_path));
     assert.deepEqual(await readdir(path.dirname(announcement.status_path)), [pendingSnapshot]);
   } finally {
@@ -4173,6 +4220,74 @@ test("CLI renders Codex app-server placement refusals as bounded notices", async
     assert.equal(code, 0, stderr.text());
     assert.match(stderr.text(), /\[codex\] app-server \(pid 123\) scope placement refused: manager refused\n/);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+
+test("a raising CLI announces holds and every rejected answer without polling the listing", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-hold-notices-"));
+  const script = path.join(directory, "workflow.js");
+  const verdicts = ["approve", "don't expand $HOME or `printf injected`\nnext line"];
+  await writeFile(script, `export const meta = { name: "hold-notices" };\nreturn await hold({ content: "which route?", verdicts: ${JSON.stringify(verdicts)} });`);
+  const stderr = new CaptureStream();
+  const stdout = new CaptureStream();
+  const holdsDir = path.join(directory, "holds");
+  let runtime: EnsembleRuntime | undefined;
+  const running = runEnsembleCli([script], {
+    cwd: directory, stdout, stderr, programName: "capture", timeoutMs: 5000,
+    runRecordDir: path.join(directory, "records"), statusDir: null,
+    env: { XDG_CONFIG_HOME: path.join(directory, "config") },
+    createRuntime: async (options) => {
+      runtime = new EnsembleRuntime({ ...options, defaultMaxAttempts: 1, engines: new EngineRegistry([]), holdsDir, holdPollIntervalMs: 5 });
+      return runtime;
+    }
+  });
+  const notices = (): Array<Record<string, unknown>> => stderr.text().split("\n")
+    .filter((line) => line.startsWith("[hold] ")).map((line) => JSON.parse(line.slice(7)) as Record<string, unknown>);
+  const waitForNotice = async (count: number): Promise<void> => {
+    for (let attempt = 0; attempt < 1000; attempt += 1) {
+      if (notices().length >= count) return;
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    assert.fail(`missing hold notice ${count}: ${stderr.text()}`);
+  };
+  try {
+    await waitForNotice(1);
+    const raised = notices()[0]!;
+    assert.equal(raised.event, "raised");
+    assert.deepEqual(raised.verdicts, verdicts);
+    const record = (await enumerateHolds(holdsDir)).holds[0]!.record;
+    assert.equal(raised.hold_id, record.hold_id);
+    const commands = raised.answer_commands as string[];
+    assert.equal(commands.length, verdicts.length);
+    for (const [index, command] of commands.entries()) {
+      const captured = await execFileAsync("bash", ["-c", `capture() { printf '%s\\0' "$@"; }\n${command}`]);
+      assert.deepEqual(captured.stdout.split("\0"), ["holds", "answer", record.hold_id, `--verdict=${verdicts[index]}`, ""]);
+    }
+    await writeFile(record.decision_path, JSON.stringify({ nonce: "stale", verdict: "approve", answered_by: "decider-1" }));
+    await waitForNotice(2);
+    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "maybe", answered_by: "decider-2" }));
+    await waitForNotice(3);
+    await writeFile(record.decision_path, "not-json");
+    await waitForNotice(4);
+    assert.deepEqual(notices().slice(1).map((notice) => [notice.hold_id, notice.event, notice.reason, notice.answered_by]), [
+      [record.hold_id, "answer-rejected", "stale-nonce", "decider-1"],
+      [record.hold_id, "answer-rejected", "invalid-verdict", "decider-2"],
+      [record.hold_id, "answer-rejected", "malformed", null]
+    ]);
+    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "approve" }));
+    assert.equal(await running, 0, stderr.text());
+    assert.doesNotMatch(stdout.text(), /\[hold\]/);
+    const archive = announcedRunRecord(stderr.text());
+    const manifest = JSON.parse(await readFile(path.join(archive.archive_path, "manifest.json"), "utf8")) as {
+      hold_events: Array<{ event: string; answered_by: string | null }>;
+    };
+    assert.deepEqual(manifest.hold_events.filter((event) => event.event === "answer-rejected").map((event) => event.answered_by),
+      ["decider-1", "decider-2", null]);
+  } finally {
+    await runtime?.close();
+    await running;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("relative record stores use the launcher directory for preflight, archive and sentinel", async () => {

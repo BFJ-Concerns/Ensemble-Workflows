@@ -755,6 +755,14 @@ the machine-wide listing always does. The scope is never inferred from the
 working directory or process ancestry, and the nonce, not the scope, is what
 makes an answer valid.
 
+The raising CLI announces each hold on stderr as a `[hold]` JSON line with
+`hold_id`, `event: "raised"`, the accepted `verdicts`, and `answer_commands`
+(one shell command per verdict). Each rejected answer produces another
+`[hold]` line with `event: "answer-rejected"`, the hold id, rejection reason,
+attempted verdict and its availability state, and `answered_by` (or `null`
+when the decision file does not name an answerer). Stdout remains the run's
+result envelope. Read command strings as JSON before executing them.
+
 ### Answering a hold
 
 `ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]` is the
@@ -788,6 +796,6 @@ provably dead is retired by whichever listing or run observes it and reported
 as `retired`, so the listing only shows holds that can still be answered.
 
 Every raise, answer, rejected answer, and timeout is recorded in the raising
-run's `hold_events`, including who answered and their note. A retirement is
+run's `hold_events`, including who answered; accepted answers also carry their note. A retirement is
 recorded by the run whose startup sweep observed it; one observed by a
 listing is not recorded.

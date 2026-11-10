@@ -103,44 +103,12 @@ export interface ClaudeEngineInvocationOptions {
    * a correction that cannot ride the valve fails the turn rather than
    * degrade to a fresh dispatch — a redispatch would answer a follow-up
    * from a different session than the one created, a continuity failure.
-   * Also rides the dispatch with the 1-hour prompt-cache TTL: a loitering
-   * worker is the one case the write premium pays back.
    */
   multiTurn?: boolean;
   onEvent?: (event: RuntimeEvent) => void;
   config?: ClaudeEngineConfig;
   /** Adapter deregistration: called exactly once, when close() completes. */
   onClose?: (invocation: ClaudeEngineInvocation) => void;
-}
-
-/**
- * The prompt-cache TTL a multi-turn Claude worker is dispatched with,
- * in the value format Claude Code's settings accept. One-shot workers keep
- * the engine's 5-minute default — the premium is spent only where loitering
- * pays it back — and a machine-declared `worker_environment` value for the
- * same variable still wins (the operator's word outranks the harness
- * default; see the control plane's settings-file spread order).
- */
-export const CLAUDE_MULTITURN_CACHE_TTL = "1h";
-
-/**
- * Parse a Claude Code cache-TTL settings value ("30s", "5m", "1h", or bare
- * seconds) to milliseconds; null for anything unrecognised. Used to keep
- * the staleness cliff on the *effective* TTL when a machine-declared
- * worker-environment value overrides the injected default — two settings
- * that would otherwise silently desynchronise.
- */
-export function claudeCacheTtlToMs(value: string): number | null {
-  const match = /^(\d+)([smh]?)$/.exec(value.trim());
-  if (match === null) {
-    return null;
-  }
-  const amount = Number(match[1]);
-  if (!Number.isSafeInteger(amount) || amount <= 0) {
-    return null;
-  }
-  const unit = match[2];
-  return amount * (unit === "h" ? 3_600_000 : unit === "m" ? 60_000 : 1_000);
 }
 
 /**
@@ -428,10 +396,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
-      ...(denyRules.length > 0 ? { permissionDenyRules: denyRules } : {}),
-      // Loiter pricing: only a session meant to be resumed pays the
-      // 1-hour cache-write premium; one-shot workers keep the 5m default.
-      ...(this.#multiTurn ? { cacheTtl: CLAUDE_MULTITURN_CACHE_TTL } : {})
+      ...(denyRules.length > 0 ? { permissionDenyRules: denyRules } : {})
     });
     this.#handle = handle;
     this.#turnDelivered = true;

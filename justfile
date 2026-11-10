@@ -11,8 +11,9 @@ default:
 # The gate: lint, then the test suite (which builds first), then the
 # bundle-freshness check — after the tests deliberately, so a red gate on a
 # stale bundle still reports the test results, and the check compares
-# against the bundle the test recipe just rebuilt.
-verify: lint test bundle-fresh
+# against the bundle the test recipe just rebuilt. Version checking also
+# checks the lockfile metadata against the package and launcher reports.
+verify: lint test bundle-fresh version-check
 
 # Fail when the tracked skill bundle differs from the fresh build `test`
 # produced — a stale committed bundle is otherwise invisible unless someone
@@ -42,6 +43,14 @@ install:
 # Rebuild the standalone skill launcher (skills/…/Base/scripts/ensemble.mjs).
 build:
     npm run build
+
+# Print the agreed package, lockfile and launcher version without rebuilding.
+version-check:
+    node scripts/release-version.mjs check
+
+# Write all version surfaces and rebuild the standalone launcher (needs npm ci).
+version-bump version:
+    node scripts/release-version.mjs bump {{quote(version)}}
 
 # The live tests, which reach real engines. Not part of the gate. Legs that
 # must name a model read it from ENSEMBLE_LIVE_CODEX_MODEL or

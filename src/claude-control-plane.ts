@@ -8,6 +8,7 @@ import { attachFailedTurnResult, ClaudeDispatchError, ClaudeRegistrationTimeoutE
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
+import type { ClaudeToolSurface } from "./claude-tool-surface.js";
 import type { JsonObject, RuntimeEvent } from "./types.js";
 import { NoWorkerScopes, RUN_SCOPE_GROUP, processTree, type WorkerScopeGrouping, type ScopePlacement, type WorkerScopes } from "./worker-scopes.js";
 
@@ -72,7 +73,43 @@ export interface ClaudeControlPlane {
   stop(handle: ClaudeSessionHandle): Promise<void>;
   /** Whether the tmux valve is usable; gates in-session correction and blocked recovery. */
   tmuxAvailable(): Promise<boolean>;
+  /**
+   * Read the tool surface a worker dispatched with these inputs would be
+   * offered (see `claude-tool-surface.ts`). Optional: a control plane
+   * without it cannot prepare a strip, so every Claude strip refuses
+   * before spawn.
+   *
+   * The CLI control plane launches the probe exactly as `dispatch` launches
+   * a worker: the same executable, daemon, `cwd`, model pin, launch
+   * environment, and per-dispatch settings file with the declared worker
+   * variables and these deny rules. The probe has no effort pin, since
+   * effort does not change the tool surface. One variable is added to the
+   * settings `env` block: `ANTHROPIC_BASE_URL`, set to the `origin` of a
+   * capture provider (`startCaptureProvider`) that this probe owns. A
+   * declared value for that variable is overridden, because the probe must
+   * not reach a real provider. A worker environment that routes Claude
+   * through Bedrock, Vertex or another provider switch would bypass the
+   * capture provider, so the probe rejects it rather than send a request
+   * there. The opening prompt is `claudeToolSurfaceProbePrompt(nonce)`.
+   * The probe waits until the session stops sending requests: its turn has
+   * ended, or one second has passed with no new capture. It then stops the
+   * session with `stop`'s full teardown, closes the provider, and returns
+   * `readClaudeToolSurface(requests, nonce)`. When `signal` aborts, it tears
+   * everything down and rejects.
+   */
+  probeToolSurface?: ClaudeToolSurfaceProbe;
 }
+
+/** One probe: what the probe session is launched with, and the bound that tears it down. */
+export interface ClaudeToolSurfaceProbeRequest {
+  cwd: string;
+  model?: string;
+  /** Empty for the inventory probe; the derived rules for the confirming one. */
+  permissionDenyRules: readonly string[];
+  signal: AbortSignal;
+}
+
+export type ClaudeToolSurfaceProbe = (request: ClaudeToolSurfaceProbeRequest) => Promise<ClaudeToolSurface>;
 
 /**
  * What the valve can attest about one injection: whether it submitted the
@@ -104,11 +141,11 @@ export interface ClaudeDispatchOptions {
    * Permission deny rules for the worker session (capability stripping).
    * Delivered through the per-dispatch settings file — the surface
    * measured to reach the daemon-served session — as `permissions.deny`.
-   * That deny rules outrank every allow layer and permission mode
-   * (`--dangerously-skip-permissions` included) is a stated judgement
-   * until a live test observes it at a real worker.
+   * The rules come from a strip preparation (`ClaudeStripPreparer`), whose
+   * confirming probe ran under these same rules and was offered none of
+   * the denied tools.
    */
-  permissionDenyRules?: string[];
+  permissionDenyRules?: readonly string[];
 }
 
 
@@ -489,7 +526,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[]): Promise<string> {
+  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: readonly string[]): Promise<string> {
     // The ownership tag is harness bookkeeping and always lands last.
     // The hold scope is per-lead coordination state whose contract is
     // inheritance by every nested invocation (`HOLD_SCOPE_ENV`). It is

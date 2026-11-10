@@ -23097,10 +23097,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
     this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
+    const phase = options.phase ?? this.progress.snapshot().currentPhase;
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
-      phase: options.phase ?? null
+      phase
     });
     if (engine.name === "claude" && options.model === void 0) {
       this.#emitEvent({
@@ -23109,7 +23110,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, { ...dispatchOptions, ...phase !== null ? { phase } : {} }, stripRoutes);
     const unsettled = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     try {
@@ -23271,10 +23272,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
     try {
       this.budget.assertCanStart(engine.name);
       const queuedAt = Date.now();
+      const phase = options.phase ?? this.progress.snapshot().currentPhase;
       const agentId = this.progress.queueAgent({
         engine: engine.name,
         label: options.label ?? null,
-        phase: options.phase ?? null
+        phase
       });
       if (engine.name === "claude" && options.model === void 0 && state.turnCount === 0) {
         this.#emitEvent({
@@ -23296,7 +23298,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
         ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
         ...options.label !== void 0 ? { label: options.label } : {},
-        ...options.phase !== void 0 ? { phase: options.phase } : {},
+        ...phase !== null ? { phase } : {},
         ...turn.schema !== void 0 ? { schema: turn.schema } : {},
         ...options.strip !== void 0 ? { strip: options.strip } : {}
       };

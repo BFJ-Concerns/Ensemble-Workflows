@@ -776,7 +776,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // Re-read at nudge time: the nudge's receipt is read from this
         // mark, and a submission recorded between the loop-top read and the
         // blocked observation must not be taken for it.
-        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
+        const mark = (await this.#readTranscript(handle, observers)).entries.length;
         const message = this.#blockedNudge(status.waitingFor);
         await this.#deliver(handle, { message, mark, what: "the blocked-worker nudge", carriesTurn: false }, observers);
         continue;

@@ -740,6 +740,20 @@ test("blocked recovery stops after a failed steer instead of claiming the nudge 
   );
 });
 
+test("a blocked-worker nudge is not submitted without a readable transcript baseline", async () => {
+  await withControlPlane([{ outcome: "blocked" }], async (controlPlane) => {
+    const locate = controlPlane.transcriptPath.bind(controlPlane);
+    let reads = 0;
+    controlPlane.transcriptPath = async () => ++reads === 2 ? null : await locate();
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    try {
+      assert.equal(await runtime.agent("decide", { engine: "claude", schema: okSchema }), null);
+      assert.ok(reads >= 2);
+      assert.equal(controlPlane.steerCount, 0);
+    } finally { await runtime.close(); }
+  });
+});
+
 test("blocked recovery requires a receipt before another nudge", async () => {
   await withControlPlane(
     [{ outcome: "blocked" }],

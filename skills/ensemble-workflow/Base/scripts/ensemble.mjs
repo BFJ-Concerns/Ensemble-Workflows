@@ -20610,7 +20610,7 @@ var ClaudeEngineInvocation = class {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         this.#nudges += 1;
-        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
+        const mark = (await this.#readTranscript(handle, observers)).entries.length;
         const message = this.#blockedNudge(status.waitingFor);
         await this.#deliver(handle, { message, mark, what: "the blocked-worker nudge", carriesTurn: false }, observers);
         continue;

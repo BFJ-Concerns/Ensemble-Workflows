@@ -976,7 +976,7 @@ test("a real private tmux server gives its attach client the editor and declared
   try {
     const stub = await installValveStubs(dir);
     await writeFile(stub.claude, `#!/usr/bin/env node
-      import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+      import { writeFileSync } from "node:fs";
       import { execFileSync } from "node:child_process";
       if (process.argv[2] === "agents") {
         console.log(JSON.stringify([${JSON.stringify({ ...stub.handle, status: "idle", state: "working", kind: "background" })}]));
@@ -988,7 +988,6 @@ test("a real private tmux server gives its attach client the editor and declared
             const [file, ...args] = process.env.VISUAL.split(" ");
             execFileSync(file, [...args, ${JSON.stringify(path.join(dir, "edited.txt"))}]);
           }
-
         });
       }
     `);

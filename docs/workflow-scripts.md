@@ -495,13 +495,10 @@ await builder.close();
 - **Concurrency and budget are per turn:** a turn holds its engine slot from
   dispatch to settlement, an idle session holds nothing, and each turn's
   budget check happens at its own dispatch.
-- **Prompt caching:** a Claude session's worker is dispatched with the
-  one-hour prompt-cache TTL (`CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`; a
-  value declared in `worker_environment` wins). Ensemble sets no TTL for
-  one-shot Claude workers, which keep Claude Code's default. Codex has no TTL
-  setting.
+- **Prompt caching:** Claude Code fixes the subscription prompt-cache TTL at
+  one hour. Ensemble does not request a TTL for Claude workers.
 - **Staleness:** `handle.stale` becomes `true` once the idle time since the
-  last turn outlasts the cache — the TTL on Claude, 60 idle minutes on
+  last turn reaches the threshold — one idle hour on Claude, 60 idle minutes on
   Codex — and `handle.idleMs` gives the idle time. It is advisory: a send to a
   stale session still runs, and the script decides whether to pay for the
   re-read or start a fresh worker. `stalenessMark: false` turns the mark off

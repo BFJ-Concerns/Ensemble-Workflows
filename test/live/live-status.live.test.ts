@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { runNode, runProcess } from "../integration/estate-process.js";
 import type { ProcessResult } from "../integration/estate-process.js";
 import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths } from "./held-worker-probes.js";
@@ -29,6 +30,13 @@ for (const engine of ["claude", "codex"] as const) {
     }));
     let reader: Promise<ProcessResult> | undefined;
     try {
+      // Keep ambient run settings isolated while retaining machine worker credentials.
+      const configHome = path.join(directory, "config");
+      await mkdir(path.join(configHome, "ensemble"), { recursive: true, mode: 0o700 });
+      await writeFile(path.join(configHome, "ensemble", "config.json"), JSON.stringify({
+        schema_version: 1,
+        worker_environment: resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment
+      }), { mode: 0o600 });
       await mkdir(repo);
       const init = await runProcess("git", ["-C", repo, "init", "--initial-branch=main"]);
       assert.equal(init.code, 0, init.stderr);
@@ -71,7 +79,7 @@ for (const engine of ["claude", "codex"] as const) {
       reader = runNode([consumer, spec], {
         ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records"),
         ENSEMBLE_CONCURRENCY_CODEX: "1", ENSEMBLE_CONCURRENCY_CLAUDE: "1",
-        XDG_CONFIG_HOME: path.join(directory, "config")
+        XDG_CONFIG_HOME: configHome
       }, 1_110_000);
       for (const [index, probe] of probes.entries()) {
         await waitForReady(probe.paths.ready, reader);

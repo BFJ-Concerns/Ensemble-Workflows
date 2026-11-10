@@ -496,7 +496,14 @@ await builder.close();
   dispatch to settlement, an idle session holds nothing, and each turn's
   budget check happens at its own dispatch.
 - **Prompt caching:** Claude Code fixes the subscription prompt-cache TTL at
-  one hour. Ensemble does not request a TTL for Claude workers.
+  one hour. Ensemble does not request a TTL for Claude workers. That lifetime
+  does not guarantee a cache read on the next turn. Claude Code places cache
+  breakpoints in the continued request; observed follow-ups with different
+  breakpoint placements have re-created different amounts of the prefix,
+  even when sent to the same held session immediately. The request records
+  do not expose the provider's cache decisions. Judge a held worker's cost
+  from the run record's per-turn `cacheReadTokens` and `cacheCreationTokens`
+  figures, which reflect the engine's reported reads and writes.
 - **Staleness:** `handle.stale` becomes `true` once the idle time since the
   last turn reaches the threshold — one idle hour on Claude, 60 idle minutes on
   Codex — and `handle.idleMs` gives the idle time. It is advisory: a send to a
@@ -504,7 +511,8 @@ await builder.close();
   re-read or start a fresh worker. `stalenessMark: false` turns the mark off
   for that session. `handle.stalenessMark` reports whether the mark is enabled,
   including before the first turn. `handle.staleAfterMs` gives the active
-  threshold, or `null` when marking is disabled.
+  threshold, or `null` when marking is disabled. A Claude session below this
+  idle threshold may still miss the prompt cache.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.

@@ -7,7 +7,8 @@ import { execFile, spawn } from "node:child_process";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { liveCodexModel, liveOpenCodeModel } from "./live-models.js";
+import { assertEach } from "./launcher.js";
+import { liveCodexModel, liveCodexScriptOptions, liveOpenCodeModel } from "./live-models.js";
 
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 const codexModelSkip = liveCodexModel === undefined ? "ENSEMBLE_LIVE_CODEX_MODEL is unset" : false;
@@ -30,6 +31,7 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
       const drafts = await parallel([
         () => agent("Reply with exactly one short JSON object: {\\"point\\":\\"alpha\\"}", {
           engine: "codex",
+          ${liveCodexScriptOptions()}
           schema: {
             type: "object",
             required: ["point"],
@@ -39,6 +41,7 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
         }),
         () => agent("Reply with exactly one short JSON object: {\\"point\\":\\"beta\\"}", {
           engine: "codex",
+          ${liveCodexScriptOptions()}
           schema: {
             type: "object",
             required: ["point"],
@@ -53,6 +56,7 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
         "Return JSON with count 2 and summary containing LIVE_WORKFLOW_OK. Inputs: " + JSON.stringify(drafts),
         {
           engine: "codex",
+          ${liveCodexScriptOptions()}
           schema: {
             type: "object",
             required: ["count", "summary"],
@@ -65,23 +69,31 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
         }
       );
 
-      return { drafts: drafts.filter(Boolean), compiled };
+      return { drafts, compiled };
     `
   );
 
-  const cliPath = path.resolve("dist/src/cli/ensemble.js");
-  const result = await runNode([cliPath, script]);
+  const result = await runNode([bundledCliPath, script]);
 
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stderr, /\[phase\] draft/);
   assert.match(result.stderr, /\[phase\] compile/);
+  // What the workers wrote into the schema's fields is their own choice; the
+  // product determines that both fan-out results and the compiled result reach
+  // stdout as schema-validated objects.
   const parsed = JSON.parse(result.stdout) as {
-    drafts: unknown[];
-    compiled: { count: number; summary: string };
+    drafts: Array<{ point: unknown } | null>;
+    compiled: { count: unknown; summary: unknown };
   };
-  assert.equal(parsed.drafts.length, 2);
-  assert.equal(parsed.compiled.count, 2);
-  assert.match(parsed.compiled.summary, /LIVE_WORKFLOW_OK/);
+  assertEach([
+    ["the fan-out returned both results", () => assert.equal(parsed.drafts.length, 2)],
+    ...[0, 1].map((index): [string, () => void] => [
+      `fan-out result ${index} is its validated object`,
+      () => assert.equal(typeof parsed.drafts[index]?.point, "string", JSON.stringify(parsed.drafts[index]))
+    ]),
+    ["the compiled count is its validated integer", () => assert.ok(Number.isInteger(parsed.compiled.count), result.stdout)],
+    ["the compiled summary is its validated string", () => assert.equal(typeof parsed.compiled.summary, "string")]
+  ]);
 });
 
 test("live built CLI runs a current Codex model with unusual open-domain metadata", { skip: !isLive || codexModelSkip, timeout: 240_000 }, async () => {
@@ -138,7 +150,7 @@ test("live built CLI runs a current Codex model with unusual open-domain metadat
   }
 });
 
-test("live built CLI honours the maximum faithful per-turn timeout as a long deadline", { skip: !isLive || codexModelSkip, timeout: 240_000 }, async () => {
+test("live built CLI honours the maximum faithful per-turn timeout as a long deadline", { skip: !isLive, timeout: 240_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-large-turn-timeout-"));
   const script = path.join(directory, "workflow.js");
   const token = `LIVE_LARGE_TIMEOUT_${randomUUID()}`;
@@ -156,7 +168,7 @@ test("live built CLI honours the maximum faithful per-turn timeout as a long dea
           "Return exactly one JSON object with token ${token}.",
           {
             engine: "codex",
-            model: ${JSON.stringify(liveCodexModel)},
+            ${liveCodexScriptOptions()}
             timeoutMs: 2147483647,
             maxAttempts: 1,
             schema: {
@@ -184,9 +196,10 @@ test("live built CLI honours the maximum faithful per-turn timeout as a long dea
   }
 });
 
-test("live CLI runs Codex findings through Claude verification", { skip: !isLive, timeout: 420_000 }, async () => {
+test("live CLI runs Codex findings through Claude verification", { skip: !isLive, timeout: 420_000 }, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-cross-engine-"));
   const script = path.join(directory, "workflow.js");
+  const recordStore = path.join(directory, "records");
 
   try {
     await writeFile(
@@ -202,70 +215,92 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
           required: ["token", "risk"],
           additionalProperties: false,
           properties: {
-            token: { type: "string", enum: ["LIVE_CROSS_FIND"] },
+            token: { type: "string" },
             risk: { type: "string" }
           }
         };
 
         const verificationSchema = {
           type: "object",
-          required: ["token", "accepted", "checkedBy"],
+          required: ["token", "accepted"],
           additionalProperties: false,
           properties: {
-            token: { type: "string", enum: ["LIVE_CROSS_VERIFY"] },
-            accepted: { type: "boolean", enum: [true] },
-            checkedBy: { type: "string", enum: ["claude"] }
+            token: { type: "string" },
+            accepted: { type: "boolean" }
           }
         };
 
         phase("find");
         const finding = await agent(
-          "Return exactly one JSON object matching the schema: token LIVE_CROSS_FIND and risk cross-engine-contract.",
-          { engine: "codex", schema: findingSchema, maxAttempts: 1 }
+          "Name one risk in passing work between two AI engines. Return a JSON object with a one-word token of your choosing for the risk and a short risk description.",
+          { engine: "codex", ${liveCodexScriptOptions()} label: "cross-find", schema: findingSchema, maxAttempts: 2 }
         );
 
         phase("verify");
         const verification = await agent(
-          "Verify this Codex finding is structurally valid and relevant to cross-engine verification. " +
-            "Return JSON with token LIVE_CROSS_VERIFY, accepted true, and checkedBy claude. Finding: " +
+          "Judge whether this Codex finding is relevant to cross-engine verification. " +
+            "Return JSON with a one-word token of your choosing and your judgement as accepted. Finding: " +
             JSON.stringify(finding),
-          { engine: "claude", schema: verificationSchema, maxAttempts: 2 }
+          { engine: "claude", label: "cross-verify", schema: verificationSchema, maxAttempts: 2 }
         );
 
         return { finding, verification };
       `
     );
 
-    const cliPath = path.resolve("dist/src/cli/ensemble.js");
-    const result = await runNode([cliPath, script]);
+    const result = await runNode([bundledCliPath, script], {
+      env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
+    });
 
+    // Both families must actually have answered: the archive names the engine
+    // each agent ran on and holds the validated object stdout returned, and
+    // the verifier's recorded prompt carries the finding the Codex agent
+    // actually produced, as archived and as the script received it. Every
+    // token and judgement is the workers' own choice; none is prescribed.
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stderr, /\[phase\] find/);
     assert.match(result.stderr, /\[phase\] verify/);
-    const parsed = JSON.parse(result.stdout) as {
-      finding: { token: string; risk: string };
-      verification: { token: string; accepted: boolean; checkedBy: string };
+    const parsed = JSON.parse(result.stdout) as { finding: unknown; verification: unknown };
+    const { agent: finder } = await recordedAgent(recordStore, "cross-find");
+    const { agent: verifier } = await recordedAgent(recordStore, "cross-verify");
+    // The script appends the finding to the verifier's prompt as JSON; the
+    // archive may serialise the same value with its keys in another order,
+    // so the hand-off is compared as a value, not as text.
+    const handedOff = (): unknown => {
+      const marker = "Finding: ";
+      const at = verifier.prompt.indexOf(marker);
+      assert.ok(at >= 0, `the verifier's recorded prompt carries no finding: ${verifier.prompt}`);
+      return JSON.parse(verifier.prompt.slice(at + marker.length)) as unknown;
     };
-    assert.deepEqual(parsed.finding, { token: "LIVE_CROSS_FIND", risk: "cross-engine-contract" });
-    assert.deepEqual(parsed.verification, {
-      token: "LIVE_CROSS_VERIFY",
-      accepted: true,
-      checkedBy: "claude"
-    });
+    assertEach([
+      ["the finder ran on codex", () => assert.equal(finder.engine, "codex")],
+      ["the verifier ran on claude", () => assert.equal(verifier.engine, "claude")],
+      ["the finder completed", () => assert.equal(finder.status, "complete")],
+      ["the verifier completed", () => assert.equal(verifier.status, "complete")],
+      ["the finder's validated output is the finding returned", () => assert.deepEqual(finder.validated_output, parsed.finding)],
+      [
+        "the verifier's validated output is the verification returned",
+        () => assert.deepEqual(verifier.validated_output, parsed.verification)
+      ],
+      [
+        "the verifier's recorded prompt carries the finding the script received",
+        () => assert.deepEqual(handedOff(), parsed.finding)
+      ],
+      [
+        "the verifier's recorded prompt carries the finder's archived output",
+        () => assert.deepEqual(handedOff(), finder.validated_output)
+      ]
+    ]);
+    t.diagnostic(`model-chosen tokens: finding ${JSON.stringify(parsed.finding)}; verification ${JSON.stringify(parsed.verification)}`);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("live CLI accepts prose-wrapped schema output from a real Claude worker", { skip: !isLive, timeout: 420_000 }, async () => {
+test("live CLI accepts prose-wrapped schema output from a real Claude worker", { skip: !isLive, timeout: 420_000 }, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-tolerant-parse-"));
   const script = path.join(directory, "workflow.js");
-  const recordStore = path.join(directory, "records");
-  const expected = {
-    token: "LIVE_TOLERANT_CLAUDE",
-    product: 57,
-    checkedBy: "claude"
-  };
+  const maxProseRuns = 3;
 
   try {
     await writeFile(
@@ -278,12 +313,11 @@ test("live CLI accepts prose-wrapped schema output from a real Claude worker", {
 
         const schema = {
           type: "object",
-          required: ["token", "product", "checkedBy"],
+          required: ["token", "product"],
           additionalProperties: false,
           properties: {
             token: { type: "string", enum: ["LIVE_TOLERANT_CLAUDE"] },
-            product: { type: "integer", enum: [57] },
-            checkedBy: { type: "string", enum: ["claude"] }
+            product: { type: "integer" }
           }
         };
 
@@ -291,7 +325,7 @@ test("live CLI accepts prose-wrapped schema output from a real Claude worker", {
         return await agent(
           "Calculate 19 multiplied by 3. In your final response, first write at least one complete sentence " +
             "explaining how you computed the product. After that prose, include a JSON object with token " +
-            "LIVE_TOLERANT_CLAUDE, product 57, and checkedBy claude. The prose before the object is required.",
+            "LIVE_TOLERANT_CLAUDE and the product. The prose before the object is required.",
           {
             engine: "claude",
             label: "prose-wrapped-claude",
@@ -302,24 +336,46 @@ test("live CLI accepts prose-wrapped schema output from a real Claude worker", {
       `
     );
 
-    const cliPath = path.resolve("dist/src/cli/ensemble.js");
-    const result = await runNode([cliPath, script], {
-      env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
-    });
+    // Whether Claude wraps its object in prose is the model's choice, so the
+    // run is repeated until a reply arrives wrapped; only then is the claim
+    // exercised. For a wrapped reply the product decides the rest: the run
+    // succeeds, the archive records the object-fallback parse route, and the
+    // validated value stdout returns is the object inside the raw reply.
+    for (let run = 1; run <= maxProseRuns; run += 1) {
+      const recordStore = path.join(directory, `records-${run}`);
+      const result = await runNode([bundledCliPath, script], {
+        env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stderr, /\[phase\] prose-wrapped-claude/);
 
-    assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stderr, /\[phase\] prose-wrapped-claude/);
-    assert.deepEqual(JSON.parse(result.stdout), expected);
+      const { agent } = await recordedAgent(recordStore, "prose-wrapped-claude");
+      const rawOutput = agent.raw_output ?? "";
+      const objectStart = rawOutput.indexOf("{");
+      if (objectStart >= 0 && rawOutput.slice(0, objectStart).trim().length === 0) {
+        t.diagnostic(`run ${run}: Claude replied without prose before its object, so the run is repeated`);
+        continue;
+      }
 
-    const { agent } = await recordedAgent(recordStore, "prose-wrapped-claude");
-    assert.equal(agent.attempts.length, 1);
-    assert.equal(agent.attempts[0]?.status, "complete");
-    assert.deepEqual(agent.validated_output, expected);
-    assert.equal(typeof agent.raw_output, "string");
-    const rawOutput = agent.raw_output ?? "";
-    const objectStart = rawOutput.indexOf("{");
-    assert.ok(objectStart > 0, `Claude did not put prose before its JSON object: ${rawOutput}`);
-    assert.match(rawOutput.slice(0, objectStart), /[A-Za-z][\s\S]*[.!?]/);
+      const returned: unknown = JSON.parse(result.stdout);
+      const objectEnd = rawOutput.lastIndexOf("}") + 1;
+      assert.equal(agent.attempts.length, 1);
+      assertEach([
+        ["the prose-wrapped reply was accepted", () => assert.equal(agent.attempts[0]?.status, "complete", rawOutput)],
+        ["the archive records the object-fallback parse route", () => assert.equal(agent.parse_route, "object-fallback")],
+        ["the archive's validated output is the value returned", () => assert.deepEqual(agent.validated_output, returned)],
+        [
+          "the archived raw reply holds a JSON object",
+          () => assert.ok(objectStart >= 0 && objectEnd > objectStart, `no JSON object in: ${rawOutput}`)
+        ],
+        [
+          "the object inside the raw reply is the value returned",
+          () => assert.deepEqual(JSON.parse(rawOutput.slice(objectStart, objectEnd)), returned)
+        ]
+      ]);
+      return;
+    }
+    t.skip(`Claude replied without prose in all ${maxProseRuns} runs, so the prose-tolerant parse was not exercised`);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -332,7 +388,6 @@ test("live built CLI gives Codex workers unrestricted filesystem and network acc
   const outsidePath = path.join(tmpdir(), `ensemble-outside-${randomUUID()}.txt`);
   const outsideReceipt = `OUTSIDE_WORKSPACE_${randomUUID()}`;
   const registryUrl = "https://registry.npmjs.org/typescript/5.9.3";
-  const registryReceipt = "typescript@5.9.3";
   const command =
     `printf '%s' '${outsideReceipt}' > '${outsidePath}' && ` +
     `curl --silent --show-error --fail --max-time 20 '${registryUrl}' | ` +
@@ -347,33 +402,16 @@ test("live built CLI gives Codex workers unrestricted filesystem and network acc
           description: "Live proof of Codex worker filesystem and network reach"
         };
 
-        const resultSchema = {
-          type: "object",
-          required: ["attempted", "exitCode", "registryReceipt"],
-          additionalProperties: false,
-          properties: {
-            attempted: { type: "boolean", enum: [true] },
-            exitCode: { type: "integer" },
-            registryReceipt: { type: "string" }
-          }
-        };
-
         phase("unrestricted-posture");
-        const result = await agent(
-          ${JSON.stringify(
-            `Use the shell tool to run this command exactly once: ${command}. ` +
-              "Do not infer or invent its result. Return attempted true, the tool exit code as exitCode, " +
-              "and the command stdout as registryReceipt."
-          )},
+        return await agent(
+          ${JSON.stringify(`Use the shell tool to run this command exactly once: ${command}. Then reply with the single word done.`)},
           {
           engine: "codex",
+          ${liveCodexScriptOptions()}
           label: "unrestricted-posture",
-          schema: resultSchema,
           maxAttempts: 1
           }
         );
-
-        return result;
       `
     );
 
@@ -381,14 +419,11 @@ test("live built CLI gives Codex workers unrestricted filesystem and network acc
       env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
     });
 
+    // Reach is witnessed by the file the worker's shell left outside the
+    // workspace and by the engine's own record of the command, never by the
+    // worker's account of what it ran.
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stderr, /\[phase\] unrestricted-posture/);
-    const parsed = JSON.parse(result.stdout) as UnrestrictedProbeResult;
-    assert.deepEqual(parsed, {
-      attempted: true,
-      exitCode: 0,
-      registryReceipt
-    });
     assert.equal(await readFile(outsidePath, "utf8"), outsideReceipt);
 
     const recorded = await recordedCommand(recordStore, "unrestricted-posture", registryUrl);
@@ -399,12 +434,6 @@ test("live built CLI gives Codex workers unrestricted filesystem and network acc
     await rm(directory, { recursive: true, force: true });
   }
 });
-
-interface UnrestrictedProbeResult {
-  attempted: true;
-  exitCode: number;
-  registryReceipt: string;
-}
 
 test("live CLI gives a real Codex worker unrestricted filesystem and network access", { skip: !isLive, timeout: 240_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-unrestricted-estate-"));
@@ -426,35 +455,15 @@ test("live CLI gives a real Codex worker unrestricted filesystem and network acc
           description: "Worker-shell proof of unrestricted filesystem and network access"
         };
 
-        const resultSchema = {
-          type: "object",
-          required: ["attempted", "exitCode", "httpStatus", "body"],
-          additionalProperties: false,
-          properties: {
-            attempted: { type: "boolean", enum: [true] },
-            exitCode: { type: "integer", enum: [0] },
-            // Reachability, not one endpoint's method policy: any HTTP
-            // status proves the request left the worker and came back. A
-            // genuinely restricted worker gets a curl connection error, not
-            // a status code. Codex routes worker traffic through its own
-            // proxy when its network_proxy feature is on (observed
-            // 2026-08-07: the proxy answers GET /-/ping with 405 where
-            // the origin answers 200), so pinning 200 makes a proxy's
-            // policy part of a pass condition that is not about proxies.
-            httpStatus: { type: "integer", minimum: 100, maximum: 599 },
-            body: { type: "string" }
-          }
-        };
-
         phase("unrestricted-posture-estate");
         return await agent(
           ${JSON.stringify(
-            `Use the shell tool to run this command exactly once: printf %s ${fileReceipt} > ${outsideFile} && curl --silent --show-error --max-time 10 --write-out '\\n%{http_code}' ${registryUrl}. Do not infer or invent its result. Return attempted true, the tool exit code as exitCode, the final curl status line as integer httpStatus, and the preceding curl stdout as body.`
+            `Use the shell tool to run this command exactly once: printf %s ${fileReceipt} > ${outsideFile} && curl --silent --show-error --max-time 10 --write-out '\\n%{http_code}' ${registryUrl}. Then reply with the single word done.`
           )},
           {
           engine: "codex",
+          ${liveCodexScriptOptions()}
           label: "unrestricted-posture-estate",
-          schema: resultSchema,
           maxAttempts: 1
           }
         );
@@ -467,23 +476,17 @@ test("live CLI gives a real Codex worker unrestricted filesystem and network acc
 
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stderr, /\[phase\] unrestricted-posture-estate/);
-    const posture = JSON.parse(result.stdout) as {
-      attempted: boolean;
-      exitCode: number;
-      httpStatus: number;
-      body: string;
-    };
-    assert.equal(posture.attempted, true);
-    assert.equal(posture.exitCode, 0);
-    assert.ok(
-      posture.httpStatus >= 100 && posture.httpStatus <= 599,
-      `worker reported no HTTP response (httpStatus ${posture.httpStatus}); an unreachable network fails curl instead`
-    );
 
     assert.equal(await readFile(outsideFile, "utf8"), fileReceipt);
     const command = await recordedCommand(recordStore, "unrestricted-posture-estate", registryUrl);
     assert.equal(command.exitCode, 0);
     assert.match(command.command, new RegExp(escapeRegExp(outsideFile)));
+    // Reachability, not one endpoint's method policy: any HTTP status in the
+    // engine's record of the command proves the request left the worker and
+    // came back; a restricted worker gets a curl connection error instead.
+    // Codex may route worker traffic through its own network proxy (observed
+    // 2026-08-07: the proxy answers GET /-/ping with 405 where the origin
+    // answers 200), so no one status is pinned.
     assert.match(command.aggregatedOutput ?? "", /\s[1-5]\d{2}\s*$/);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -492,9 +495,11 @@ test("live CLI gives a real Codex worker unrestricted filesystem and network acc
 });
 
 const placementScenarios = [
-  { engine: "codex" },
-  { engine: "claude" },
-  ...(liveOpenCodeModel !== undefined ? [{ engine: "opencode", model: liveOpenCodeModel }] : [])
+  { engine: "codex", scriptOptions: liveCodexScriptOptions() },
+  { engine: "claude", scriptOptions: "" },
+  ...(liveOpenCodeModel !== undefined
+    ? [{ engine: "opencode", scriptOptions: `model: ${JSON.stringify(liveOpenCodeModel)},` }]
+    : [])
 ] as const;
 
 for (const scenario of placementScenarios) {
@@ -519,7 +524,7 @@ for (const scenario of placementScenarios) {
           "Copy the file placement-receipt.txt in your current working directory to a new file named placed.txt in the same directory, using relative paths only. Then reply with the single word done.",
           {
             engine: ${JSON.stringify(scenario.engine)},
-            ${"model" in scenario ? `model: ${JSON.stringify(scenario.model)},` : ""}
+            ${scenario.scriptOptions}
             cwd: ${JSON.stringify(targetCwd)},
             label: ${JSON.stringify(`per-call-cwd-${scenario.engine}`)},
             maxAttempts: 1
@@ -570,28 +575,19 @@ for (const scenario of placementScenarios) {
           name: ${JSON.stringify(`${scenario.engine}-worktree-commit`)},
           description: "Final-consumer proof that an isolated worker can commit"
         };
-        const agentResult = await agent(
+        await agent(
           ${JSON.stringify(
-            `Use the shell to create worker-commit.txt containing exactly ${receipt}, git add it, and commit it with message "worker commit". Then return the current branch and HEAD commit.`
+            `Use the shell to create worker-commit.txt containing exactly ${receipt}, git add it, and commit it with message "worker commit". Then reply with the single word done.`
           )},
           {
             engine: ${JSON.stringify(scenario.engine)},
-            ${"model" in scenario ? `model: ${JSON.stringify(scenario.model)},` : ""}
+            ${scenario.scriptOptions}
             isolation: "worktree",
             label: ${JSON.stringify(`worktree-commit-${scenario.engine}`)},
-            maxAttempts: 1,
-            schema: {
-              type: "object",
-              required: ["branch", "commit"],
-              additionalProperties: false,
-              properties: {
-                branch: { type: "string" },
-                commit: { type: "string" }
-              }
-            }
+            maxAttempts: 1
           }
         );
-        return { agentResult, worktrees };
+        return { worktrees };
       `
     );
     await git(repo, ["add", "README.md", "workflow.js"]);
@@ -604,7 +600,6 @@ for (const scenario of placementScenarios) {
 
     assert.equal(result.code, 0, result.stderr);
     const parsed = JSON.parse(result.stdout) as {
-      agentResult: { branch: string; commit: string };
       worktrees: Array<{ path: string; branch: string; baseCommit: string; changed: boolean; removed: boolean }>;
     };
     assert.equal(parsed.worktrees.length, 1);
@@ -616,9 +611,9 @@ for (const scenario of placementScenarios) {
     assert.equal((await git(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"])).trim(), "");
 
     const tip = (await git(repo, ["rev-parse", worktree.branch])).trim();
+    // The commit is read from the repository and the archive, not from the
+    // worker's account of its branch and HEAD.
     assert.notEqual(tip, worktree.baseCommit);
-    assert.equal(parsed.agentResult.branch, worktree.branch);
-    assert.equal(parsed.agentResult.commit, tip);
 
     const { agent } = await recordedAgent(recordStore, `worktree-commit-${scenario.engine}`);
     assert.equal(agent.resolved_cwd, worktree.path);
@@ -648,6 +643,10 @@ interface RecordedCommand {
 
 interface RecordedAgent {
   label: string | null;
+  engine: string;
+  status: string;
+  prompt: string;
+  parse_route: string | null;
   resolved_cwd: string;
   isolation: "worktree" | null;
   worktree: {

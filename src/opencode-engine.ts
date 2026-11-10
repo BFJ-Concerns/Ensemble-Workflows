@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+import { launchEnvironment } from "./engine-environment.js";
 import {
   EngineShutdownError,
   TurnTimeoutError,
@@ -117,14 +118,13 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
   constructor(bin = "opencode", options: { killGraceMs?: number; workerEnv?: Record<string, string> } = {}) {
     this.#bin = bin;
     this.#killGraceMs = options.killGraceMs ?? 5_000;
-    // Declared variables sit above inherited ones; everything undeclared
-    // still inherits, so a configured parent keeps working unchanged.
-    this.#env = { ...process.env, ...options.workerEnv };
+    this.#env = launchEnvironment("opencode", options.workerEnv);
   }
 
   async run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult> {
     const args = [
       "run",
+      "--auto",
       "--format",
       "json",
       "--model",
@@ -319,7 +319,8 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     }
     const { tokenUsageEvents, transcripts } = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, exportData);
 
-    if (run.exitCode !== 0) {
+    const reportedFailure = reportedRunFailure(parsedRun.events, exportData, text);
+    if (run.exitCode !== 0 || reportedFailure !== null) {
       // An operational failure consumes a bounded retry attempt, the
       // contract the usage brief documents for every engine — so it returns
       // as a failed result the shared loop governs (imitating the Claude
@@ -335,7 +336,9 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         resolvedModel: this.#providerModel,
         attemptFailure: {
           kind: "opencode-run-error",
-          message: openCodeFailureMessage(run, parsedRun.events)
+          message: reportedFailure === null
+            ? openCodeFailureMessage(run, parsedRun.events)
+            : `opencode run failed: ${reportedFailure}`
         },
         workerExit: { exitCode: run.exitCode, signal: run.signal },
         deltaText: text,
@@ -870,6 +873,37 @@ function openCodeFailureMessage(run: OpenCodeRunResult, events: unknown[]): stri
     return `opencode run failed: ${stderr}`;
   }
   return `opencode run failed with exit code ${run.exitCode ?? `signal ${run.signal ?? "unknown"}`}`;
+}
+
+function reportedRunFailure(events: unknown[], exportData: OpenCodeExport | null, text: string): string | null {
+  const eventError = events.map(errorFromEvent).find((message) => message !== null);
+  if (eventError !== undefined) {
+    return eventError;
+  }
+  const messages = Array.isArray(exportData?.messages) ? exportData.messages.filter(isRecord) : [];
+  const assistantMessages = messages.filter((message) => isRecord(message.info) && message.info.role === "assistant");
+  const lastAssistant = assistantMessages.at(-1);
+  const assistantError = isRecord(lastAssistant?.info) ? errorFromEvent(lastAssistant.info) : null;
+  if (assistantError !== null) {
+    return assistantError;
+  }
+  // Tool errors can be recovered within a turn. Only attribute an empty
+  // answer to a failed tool when it is the last tool the worker reported.
+  if (text.trim().length > 0) {
+    return null;
+  }
+  const exportedTools = assistantMessages
+    .flatMap((message) => Array.isArray(message.parts) ? message.parts : [])
+    .filter((part) => isRecord(part) && part.type === "tool");
+  const streamedTools = events
+    .flatMap((event) => isRecord(event) && isRecord(event.part) && event.part.type === "tool" ? [event.part] : []);
+  const lastTool: unknown = exportedTools.at(-1) ?? streamedTools.at(-1);
+  if (!isRecord(lastTool) || !isRecord(lastTool.state) || lastTool.state.status !== "error") {
+    return null;
+  }
+  const tool = typeof lastTool.tool === "string" ? lastTool.tool : "unknown";
+  const error = typeof lastTool.state.error === "string" ? lastTool.state.error : "no diagnostic reported";
+  return `tool ${tool} failed: ${error}`;
 }
 
 function errorFromEvent(event: unknown): string | null {

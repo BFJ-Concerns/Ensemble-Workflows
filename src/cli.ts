@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { CALLER_IDENTITY_ENV, parseWorkerScopeGrouping, resolveAmbientSettings } from "./ambient-settings.js";
+import { CALLER_IDENTITY_ENV, RUN_RECORD_DIR_ENV, parseWorkerScopeGrouping, resolveAmbientSettings } from "./ambient-settings.js";
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
@@ -15,13 +15,15 @@ import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { RunRecordWriter } from "./run-record.js";
+import { judgeResources } from "./resource-preflight.js";
 
 import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
 import { defaultWorkflowRegistryDirs, listSavedWorkflows } from "./workflow-registry.js";
 import { harnessVersion } from "./harness-version.js";
 
 import type { WorkerScopeGrouping } from "./worker-scopes.js";
-import type { AmbientSettings } from "./ambient-settings.js";
+import type { AmbientSettings, SettingLayer } from "./ambient-settings.js";
+import type { ResourceRequirement } from "./resource-preflight.js";
 import type { RunProgress } from "./progress.js";
 import type { CompletedAgentOutput, EnsembleRuntime, ShutdownTally, UnfinishedLeg } from "./runtime.js";
 import type { StrippableCapability } from "./capability-stripping.js";
@@ -306,6 +308,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     return 2;
   }
 
+  // Store paths belong to the launcher process, independently of the
+  // workflow cwd. Freeze them before probing so the probe, sentinel and
+  // archive writer consume the same absolute directory.
+  const configuredRecordDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordDir.value;
+  const runRecordDir = configuredRecordDir ? path.resolve(configuredRecordDir) : configuredRecordDir;
+  const configuredSentinelDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
+  const sentinelStoreDir = configuredSentinelDir ? path.resolve(configuredSentinelDir) : configuredSentinelDir;
+
   // The acceptance boundary: a run begins when the invocation is accepted —
   // flags parsed above, and here the script read (or the direct agent's
   // placement usable). Everything the launcher does for a run — the
@@ -316,6 +326,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let prepared: PreparedRun;
   try {
     prepared = await prepareRun(invocation, cwd);
+    await judgeResources(launcherResourceRequirements(runRecordDir, options.runRecordDir !== undefined, ambientSettings), env);
   } catch (error) {
     stderr.write(`${presentOperationalError(error) ?? formatError(error)}\n`);
     return 2;
@@ -376,7 +387,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // Injected test runtimes may not carry a progress model; read it defensively.
     progress = (runtime as { progress?: RunProgress }).progress;
 
-    const runRecordDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordDir.value;
     recordingEnabled = runRecordDir !== null && runRecordDir.length > 0;
     const runtimeRunId = progress?.runId ?? "unknown-run";
     const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
@@ -388,10 +398,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // explicit programmatic `runRecordDir: null` is a different thing — a
     // library caller opting out of the store entirely — and skips the
     // sentinel with it.
-    const sentinelStoreDir =
-      options.runRecordDir !== undefined
-        ? options.runRecordDir
-        : ambientSettings.runRecordStoreDir.value;
     if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
       const sentinelPath = await sentinel.prepare(
         { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
@@ -927,6 +933,46 @@ async function prepareRun(invocation: ParsedInvocation, cwd: string): Promise<Pr
     runnerArgs: invocation.args,
     recordArgs: invocation.args
   };
+}
+
+/**
+ * The launcher's own filesystem requirements, judged at the acceptance
+ * boundary so a denial is a rejected invocation rather than a run that
+ * fails after it began: the durable record's store, when recording is on.
+ * With recording off a store the launcher cannot use costs only the
+ * sentinel, which the run reports and runs on without, so it is not
+ * required. The status directory is not among them, since a failed status
+ * write never breaks a run, and no engine's is: the runtime judges an
+ * engine's requirements before that engine's first attempt.
+ */
+function launcherResourceRequirements(
+  recordDir: string | null,
+  injectedRecordDir: boolean,
+  settings: AmbientSettings
+): ResourceRequirement[] {
+  if (recordDir === null || recordDir.length === 0) {
+    return [];
+  }
+  const from = injectedRecordDir
+    ? "the runRecordDir option"
+    : settingSource(settings.runRecordDir.layer, RUN_RECORD_DIR_ENV, "run_record.dir", settings.configFile);
+  return [
+    { owner: "launcher", role: "run record store", path: recordDir, access: "create-entries", resolvedFrom: from }
+  ];
+}
+
+/** Where a resolved ambient setting came from, as a refusal names it. */
+function settingSource(layer: SettingLayer, envKey: string, fileKey: string, configFile: string): string {
+  switch (layer) {
+    case "flag":
+      return "the command line";
+    case "env":
+      return envKey;
+    case "config-file":
+      return `${fileKey} in ${configFile}`;
+    case "default":
+      return `the default; ${envKey}, or ${fileKey} in ${configFile}, moves it`;
+  }
 }
 
 function singleAgentWorkflowSource(invocation: ParsedAgentInvocation): string {

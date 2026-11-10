@@ -267,6 +267,9 @@ subdirectory: archives land under `<dir>/runs/cwd/…`, so a value ending in
 `run_record.dir`, then to the default location; it never disables
 recording. Disable recording with
 `ENSEMBLE_RUN_RECORD=off` or `run_record.enabled: false`.
+Relative store paths resolve from the launcher process's working directory,
+independently of the workflow directory; preflight, the archive and the
+completion sentinel use that same absolute path.
 
 The live status file defaults to
 `$XDG_DATA_HOME/ensemble/status` (normally

@@ -168,6 +168,99 @@ test("opencode run failure preserves stream text and the engine diagnostic in th
   }
 });
 
+test("opencode retains a zero-exit shell refusal from the stream or session export", async () => {
+  const stream = await readFile("test/fixtures/opencode/refused-shell.jsonl", "utf8");
+  const parts = stream.trim().split("\n").map((line) => (JSON.parse(line) as { part: unknown }).part);
+  for (const source of ["stream", "export"] as const) {
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-refusal-"));
+    const runner = new FakeOpenCodeRunner({
+      runResult: { stdout: source === "stream" ? stream : JSON.stringify({ sessionID: "ses_permission_refused" }) },
+      exportResult: source === "stream"
+        ? { status: "command-failed", exitCode: 1, signal: null, stderr: "export unavailable" }
+        : { status: "ok", stdout: JSON.stringify({ messages: [{ info: { role: "assistant" }, parts }] }) }
+    });
+    const runtime = new EnsembleRuntime({
+      engines: new EngineRegistry([new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry })]),
+      defaultMaxAttempts: 2
+    });
+    const writer = await RunRecordWriter.start({
+      storeDir: directory,
+      cwd: directory,
+      runUuid: `run-opencode-refusal-${source}`,
+      workflowPath: path.join(directory, "workflow.js"),
+      workflowSource: "export const meta = { name: 'opencode-refusal' };\n",
+      args: [],
+      cliFlags: { jsonArgs: false }
+    });
+    runtime.setRunRecorder(writer);
+    try {
+      assert.equal(await runtime.agent("run a command", { engine: "opencode", model: "glm-5.2" }), null);
+      const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+        attempts: Array<{ failure: { kind: string; message: string }; worker_exit: unknown }>;
+      };
+      assert.equal(agent.attempts.length, 2);
+      for (const attempt of agent.attempts) {
+        assert.equal(attempt.failure.kind, "opencode-run-error");
+        assert.match(attempt.failure.message, /tool bash failed: The user rejected permission/);
+        assert.deepEqual(attempt.worker_exit, { exit_code: 0, signal: null });
+      }
+      assert.match(runner.runs[1]?.prompt ?? "", /tool bash failed: The user rejected permission/);
+    } finally {
+      await runtime.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("opencode reports engine errors even when its process exits zero with text", async () => {
+  for (const source of ["stream", "export"] as const) {
+    const error = { name: "APIError", data: { message: "provider refused tool bash" } };
+    const runner = new FakeOpenCodeRunner({
+      runResult: {
+        stdout: [
+          JSON.stringify({ type: "session.created", sessionID: "ses_test" }),
+          ...(source === "stream" ? [JSON.stringify({ type: "error", error })] : [])
+        ].join("\n")
+      },
+      exportText: JSON.stringify({ messages: [{
+        info: { role: "assistant", ...(source === "export" ? { error } : {}) },
+        parts: [{ type: "text", text: "partial progress" }]
+      }] })
+    });
+    const adapter = new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry });
+    try {
+      const result = await adapter.createInvocation("run a command", { model: "glm-5.2" }).runAttempt({ attempt: 1 });
+      assert.equal(result.text, "partial progress");
+      assert.equal(result.attemptFailure?.kind, "opencode-run-error");
+      assert.match(result.attemptFailure?.message ?? "", /provider refused tool bash/);
+    } finally {
+      await adapter.close();
+    }
+  }
+});
+
+test("opencode lets a worker recover from a tool error and give its answer", async () => {
+  const refusal = await readFile("test/fixtures/opencode/refused-shell.jsonl", "utf8");
+  for (const text of ["COMMAND-OK", ""]) {
+    const runner = new FakeOpenCodeRunner({
+      runResult: {
+        stdout: refusal + JSON.stringify({ type: "tool_use", part: {
+          type: "tool", tool: "bash", state: { status: "completed", output: "done" }
+        } }) + "\n"
+      },
+      exportText: exportText(text, tokens(3, 2, 1))
+    });
+    const adapter = new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry });
+    try {
+      const result = await adapter.createInvocation("run a command", { model: "glm-5.2" }).runAttempt({ attempt: 1 });
+      assert.equal(result.text, text);
+      assert.equal(result.attemptFailure, undefined, "an earlier tool error is not a terminal diagnostic");
+    } finally {
+      await adapter.close();
+    }
+  }
+});
+
 test("a worker killed by signal leaves its exit evidence in the attempt record", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-signal-cwd-"));
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-signal-store-"));
@@ -407,7 +500,8 @@ test("a declared opencode worker environment reaches the run child, above inheri
 import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({
   key: process.env.OPENCODE_API_KEY ?? null,
-  inherited: process.env.ENSEMBLE_TEST_INHERITED ?? null
+  inherited: process.env.ENSEMBLE_TEST_INHERITED ?? null,
+  argv: process.argv.slice(2)
 }));
 process.stdout.write(JSON.stringify({ type: "session.created", sessionID: "ses_env" }) + "\\n");
 process.stdout.write(JSON.stringify({ type: "text", part: { type: "text", text: "ok" } }) + "\\n");
@@ -430,9 +524,10 @@ process.stdout.write(JSON.stringify({ type: "text", part: { type: "text", text: 
     restoreEnv("ENSEMBLE_TEST_INHERITED", savedInherited);
     // The observation file is written before the child exits, so no wait race.
   }
-  const observed = JSON.parse(await readFile(envPath, "utf8")) as { key: string | null; inherited: string | null };
+  const observed = JSON.parse(await readFile(envPath, "utf8")) as { key: string | null; inherited: string | null; argv: string[] };
   assert.equal(observed.key, "declared-key");
   assert.equal(observed.inherited, "still-here");
+  assert.ok(observed.argv.includes("--auto"), "native permissions must be approved for autonomous commands");
   await rm(directory, { recursive: true, force: true });
 });
 

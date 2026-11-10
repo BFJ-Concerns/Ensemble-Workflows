@@ -28,6 +28,9 @@ async function readJson(file) {
 for (;;) {
   assert.ok(Date.now() < deadline, "archive did not settle before the consumer deadline");
   const controls = acknowledgements === undefined ? [] : (await readFile(acknowledgements, "utf8")).split("\n");
+  // The observer can fail before every expected agent exists. Its cleanup
+  // stops this reader without waiting for an archive that cannot complete.
+  if (controls.includes("stop")) process.exit(0);
   const entries = await readdir(store, { recursive: true });
   const manifests = entries.filter((entry) => path.basename(entry) === "manifest.json");
   for (const relative of manifests) {

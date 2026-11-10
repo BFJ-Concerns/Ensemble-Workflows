@@ -349,11 +349,52 @@ cannot pass silently:
 A schema value of JSON `null` that validates is a successful answer, not a
 failure.
 
+### Claude opening delivery
+
+Claude dispatch requires tmux. Ensemble starts an empty native `claude --bg`
+session, waits for the dispatch command to finish and the roster to name its
+process, then loads the complete UTF-8 opening through Claude Code's external
+prompt editor. The first native user turn must equal the text sent. The prompt
+stays in a private file rather than Claude's launch arguments or dispatch
+payload; no bootstrap model turn is added. The same background session serves
+follow-ups and corrections.
+
+A launch failure retains the command's exit code, signal, stdout and stderr,
+the last observed session identity and PID, native logs and any transcript in
+the attempt's `diagnostics.claudeLaunch` and transcript references. The
+dispatch command's status is separate from `worker_exit`, which names the
+worker process itself. A PID-less roster seed is insufficient for registration.
+A refused launch, or one that never acquires a process, is an availability
+failure and advances a declared fallback after its session and tagged
+processes have been removed. If cleanup cannot be confirmed, dispatch keeps
+the session owned rather than rejecting it, with the original failure under
+`diagnostics.claudeLaunch` when the engine reports its outcome.
+
+Once the opening has been submitted, the engine checks its receipt at the
+session's first transcript. A missing or differing receipt is
+`claude-delivery-error`, so it retries on the same target and never advances
+fallback. One-shot retries stop the old session before relaunching. A held
+session follows an altered turn to its end before resending the complete
+opening through the valve; it is never relaunched. A worker that never writes
+a transcript normally fails as `claude-first-life-timeout`, an availability
+failure. A retained launch whose cleanup is unconfirmed remains an
+unclassified delivery failure even without a transcript, so it cannot advance
+fallback.
+A model context rejection after exact delivery retains its own diagnostic.
+
+Ensemble encloses the opening task in boundary tags chosen to be absent from
+its text. The caller's text stays literal, including leading and trailing
+whitespace; the closing tag keeps it inside the message when Claude trims
+the message boundary. The complete opening still requires an exact receipt,
+so any input transformation fails delivery explicitly. Host memory, storage
+and model context still bound prompt size.
+
 ### Retries
 
 Each attempt that fails is retried, up to `maxAttempts`, with the failure fed
-back to the worker. Claude corrects in the same session when tmux is
-available, and otherwise starts a fresh session with the failure appended.
+back to the worker. Claude corrects in the same session through the prompt
+editor. If tmux becomes unavailable, a one-shot correction starts a fresh session, whose
+opening delivery also requires tmux.
 Codex and opencode retry with the failure appended to the prompt.
 
 Operational failures — a Claude session that never registered or died, a
@@ -363,6 +404,44 @@ failed thread — are failed attempts like any other. They consume an attempt
 and keep the worker's partial text, exit status, and the engine's diagnostic
 on the attempt record. A call whose deadline should end it outright sets
 `maxAttempts: 1`.
+
+A message Ensemble sends into a live Claude session — a follow-up turn, a
+correction, a nudge to a blocked worker — counts as delivered only when the
+session's transcript shows it received exactly the text sent. Two failures
+are told apart:
+
+- `claude-valve-error`: the message was never submitted. Nothing reached the
+  worker, and the retry sends the same message again.
+- `claude-delivery-error`: the message was submitted, but the transcript
+  shows the worker received different text, or shows no trace of it within
+  the receipt deadline. The message names the sizes and SHA-256 digests of
+  what was sent and what arrived. A reply to altered text is never returned
+  as the turn's value.
+
+In a `session()`, a turn the worker took on altered text runs to its end
+before the attempt fails, with its text kept on the attempt record, so the
+session is between turns when the retry begins. A recovery nudge's matching
+receipt never verifies altered task or correction text. That delivery failure
+survives nudges; a fresh task or correction submission must verify before
+its reply can succeed. Resuming a nudge still waits for the
+task's outstanding background work; an interim reply is not a final answer.
+The retry never sends the follow-up a second time as though it were new: a
+submission that turns out to have landed late is collected as the answer, and otherwise the follow-up goes
+again with a preface telling the worker it replaces the earlier copy. Because
+of that preface a leading `/skill` line is not expanded on the retry.
+
+The prompt a Claude worker is launched with is held to the same rule: the
+worker holds it only when the first message its transcript records is exactly
+the prompt sent. Otherwise the attempt fails as a `claude-delivery-error`.
+One-shot retries stop the old session and launch a fresh one on the same
+target; held-session retries stay in the session and resend the whole opening
+through the valve after the altered turn ends. A
+delivery failure is never an availability failure, so it does not move the
+call down its fallback chain: the worker took something and may have begun
+work, and launching the prompt on another target would start that work a
+second time. A failed launch moves down the chain only when no worker held
+the prompt: the launch was refused, no session registered, or the session
+never wrote a transcript.
 
 When a single `ensemble agent` run times out, the error says which deadline
 expired, because the remedies differ: the call's own `timeoutMs` (raise it or
@@ -519,16 +598,22 @@ await builder.close();
 - **Records:** each turn is its own agent record with a
   `session: { id, turn }` field. A session using `isolation: "worktree"` works
   in one worktree for its whole life, finalised when the session closes.
-- **Claude follow-ups need tmux:** follow-up turns are typed into the held
-  session through tmux as individual terminal key records, batched without
-  splitting a record. Follow-ups stay typed even when the reader pauses,
-  so a leading `/skill` line expands. Unicode and LF line breaks are preserved;
-  tabs become four spaces and CR or CRLF line endings become LF, matching
-  Claude Code's paste-handler conversions. The turn is submitted once, after
-  all records arrive. Each injection uses a private tmux server that loads
-  no tmux configuration and does not appear among your own sessions. Without
-  tmux, a follow-up or correction fails with a `claude-valve-error` naming
-  the tmux step that failed, rather than silently starting a fresh worker.
+- **Claude follow-ups need tmux:** a private attach client loads the complete
+  UTF-8 message through Claude Code's external prompt editor, then submits it
+  once. The payload stays in a private file, avoiding command-line size and
+  per-character input limits. It arrives as ordinary typed text, so a leading
+  `/skill` line expands. Ensemble overrides `VISUAL` and `EDITOR` only for
+  that attach client and removes its files and tmux server after delivery.
+  It loads no tmux configuration and does not appear among your own sessions.
+  Delivery requires a new native user row equal to the message sent (or the
+  matching command name and arguments for a slash command). Roster activity
+  and model output do not prove delivery. Missing or differing text fails with
+  `claude-delivery-error`, including UTF-8 lengths and SHA-256 digests for a
+  mismatch. Ensemble applies no whitespace conversion: if Claude's normal
+  editor/submission handling trims or transforms the text, equality fails.
+  Model context limits still apply after successful delivery; a subsequent
+  context rejection retains the model's diagnostic on the failed attempt.
+  Without tmux, follow-ups and corrections fail rather than starting a fresh worker.
 
 ## Holds
 

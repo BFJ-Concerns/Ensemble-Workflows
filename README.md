@@ -30,7 +30,7 @@ family can check another's work within a single run.
   Codex, `claude` (Claude Code) for Claude, and `opencode` for opencode.
   opencode models must also be declared in the
   [machine configuration](docs/configuration.md#opencode_models).
-- `tmux`, for follow-up turns and in-session corrections on Claude.
+- `tmux`, for opening prompts, follow-up turns and in-session corrections on Claude.
 - `git`, for worktree isolation.
 
 Ensemble is developed and tested on Linux.

@@ -17519,6 +17519,12 @@ function claudeApiErrorOf(diagnostics) {
 }
 
 // src/progress.ts
+var DISPOSITION_COUNTER = {
+  done: "done",
+  failed: "failed",
+  "cut-short": "cutShort",
+  unsettled: "unsettled"
+};
 var RunProgress = class {
   runId;
   #budget;
@@ -17724,8 +17730,13 @@ var RunProgress = class {
     record.waitingOn = null;
     this.#touch();
   }
-  /** Retires a worker, tallying it as done or failed and freeing its slot. */
-  settleAgent(id, outcome, failure = null) {
+  /**
+   * Retires a worker with its disposition, counting it and freeing its slot.
+   * `failure` is the account its record carries — kept for every disposition
+   * but `done`. The first settlement is final: later calls are inert, so a
+   * worker is never reclassified once published.
+   */
+  settleAgent(id, disposition, failure = null) {
     const record = this.#live.get(id);
     if (record === void 0) {
       return;
@@ -17737,14 +17748,10 @@ var RunProgress = class {
     } else {
       counters.queued -= 1;
     }
-    if (outcome === "done") {
-      counters.done += 1;
-    } else {
-      counters.failed += 1;
-    }
-    record.state = outcome;
+    counters[DISPOSITION_COUNTER[disposition]] += 1;
+    record.state = disposition;
     record.finishedAtMs = this.#now();
-    record.failure = outcome === "failed" && failure !== null ? { ...failure } : null;
+    record.failure = disposition !== "done" && failure !== null ? { ...failure } : null;
     record.waitingOn = null;
     this.#finished.set(id, record);
     this.#touch();
@@ -17783,7 +17790,7 @@ var RunProgress = class {
   }
   snapshot() {
     const engines = {};
-    const totals = { active: 0, queued: 0, done: 0, failed: 0 };
+    const totals = { active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 0 };
     for (const engine of this.#engines.keys()) {
       const counters = this.#counters(engine);
       const remaining = this.#budget.remaining(engine);
@@ -17793,6 +17800,8 @@ var RunProgress = class {
         queued: counters.queued,
         done: counters.done,
         failed: counters.failed,
+        cutShort: counters.cutShort,
+        unsettled: counters.unsettled,
         spent: this.#budget.spent(engine),
         ceiling: this.#budget.ceilings[engine] ?? null,
         remaining: Number.isFinite(remaining) ? remaining : null
@@ -17801,9 +17810,11 @@ var RunProgress = class {
       totals.queued += counters.queued;
       totals.done += counters.done;
       totals.failed += counters.failed;
+      totals.cutShort += counters.cutShort;
+      totals.unsettled += counters.unsettled;
     }
     return {
-      schema: 3,
+      schema: 4,
       runId: this.runId,
       pid: this.#pid,
       archiveDir: this.#archiveDir,
@@ -17847,7 +17858,7 @@ var RunProgress = class {
   #counters(engine) {
     const counters = this.#engines.get(engine);
     if (counters === void 0) {
-      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0 };
+      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 0 };
       this.#engines.set(engine, fresh);
       return fresh;
     }

@@ -571,8 +571,12 @@ The fields present throughout a record's lifetime are:
 - `usage`: `{ summary }` holding a usage summary (see below), or
   `{ unavailable }` with a reason: `"record-unsettled"` (the writer never settled the record — it is
   `in-progress`, or was abandoned after its run was killed — so the attempt
-  in flight and its spend are unobserved), `"no-attempt-ran"`, or
-  `"engine-reported-no-usage"`.
+  in flight and its spend are unobserved), `"no-attempt-ran"`,
+  `"substrate-never-started"` (every attempt was refused before a worker
+  existed), `"worker-interrupted"` or `"worker-timed-out"` (the run cut the
+  worker short before usage was reported), or `"engine-reported-no-usage"`
+  (a settled worker supplied no usage). Any usage the engine did report,
+  including zero tokens, is retained as a summary instead of an absence reason.
 - `queued_ms`, `execution_ms`: time spent waiting for admission and time
   spent executing. `null` on an unsettled record means the interval has not
   been measured; it does not claim zero time. Runtime abandonment and a reap

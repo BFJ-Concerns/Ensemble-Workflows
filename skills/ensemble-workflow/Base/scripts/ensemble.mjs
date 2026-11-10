@@ -16433,9 +16433,7 @@ function transcriptAbsenceReason(record) {
   if (record.attempts.length === 0) {
     return "no-attempt-ran";
   }
-  if (record.attempts.every(
-    (attempt) => attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
-  )) {
+  if (substratesNeverStarted(record)) {
     return "substrate-never-started";
   }
   if (record.status === "interrupted") {
@@ -16463,7 +16461,24 @@ function agentUsage(record) {
   if (record.status === "in-progress") {
     return { unavailable: "record-unsettled" };
   }
-  return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
+  if (record.attempts.length === 0) {
+    return { unavailable: "no-attempt-ran" };
+  }
+  if (substratesNeverStarted(record)) {
+    return { unavailable: "substrate-never-started" };
+  }
+  if (record.status === "interrupted") {
+    return { unavailable: "worker-interrupted" };
+  }
+  if (record.status === "timed-out") {
+    return { unavailable: "worker-timed-out" };
+  }
+  return { unavailable: "engine-reported-no-usage" };
+}
+function substratesNeverStarted(record) {
+  return record.attempts.length > 0 && record.attempts.every(
+    (attempt) => attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
+  );
 }
 function buildCostRollup(records) {
   const rollup = {};
@@ -21522,6 +21537,7 @@ var OpenCodeCliRunner = class {
   async run(options) {
     const args = [
       "run",
+      "--auto",
       "--format",
       "json",
       "--model",
@@ -21700,13 +21716,14 @@ var OpenCodeEngineInvocation = class {
       }
     }
     const { tokenUsageEvents, transcripts } = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, exportData);
-    if (run.exitCode !== 0) {
+    const reportedFailure = reportedRunFailure(parsedRun.events, exportData, text);
+    if (run.exitCode !== 0 || reportedFailure !== null) {
       return {
         text,
         resolvedModel: this.#providerModel,
         attemptFailure: {
           kind: "opencode-run-error",
-          message: openCodeFailureMessage(run, parsedRun.events)
+          message: reportedFailure === null ? openCodeFailureMessage(run, parsedRun.events) : `opencode run failed: ${reportedFailure}`
         },
         workerExit: { exitCode: run.exitCode, signal: run.signal },
         deltaText: text,
@@ -22145,6 +22162,31 @@ function openCodeFailureMessage(run, events) {
     return `opencode run failed: ${stderr}`;
   }
   return `opencode run failed with exit code ${run.exitCode ?? `signal ${run.signal ?? "unknown"}`}`;
+}
+function reportedRunFailure(events, exportData, text) {
+  const eventError = events.map(errorFromEvent).find((message) => message !== null);
+  if (eventError !== void 0) {
+    return eventError;
+  }
+  const messages = Array.isArray(exportData?.messages) ? exportData.messages.filter(isRecord) : [];
+  const assistantMessages = messages.filter((message) => isRecord(message.info) && message.info.role === "assistant");
+  const lastAssistant = assistantMessages.at(-1);
+  const assistantError = isRecord(lastAssistant?.info) ? errorFromEvent(lastAssistant.info) : null;
+  if (assistantError !== null) {
+    return assistantError;
+  }
+  if (text.trim().length > 0) {
+    return null;
+  }
+  const exportedTools = assistantMessages.flatMap((message) => Array.isArray(message.parts) ? message.parts : []).filter((part) => isRecord(part) && part.type === "tool");
+  const streamedTools = events.flatMap((event) => isRecord(event) && isRecord(event.part) && event.part.type === "tool" ? [event.part] : []);
+  const lastTool = exportedTools.at(-1) ?? streamedTools.at(-1);
+  if (!isRecord(lastTool) || !isRecord(lastTool.state) || lastTool.state.status !== "error") {
+    return null;
+  }
+  const tool = typeof lastTool.tool === "string" ? lastTool.tool : "unknown";
+  const error = typeof lastTool.state.error === "string" ? lastTool.state.error : "no diagnostic reported";
+  return `tool ${tool} failed: ${error}`;
 }
 function errorFromEvent(event) {
   if (!isRecord(event)) {

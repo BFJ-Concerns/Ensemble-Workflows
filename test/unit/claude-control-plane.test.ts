@@ -621,13 +621,16 @@ test("an undeclared worker environment still dispatches with the ownership tag a
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { writeFile } from "node:fs/promises";
+        import { readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // Registration acknowledges a complete capture from this dispatch.
+          try { JSON.parse(await readFile(${JSON.stringify(argvPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "no-settings-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -642,6 +645,10 @@ test("an undeclared worker environment still dispatches with the ownership tag a
       `
     );
     await chmod(stubPath, 0o755);
+    // Exercise both sides of the capture boundary without scheduling delays.
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+    await writeFile(argvPath, '["--bg",');
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
 
     const controlPlane = new ClaudeCliControlPlane({
       claudeBin: stubPath,
@@ -675,13 +682,16 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { writeFile } from "node:fs/promises";
+        import { readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
+          // Registration acknowledges a complete capture from this dispatch.
+          try { JSON.parse(await readFile(${JSON.stringify(argvPath)}, "utf8")); }
+          catch { process.stdout.write("[]"); process.exit(0); }
           process.stdout.write(JSON.stringify([{
             id: "deny-rules-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -696,6 +706,10 @@ test("permission deny rules join the per-dispatch settings file beside the env b
       `
     );
     await chmod(stubPath, 0o755);
+    // Exercise both sides of the capture boundary without scheduling delays.
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
+    await writeFile(argvPath, '["--bg",');
+    assert.deepEqual(JSON.parse(execFileSync(stubPath, ["agents", "--json"], { encoding: "utf8" })), []);
 
     const controlPlane = new ClaudeCliControlPlane({
       claudeBin: stubPath,

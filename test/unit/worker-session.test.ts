@@ -15,6 +15,7 @@ import {
   UnrecognisedAgentOptionError
 } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { parallel, pipeline } from "../../src/hooks.js";
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 
 import type {
@@ -451,6 +452,40 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
   await runtime.close();
 });
 
+test("identified session budget refusals keep their envelope through combinators before and after opening", async () => {
+  for (const opened of [false, true]) {
+    for (const identity of [true, false]) {
+      const transport = new ScriptedTransport([turnResult("first answer")]);
+      const runtime = codexRuntime(transport, { codexBudget: opened ? 100 : 0 });
+      const session = runtime.createWorkerSession({ engine: "codex", identity, label: "held", phase: "build" });
+      try {
+        if (opened) {
+          await session.send("first turn");
+          runtime.budget.record("codex", spendEvent("thread-1", 100));
+        }
+        const recordBefore = runtime.lastAgentRecord();
+        for (const combinator of ["parallel", "pipeline"]) {
+          const send = () => session.send("blocked turn");
+          const result = combinator === "parallel"
+            ? await parallel([send], () => {})
+            : await pipeline(["go"], [send], () => {});
+          const failure = new BudgetExceededError("codex", opened ? 100 : 0, opened ? 100 : 0);
+          assert.deepEqual(result, [identity ? {
+            label: "held", phase: "build", output: null, failure: { message: failure.message }
+          } : null]);
+        }
+        // Direct sends still reject, and admission never opens or records a turn.
+        await assert.rejects(session.send("blocked directly"), BudgetExceededError);
+        assert.equal(transport.openedThreads.length, opened ? 1 : 0);
+        assert.equal(transport.turns.length, opened ? 1 : 0);
+        assert.equal(runtime.lastAgentRecord(), recordBefore);
+      } finally {
+        await runtime.close();
+      }
+    }
+  }
+});
+
 test("turns are strictly sequential: a send during an unsettled turn throws", async () => {
   let releaseTurn: (() => void) | undefined;
   const gate = new Promise<void>((resolve) => {
@@ -486,8 +521,8 @@ test("session creation is validated pre-spawn: schema and unknown keys are rejec
     UnrecognisedAgentOptionError
   );
   assert.throws(
-    () => runtime.createWorkerSession({ engine: "codex", identity: true } as never),
-    UnrecognisedAgentOptionError
+    () => runtime.createWorkerSession({ engine: "codex", identity: "yes" } as never),
+    InvalidAgentOptionValueError
   );
   // Effort is fixed at creation and judged there against the canonical
   // vocabulary, before the held worker spawns.
@@ -498,6 +533,85 @@ test("session creation is validated pre-spawn: schema and unknown keys are rejec
   const session = runtime.createWorkerSession({ engine: "codex" });
   await assert.rejects(session.send("fine", { effort: "high" } as never), UnrecognisedAgentOptionError);
   assert.equal(transport.openedThreads.length, 0);
+  await runtime.close();
+});
+
+test("an identified held session distinguishes a failed schema turn from a valid null answer", async () => {
+  const transport = new ScriptedTransport([turnResult("{}"), turnResult("null")]);
+  const runtime = codexRuntime(transport);
+  let session: ReturnType<EnsembleRuntime["createWorkerSession"]> | undefined;
+  assert.doesNotThrow(() => {
+    session = runtime.createWorkerSession({ engine: "codex", identity: true, label: "held", maxAttempts: 1 });
+  });
+  assert.ok(session);
+  runtime.notePhase("Check");
+  const first = await session.send("fail", { schema: { type: "null" } }) as {
+    label: string | null; phase: string | null; output: unknown; failure: { message: string } | null;
+  };
+  runtime.notePhase("Answer");
+  const second = await session.send("answer null", { schema: { type: "null" } });
+  assert.equal(first.label, "held");
+  assert.equal(first.phase, "Check");
+  assert.equal(first.output, null);
+  assert.match(first.failure?.message ?? "", /schema-validation/);
+  assert.deepEqual(second, { label: "held", phase: "Answer", output: null, failure: null });
+  assert.deepEqual(transport.turns.map((turn) => turn.threadId), ["thread-1", "thread-1"]);
+  await runtime.close();
+});
+
+test("identified session setup failures retain their envelope through both combinators", async () => {
+  for (const failureAt of ["placement", "session"]) {
+    for (const nonError of [false, true]) {
+      const transport = new ScriptedTransport([]);
+      const adapter = new CodexEngineAdapter({ transport, concurrency: 1 });
+      const fail = () => { throw nonError ? "setup failed" : new Error("setup failed"); };
+      if (failureAt === "session") adapter.createSession = fail;
+      const runtime = new EnsembleRuntime({
+        engines: new EngineRegistry([adapter]),
+        defaultMaxAttempts: 1,
+        worktreeManager: { create: fail, finish: async () => { throw new Error("no worktree was created"); } }
+      });
+      try {
+        runtime.notePhase("build");
+        for (const identity of [true, false]) {
+          for (const combinator of ["parallel", "pipeline"]) {
+            const session = runtime.createWorkerSession({
+              engine: "codex", identity, label: "held",
+              ...(failureAt === "placement" ? { isolation: "worktree" } : {})
+            });
+            const send = () => session.send("go");
+            const result = combinator === "parallel"
+              ? await parallel([send], () => {})
+              : await pipeline(["go"], [send], () => {});
+            assert.deepEqual(result, [identity ? {
+              label: "held", phase: "build", output: null, failure: { message: "setup failed" }
+            } : null]);
+            assert.equal(runtime.lastAgentRecord()?.attempts.length, 0);
+          }
+        }
+        assert.equal(transport.openedThreads.length, 0);
+      } finally {
+        await runtime.close();
+      }
+    }
+  }
+});
+
+test("a fresh handle reports whether staleness marking is enabled", async () => {
+  const runtime = codexRuntime(new ScriptedTransport([]));
+  const marked = runtime.createWorkerSession({ engine: "codex" });
+  const disabled = runtime.createWorkerSession({ engine: "codex", stalenessMark: false });
+  assert.equal(marked.stale, false);
+  assert.equal(disabled.stale, false);
+  assert.equal(marked.stalenessMark, true);
+  assert.equal(disabled.stalenessMark, false);
+  await runtime.close();
+});
+
+test("a disabled staleness mark has no active threshold on its handle", async () => {
+  const runtime = codexRuntime(new ScriptedTransport([]));
+  const disabled = runtime.createWorkerSession({ engine: "codex", stalenessMark: false });
+  assert.equal(disabled.staleAfterMs, null);
   await runtime.close();
 });
 

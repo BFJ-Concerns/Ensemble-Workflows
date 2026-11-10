@@ -852,6 +852,81 @@ test("schema agent returns null after the bounded attempts when correction never
   );
 });
 
+// Native API failures can land while the roster query is in flight. The
+// transcript read before poll then contains only the submitted user row.
+for (const refusal of [
+  { code: "authentication_failed", text: "Not logged in · Please run /login", status: undefined, kind: "authentication-failure" },
+  { code: "invalid_request", text: "Prompt is too long · the request exceeds the context limit", status: 400, kind: "claude-worker-diagnostic" }
+]) {
+  for (const arrival of ["opening", "blocked-poll", "valve-check", "follow-up"] as const) {
+    test(`Claude ${refusal.code} at ${arrival} keeps the diagnostic without sending a nudge`, async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-refusal-"));
+      class RefusingPlane extends FakeControlPlane {
+        handle: ClaudeSessionHandle | undefined;
+        wroteRefusal = false;
+        async reject(): Promise<void> {
+          if (this.wroteRefusal) return;
+          this.wroteRefusal = true;
+          const file = await super.transcriptPath();
+          assert.ok(file);
+          await appendFile(file, `${JSON.stringify({
+            type: "assistant", isApiErrorMessage: true, error: refusal.code,
+            ...(refusal.status === undefined ? {} : { apiErrorStatus: refusal.status }),
+            message: { role: "assistant", model: "<synthetic>", stop_reason: "stop_sequence",
+              content: [{ type: "text", text: refusal.text }] }
+          })}\n`);
+        }
+        override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+          this.handle = await super.dispatch(options);
+          if (arrival === "opening") await this.reject();
+          return this.handle;
+        }
+        override async tmuxAvailable(): Promise<boolean> {
+          if (arrival === "valve-check") await this.reject();
+          return super.tmuxAvailable();
+        }
+        override async poll(): Promise<ClaudeSessionStatus> {
+          if (arrival === "blocked-poll" || (arrival === "follow-up" && this.steerCount > 0)) await this.reject();
+          return super.poll();
+        }
+      }
+      const plane = new RefusingPlane(dir, [...(arrival === "follow-up" ? [{ assistant: { text: "first answer" } }] : []), { outcome: "blocked" }]);
+      const runtime = makeRuntime(plane, { maxAttempts: 1 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+      try {
+        if (arrival === "follow-up") {
+          const session = runtime.createWorkerSession({ engine: "claude" });
+          assert.equal(await session.send("first"), "first answer");
+          assert.equal(await session.send("second"), null);
+          await session.close();
+        } else {
+          assert.equal(await runtime.agent("decide", { engine: "claude" }), null);
+        }
+        const attempt = records.at(-1)?.attempts[0];
+        assert.equal(attempt?.failure?.kind, refusal.kind);
+        assert.ok(attempt?.failure?.message.includes(refusal.text));
+        if (refusal.kind === "authentication-failure") {
+          assert.match(attempt?.failure?.message ?? "", /claude auth login/);
+          assert.deepEqual(attempt?.classification, { class: "unclassified", rule: "claude.authentication-failure" });
+        }
+        assert.deepEqual(attempt?.diagnostics?.apiError, { status: refusal.status ?? null, code: refusal.code });
+        assert.equal(attempt?.rawOutput, null);
+        assert.equal(plane.steerCount, arrival === "follow-up" ? 1 : 0);
+        assert.ok(plane.handle);
+        const file = await plane.transcriptPath();
+        assert.ok(file);
+        const rows = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line) as TranscriptEntry);
+        assert.deepEqual(rows.filter(row => row.type === "user").map(row => row.message?.content),
+          [plane.dispatched[0]?.prompt, ...plane.steered]);
+      } finally {
+        await runtime.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
 test("a blocked worker is recovered with a bounded nudge through the valve", async () => {
   await withControlPlane(
     [
@@ -872,6 +947,31 @@ test("a blocked worker is recovered with a bounded nudge through the valve", asy
       }
     }
   );
+});
+
+test("blocked recovery never submits against an unreadable transcript boundary", async () => {
+  await withControlPlane([{ outcome: "blocked" }], async (plane) => {
+    const poll = plane.poll.bind(plane);
+    const lookup = plane.transcriptPath.bind(plane);
+    let unreadable = false;
+    plane.poll = async () => {
+      unreadable = true;
+      return poll();
+    };
+    plane.transcriptPath = async () => {
+      if (unreadable) {
+        unreadable = false;
+        return null;
+      }
+      return lookup();
+    };
+    const runtime = makeRuntime(plane, { maxAttempts: 1 });
+    try {
+      assert.equal(await runtime.agent("decide", { engine: "claude" }), null);
+      assert.equal(plane.steerCount, 0, "a missing boundary reused the opening's row for a nudge");
+      assert.match(runtime.lastAgentRecord()?.attempts[0]?.failure?.message ?? "", /no transcript found/);
+    } finally { await runtime.close(); }
+  });
 });
 
 test("blocked recovery stops after a failed steer instead of claiming the nudge landed", async () => {

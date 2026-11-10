@@ -53,7 +53,7 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
   }
   // An explicit status outranks incidental error words in a gateway message.
   const authentication = status != null ? status === 401 :
-    apiError?.code === "authentication_error" || apiError?.code === "invalid_api_key" ||
+    apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" ||
     /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
     const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude"

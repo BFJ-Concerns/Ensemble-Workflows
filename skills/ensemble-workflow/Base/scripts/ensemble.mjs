@@ -22701,7 +22701,11 @@ function validateJsonSchema(value, schema) {
 function assertCompilableSchema(schema) {
   assertAcyclicSchemaObject(schema);
   try {
-    compileSchema(schema);
+    const compiler = compilerFor(schema);
+    if (!compiler.validateSchema(schema)) {
+      throw new InvalidAgentSchemaError(describeSchemaErrors(compiler.errors ?? []), { offending: schema });
+    }
+    compiler.compile(schema);
   } catch (error) {
     if (error instanceof InvalidAgentSchemaError) {
       throw error;
@@ -22712,11 +22716,43 @@ function assertCompilableSchema(schema) {
         throw new CyclicAgentSchemaError(cycle.at, cycle.back, "reference");
       }
     }
-    throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), {
+    throw new InvalidAgentSchemaError(`${error instanceof Error ? error.message : String(error)}; check the schema keywords and ensure every $ref points to an available schema`, {
       cause: error,
       offending: schema
     });
   }
+}
+function describeSchemaErrors(errors) {
+  const byLocation = /* @__PURE__ */ new Map();
+  for (const error of errors) {
+    if (error.keyword === "anyOf") continue;
+    const group = byLocation.get(error.instancePath) ?? [];
+    group.push(error);
+    byLocation.set(error.instancePath, group);
+  }
+  return [...byLocation].map(([location, group]) => {
+    const at2 = `at #${location}`;
+    const choices = group.find((error) => error.keyword === "enum");
+    if (choices !== void 0) {
+      const values = choices.params.allowedValues.map((value) => JSON.stringify(value)).join(", ");
+      const typeUnion = location.endsWith("/type") ? ", or an array of these type names" : "";
+      return `${at2}: use one of ${values}${typeUnion}`;
+    }
+    const types2 = [...new Set(group.filter((error) => error.keyword === "type").flatMap((error) => error.params.type))];
+    const messages = types2.length === 0 ? [] : [`${at2}: replace this value with a JSON ${types2.join(" or ")}`];
+    return [...messages, ...group.filter((error) => error.keyword !== "type").map((error) => {
+      switch (error.keyword) {
+        case "required":
+          return `${at2}: add the required ${JSON.stringify(error.params.missingProperty)} key`;
+        case "minItems":
+          return `${at2}: supply at least ${String(error.params.limit)} item(s)`;
+        case "uniqueItems":
+          return `${at2}: remove duplicate items`;
+        default:
+          return `${at2}: ${error.message ?? `invalid ${error.keyword}`}; correct this schema value to satisfy ${error.keyword}`;
+      }
+    })].join("; ");
+  }).join("; ");
 }
 function findLocalReferenceCycle(schema) {
   const seenObjects = /* @__PURE__ */ new Set();
@@ -33575,6 +33611,15 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   const engine = parseEngineName(rawEngine, "--engine");
   const isolation = parseIsolation(parsed.values.isolation);
   const schema = parsed.values.schema === void 0 ? void 0 : await parseJsonValue(parsed.values.schema, cwd, "--schema");
+  if (schema !== void 0) {
+    try {
+      assertCompilableSchema(schema);
+    } catch (error) {
+      if (!(error instanceof InvalidAgentSchemaError)) throw error;
+      const source = parsed.values.schema.startsWith("@") ? path17.resolve(cwd, parsed.values.schema.slice(1)) : "the inline argument";
+      throw new CliUsageError(`--schema from ${source}: ${error.message}`);
+    }
+  }
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
   const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");

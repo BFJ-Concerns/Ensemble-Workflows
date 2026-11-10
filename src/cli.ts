@@ -8,13 +8,14 @@ import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
-import { describeError, HoldTimeoutError, PreSpawnAuthorError } from "./errors.js";
+import { describeError, HoldTimeoutError, InvalidAgentSchemaError, PreSpawnAuthorError } from "./errors.js";
 import { answerHold, defaultHoldsDirectory, enumerateHolds, holdListingState, resolveHoldScope } from "./holds.js";
 import { boundedEvidence, presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { resolveRunId, RunRecordWriter } from "./run-record.js";
+import { assertCompilableSchema } from "./schema.js";
 import { judgeResources } from "./resource-preflight.js";
 
 import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
@@ -1456,6 +1457,17 @@ async function parseAgentInvocation(
     parsed.values.schema === undefined
       ? undefined
       : ((await parseJsonValue(parsed.values.schema, cwd, "--schema")) as JsonSchema);
+  if (schema !== undefined) {
+    try {
+      assertCompilableSchema(schema);
+    } catch (error) {
+      if (!(error instanceof InvalidAgentSchemaError)) throw error;
+      const source = parsed.values.schema!.startsWith("@")
+        ? path.resolve(cwd, parsed.values.schema!.slice(1))
+        : "the inline argument";
+      throw new CliUsageError(`--schema from ${source}: ${error.message}`);
+    }
+  }
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
   const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");

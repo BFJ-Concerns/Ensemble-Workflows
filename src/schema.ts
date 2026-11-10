@@ -16,7 +16,7 @@ const ajv2020 = new Ajv2020({
   strict: false
 });
 
-type SchemaCompiler = Pick<Ajv, "compile">;
+type SchemaCompiler = Pick<Ajv, "compile" | "validateSchema" | "errors">;
 
 const DRAFT_2020_12_URI = "https://json-schema.org/draft/2020-12/schema";
 const DRAFT_07_URI = "http://json-schema.org/draft-07/schema";
@@ -137,10 +137,14 @@ export function validateJsonSchema(value: unknown, schema: JsonSchema): Validati
 export function assertCompilableSchema(schema: JsonSchema): void {
   assertAcyclicSchemaObject(schema);
   try {
-    compileSchema(schema);
+    const compiler = compilerFor(schema);
+    if (!compiler.validateSchema(schema)) {
+      throw new InvalidAgentSchemaError(describeSchemaErrors(compiler.errors ?? []), { offending: schema });
+    }
+    compiler.compile(schema);
   } catch (error) {
     if (error instanceof InvalidAgentSchemaError) {
-      // Already the author-facing rejection (an unsupported dialect);
+      // Already an author-facing rejection;
       // re-wrapping would bury the remedy under a second layer of message.
       throw error;
     }
@@ -153,11 +157,42 @@ export function assertCompilableSchema(schema: JsonSchema): void {
         throw new CyclicAgentSchemaError(cycle.at, cycle.back, "reference");
       }
     }
-    throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), {
+    throw new InvalidAgentSchemaError(`${error instanceof Error ? error.message : String(error)}; check the schema keywords and ensure every $ref points to an available schema`, {
       cause: error,
       offending: schema
     });
   }
+}
+
+/** Translate meta-schema failures without depending on the validator's prose. */
+function describeSchemaErrors(errors: readonly ErrorObject[]): string {
+  const byLocation = new Map<string, ErrorObject[]>();
+  for (const error of errors) {
+    if (error.keyword === "anyOf") continue;
+    const group = byLocation.get(error.instancePath) ?? [];
+    group.push(error);
+    byLocation.set(error.instancePath, group);
+  }
+  return [...byLocation].map(([location, group]) => {
+    const at = `at #${location}`;
+    const choices = group.find((error) => error.keyword === "enum");
+    if (choices !== undefined) {
+      const values = (choices.params.allowedValues as unknown[]).map((value) => JSON.stringify(value)).join(", ");
+      const typeUnion = location.endsWith("/type") ? ", or an array of these type names" : "";
+      return `${at}: use one of ${values}${typeUnion}`;
+    }
+    const types = [...new Set(group.filter((error) => error.keyword === "type")
+      .flatMap((error) => error.params.type as string | string[]))];
+    const messages = types.length === 0 ? [] : [`${at}: replace this value with a JSON ${types.join(" or ")}`];
+    return [...messages, ...group.filter((error) => error.keyword !== "type").map((error) => {
+      switch (error.keyword) {
+        case "required": return `${at}: add the required ${JSON.stringify(error.params.missingProperty)} key`;
+        case "minItems": return `${at}: supply at least ${String(error.params.limit)} item(s)`;
+        case "uniqueItems": return `${at}: remove duplicate items`;
+        default: return `${at}: ${error.message ?? `invalid ${error.keyword}`}; correct this schema value to satisfy ${error.keyword}`;
+      }
+    })].join("; ");
+  }).join("; ");
 }
 
 function findLocalReferenceCycle(schema: unknown): { at: string; back: string } | null {

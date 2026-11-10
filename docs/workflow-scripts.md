@@ -254,7 +254,9 @@ Schemas are JSON Schema draft-07 (the default when `$schema` is omitted) or
 draft 2020-12 (declare `"$schema": "https://json-schema.org/draft/2020-12/schema"`).
 Any other dialect is rejected before a worker spawns. A schema object that
 refers to itself is refused with the cycle's location; recursive `$ref`
-schemas that compile are accepted.
+schemas that compile are accepted. Malformed schema keywords are refused before
+dispatch with their JSON Pointer location and a correction: an invalid `type`
+lists the accepted type names, and invalid `properties` asks for a JSON object.
 
 ### Per-engine behaviour
 

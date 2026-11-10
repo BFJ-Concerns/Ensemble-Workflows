@@ -375,7 +375,34 @@ cannot pass silently:
 - Errors raised before a worker exists: an invalid option, a placement that
   could not be opened, an engine refusing the dispatch itself
   (`ClaudeDispatchError`, `CodexSubstrateRefusedError`), a strip that cannot
-  be enforced, or a budget refusal.
+  be enforced, or a budget refusal. Before an engine's first attempt in a
+  run, the runtime also checks that it can use the directories that engine
+  needs, resolved from the environment that engine is launched with:
+  Codex's `CODEX_HOME` (else `$HOME/.codex`); Claude's `CLAUDE_CONFIG_DIR`
+  (else `$HOME/.claude`), global configuration and daemon sockets; and
+  opencode's data, configuration, state and cache homes under the matching
+  `XDG_*_HOME` variables, plus its temporary directory. Claude's dispatch
+  settings scratch files use the launcher's `TMPDIR` (then `TMP`, `TEMP`,
+  `/tmp`), and reply valve sockets use its `TMUX_TMPDIR` (else `/tmp`),
+  independently of worker overrides. Claude's own scratch files use
+  `CLAUDE_CODE_TMPDIR` or its temporary directory, under `claude-<uid>`.
+  Relative `CLAUDE_CONFIG_DIR` values resolve from the launcher's working
+  directory so dispatch and roster commands share one home.
+  Claude's daemon sockets use `/tmp/cc-daemon-<uid>/<config hash>` on Linux,
+  independently of `TMPDIR`. Other relative worker paths resolve from the
+  worker's actual directory, including a per-agent `cwd` or isolated
+  worktree; Codex homes resolve from the shared app-server's run base.
+  Each distinct resolved resource set is checked once per run, before its
+  first attempt, so a new placement with different relative homes is checked
+  separately. Unused engines are not checked. A denied
+  resource refuses dispatches needing that resource with
+  `ResourcePreflightRefusedError`, naming the directory, the setting it came
+  from and the error. Evidence identifying a Codex sandbox adds its name and
+  the `danger-full-access` mode that lifts it; without such evidence the
+  refusal says that no caller sandbox was identified. These checks exercise
+  current access and cannot guarantee later writes will succeed. A probe
+  that cannot finish its own cleanup raises a substrate refusal with the
+  cause retained; that failed check is not cached as a resource verdict.
 - The run's own ending — an interrupt or a whole-run timeout — which throws
   through any call it cut short, and through `parallel()` and `pipeline()`
   around it.
@@ -499,7 +526,9 @@ engine's own diagnostic:
   retries (`responseTooManyFailedAttempts`) on a 429 or 5xx, or an app-server
   that died or never started; a Claude API refusal carrying a 429, 503, or 529, a dispatch
   Claude Code refused, a dispatch the daemon never registered, or a session
-  that never showed life. Only this class advances a fallback chain.
+  that never showed life; on any engine, a directory the engine needs that
+  the launching process cannot use (`preflight.resource-denied`). Only this
+  class advances a fallback chain.
 - **output** — the worker answered badly: empty, unparseable, or off-schema.
 - **unclassified** — anything else, including a deadline, a Codex schema
   rejection, and a client error about a bad model name. A diagnostic that no

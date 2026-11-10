@@ -214,14 +214,16 @@ the run ends:
 ```
 
 A supervising process can watch for that file instead of polling the run. The
-path is announced only once its directory exists. If the launcher cannot create
-the directory (a regular file where the store should be, a read-only parent),
-it prints one `[sentinel] no sentinel will be written for this run — …` line
-naming the cause instead, so a supervisor never waits on a path that cannot be
-written. With recording enabled the run then fails to start, with a one-line
-`the durable run record could not start under …` diagnosis; with recording off
-it runs on without a sentinel. A write that fails later is reported as one
-`[sentinel]` line.
+path is announced only once its directory exists. With recording enabled, a
+store the launching process cannot create entries in (a regular file where the
+store should be, a read-only parent) rejects the invocation before the run
+begins: one line naming the store, the setting it came from and the error, exit
+2, nothing on stdout and no sentinel. With recording off the launcher instead
+prints one `[sentinel] no sentinel will be written for this run — …` line
+naming the cause and runs on without a sentinel, so a supervisor never waits on
+a path that cannot be written. A store that becomes unusable after that check
+fails the run with a one-line `the durable run record could not start under …`
+diagnosis. A write that fails later is reported as one `[sentinel]` line.
 
 The sentinel is written on every ending the launcher can handle — success,
 failure, timeout, interruption, a partial result, a script's `process.exit`,

@@ -9,9 +9,9 @@ import { execFileSync, spawn } from "node:child_process";
 
 import {
   ClaudeCliControlPlane,
-  SANDBOXED_WORKSPACE_VARIABLE,
   WORKER_MARKER_VARIABLE
 } from "../../src/claude-control-plane.js";
+import { SANDBOXED_WORKSPACE_VARIABLE } from "../../src/engine-environment.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError, failedTurnResultOf } from "../../src/errors.js";
 import { SystemdWorkerScopes, containingSlice, type ScopePlacement, type WorkerScopes } from "../../src/worker-scopes.js";
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";

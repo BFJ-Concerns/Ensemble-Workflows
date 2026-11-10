@@ -837,12 +837,21 @@ function prematureWrapperClose(
       ecmaVersion: "latest",
       sourceType: "module"
     });
+    let braceDepth = 0;
     while (true) {
       const token = tokens.getToken();
       if (token.type.label === "eof") {
         break;
       }
+      if (token.type.label === "{" || token.type.label === "${") {
+        braceDepth += 1;
+        continue;
+      }
       if (token.type.label !== "}") {
+        continue;
+      }
+      braceDepth -= 1;
+      if (braceDepth !== 0) {
         continue;
       }
       try {
@@ -858,8 +867,10 @@ function prematureWrapperClose(
           return authorPositionOf(origin, closingBrace.line, closingBrace.column);
         }
       } catch {
-        // A nested brace cannot close the exported body yet.
+        // An earlier syntax fault can prevent identifying the wrapper close.
       }
+      // Only the first outer close can terminate the exported body.
+      return null;
     }
   } catch {
     // Acorn is only helping describe a rejection V8 has already made.

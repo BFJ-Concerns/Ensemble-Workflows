@@ -15,6 +15,7 @@ import {
   UnrecognisedAgentOptionError
 } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { parallel, pipeline } from "../../src/hooks.js";
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 
 import type {
@@ -520,6 +521,43 @@ test("an identified held session distinguishes a failed schema turn from a valid
   assert.deepEqual(second, { label: "held", phase: null, output: null, failure: null });
   assert.deepEqual(transport.turns.map((turn) => turn.threadId), ["thread-1", "thread-1"]);
   await runtime.close();
+});
+
+test("identified session setup failures retain their envelope through both combinators", async () => {
+  for (const failureAt of ["placement", "session"]) {
+    for (const nonError of [false, true]) {
+      const transport = new ScriptedTransport([]);
+      const adapter = new CodexEngineAdapter({ transport, concurrency: 1 });
+      const fail = () => { throw nonError ? "setup failed" : new Error("setup failed"); };
+      if (failureAt === "session") adapter.createSession = fail;
+      const runtime = new EnsembleRuntime({
+        engines: new EngineRegistry([adapter]),
+        defaultMaxAttempts: 1,
+        worktreeManager: { create: fail, finish: async () => { throw new Error("no worktree was created"); } }
+      });
+      try {
+        for (const identity of [true, false]) {
+          for (const combinator of ["parallel", "pipeline"]) {
+            const session = runtime.createWorkerSession({
+              engine: "codex", identity, label: "held", phase: "build",
+              ...(failureAt === "placement" ? { isolation: "worktree" } : {})
+            });
+            const send = () => session.send("go");
+            const result = combinator === "parallel"
+              ? await parallel([send], () => {})
+              : await pipeline(["go"], [send], () => {});
+            assert.deepEqual(result, [identity ? {
+              label: "held", phase: "build", output: null, failure: { message: "setup failed" }
+            } : null]);
+            assert.equal(runtime.lastAgentRecord()?.attempts.length, 0);
+          }
+        }
+        assert.equal(transport.openedThreads.length, 0);
+      } finally {
+        await runtime.close();
+      }
+    }
+  }
 });
 
 test("a fresh handle reports whether staleness marking is enabled", async () => {

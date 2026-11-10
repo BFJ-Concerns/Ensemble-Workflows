@@ -22510,6 +22510,12 @@ function identifiedResult(options, output, record) {
     failure: record.status === "complete" ? null : { message: settledFailureMessage(record) }
   };
 }
+function identifiedFailure(options, error) {
+  if (options.identity !== true) return error;
+  const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
+  attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
+  return carrier;
+}
 var WorkerSession = class {
   #state;
   #now;
@@ -22855,12 +22861,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
       return output;
     } catch (error) {
-      if (options.identity === true) {
-        const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
-        attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
-        throw carrier;
-      }
-      throw error;
+      throw identifiedFailure(options, error);
     } finally {
       this.#noteAgentSettled(agentId);
     }
@@ -23053,7 +23054,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         } catch (error) {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
-          throw error;
+          throw identifiedFailure(options, error);
         }
       } finally {
         this.#noteAgentSettled(agentId);
@@ -30967,12 +30968,21 @@ function prematureWrapperClose(wrappedSource, bodyEndOffset, origin) {
       ecmaVersion: "latest",
       sourceType: "module"
     });
+    let braceDepth = 0;
     while (true) {
       const token = tokens.getToken();
       if (token.type.label === "eof") {
         break;
       }
+      if (token.type.label === "{" || token.type.label === "${") {
+        braceDepth += 1;
+        continue;
+      }
       if (token.type.label !== "}") {
+        continue;
+      }
+      braceDepth -= 1;
+      if (braceDepth !== 0) {
         continue;
       }
       try {
@@ -30984,6 +30994,7 @@ function prematureWrapperClose(wrappedSource, bodyEndOffset, origin) {
         }
       } catch {
       }
+      return null;
     }
   } catch {
   }

@@ -329,6 +329,15 @@ function identifiedResult(options: { label?: string; phase?: string }, output: u
   };
 }
 
+function identifiedFailure(options: { identity?: boolean; label?: string; phase?: string }, error: unknown): unknown {
+  if (options.identity !== true) return error;
+  // Combinators read the carrier to retain the failed call's envelope.
+  // Wrap non-Error rejections so they can carry the same identity.
+  const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
+  attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
+  return carrier;
+}
+
 /** A worker session's runtime-internal state, owned by EnsembleRuntime. */
 interface WorkerSessionState {
   id: number;
@@ -846,19 +855,7 @@ export class EnsembleRuntime {
       }
       return output;
     } catch (error) {
-      if (options.identity === true) {
-        // An identified call keeps its identity through operational failure:
-        // the combinators' collapse reads this carrier and resolves
-        // the failure-bearing envelope instead of bare null. A non-Error
-        // rejection cannot carry the property, so it is wrapped — losing
-        // the discrimination to a rejection's spelling would re-open the
-        // silent-empty-success case. The call's own contract is otherwise
-        // unchanged — the error still propagates.
-        const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
-        attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
-        throw carrier;
-      }
-      throw error;
+      throw identifiedFailure(options, error);
     } finally {
       this.#noteAgentSettled(agentId);
     }
@@ -1090,7 +1087,7 @@ export class EnsembleRuntime {
           // next turn just as on the successful path.
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
-          throw error;
+          throw identifiedFailure(options, error);
         }
       } finally {
         this.#noteAgentSettled(agentId);

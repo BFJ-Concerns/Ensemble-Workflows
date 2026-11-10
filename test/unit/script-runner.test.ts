@@ -1858,6 +1858,20 @@ test("an unfinished CR-separated body reports its own line", async () => {
   );
 });
 
+test("early-close diagnostics count template interpolations and ignore braces in literals", async () => {
+  const source = [
+    'export const meta = { name: "template-braces" };',
+    'const value = `outer ${`inner ${({ text: "}" }).text}`}`;',
+    'const pattern = /}/;',
+    '}',
+    'return value;'
+  ].join("\n");
+  await assert.rejects(
+    runWorkflowScript({ filename: "template-braces.js", runtime, log: () => {}, source }),
+    /template-braces\.js:4:1: Unexpected closing '\}' in workflow body/
+  );
+});
+
 test("a thrown error's reported position is the author's own line on an openable path, runtime frames cut", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-throw-position-"));
   const scriptPath = path.join(directory, "workflow.js");

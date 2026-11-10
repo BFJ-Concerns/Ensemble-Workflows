@@ -23747,7 +23747,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   #runSettlementCause(error, dispatch = "in-flight") {
     const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
-    if (error instanceof EngineShutdownError || this.#closed && (error instanceof TurnTimeoutError || substrate instanceof AppServerExitedError)) {
+    if (this.#closed && (error instanceof EngineShutdownError || error instanceof TurnTimeoutError || substrate instanceof AppServerExitedError)) {
       return this.#closeCause(dispatch);
     }
     return null;

@@ -2308,20 +2308,21 @@ test("a recorded Codex failure serialises its observed app-server diagnostic", a
 
 test("terminal timeout and shutdown errors retain their agent statuses with two transition writes", async () => {
   // A turn deadline is the worker's own failure and resolves as a value; a
-  // shutdown is the run ending and still throws, at the spawn boundary.
+  // shutdown during runtime.close is the run ending and still throws.
   for (const [error, expected, resolution] of [
     [new TurnTimeoutError("turn timed out", { kind: "turn", timeoutMs: 1_000, threadId: "thread-1" }), "timed-out", "value"],
     [new EngineShutdownError("codex"), "interrupted", "throw"]
   ] as const) {
     const records: RuntimeAgentRecord[] = [];
+    const transport = resolution === "throw" ? new ClosingTransport(error) : new ErrorTransport(error);
     const runtime = new EnsembleRuntime({
-      transport: new ErrorTransport(error),
+      transport,
       concurrencyCaps: { codex: 1 },
       defaultMaxAttempts: 1
     });
     runtime.setRunRecorder({
       recordAttemptStart: ignoreAttemptStart,
-    recordAttemptEnd: ignoreAttemptEnd,
+      recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -2330,12 +2331,17 @@ test("terminal timeout and shutdown errors retain their agent statuses with two 
     if (resolution === "value") {
       assert.equal(await runtime.agent("stop", { engine: "codex" }), null);
     } else {
-      await assert.rejects(() => runtime.agent("stop", { engine: "codex" }), error.constructor);
+      assert.ok(transport instanceof ClosingTransport);
+      const worker = runtime.agent("stop", { engine: "codex" });
+      await transport.started;
+      await runtime.close("interrupted");
+      await assert.rejects(worker, error.constructor);
     }
 
     assert.equal(records.length, 2);
     assert.equal(records[0]?.status, "in-progress");
     assert.equal(records[1]?.status, expected);
+    await runtime.close();
   }
 });
 

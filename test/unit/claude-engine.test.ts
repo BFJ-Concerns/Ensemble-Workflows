@@ -15,6 +15,7 @@ import {
   partialWorkerTextOf
 } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { parallel, pipeline } from "../../src/hooks.js";
 import { usageSince } from "../../src/claude-transcript.js";
 
 import { RunRecordWriter } from "../../src/run-record.js";
@@ -2023,4 +2024,35 @@ test("a held Claude turn retains observed identity before new assistant output",
       assert.ok(observed.every((identity) => identity.resolvedModel === "claude-held" && identity.resolvedEffort === "high"));
     } finally { await held.close(); await adapter.close(); }
   });
+});
+
+
+test("closing a held Claude session mid-turn stays a worker failure through combinators", async () => {
+  for (const shape of ["parallel", "pipeline"]) {
+    await withControlPlane([{ busyPolls: 10_000 }], async (controlPlane) => {
+      let markPolled: (() => void) | undefined;
+      const polled = new Promise<void>((resolve) => { markPolled = resolve; });
+      const poll = controlPlane.poll.bind(controlPlane);
+      controlPlane.poll = async () => {
+        const status = await poll();
+        markPolled?.();
+        return status;
+      };
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+      const session = runtime.createWorkerSession({ engine: "claude", model: "opus" });
+      try {
+        const send = () => session.send("work");
+        const result = shape === "parallel"
+          ? parallel([send], () => {})
+          : pipeline(["item"], [send], () => {});
+        await polled;
+        await session.close();
+        assert.deepEqual(await result, [null], shape);
+        assert.equal(runtime.lastAgentRecord()?.status, "failed");
+        assert.equal(runtime.lastAgentRecord()?.attempts[0]?.failure?.kind, "EngineShutdownError");
+      } finally {
+        await runtime.close();
+      }
+    });
+  }
 });

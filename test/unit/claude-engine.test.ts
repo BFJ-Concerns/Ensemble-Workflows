@@ -2344,3 +2344,63 @@ for (const shape of ["slow", "monitor"] as const) {
     } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
   });
 }
+
+for (const [altered, lateCorrection] of [[true, false], [true, true], [false, false], [false, true]] as const) {
+  test(`a late nudge receipt ${altered ? "cannot verify an altered" : "can finish a verified"} correction${lateCorrection ? " that arrived late" : ""}`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-correction-nudge-"));
+    class CorrectionNudge extends FakeControlPlane {
+      readonly messages: string[] = [];
+      correction: string | null = null;
+      nudge: string | null = null;
+      override async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
+        this.messages.push(message);
+        if (this.messages.length === 2) {
+          this.nudge = message;
+          return { submitted: true };
+        }
+        if (this.messages.length === 1) {
+          this.correction = altered ? message + " " : message;
+          const result = await super.steer(handle, this.correction);
+          if (lateCorrection) {
+            const file = await this.transcriptPath();
+            assert.ok(file);
+            await writeFile(file, (await readFile(file, "utf8")).replace(submissionRow(this.correction) + "\n", ""));
+          }
+          return result;
+        }
+        return super.steer(handle, message);
+      }
+    }
+    const plane = new CorrectionNudge(dir, [
+      { assistant: { text: "not JSON" } }, { outcome: "blocked" }, { assistant: { text: '{"ok":true}' } }
+    ]);
+    const runtime = makeRuntime(plane, { maxAttempts: 5, receiptTimeoutMs: 1, blockedRecoveryBound: 1 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAttemptStart: async (_id: number, attempt: number) => {
+        const file = await plane.transcriptPath();
+        if (lateCorrection && attempt === 3) {
+          assert.ok(file && plane.correction);
+          await appendFile(file, submissionRow(plane.correction) + "\n");
+        }
+        if (attempt === (lateCorrection ? 4 : 3)) {
+          assert.ok(file && plane.nudge);
+          await appendFile(file, submissionRow(plane.nudge) + "\n" + assistantLine({ text: '{"ok":false}' }) + "\n");
+        }
+      },
+      recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    try {
+      const held = runtime.createWorkerSession({ engine: "claude" });
+      assert.deepEqual(await held.send("decide", { schema: okSchema }), { ok: altered });
+      assert.equal(plane.dispatchCount, 1);
+      assert.equal(plane.messages.length, altered ? 3 : 2);
+      if (altered) {
+        const attempt = records.at(-1)?.attempts[lateCorrection ? 3 : 2];
+        assert.match(attempt?.failure?.message ?? "", /^the correction was submitted, but the session received different text:/);
+        assert.equal(attempt?.rawOutput, '{"ok":false}');
+      }
+    } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+}

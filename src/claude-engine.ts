@@ -288,8 +288,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #acceptedTurnCopy = "";
   /** The submission the session accepted whose receipt has not verified, if any. Outlives the turn that made it. */
   #pending: PendingSubmission | null = null;
-  /** A task's differing receipt survives any recovery-nudge submission. */
-  #taskDeliveryFailure: ClaudeDeliveryError | null = null;
+  /** A differing receipt survives nudges until a fresh answer is requested. */
+  #deliveryFailure: ClaudeDeliveryError | null = null;
   /** Start of the current answer's work; recovery-nudge receipts never move it. */
   #collectionMark = 0;
 
@@ -338,7 +338,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#turnPrompt = prompt;
     this.#turnSchema = turn.schema;
     this.#turn = "unsent";
-    this.#taskDeliveryFailure = null;
+    this.#deliveryFailure = null;
     if (this.#pending !== null) {
       // The turn that made it has settled without it: whatever reply it
       // still draws answers nothing the script is waiting on.
@@ -571,6 +571,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     observers: AttemptObservers
   ): Promise<TurnResult> {
     this.#collectionMark = fromIndex;
+    this.#deliveryFailure = null;
     const message = this.#correctionMessage(previousFailure);
     await this.#deliver(handle, { message, mark: fromIndex, what: "the correction", carriesTurn: false }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
@@ -606,7 +607,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         this.#acceptedTurnCopy = submission.message;
       }
       this.#turn = "accepted";
-      this.#taskDeliveryFailure = null;
+      this.#deliveryFailure = null;
       this.#collectionMark = submission.mark;
     }
   }
@@ -632,7 +633,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       this.#pending = null;
       if (submission.carriesTurn) {
         this.#turn = "verified";
-        this.#taskDeliveryFailure = null;
+        this.#deliveryFailure = null;
       }
       return;
     }
@@ -641,7 +642,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         ? `${submission.what} was submitted, but the session received different text: ${differenceAccount(submission.message, receipt.received)}`
         : `${submission.what} was submitted, but no receipt for it appeared in the transcript within ${this.#receiptTimeoutMs}ms: sent ${textIdentity(submission.message)}`
     );
-    if (submission.carriesTurn && receipt.state === "differing") this.#taskDeliveryFailure = failure;
+    if (receipt.state === "differing" && this.#deliveryFailure === null) this.#deliveryFailure = failure;
     if (receipt.state === "differing" && this.#multiTurn) {
       await this.#runToCompletion(handle, this.#collectionMark, observers);
       this.#pending = null;
@@ -698,24 +699,24 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       this.#pending = null;
       return null;
     }
-    if (pending.carriesTurn && pending.answersTurn) {
-      if (receipt.state === "verified") {
+    if (pending.answersTurn) {
+      if (pending.carriesTurn && receipt.state === "verified") {
         // Preserve this task receipt before following work that may itself
         // submit a recovery nudge whose receipt arrives only on a retry.
         this.#turn = "verified";
-        this.#taskDeliveryFailure = null;
-      } else if (this.#taskDeliveryFailure === null) {
-        this.#taskDeliveryFailure = new ClaudeDeliveryError(
+        this.#deliveryFailure = null;
+      } else if (receipt.state === "differing" && this.#deliveryFailure === null) {
+        this.#deliveryFailure = new ClaudeDeliveryError(
           `${pending.what} was submitted, but the session received different text: ${differenceAccount(pending.message, receipt.received)}`
         );
       }
     }
     const transcript = await this.#runToCompletion(handle, this.#collectionMark, observers);
     this.#pending = null;
-    if (receipt.state === "verified" && pending.answersTurn && this.#turn === "verified") {
+    if (receipt.state === "verified" && pending.answersTurn && this.#turn === "verified" && this.#deliveryFailure === null) {
       return this.#buildResult(handle, transcript, this.#collectionMark);
     }
-    if (pending.answersTurn && this.#taskDeliveryFailure !== null) throw this.#taskDeliveryFailure;
+    if (pending.answersTurn && this.#deliveryFailure !== null) throw this.#deliveryFailure;
     throw new ClaudeDeliveryError(
       receipt.state === "differing"
         ? `${pending.what} submitted earlier reached the session late and as different text: ${differenceAccount(pending.message, receipt.received)}`
@@ -1137,7 +1138,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // and the turn's prompt is in no session: the next launch submits it anew.
     this.#pending = null;
     this.#turn = "unsent";
-    this.#taskDeliveryFailure = null;
+    this.#deliveryFailure = null;
     this.#collectionMark = 0;
     if (handle === null) {
       return;

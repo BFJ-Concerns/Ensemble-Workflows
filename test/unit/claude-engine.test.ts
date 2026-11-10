@@ -653,8 +653,22 @@ test("an agents strip denies Claude spawn, discovery, and messaging tools", asyn
         "Task",
         "Agent",
         "ListAgents",
-        "SendMessage"
+        "SendMessage",
+        "Workflow"
       ]);
+      assert.deepEqual(runtime.lastAgentRecord()?.strip, {
+        requested: ["skills", "agents"],
+        enforcement: {
+          skills: {
+            route: "config",
+            detail: 'permissions.deny ["Skill"] in the per-dispatch settings file'
+          },
+          agents: {
+            route: "config",
+            detail: 'permissions.deny ["Task","Agent","ListAgents","SendMessage","Workflow"] in the per-dispatch settings file'
+          }
+        }
+      });
     } finally {
       await runtime.close();
     }

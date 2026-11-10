@@ -293,7 +293,10 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   never settles, the call fails before the worker spawns rather than run
   unstripped.
 - **Claude** applies deny rules for `Skill`, and for `Task`, `Agent`,
-  `ListAgents`, and `SendMessage`, through the per-dispatch settings file.
+  `ListAgents`, `SendMessage`, and `Workflow`, through the per-dispatch
+  settings file. `Workflow` is included because its scripts can spawn agents.
+  The agent record names the configured deny rules; it does not claim a
+  runtime measurement of the worker’s tool inventory.
 - **opencode** rejects any strip before the worker spawns.
 
 Each agent record lists the requested strips and how each was enforced.

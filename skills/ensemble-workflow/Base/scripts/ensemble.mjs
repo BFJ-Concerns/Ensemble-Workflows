@@ -17440,7 +17440,7 @@ import path11 from "node:path";
 // src/claude-transcript.ts
 import { readFile as readFile5 } from "node:fs/promises";
 function submittedUserText(entry) {
-  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary) return null;
+  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
   const content = entry.message?.content;
   if (typeof content !== "string") return null;
   const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);

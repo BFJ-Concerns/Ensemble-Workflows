@@ -963,7 +963,10 @@ async function installValveStubs(dir: string, mode = "exact") {
     }
     if (step === "Enter") {
       const text = readFileSync(target, "utf8");
-      const row = mode === "missing" ? { type: "assistant", message: { content: "unrelated" } } :
+      if ((mode === "notification" || mode === "notification-missing")) appendFileSync(${JSON.stringify(transcript)}, JSON.stringify({
+        type: "user", origin: { kind: "task-notification" }, message: { content: "<task-notification>background task complete</task-notification>" }
+      }) + "\\n");
+      const row = (mode === "missing" || mode === "notification-missing") ? { type: "assistant", message: { content: "unrelated" } } :
         { type: "user", message: { content: mode === "mismatch" ? text + "changed" : text } };
       appendFileSync(${JSON.stringify(transcript)}, JSON.stringify(row) + "\\n");
     }
@@ -971,7 +974,7 @@ async function installValveStubs(dir: string, mode = "exact") {
   return { claude, tmux, handle, transcript };
 }
 
-for (const mode of ["attach", "C-g", "Enter", "editor-missing", "missing", "mismatch"] as const) {
+for (const mode of ["attach", "C-g", "Enter", "editor-missing", "missing", "notification-missing", "mismatch"] as const) {
   test(`reply valve reports ${mode} failure and removes its private files`, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-failure-"));
     try {
@@ -984,7 +987,7 @@ for (const mode of ["attach", "C-g", "Enter", "editor-missing", "missing", "mism
       assert.equal(result.delivered, false);
       if (!result.delivered) {
         assert.match(result.reason, mode === "editor-missing" ? /editor did not finish/ :
-          mode === "missing" ? /delivery missing/ : mode === "mismatch" ? /delivery mismatch.*sha256/ : /delivery refused/);
+          (mode === "missing" || mode === "notification-missing") ? /delivery missing/ : mode === "mismatch" ? /delivery mismatch.*sha256/ : /delivery refused/);
       }
       const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
         .map(line => JSON.parse(line) as { argv: string[] });
@@ -993,6 +996,17 @@ for (const mode of ["attach", "C-g", "Enter", "editor-missing", "missing", "mism
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 }
+
+test("a background notification between attach and receipt does not acknowledge or corrupt delivery", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-notification-"));
+  try {
+    const stub = await installValveStubs(dir, "notification");
+    const control = new ClaudeCliControlPlane({
+      claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0
+    });
+    assert.deepEqual(await control.steer(stub.handle, "new input"), { delivered: true });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 
 test("literal command-record XML is accepted as exact ordinary text", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-literal-"));

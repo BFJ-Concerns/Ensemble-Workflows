@@ -644,6 +644,7 @@ test("submittedUserText reads native typed turns and reconstructs expanded slash
   assert.equal(submittedUserText({ type: "user", message: { content: `<command-message>check</command-message>\n<command-name>/check</command-name>\n<command-args>${message}</command-args>` } }), `/check ${message}`);
   assert.equal(submittedUserText({ type: "user", message: { content: "<command-message>check</command-message>\n<command-name>/check</command-name>\n<command-args></command-args>" } }), "/check");
   assert.equal(submittedUserText({ type: "user", message: { content: "<command-message>check</command-message>\n<command-name>/check</command-name>" } }), "/check");
+  assert.equal(submittedUserText({ type: "user", origin: { kind: "task-notification" }, message: { content: commandNotification("bg-123", "completed") } }), null);
   assert.equal(submittedUserText({ type: "assistant", message: { content: message } }), null);
   assert.equal(submittedUserText({ type: "user", isMeta: true, message: { content: message } }), null);
   assert.equal(submittedUserText({ type: "user", isCompactSummary: true, message: { content: message } }), null);

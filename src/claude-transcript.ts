@@ -20,6 +20,7 @@ export interface TranscriptEntry {
   type?: string;
   isMeta?: boolean;
   isCompactSummary?: boolean;
+  origin?: { kind?: unknown };
   message?: TranscriptMessage;
   /**
    * Claude Code's record of a queued prompt absorbed into a turn already
@@ -82,7 +83,7 @@ interface TranscriptMessage {
  * check as plain text. Ordinary submissions remain unwrapped strings.
  */
 export function submittedUserText(entry: TranscriptEntry): string | null {
-  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary) return null;
+  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
   const content = entry.message?.content;
   if (typeof content !== "string") return null;
   const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);

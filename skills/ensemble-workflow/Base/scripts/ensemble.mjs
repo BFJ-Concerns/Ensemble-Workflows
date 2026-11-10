@@ -15353,14 +15353,17 @@ function readMachineConfig(configFile) {
   if (!isObject(parsed) || Array.isArray(parsed)) {
     throw fileValueError(configFile, "<root>", "must be a JSON object");
   }
-  assertKnownKeys(
-    parsed,
-    ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
-    configFile
-  );
+  const newer = typeof parsed.schema_version === "number" && parsed.schema_version > CONFIG_SCHEMA_VERSION;
+  if (!newer) {
+    assertKnownKeys(
+      parsed,
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+      configFile
+    );
+  }
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
     throw new AmbientConfigError(
-      `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
+      `Unsupported schema_version ${JSON.stringify(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}` + (newer ? "; this file was written for a newer Ensemble. Upgrade Ensemble to read it." : "")
     );
   }
   if (parsed.worker_scope !== void 0) {
@@ -16467,6 +16470,7 @@ var RunRecordWriter = class _RunRecordWriter {
       model: record.model,
       effort: record.effort,
       fallback: record.fallback,
+      fallback_source: { ...record.fallbackSource },
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
@@ -17803,6 +17807,25 @@ function claudeApiErrorOf(diagnostics) {
     status: typeof record.status === "number" ? record.status : null,
     code: typeof record.code === "string" ? record.code : null
   };
+}
+
+// src/fallback-source.ts
+var handedOff = /* @__PURE__ */ new WeakMap();
+function handOffFallbackSource(options, source) {
+  handedOff.set(options, source);
+  return options;
+}
+function fallbackSourceOf(passed, validated) {
+  return handedOff.get(passed) ?? (validated.fallback === void 0 ? { kind: "none" } : { kind: "call" });
+}
+function attributeMergedChain(merged, callFallback, engine) {
+  if (callFallback !== void 0) {
+    return handOffFallbackSource(merged, { kind: "call" });
+  }
+  if (merged.fallback !== void 0) {
+    return handOffFallbackSource(merged, { kind: "defaults", engine });
+  }
+  return handOffFallbackSource(merged, { kind: "none" });
 }
 
 // src/progress.ts
@@ -23829,8 +23852,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
+    const passedOptions = options;
     options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
+    const fallbackSource = fallbackSourceOf(passedOptions, options);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
     }
@@ -23845,6 +23870,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
+    }
+    if (engine instanceof OpenCodeEngineAdapter) {
+      if (options.model === void 0) {
+        throw new OpenCodeModelRequiredError(engine.modelRegistry.names());
+      }
+      validateEngineDefaults(engine.name, options, engine.modelRegistry);
     }
     const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
     this.budget.assertCanStart(engine.name);
@@ -23867,6 +23898,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       engine.name,
       prompt,
       { ...dispatchOptions, ...phase !== null ? { phase } : {} },
+      fallbackSource,
       stripRoutes
     );
     const unsettled = { record: agentRecord, stage: "dispatching" };
@@ -23941,6 +23973,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
+    const fallbackSource = fallbackSourceOf(options, options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === void 0) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -23965,6 +23998,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       resolvedModel: null,
       resolvedEffort: null,
       stripRoutes,
+      fallbackSource,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
@@ -24048,7 +24082,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...turn.schema !== void 0 ? { schema: turn.schema } : {},
         ...options.strip !== void 0 ? { strip: options.strip } : {}
       };
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
+      const fallbackSource = state.turnCount === 0 ? state.fallbackSource : { kind: "later-turn" };
+      const agentRecord = this.#newAgentRecord(
+        agentId,
+        engine.name,
+        prompt,
+        recordOptions,
+        fallbackSource,
+        state.stripRoutes
+      );
       agentRecord.resolvedModel = state.resolvedModel;
       agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
@@ -25370,7 +25412,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd
     };
   }
-  #newAgentRecord(id, engine, prompt, options, stripRoutes = null) {
+  #newAgentRecord(id, engine, prompt, options, fallbackSource, stripRoutes = null) {
     return {
       id,
       engine,
@@ -25383,6 +25425,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
       fallback: options.fallback === void 0 ? null : options.fallback.map((target) => ({ ...target })),
+      fallbackSource,
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
@@ -25680,7 +25723,7 @@ function mergeAgentDefaults(defaults, agentOptions) {
   assertValidAgentOptions(agentOptions ?? {});
   const engine = agentOptions?.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
-  if (engineDefaults === void 0) {
+  if (engine === void 0 || engineDefaults === void 0) {
     return agentOptions ?? {};
   }
   const merged = { ...engineDefaults };
@@ -25689,7 +25732,7 @@ function mergeAgentDefaults(defaults, agentOptions) {
       merged[key] = value;
     }
   }
-  return merged;
+  return attributeMergedChain(merged, agentOptions?.fallback, engine);
 }
 function mergeSessionDefaults(defaults, sessionOptions) {
   const engineDefaults = typeof sessionOptions.engine === "string" ? defaults[sessionOptions.engine] : void 0;
@@ -25702,7 +25745,7 @@ function mergeSessionDefaults(defaults, sessionOptions) {
       merged[key] = value;
     }
   }
-  return merged;
+  return attributeMergedChain(merged, sessionOptions.fallback, sessionOptions.engine);
 }
 function describeWorkerFailure(error) {
   const presented = presentOperationalError(error);
@@ -33479,7 +33522,8 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliUsageError(message);
+    const unknown = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ? unknownAgentOption(argv) : void 0;
+    throw new CliUsageError(unknown === void 0 ? message : unknownAgentOptionMessage(unknown));
   }
   if (parsed.positionals.length > 1) {
     throw new CliUsageError(`${program} agent accepts exactly one prompt argument, or reads the prompt from stdin`);
@@ -33530,6 +33574,45 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...workerScope !== void 0 ? { workerScope } : {},
     ...holdScope !== void 0 ? { holdScope } : {}
   };
+}
+function unknownAgentOption(argv) {
+  try {
+    const { tokens } = parseArgs({
+      args: argv,
+      options: AGENT_INVOCATION_OPTIONS,
+      strict: false,
+      allowPositionals: true,
+      tokens: true
+    });
+    const unknown = tokens.find((token) => token.kind === "option" && !Object.hasOwn(AGENT_INVOCATION_OPTIONS, token.name));
+    return unknown?.kind === "option" ? argv[unknown.index] : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function unknownAgentOptionMessage(option) {
+  const name = option.split("=", 1)[0];
+  const candidates = Object.keys(AGENT_INVOCATION_OPTIONS).map((key) => ({ flag: `--${key}`, distance: optionDistance(name, `--${key}`) })).filter(({ distance }) => distance <= 2).sort((left, right) => left.distance - right.distance || left.flag.localeCompare(right.flag));
+  const best = candidates[0];
+  if (best !== void 0 && (candidates[1] === void 0 || best.distance < candidates[1].distance)) {
+    return `Unknown option ${JSON.stringify(option)}. Did you mean ${JSON.stringify(best.flag)}?`;
+  }
+  return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${quoteShellArgument(option)}`;
+}
+function optionDistance(left, right) {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current2 = [row];
+    for (let column = 1; column <= right.length; column += 1) {
+      current2[column] = Math.min(
+        current2[column - 1] + 1,
+        previous[column] + 1,
+        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1)
+      );
+    }
+    previous = current2;
+  }
+  return previous[right.length];
 }
 async function readPrompt(stdin) {
   const chunks = [];
@@ -33932,8 +34015,11 @@ function programNameFor(scriptPath) {
     return DEFAULT_PROGRAM_NAME;
   }
   const absolutePath = path17.resolve(scriptPath);
-  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : `'${absolutePath.replaceAll("'", `'"'"'`)}'`;
+  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : quoteShellArgument(absolutePath);
   return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
+}
+function quoteShellArgument(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 var USAGE_WIDTH = 80;
 var USAGE_LEAD = "Usage: ";

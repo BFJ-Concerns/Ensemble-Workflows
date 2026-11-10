@@ -78,12 +78,11 @@ test(
       assert.ok(snapshots.every((snapshot) => snapshot.agents.every((agent) => agent.label !== "blocked-live")));
 
       const archive = await readArchiveAsConsumer(recordStore);
-      // Whatever the worker replied, the script received it as a string, and
-      // the archive holds that same reply as the agent's output and in the
-      // run's result.
+      // The script receives the trimmed reply. The archive keeps both the
+      // raw agent output and the returned value in the run result.
       assertEach([
         ["the admitted call returned its reply", () => assert.equal(typeof output.admitted, "string", result.stdout)],
-        ["the archived agent output is the reply received", () => assert.equal(archive.agents[0]?.raw_output, output.admitted)],
+        ["the archived agent output is the reply received", () => assert.equal(archive.agents[0]?.raw_output?.trim(), output.admitted)],
         ["the archived run result holds the reply received", () => assert.equal(archive.result.value.admitted, output.admitted)]
       ]);
       assert.equal(archive.manifest.schema_version, 4);

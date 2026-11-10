@@ -12,7 +12,6 @@ import { archivedAgent, archivedAgents, assertEach, runLauncher } from "./launch
 import { liveCodexOptions, liveCodexScriptOptions } from "./live-models.js";
 
 import type { RuntimeEvent } from "../../src/types.js";
-import type { ArchivedAgent } from "./launcher.js";
 
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 const liveOptions = { skip: !isLive, timeout: 420_000 };
@@ -36,10 +35,9 @@ const nestedSchema = {
   }
 };
 
-// Every journey here drives the bundled launcher with a real workflow script
-// and reads what the product determines: stdout, the exit code, and the run
-// archive under ENSEMBLE_RUN_RECORD_DIR. What a worker writes in its reply is
-// never asserted.
+// Launcher journeys read stdout, exit codes and run archives. The library
+// journeys observe engine events for claims that need turn or request boundaries.
+// Assertions do not depend on the wording of a worker's reply.
 
 test("live text agent returns a string and feeds the Codex budget", liveOptions, async () => {
   await withRun(async ({ run }) => {
@@ -102,29 +100,38 @@ test("live schema agent returns a client-validated nested enum object", liveOpti
 });
 
 test("live one-process runtime runs at least eight turns concurrently", liveOptions, async () => {
-  await withRun(async ({ run, recordStore }) => {
-    const result = await run(
-      `
-        return await parallel(Array.from({ length: 8 }, (_value, index) => () =>
-          agent(\`Think briefly about three reasons concurrent schedulers are useful, then reply with one sentence (request \${index}).\`, {
-            engine: "codex", ${liveCodexScriptOptions()} label: \`concurrent-\${index}\`, maxAttempts: 1
-          })
-        ));
-      `,
-      ["--concurrency", "codex=8"]
+  const runtime = await createRuntime({
+    concurrencyCaps: { codex: 8 },
+    defaultTurnTimeoutMs: 180_000,
+    defaultMaxAttempts: 1
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.onEvent((event) => {
+    if (event.method === "turn/started" || event.method === "turn/completed") {
+      events.push(event);
+    }
+  });
+  try {
+    const values = await Promise.all(
+      Array.from({ length: 8 }, (_value, index) =>
+        runtime.agent(`Think briefly about three reasons concurrent schedulers are useful, then reply with one sentence (request ${index}).`, {
+          engine: "codex", ...liveCodexOptions(), label: `concurrent-${index}`
+        })
+      )
     );
-    assert.equal(result.code, 0, result.stderr);
-    const values = JSON.parse(result.stdout) as unknown[];
-    const agents = (await archivedAgents(recordStore)).filter((agent) => agent.label?.startsWith("concurrent-"));
-    const peak = peakInFlight(agents.flatMap((agent) => agent.attempts));
+    // Attempt lifetimes include lazy startup and thread creation. Only the
+    // engine's turn events establish that model turns actually overlap.
+    const peak = peakInFlight(events);
     assertEach([
       ...Array.from({ length: 8 }, (_value, index): [string, () => void] => [
         `concurrent agent ${index}'s value is a string`,
         () => assert.equal(typeof values[index], "string", `concurrent agent ${index} failed`)
       ]),
-      ["at least eight archived attempts were in flight at once", () => assert.ok(peak >= 8, `peak in-flight ${peak}`)]
+      ["at least eight Codex turns were in flight at once", () => assert.ok(peak >= 8, `peak in-flight ${peak}`)]
     ]);
-  });
+  } finally {
+    await runtime.close();
+  }
 });
 
 test("live token usage exposes last deltas and cumulative totals across turns", liveOptions, async () => {
@@ -250,7 +257,7 @@ test("live worktree isolation gives autonomous writable agents separate git work
   });
 });
 
-// The one in-process journey: whether the engine asked a worker for approval
+// Whether the engine asked a worker for approval
 // is visible only on the library's runtime event stream (`server/request/denied`
 // from `createRuntime().onEvent`). The launcher answers those requests itself
 // and writes nothing about them to stdout, stderr or the run archive, so it
@@ -320,22 +327,20 @@ async function withRun(
   }
 }
 
-function peakInFlight(attempts: ArchivedAgent["attempts"]): number {
-  const points = attempts
-    .flatMap((attempt) =>
-      attempt.started_at === null || attempt.ended_at === null
-        ? []
-        : [
-            { at: Date.parse(attempt.started_at), delta: 1 },
-            { at: Date.parse(attempt.ended_at), delta: -1 }
-          ]
-    )
-    .sort((left, right) => left.at - right.at || left.delta - right.delta);
-  let current = 0;
+function peakInFlight(events: RuntimeEvent[]): number {
+  const active = new Set<string>();
   let peak = 0;
-  for (const point of points) {
-    current += point.delta;
-    peak = Math.max(peak, current);
+  for (const event of events) {
+    const threadId = event.params.threadId;
+    if (typeof threadId !== "string") {
+      continue;
+    }
+    if (event.method === "turn/started") {
+      active.add(threadId);
+      peak = Math.max(peak, active.size);
+    } else if (event.method === "turn/completed") {
+      active.delete(threadId);
+    }
   }
   return peak;
 }

@@ -55,8 +55,14 @@ export interface ReportedCost {
 export interface UnobservedSpend {
   /** The agent record's `id`. */
   agent: number;
-  /** The attempt's number in that record's `attempts`. */
-  attempt: number;
+  /**
+   * The attempt's number in that record's `attempts`, or null for an
+   * attempt the record may have run without listing it
+   * (`RollupAgentView.mayHaveUnlistedAttempt`): nothing recorded its start,
+   * so nothing gave it a number. A null entry always reads
+   * `record-unsettled` and `measured: "none"`.
+   */
+  attempt: number | null;
   reason: UnobservedSpendReason;
   measured: "partial" | "none";
 }
@@ -69,9 +75,11 @@ export interface UnobservedSpend {
  * - `record-unsettled`: no outcome was observed. In a live manifest the
  *   attempt is still running; in an abandoned run the writer died with it
  *   running (SIGKILL, or any death the launcher could not handle) and the
- *   next run's sweep found it.
- * - `worker-interrupted`: the run's interrupt (SIGINT, SIGTERM, or a body
- *   that returned with the leg in flight) cut the attempt short.
+ *   next run's sweep found it, or found a record that may have had an
+ *   attempt running without listing it.
+ * - `worker-interrupted`: the run's ending cut the attempt short — its
+ *   interrupt (SIGINT, SIGTERM), a body that returned with the leg in
+ *   flight, or a body that failed with it in flight.
  * - `worker-timed-out`: a run or turn deadline the runtime enforced cut it
  *   short.
  * - `engine-reported-no-usage`: the attempt settled on its engine's own
@@ -89,7 +97,8 @@ export type UnobservedSpendReason =
  * - `settled`: the engine's own account settled it, complete or failed.
  * - `refused`: refused before any worker existed — nothing ran, so there
  *   is no spend to observe.
- * - `interrupted` / `timed-out`: the runtime cut it short.
+ * - `interrupted`: the run's ending cut it short.
+ * - `timed-out`: a run or worker deadline cut it short.
  * - `unsettled`: no outcome observed (running, or abandoned).
  */
 export type AttemptEnding = "settled" | "refused" | "interrupted" | "timed-out" | "unsettled";
@@ -118,21 +127,74 @@ export function isTimeoutFailureKind(kind: string): boolean {
 }
 
 /**
+ * The statuses the run's close settles its in-flight legs with, and the
+ * failure kind it writes on the attempt each leg had in flight. The
+ * runtime's close produces the kind with `runEndingFailureKind` and
+ * `attemptEnding` reads it back, so the attempt the run cut short carries
+ * that fact on its own entry: no later reader has to infer it from the
+ * agent's status, which also reads `interrupted` for a leg that was only
+ * waiting between attempts when the run ended.
+ */
+export type RunEndingStatus = "failed" | "timed-out" | "interrupted";
+export type RunEndingFailureKind = `run-${RunEndingStatus}`;
+
+export function runEndingFailureKind(status: RunEndingStatus): RunEndingFailureKind {
+  return `run-${status}`;
+}
+
+/**
+ * How a run-ending kind ends its attempt. A body that failed tears its legs
+ * down exactly as an interrupt does, so its kind reads `interrupted`; only
+ * the run deadline is a deadline.
+ */
+const RUN_ENDING_ATTEMPT_ENDING: Readonly<Record<RunEndingFailureKind, "interrupted" | "timed-out">> = {
+  "run-interrupted": "interrupted",
+  "run-failed": "interrupted",
+  "run-timed-out": "timed-out"
+};
+
+function isRunEndingFailureKind(kind: string): kind is RunEndingFailureKind {
+  return Object.hasOwn(RUN_ENDING_ATTEMPT_ENDING, kind);
+}
+
+/**
  * An agent record reduced to what the roll-up reads, in either writer's
- * terms. `attempts` lists every attempt that demonstrably ran, settled ones
+ * terms. `attempts` lists every attempt the record shows ran, settled ones
  * first in number order and then, where one exists, the unsettled attempt
  * (the live attempt in a running record, the abandoned entry in a reaped
  * one).
  */
 export interface RollupAgentView {
   id: number;
-  /** The engine the call asked for; books an agent with no attempts. */
+  /**
+   * The engine the call asked for. An agent with no attempts books under it,
+   * and so does an attempt the record may not list, since nothing recorded
+   * which target that attempt ran on.
+   */
   engine: EngineName;
-  /** The agent record's status. */
-  status: "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
   /** The agent-level served model: last write wins across attempts. */
   resolvedModel: string | null;
   attempts: RollupAttemptView[];
+  /**
+   * Whether a worker may have run an attempt that `attempts` does not list.
+   * The runtime records an attempt's start best-effort and invokes the
+   * worker even when that write fails, so a missing start is not proof that
+   * nothing ran. Each projection answers from its own evidence:
+   *
+   * - The writer's own view is always false. It holds every start the
+   *   runtime announced in memory before any write of it can fail, so a
+   *   record with no live attempt has started nothing it does not list.
+   * - A view read back from an archived record is true when the record's
+   *   writer never settled it — it reads `in-progress`, or `abandoned`
+   *   with the sweep's `abandonment` block — and it lists no unsettled
+   *   attempt. Such a record may have been between attempts or still
+   *   queued, but the archive cannot tell which, so its spend is not
+   *   claimed complete.
+   *
+   * When true, the roll-up books one `unobserved` entry with a null
+   * `attempt` under the agent's `engine` and `"unresolved"`.
+   */
+  mayHaveUnlistedAttempt: boolean;
 }
 
 export interface RollupAttemptView {
@@ -149,30 +211,30 @@ export interface RollupAttemptView {
 }
 
 /**
- * How an attempt ended, judged from the attempt's own evidence first. A
- * worker deadline ends only the attempt it fell on, and the runtime may
- * retry it, so an attempt whose failure is a timeout was cut short
- * whatever became of the agent afterwards — a complete agent can carry a
- * timed-out attempt. The agent's status speaks only for its last settled
- * attempt: a run interrupt or run deadline cuts short the attempt in
- * flight when it ends the record, so earlier attempts settled on their
- * own.
+ * How an attempt ended, judged from the attempt's own evidence alone. The
+ * agent's status says how the call ended, not how each attempt did: a
+ * complete agent can carry a timed-out attempt the runtime retried, and an
+ * interrupted one can end with every attempt settled, its last refused or
+ * failed attempt already over while the call waited for re-admission on
+ * the next fallback target. An attempt was cut short only when its own
+ * failure says so — a run-ending kind the run's close wrote on it, or a
+ * worker deadline's kind.
  */
-export function attemptEnding(agent: RollupAgentView, attempt: RollupAttemptView): AttemptEnding {
+export function attemptEnding(attempt: RollupAttemptView): AttemptEnding {
   if (!attempt.settled) {
     return "unsettled";
   }
-  if (attempt.failureKind !== null && REFUSED_BEFORE_WORKER_KINDS.has(attempt.failureKind)) {
+  const kind = attempt.failureKind;
+  if (kind === null) {
+    return "settled";
+  }
+  if (REFUSED_BEFORE_WORKER_KINDS.has(kind)) {
     return "refused";
   }
-  if (attempt.failureKind !== null && isTimeoutFailureKind(attempt.failureKind)) {
-    return "timed-out";
+  if (isRunEndingFailureKind(kind)) {
+    return RUN_ENDING_ATTEMPT_ENDING[kind];
   }
-  const last = agent.attempts.findLast((candidate) => candidate.settled) === attempt;
-  if (last && agent.status === "interrupted") {
-    return "interrupted";
-  }
-  if (last && agent.status === "timed-out") {
+  if (isTimeoutFailureKind(kind)) {
     return "timed-out";
   }
   return "settled";
@@ -187,8 +249,9 @@ const UNOBSERVED_REASON: Record<Exclude<AttemptEnding, "settled" | "refused">, U
 /**
  * Builds the roll-up from every agent the run recorded. Spend is booked
  * under the engine and served model of each attempt — never the requested
- * pin — with an agent that has no attempt at all booked under its engine's
- * `"unresolved"` model.
+ * pin. An agent that lists no attempt books under its engine's
+ * `"unresolved"` model, complete unless it may have run one unlisted, and
+ * an attempt it may not list books there too.
  */
 export function buildCostRollup(agents: readonly RollupAgentView[]): CostRollup {
   const buckets = new Map<string, Bucket>();
@@ -203,10 +266,6 @@ export function buildCostRollup(agents: readonly RollupAgentView[]): CostRollup 
   };
 
   for (const agent of agents) {
-    if (agent.attempts.length === 0) {
-      bucketFor(agent.engine, "unresolved");
-      continue;
-    }
     // An attempt that reported no served model of its own may borrow the
     // agent-level answer only when that answer came from its own engine:
     // the agent-level field is last-write-wins across attempts, and under
@@ -223,7 +282,7 @@ export function buildCostRollup(agents: readonly RollupAgentView[]): CostRollup 
           addProviderCost(bucket.cost, event);
         }
       }
-      const ending = attemptEnding(agent, attempt);
+      const ending = attemptEnding(attempt);
       if (ending === "refused" || (ending === "settled" && summary !== null)) {
         continue;
       }
@@ -233,6 +292,12 @@ export function buildCostRollup(agents: readonly RollupAgentView[]): CostRollup 
         reason: ending === "settled" ? "engine-reported-no-usage" : UNOBSERVED_REASON[ending],
         measured: summary === null ? "none" : "partial"
       });
+    }
+    if (agent.attempts.length === 0 || agent.mayHaveUnlistedAttempt) {
+      const bucket = bucketFor(agent.engine, "unresolved");
+      if (agent.mayHaveUnlistedAttempt) {
+        bucket.unobserved.push({ agent: agent.id, attempt: null, reason: "record-unsettled", measured: "none" });
+      }
     }
   }
 

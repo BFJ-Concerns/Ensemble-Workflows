@@ -1092,7 +1092,9 @@ export class RunRecordWriter {
           tokenUsageEvents: []
         });
       }
-      return { id: record.id, engine: record.engine, status: record.status, resolvedModel: record.resolvedModel, attempts };
+      // Every start the runtime announced is in #currentAttempts before any
+      // write of it can fail, so this view lists every attempt that ran.
+      return { id: record.id, engine: record.engine, resolvedModel: record.resolvedModel, attempts, mayHaveUnlistedAttempt: false };
     });
   }
 
@@ -1790,6 +1792,13 @@ async function abandonedCostRollup(runDir: string): Promise<CostRollup | null> {
  * made. The sweep recomputes the roll-up only for a run whose records are
  * all of this writer's schema version, after reconciling them; null for
  * anything else, and the sweep then leaves the roll-up as written.
+ *
+ * An archived record's attempt starts are best-effort writes, so a record
+ * its writer never settled — still `in-progress`, or `abandoned` by the
+ * sweep and so carrying its `abandonment` block — that lists no unsettled
+ * attempt may have had one running: `mayHaveUnlistedAttempt`. A record the
+ * run's own close abandoned carries no such block; its writer knew no
+ * attempt had begun.
  */
 export function rollupViewOfArchivedRecord(value: unknown): RollupAgentView | null {
   if (!isObject(value) || value.schema_version !== SCHEMA_VERSION || value.kind !== "agent_record") {
@@ -1816,7 +1825,14 @@ export function rollupViewOfArchivedRecord(value: unknown): RollupAgentView | nu
       tokenUsageEvents: attempt.token_usage_events as TokenUsageEvent[]
     });
   }
-  return { id, engine, status, resolvedModel, attempts: views };
+  const writerSettled = status !== "in-progress" && !(status === "abandoned" && isObject(value.abandonment));
+  return {
+    id,
+    engine,
+    resolvedModel,
+    attempts: views,
+    mayHaveUnlistedAttempt: !writerSettled && views.every((attempt) => attempt.settled)
+  };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

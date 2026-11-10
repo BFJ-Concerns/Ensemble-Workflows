@@ -759,17 +759,26 @@ Each leaf has four fields:
 - `unobserved`: one entry for each attempt whose spend the figures leave out,
   ordered by agent and then attempt. It is empty exactly when `complete` is
   `true`. Each entry is `{ agent, attempt, reason, measured }`. `agent` is the
-  agent record's `id` and `attempt` the attempt's number. `measured` is
-  `"partial"` when the figures include usage the attempt reported before it
-  ended, and `"none"` when they include nothing of it. `reason` uses the
+  agent record's `id` and `attempt` the attempt's number in its `attempts`,
+  or `null` for an attempt the record does not list (see below). `measured`
+  is `"partial"` when the figures include usage the attempt reported before
+  it ended, and `"none"` when they include nothing of it. `reason` uses the
   words of the agent record's `usage.unavailable`:
 
   | `reason` | The attempt |
   |---|---|
-  | `record-unsettled` | had no observed outcome: still running in a live manifest, or running when its writer died (SIGKILL), so the sweep listed it as `abandoned` |
-  | `worker-interrupted` | was cut short by the run's interrupt (SIGINT or SIGTERM), or by a script body returning with it in flight |
+  | `record-unsettled` | had no observed outcome: still running in a live manifest, or running when its writer died (SIGKILL), so the sweep listed it as `abandoned`; or it is an attempt the record does not list |
+  | `worker-interrupted` | was cut short by the run ending with it in flight: the run's interrupt (SIGINT or SIGTERM), or a script body that returned or failed |
   | `worker-timed-out` | was cut short by a run or turn deadline the runtime enforced, including a timed-out attempt the runtime then retried, so an agent whose record reads `complete` can still name one here |
   | `engine-reported-no-usage` | settled on its engine's own account, which carried no usage |
+
+Each attempt is judged by its own entry, never by the agent's status. The run
+cut an attempt short only when that attempt's `failure.kind` says so:
+`run-interrupted`, `run-failed` or `run-timed-out`, which the run's close
+writes on the attempt it tears down, or a deadline's kind. An agent that reads
+`interrupted` because the run ended while it waited between attempts — queued
+for its next fallback target, say — has no attempt cut short, and the spend of
+the attempts it settled is booked as complete.
 
 An attempt refused before any worker existed spent nothing. It books its leaf
 without an `unobserved` entry, so a leaf holding only such attempts reads
@@ -777,3 +786,18 @@ without an `unobserved` entry, so a leaf holding only such attempts reads
 share a leaf. When one reported its usage and another was cut short, the leaf
 carries the first's figures, `complete: false`, and an `unobserved` entry for
 the second.
+
+An agent that lists no attempt books under its engine's `"unresolved"` leaf.
+That leaf stays complete when the record shows no worker started: the agent
+settled without one, or the run's own close abandoned it while it was still
+being dispatched. A record's attempt start is written on a best-effort basis,
+and the worker runs even when that write fails, so a record whose writer
+never settled it — the sweep's `abandoned` records, which carry an
+`abandonment` block — may have had an attempt running that it does not list.
+When such a record lists no unsettled attempt, the roll-up the sweep
+recomputes books that possible attempt under the requested engine's
+`"unresolved"` leaf, as `{ agent, attempt: null, reason: "record-unsettled",
+measured: "none" }`, and the leaf is not complete. The record may only have
+been waiting for its next attempt when the run died, but the archive cannot
+show that. A live manifest never carries such an entry: its writer holds every
+attempt start in memory.

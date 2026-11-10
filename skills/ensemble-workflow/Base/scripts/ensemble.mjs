@@ -31701,10 +31701,14 @@ async function runEnsembleCli(argv, options = {}) {
     stderr.write(usage(program));
     return 2;
   }
+  const configuredRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
+  const runRecordDir = configuredRecordDir ? path17.resolve(configuredRecordDir) : configuredRecordDir;
+  const configuredSentinelDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
+  const sentinelStoreDir = configuredSentinelDir ? path17.resolve(configuredSentinelDir) : configuredSentinelDir;
   let prepared;
   try {
     prepared = await prepareRun(invocation, cwd);
-    await judgeResources(launcherResourceRequirements(options.runRecordDir, ambientSettings, cwd), env);
+    await judgeResources(launcherResourceRequirements(runRecordDir, options.runRecordDir !== void 0, ambientSettings), env);
   } catch (error) {
     stderr.write(`${presentOperationalError(error) ?? formatError2(error)}
 `);
@@ -31739,11 +31743,9 @@ async function runEnsembleCli(argv, options = {}) {
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     progress = runtime.progress;
-    const runRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
     recordingEnabled = runRecordDir !== null && runRecordDir.length > 0;
     const runtimeRunId = progress?.runId ?? "unknown-run";
     const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
-    const sentinelStoreDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
     if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
       const sentinelPath = await sentinel.prepare(
         { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
@@ -32114,13 +32116,13 @@ async function prepareRun(invocation, cwd) {
     recordArgs: invocation.args
   };
 }
-function launcherResourceRequirements(injectedRecordDir, settings, cwd) {
-  const store = injectedRecordDir !== void 0 ? { value: injectedRecordDir, from: "the runRecordDir option" } : { value: settings.runRecordDir.value, from: settingSource(settings.runRecordDir.layer, RUN_RECORD_DIR_ENV, "run_record.dir", settings.configFile) };
-  if (store.value === null || store.value.length === 0) {
+function launcherResourceRequirements(recordDir, injectedRecordDir, settings) {
+  if (recordDir === null || recordDir.length === 0) {
     return [];
   }
+  const from = injectedRecordDir ? "the runRecordDir option" : settingSource(settings.runRecordDir.layer, RUN_RECORD_DIR_ENV, "run_record.dir", settings.configFile);
   return [
-    { owner: "launcher", role: "run record store", path: path17.resolve(cwd, store.value), access: "create-entries", resolvedFrom: store.from }
+    { owner: "launcher", role: "run record store", path: recordDir, access: "create-entries", resolvedFrom: from }
   ];
 }
 function settingSource(layer, envKey, fileKey, configFile) {

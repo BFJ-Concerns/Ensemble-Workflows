@@ -308,6 +308,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     return 2;
   }
 
+  // Store paths belong to the launcher process, independently of the
+  // workflow cwd. Freeze them before probing so the probe, sentinel and
+  // archive writer consume the same absolute directory.
+  const configuredRecordDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordDir.value;
+  const runRecordDir = configuredRecordDir ? path.resolve(configuredRecordDir) : configuredRecordDir;
+  const configuredSentinelDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
+  const sentinelStoreDir = configuredSentinelDir ? path.resolve(configuredSentinelDir) : configuredSentinelDir;
+
   // The acceptance boundary: a run begins when the invocation is accepted —
   // flags parsed above, and here the script read (or the direct agent's
   // placement usable). Everything the launcher does for a run — the
@@ -318,7 +326,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let prepared: PreparedRun;
   try {
     prepared = await prepareRun(invocation, cwd);
-    await judgeResources(launcherResourceRequirements(options.runRecordDir, ambientSettings, cwd), env);
+    await judgeResources(launcherResourceRequirements(runRecordDir, options.runRecordDir !== undefined, ambientSettings), env);
   } catch (error) {
     stderr.write(`${presentOperationalError(error) ?? formatError(error)}\n`);
     return 2;
@@ -379,7 +387,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // Injected test runtimes may not carry a progress model; read it defensively.
     progress = (runtime as { progress?: RunProgress }).progress;
 
-    const runRecordDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordDir.value;
     recordingEnabled = runRecordDir !== null && runRecordDir.length > 0;
     const runtimeRunId = progress?.runId ?? "unknown-run";
     const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
@@ -391,10 +398,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // explicit programmatic `runRecordDir: null` is a different thing — a
     // library caller opting out of the store entirely — and skips the
     // sentinel with it.
-    const sentinelStoreDir =
-      options.runRecordDir !== undefined
-        ? options.runRecordDir
-        : ambientSettings.runRecordStoreDir.value;
     if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
       const sentinelPath = await sentinel.prepare(
         { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
@@ -943,19 +946,18 @@ async function prepareRun(invocation: ParsedInvocation, cwd: string): Promise<Pr
  * engine's requirements before that engine's first attempt.
  */
 function launcherResourceRequirements(
-  injectedRecordDir: string | null | undefined,
-  settings: AmbientSettings,
-  cwd: string
+  recordDir: string | null,
+  injectedRecordDir: boolean,
+  settings: AmbientSettings
 ): ResourceRequirement[] {
-  const store =
-    injectedRecordDir !== undefined
-      ? { value: injectedRecordDir, from: "the runRecordDir option" }
-      : { value: settings.runRecordDir.value, from: settingSource(settings.runRecordDir.layer, RUN_RECORD_DIR_ENV, "run_record.dir", settings.configFile) };
-  if (store.value === null || store.value.length === 0) {
+  if (recordDir === null || recordDir.length === 0) {
     return [];
   }
+  const from = injectedRecordDir
+    ? "the runRecordDir option"
+    : settingSource(settings.runRecordDir.layer, RUN_RECORD_DIR_ENV, "run_record.dir", settings.configFile);
   return [
-    { owner: "launcher", role: "run record store", path: path.resolve(cwd, store.value), access: "create-entries", resolvedFrom: store.from }
+    { owner: "launcher", role: "run record store", path: recordDir, access: "create-entries", resolvedFrom: from }
   ];
 }
 

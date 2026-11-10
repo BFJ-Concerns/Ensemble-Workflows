@@ -4103,3 +4103,59 @@ test("CLI renders Codex app-server placement refusals as bounded notices", async
     assert.match(stderr.text(), /\[codex\] app-server \(pid 123\) scope placement refused: manager refused\n/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("relative record stores use the launcher directory for preflight, archive and sentinel", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-relative-store-"));
+  try {
+    for (const source of ["option", "environment"] as const) {
+      const base = path.join(directory, source);
+      // More levels than the process cwd: the relative path resolves to two
+      // distinct locations, both beneath this test's own directory.
+      const cwd = path.join(base, ...Array<string>(20).fill("nested"));
+      await mkdir(cwd, { recursive: true });
+      const store = path.join(base, "records");
+      const relativeStore = path.relative(process.cwd(), store);
+      const wrongStore = path.resolve(cwd, relativeStore);
+      assert.notEqual(wrongStore, store);
+      assert.ok(wrongStore.startsWith(`${base}${path.sep}`));
+      await mkdir(path.dirname(wrongStore), { recursive: true });
+      await writeFile(wrongStore, "the workflow-relative path is unusable");
+      const script = path.join(cwd, "workflow.js");
+      await writeFile(script, 'export const meta = { name: "relative-store" }; return "answer";');
+      const storage = source === "option"
+        ? { runRecordDir: relativeStore, env: { ENSEMBLE_STATUS: "0" } }
+        : { env: { ENSEMBLE_RUN_RECORD_DIR: relativeStore, ENSEMBLE_STATUS: "0" } };
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      assert.equal(await runEnsembleCli([script], {
+        cwd, stdout, stderr, ...storage, createRuntime: async () => fakeRuntime()
+      }), 0, stderr.text());
+      const archive = announcedRunRecord(stderr.text());
+      assert.ok(archive.archive_path.startsWith(`${store}${path.sep}`), archive.archive_path);
+      await access(path.join(archive.archive_path, "manifest.json"));
+      const sentinel = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+      assert.ok(sentinel, stderr.text());
+      assert.equal(path.dirname(sentinel[1]!), archive.archive_path);
+      await access(sentinel[1]!);
+
+      // Reverse the obstruction: refuse the real store even though the
+      // workflow-relative path would pass, before creating any runtime.
+      await rm(store, { recursive: true, force: true });
+      await writeFile(store, "the actual store is unusable");
+      await rm(wrongStore);
+      await mkdir(wrongStore);
+      let runtimeCreated = false;
+      const refusedOut = new CaptureStream();
+      const refusedErr = new CaptureStream();
+      assert.equal(await runEnsembleCli([script], {
+        cwd, stdout: refusedOut, stderr: refusedErr, ...storage,
+        createRuntime: async () => { runtimeCreated = true; return fakeRuntime(); }
+      }), 2);
+      assert.equal(runtimeCreated, false);
+      assert.equal(refusedOut.text(), "");
+      assert.ok(refusedErr.text().includes(`cannot create entries in ${store}`), refusedErr.text());
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

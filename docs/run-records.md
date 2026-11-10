@@ -447,7 +447,9 @@ families with their own schema versions (`3` and `3`), described above.
   no dispatch; refused <admission>`; a spent ceiling reads `Token budget
   exhausted for <engine>: spent N of M tokens; refused <admission>`. The
   admission names a dispatch, a fallback dispatch with its agent id, or a
-  numbered session turn; refusing it does not imply earlier work never ran.
+  numbered session turn, starting at `session turn 1` for the first `send()`
+  even before the worker opens. A refused send does not advance that number;
+  refusing it does not imply earlier work never ran.
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. See
   [Token usage and cost](#token-usage-and-cost).
 - `files`: integrity table for archived artefacts, each with `path`, `size`,

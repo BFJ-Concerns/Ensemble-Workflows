@@ -53,7 +53,10 @@ level. `meta` is bound read-only.
 A free identifier that is neither a Node global, a hook, nor a binding in the
 script fails at load, before any worker spawns, and the error names it. A
 `typeof X` probe is fine. Syntax errors name the script's own line and column
-with a source excerpt and a caret.
+with a source excerpt and a caret. Line positions recognise LF, CRLF, CR
+and the JavaScript Unicode line separators. An extra closing brace points to
+the brace even when more body code follows; an unfinished body points to its
+end after its last non-whitespace character.
 
 The script is a trusted program run by the user who launched it. Ensemble
 dispatches and records workers only through `agent()` and `session()`; prompts
@@ -172,6 +175,14 @@ result. `nameOrRef` is a workflow name or `{ scriptPath }`:
   Lookup reads each file's `meta.name`, so filenames are only storage.
 - `{ scriptPath }` resolves like the script path on the command line:
   relative to the run's working directory unless absolute.
+
+A literal `workflow("name")` is checked against the saved registries when the
+script loads, including calls in branches and callbacks. A missing name
+reports the script's line and column before the body can dispatch a worker.
+Names computed at runtime and `{ scriptPath }` references are resolved when
+their calls execute. A call through a local binding named `workflow`, such as
+a nested function parameter or a block-local variable, is an ordinary
+JavaScript call.
 
 The child shares the parent's runtime: the same concurrency caps, budgets,
 worktrees, and run record. Nesting is one level only; calling `workflow()`
@@ -409,6 +420,12 @@ and keep the worker's partial text, exit status, and the engine's diagnostic
 on the attempt record. A call whose deadline should end it outright sets
 `maxAttempts: 1`.
 
+An opencode subprocess stopped by its per-attempt deadline records a turn
+timeout, retaining its engine diagnostic, streamed usage, transcript, and
+subprocess exit signal on the attempt. The execution deadline stops when the
+subprocess exits, even if its output streams are still draining. A subprocess
+that exits non-zero for another reason records an opencode run error.
+
 A message Ensemble sends into a live Claude session — a follow-up turn, a
 correction, a nudge to a blocked worker — counts as delivered only when the
 session's transcript shows it received exactly the text sent. Two failures
@@ -532,7 +549,9 @@ to another engine. Once spend reaches the
 ceiling, a call that has not yet been dispatched throws a budget-exhausted
 error; a ceiling of 0 admits no dispatch and says so. The refusal names the
 dispatch, fallback dispatch (with its agent id), or numbered session turn it
-blocked. Earlier targets or session turns may already have run and caused
+blocked. A session's first `send()` is `session turn 1`, even when admission
+refuses it before the worker opens; a refused send does not advance the turn
+number. Earlier targets or session turns may already have run and caused
 side effects. A call that started under
 the ceiling runs its full retry bound even if concurrent spend crosses the
 ceiling, so turns already running can together overshoot it.
@@ -561,9 +580,9 @@ await builder.close();
 ```
 
 - **Fixed at creation:** `engine`, `model`, `effort`, `fallback`, `cwd`,
-  `isolation`, `timeoutMs`, `maxAttempts`, `label`, `phase`, `strip`, and
-  `stalenessMark`. The fallback chain applies to the first turn only: the
-  target that answers it fixes the session's engine and model for its life
+  `isolation`, `timeoutMs`, `maxAttempts`, `label`, `phase`, `strip`,
+  `stalenessMark`, and `identity`. The fallback chain applies to the first turn
+  only: the target that answers it fixes the session's engine and model for its life
   (`handle.engine` reports it), and a later turn's availability failure fails
   that turn. Changing model or effort would invalidate the session's prompt
   cache, so a change of model means a new session.
@@ -572,6 +591,10 @@ await builder.close();
   turn leaves the session usable. Creating a session spawns nothing; the
   worker starts at the first `send()`. opencode sessions throw before any
   worker spawns.
+- **Identified turns:** `identity: true` at creation makes every `send()`
+  resolve `{ label, phase, output, failure }`. `failure` is `null` for a
+  successful answer, including a valid JSON `null`; a failed turn carries
+  its recorded failure message. The option cannot vary per turn.
 - **Turns are sequential:** calling `send()` while a previous send is
   unsettled throws, as does `send()` after `close()` or after the run ends.
 - **Concurrency and budget are per turn:** a turn holds its engine slot from
@@ -591,8 +614,10 @@ await builder.close();
   Codex — and `handle.idleMs` gives the idle time. It is advisory: a send to a
   stale session still runs, and the script decides whether to pay for the
   re-read or start a fresh worker. `stalenessMark: false` turns the mark off
-  for that session, and `handle.staleAfterMs` gives the threshold in use. A
-  Claude session below this idle threshold may still miss the prompt cache.
+  for that session. `handle.stalenessMark` reports whether the mark is enabled,
+  including before the first turn. `handle.staleAfterMs` gives the active
+  threshold, or `null` when marking is disabled. A Claude session below this
+  idle threshold may still miss the prompt cache.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.

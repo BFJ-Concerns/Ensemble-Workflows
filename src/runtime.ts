@@ -1762,13 +1762,13 @@ export class EnsembleRuntime {
       pending.add(operation);
       void operation.then(() => pending.delete(operation));
     };
-    if (recorder !== null && engine !== "opencode") {
+    if (recorder !== null) {
       await this.#recordArchiveWriteSafely(agentId, () =>
         recorder.recordAttemptStart(agentId, {
           attempt: context.attempt,
           startedAt: new Date(startedAt).toISOString(),
           target: { engine: target.engine, model: target.model ?? null },
-          identity: record === undefined || record.session === null
+          identity: record === undefined || record.session === null || context.attempt !== 1
             ? { resolvedModel: null, resolvedEffort: null }
             : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
         }));
@@ -1792,6 +1792,7 @@ export class EnsembleRuntime {
           observedModel = identity.resolvedModel;
           observedEffort = identity.resolvedEffort;
           this.progress.noteAgentIdentity(agentId, identity);
+          if (recorder !== null) enqueue(() => recorder.recordAttemptIdentity(agentId, context.attempt, identity));
         },
         onUsage: (event) => {
           if (!active) return;

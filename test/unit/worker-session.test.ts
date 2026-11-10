@@ -26,7 +26,7 @@ import type {
   ValveSubmission
 } from "../../src/claude-control-plane.js";
 import { RunRecordWriter } from "../../src/run-record.js";
-import type { RuntimeAgentRecord } from "../../src/run-record.js";
+import type { LiveAttemptStart, RuntimeAgentRecord } from "../../src/run-record.js";
 import type { EngineAdapter, EngineAttemptResult } from "../../src/engines.js";
 import type { OpenCodeRunner } from "../../src/opencode-engine.js";
 import type { RuntimeTransport, ThreadStartOptions, TurnResult, TurnStartOptions } from "../../src/types.js";
@@ -1060,7 +1060,7 @@ function captureRecords(
 ): RuntimeAgentRecord[] {
   const captured: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
-    recordAttemptStart: async (_id: number, attempt: number) => onAttemptStart(attempt),
+    recordAttemptStart: async (_id: number, { attempt }: LiveAttemptStart) => onAttemptStart(attempt),
     recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => {
       captured.push(structuredClone(record));
@@ -1359,7 +1359,7 @@ test("held turns publish separate live records and ignore prior-turn callbacks",
   runtime.setRunRecorder({
     recordAgent: async () => undefined,
     recordAttemptEnd: ignoreAttemptEnd,
-    recordAttemptStart: async (id: number, attempt: number) => { starts.push([id, attempt]); },
+    recordAttemptStart: async (id: number, { attempt }: LiveAttemptStart) => { starts.push([id, attempt]); },
     appendCodexTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); }
   } as unknown as RunRecordWriter);
   const session = runtime.createWorkerSession({ engine: "codex" });

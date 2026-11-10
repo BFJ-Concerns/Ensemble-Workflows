@@ -5296,3 +5296,43 @@ test("unawaited combinators registered after runtime close have handled run-endi
     await runtime.close();
   }
 });
+
+for (const engineName of ["codex", "claude", "opencode"] as const) {
+  test(`${engineName} records attempt start and identity before settlement and ignores late identity`, async () => {
+    const starts: LiveAttemptStart[] = [];
+    const identities: Array<{ attempt: number; model: string | null; effort: string | null }> = [];
+    let lateIdentity: (() => void) | undefined;
+    const engine: EngineAdapter = {
+      name: engineName, concurrency: 1, schedule: async (task) => task(),
+      createInvocation: () => ({ runAttempt: async (context) => {
+        assert.equal(starts.length, 1, "engine started before its durable attempt metadata");
+        context.onIdentity?.({ resolvedModel: "served-model", resolvedEffort: "high" });
+        lateIdentity = () => context.onIdentity?.({ resolvedModel: "late-model", resolvedEffort: null });
+        return turn("answer");
+      } }),
+      close: async () => undefined
+    };
+    const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => {
+        if (record.status === "in-progress") return;
+        assert.deepEqual(identities, [{ attempt: 1, model: "served-model", effort: "high" }],
+          "settlement must drain identity persistence");
+      },
+      recordAttemptStart: async (_id: number, start: LiveAttemptStart) => { starts.push(start); },
+      recordAttemptEnd: ignoreAttemptEnd,
+      recordAttemptIdentity: async (_id: number, attempt: number, identity: { resolvedModel: string | null; resolvedEffort: string | null }) => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        identities.push({ attempt, model: identity.resolvedModel, effort: identity.resolvedEffort });
+      }
+    } as unknown as RunRecordWriter);
+    try {
+      assert.equal(await runtime.agent("answer", { engine: engineName }), "answer");
+      assert.equal(starts[0]?.target.engine, engineName);
+      assert.deepEqual(starts[0]?.identity, { resolvedModel: null, resolvedEffort: null });
+      lateIdentity?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(identities.length, 1);
+    } finally { await runtime.close(); }
+  });
+}

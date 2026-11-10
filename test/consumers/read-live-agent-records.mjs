@@ -11,7 +11,7 @@ import { createAcknowledgementWriter } from "./archive-helpers.mjs";
 
 const [store, expectedCount, timeout = "45000", acknowledgements] = process.argv.slice(2);
 assert.ok(store && Number(expectedCount) > 0, "usage: read-live-agent-records.mjs <store> <agent-count> [timeout-ms] [acknowledgements-file]");
-const expectedKeys = JSON.parse(await readFile(new URL("../fixtures/run-record/v4-agent-keys.json", import.meta.url), "utf8"));
+const expectedKeys = JSON.parse(await readFile(new URL("../fixtures/run-record/v5-agent-keys.json", import.meta.url), "utf8"));
 const observed = new Map();
 const deadline = Date.now() + Number(timeout);
 const { acknowledge } = createAcknowledgementWriter(acknowledgements);

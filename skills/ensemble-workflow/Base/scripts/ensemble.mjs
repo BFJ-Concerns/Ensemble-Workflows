@@ -15972,6 +15972,30 @@ function addProviderCost(target, event) {
 var execFileAsync = promisify(execFile);
 var SCHEMA_VERSION = 5;
 var MANIFEST_PATH = "manifest.json";
+function abandonedAttemptEntry(live) {
+  return {
+    attempt: live.attempt,
+    status: "abandoned",
+    target: { engine: live.target.engine, model: live.target.model },
+    failure: null,
+    classification: null,
+    chain_decision: null,
+    observed_failure: null,
+    worker_exit: null,
+    app_server_diagnostic: null,
+    background_waits: [],
+    raw_output: null,
+    validated_output: null,
+    resolved_model: live.resolved_model,
+    resolved_effort: live.resolved_effort,
+    started_at: live.started_at,
+    ended_at: null,
+    duration_ms: null,
+    first_delta_ms: null,
+    token_usage_events: [],
+    diagnostics: {}
+  };
+}
 var RunRecordWriter = class _RunRecordWriter {
   archiveDir;
   manifest;
@@ -16686,13 +16710,15 @@ async function reapAbandonedRuns(options) {
       };
       const rewritten = await resolveAbandonedAgentRecords(path6.join(options.namespaceDir, entry.name), abandonment);
       if (Array.isArray(fresh.files)) {
-        for (const fileEntry of fresh.files) {
-          const update = rewritten.get(fileEntry.path);
-          if (update !== void 0) {
-            fileEntry.size = update.size;
-            fileEntry.sha256 = update.sha256;
-          }
+        const files = new Map(fresh.files.map((file) => [file.path, file]));
+        for (const [relativePath, update] of rewritten) {
+          files.set(relativePath, { path: relativePath, ...update });
         }
+        fresh.files = [...files.values()].sort((a, b) => compareCodeUnits(a.path, b.path));
+      }
+      if (fresh.schema_version === SCHEMA_VERSION) {
+        const rollup = await abandonedCostRollup(path6.join(options.namespaceDir, entry.name));
+        if (rollup !== null) fresh.cost_rollup = rollup;
       }
       fresh.status = "abandoned";
       fresh.abandonment = abandonment;
@@ -16721,13 +16747,19 @@ async function resolveAbandonedAgentRecords(runDir, abandonment) {
     }
     try {
       const agentJsonPath = path6.join(agentsDir, agentEntry.name, "agent.json");
-      const agentRecord = JSON.parse(await readFile4(agentJsonPath, "utf8"));
-      if (agentRecord.status !== "in-progress") {
+      let agentRecord = JSON.parse(await readFile4(agentJsonPath, "utf8"));
+      if (agentRecord.status !== "in-progress" && !(agentRecord.status === "abandoned" && agentRecord.schema_version === SCHEMA_VERSION && isObject2(agentRecord.abandonment))) {
         continue;
       }
-      agentRecord.status = "abandoned";
-      agentRecord.abandonment = abandonment;
-      delete agentRecord.current_attempt;
+      if (agentRecord.schema_version === SCHEMA_VERSION) {
+        const reconciled = await reconcileAbandonedAgentRecord(runDir, agentRecord, abandonment);
+        agentRecord = reconciled.record;
+        for (const file of reconciled.files) rewritten.set(file.path, file);
+      } else {
+        agentRecord.status = "abandoned";
+        agentRecord.abandonment = abandonment;
+        delete agentRecord.current_attempt;
+      }
       const content = `${canonicalJson(agentRecord)}
 `;
       await writeStandaloneText(agentJsonPath, content);
@@ -16739,6 +16771,101 @@ async function resolveAbandonedAgentRecords(runDir, abandonment) {
     }
   }
   return rewritten;
+}
+async function reconcileAbandonedAgentRecord(runDir, record, abandonment) {
+  const reconciled = structuredClone(record);
+  const files = [];
+  const live = reconciled.current_attempt;
+  const attempts = reconciled.attempts;
+  if (live !== void 0 && !attempts.some((entry) => entry.attempt === live.attempt)) {
+    const abandoned = abandonedAttemptEntry(live);
+    attempts.push({ ...abandoned });
+    if (abandoned.resolved_model !== null) reconciled.resolved_model = abandoned.resolved_model;
+    if (abandoned.resolved_effort !== null) reconciled.resolved_effort = abandoned.resolved_effort;
+    if (live.transcript !== null && (live.target.engine === "codex" || live.target.engine === "claude")) {
+      const engine = live.target.engine;
+      const source = engine === "claude" ? live.transcript : path6.join(runDir, live.transcript);
+      const content = await readFile4(source).catch(() => null);
+      if (content !== null) {
+        const relativePath = engine === "claude" ? `agents/${padId(reconciled.id)}/attempt-${padAttempt(live.attempt)}-1-transcript.claude.jsonl` : live.transcript;
+        if (engine === "claude") await writeStandaloneText(path6.join(runDir, relativePath), content);
+        files.push({ path: relativePath, size: content.length, sha256: createHash2("sha256").update(content).digest("hex") });
+        const transcripts = reconciled.transcripts;
+        if (!transcripts.some((entry) => entry.attempt === live.attempt && entry.path === relativePath)) {
+          transcripts.push({
+            attempt: live.attempt,
+            path: relativePath,
+            format: "jsonl",
+            source: engine === "claude" ? "claude-session-jsonl" : "codex-app-server-events",
+            partial: true,
+            thread_id: null,
+            session_id: null
+          });
+        }
+        reconciled.transcripts_unavailable = null;
+      }
+    }
+  }
+  for (const transcript of reconciled.transcripts) {
+    if (typeof transcript.path !== "string" || files.some((file) => file.path === transcript.path)) continue;
+    const absolute = path6.join(runDir, transcript.path);
+    const metadata = await stat2(absolute).catch(() => null);
+    if (metadata !== null) files.push({ path: transcript.path, size: metadata.size, sha256: await hashFile(absolute) });
+  }
+  reconciled.status = "abandoned";
+  reconciled.abandonment = abandonment;
+  delete reconciled.current_attempt;
+  return { record: reconciled, files };
+}
+async function abandonedCostRollup(runDir) {
+  try {
+    const entries = await readdir3(path6.join(runDir, "agents"), { withFileTypes: true });
+    const views = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const record = JSON.parse(await readFile4(path6.join(runDir, "agents", entry.name, "agent.json"), "utf8"));
+      const view = rollupViewOfArchivedRecord(record);
+      if (view === null || view.status === "in-progress") return null;
+      views.push(view);
+    }
+    return buildCostRollup(views);
+  } catch {
+    return null;
+  }
+}
+function rollupViewOfArchivedRecord(value) {
+  if (!isObject2(value) || value.schema_version !== SCHEMA_VERSION || value.kind !== "agent_record") {
+    return null;
+  }
+  const { id, engine, status, resolved_model: resolvedModel, attempts } = value;
+  if (typeof id !== "number" || !isEngineName(engine) || !isAgentStatus(status) || !(typeof resolvedModel === "string" || resolvedModel === null) || !Array.isArray(attempts)) {
+    return null;
+  }
+  const views = [];
+  for (const attempt of attempts) {
+    if (!isObject2(attempt) || typeof attempt.attempt !== "number" || !isObject2(attempt.target) || !isEngineName(attempt.target.engine) || !Array.isArray(attempt.token_usage_events)) {
+      return null;
+    }
+    const failure = attempt.failure;
+    views.push({
+      attempt: attempt.attempt,
+      engine: attempt.target.engine,
+      resolvedModel: typeof attempt.resolved_model === "string" ? attempt.resolved_model : null,
+      settled: attempt.status !== "abandoned",
+      failureKind: isObject2(failure) && typeof failure.kind === "string" ? failure.kind : null,
+      tokenUsageEvents: attempt.token_usage_events
+    });
+  }
+  return { id, engine, status, resolvedModel, attempts: views };
+}
+function isObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isEngineName(value) {
+  return value === "codex" || value === "claude" || value === "opencode";
+}
+function isAgentStatus(value) {
+  return value === "in-progress" || value === "complete" || value === "failed" || value === "timed-out" || value === "interrupted" || value === "abandoned";
 }
 function runDirectoryFor(storeDir, namespace, runUuid) {
   return path6.join(storeDir, "runs", "cwd", namespace.hash.slice(0, 24), runUuid);
@@ -24366,12 +24493,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       pending.add(operation);
       void operation.then(() => pending.delete(operation));
     };
-    if (recorder !== null && engine !== "opencode") {
+    if (recorder !== null) {
       await this.#recordArchiveWriteSafely(agentId, () => recorder.recordAttemptStart(agentId, {
         attempt: context.attempt,
         startedAt: new Date(startedAt).toISOString(),
         target: { engine: target.engine, model: target.model ?? null },
-        identity: record === void 0 || record.session === null ? { resolvedModel: null, resolvedEffort: null } : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
+        identity: record === void 0 || record.session === null || context.attempt !== 1 ? { resolvedModel: null, resolvedEffort: null } : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
       }));
     }
     this.progress.noteAgentTranscript(agentId, null);
@@ -24396,6 +24523,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           observedModel = identity.resolvedModel;
           observedEffort = identity.resolvedEffort;
           this.progress.noteAgentIdentity(agentId, identity);
+          if (recorder !== null) enqueue(() => recorder.recordAttemptIdentity(agentId, context.attempt, identity));
         },
         onUsage: (event) => {
           if (!active) return;

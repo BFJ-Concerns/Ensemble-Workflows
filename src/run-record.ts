@@ -1570,8 +1570,10 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       // read and the rename remains, confined to a pre-owner-recording
       // writer still running mid-upgrade, accepted as transition-era cost.
       const fresh = JSON.parse(await readFile(manifestPath, "utf8")) as {
+        schema_version?: unknown;
         status?: unknown;
         abandonment?: AbandonmentRecord;
+        cost_rollup?: CostRollup;
         files?: FileEntry[];
         integrity?: { manifest_sha256?: string | null } | null;
       };
@@ -1589,16 +1591,18 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       // rewritten records' refreshed entries or a reaped archive stops
       // verifying. A reaper dying between the two writes leaves the
       // manifest `in-progress` and the next sweep re-runs both —
-      // resolution is idempotent (already-abandoned records are skipped).
+      // resolution is idempotent (already-abandoned attempts are not added twice).
       const rewritten = await resolveAbandonedAgentRecords(path.join(options.namespaceDir, entry.name), abandonment);
       if (Array.isArray(fresh.files)) {
-        for (const fileEntry of fresh.files) {
-          const update = rewritten.get(fileEntry.path);
-          if (update !== undefined) {
-            fileEntry.size = update.size;
-            fileEntry.sha256 = update.sha256;
-          }
+        const files = new Map(fresh.files.map((file) => [file.path, file]));
+        for (const [relativePath, update] of rewritten) {
+          files.set(relativePath, { path: relativePath, ...update });
         }
+        fresh.files = [...files.values()].sort((a, b) => compareCodeUnits(a.path, b.path));
+      }
+      if (fresh.schema_version === SCHEMA_VERSION) {
+        const rollup = await abandonedCostRollup(path.join(options.namespaceDir, entry.name));
+        if (rollup !== null) fresh.cost_rollup = rollup;
       }
       fresh.status = "abandoned";
       fresh.abandonment = abandonment;
@@ -1627,8 +1631,8 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
  * snapshot as an outcome. The same ordering argument as the manifest's
  * applies — the owner was observed dead before these reads, so every write
  * the dead process made is visible, and a settled record shows its
- * terminal status and is skipped. Execution metadata is removed from
- * abandoned records; the captured content stays intact. An unreadable record is left
+ * terminal status and is skipped. Live execution evidence is promoted into
+ * abandoned attempts; captured content stays intact. An unreadable record is left
  * as it stands rather than ending the sweep. Returns the rewritten files'
  * refreshed table entries, keyed by archive-relative path, for the
  * caller's single manifest write.
@@ -1649,17 +1653,20 @@ async function resolveAbandonedAgentRecords(
     }
     try {
       const agentJsonPath = path.join(agentsDir, agentEntry.name, "agent.json");
-      const agentRecord = JSON.parse(await readFile(agentJsonPath, "utf8")) as {
-        status?: unknown;
-        abandonment?: AbandonmentRecord;
-        current_attempt?: unknown;
-      };
-      if (agentRecord.status !== "in-progress") {
+      let agentRecord = JSON.parse(await readFile(agentJsonPath, "utf8")) as Record<string, unknown>;
+      if (agentRecord.status !== "in-progress" &&
+        !(agentRecord.status === "abandoned" && agentRecord.schema_version === SCHEMA_VERSION && isObject(agentRecord.abandonment))) {
         continue;
       }
-      agentRecord.status = "abandoned";
-      agentRecord.abandonment = abandonment;
-      delete agentRecord.current_attempt;
+      if (agentRecord.schema_version === SCHEMA_VERSION) {
+        const reconciled = await reconcileAbandonedAgentRecord(runDir, agentRecord, abandonment);
+        agentRecord = reconciled.record;
+        for (const file of reconciled.files) rewritten.set(file.path, file);
+      } else {
+        agentRecord.status = "abandoned";
+        agentRecord.abandonment = abandonment;
+        delete agentRecord.current_attempt;
+      }
       const content = `${canonicalJson(agentRecord)}\n`;
       await writeStandaloneText(agentJsonPath, content);
       rewritten.set(`agents/${agentEntry.name}/agent.json`, {
@@ -1711,10 +1718,69 @@ export async function reconcileAbandonedAgentRecord(
   record: Record<string, unknown>,
   abandonment: AbandonmentRecord
 ): Promise<{ record: Record<string, unknown>; files: FileEntry[] }> {
-  void runDir;
-  void record;
-  void abandonment;
-  throw new Error("reconcileAbandonedAgentRecord is not built");
+  const reconciled = structuredClone(record);
+  const files: FileEntry[] = [];
+  const live = reconciled.current_attempt as LiveAttemptRecord | undefined;
+  const attempts = reconciled.attempts as Array<Record<string, unknown>>;
+  if (live !== undefined && !attempts.some((entry) => entry.attempt === live.attempt)) {
+    const abandoned = abandonedAttemptEntry(live);
+    attempts.push({ ...abandoned });
+    if (abandoned.resolved_model !== null) reconciled.resolved_model = abandoned.resolved_model;
+    if (abandoned.resolved_effort !== null) reconciled.resolved_effort = abandoned.resolved_effort;
+    if (live.transcript !== null && (live.target.engine === "codex" || live.target.engine === "claude")) {
+      const engine = live.target.engine;
+      // Read before linking: absence must never assert a file exists. Claude's
+      // session may have been removed; Codex's append may outdate its digest.
+      const source = engine === "claude" ? live.transcript : path.join(runDir, live.transcript);
+      const content = await readFile(source).catch(() => null);
+      if (content !== null) {
+        const relativePath = engine === "claude"
+          ? `agents/${padId(reconciled.id as number)}/attempt-${padAttempt(live.attempt)}-1-transcript.claude.jsonl`
+          : live.transcript;
+        if (engine === "claude") await writeStandaloneText(path.join(runDir, relativePath), content);
+        files.push({ path: relativePath, size: content.length, sha256: createHash("sha256").update(content).digest("hex") });
+        const transcripts = reconciled.transcripts as Array<Record<string, unknown>>;
+        if (!transcripts.some((entry) => entry.attempt === live.attempt && entry.path === relativePath)) {
+          transcripts.push({
+            attempt: live.attempt, path: relativePath, format: "jsonl",
+            source: engine === "claude" ? "claude-session-jsonl" : "codex-app-server-events",
+            partial: true, thread_id: null, session_id: null
+          });
+        }
+        reconciled.transcripts_unavailable = null;
+      }
+    }
+  }
+  // A prior sweep can die after rewriting agent.json but before publishing
+  // its manifest. Refresh references again without adding a second attempt.
+  for (const transcript of reconciled.transcripts as Array<Record<string, unknown>>) {
+    if (typeof transcript.path !== "string" || files.some((file) => file.path === transcript.path)) continue;
+    const absolute = path.join(runDir, transcript.path);
+    const metadata = await stat(absolute).catch(() => null);
+    if (metadata !== null) files.push({ path: transcript.path, size: metadata.size, sha256: await hashFile(absolute) });
+  }
+  reconciled.status = "abandoned";
+  reconciled.abandonment = abandonment;
+  delete reconciled.current_attempt;
+  return { record: reconciled, files };
+}
+
+/** Re-read every record, including records a previous sweep already repaired. */
+async function abandonedCostRollup(runDir: string): Promise<CostRollup | null> {
+  try {
+    const entries = await readdir(path.join(runDir, "agents"), { withFileTypes: true });
+    const views: RollupAgentView[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const record: unknown = JSON.parse(await readFile(path.join(runDir, "agents", entry.name, "agent.json"), "utf8"));
+      const view = rollupViewOfArchivedRecord(record);
+      if (view === null || view.status === "in-progress") return null;
+      views.push(view);
+    }
+    return buildCostRollup(views);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1903,14 +1969,14 @@ async function hashFile(filePath: string): Promise<string> {
   return createHash("sha256").update(text).digest("hex");
 }
 
-async function writeStandaloneText(destination: string, content: string): Promise<void> {
+async function writeStandaloneText(destination: string, content: string | Uint8Array): Promise<void> {
   await mkdir(path.dirname(destination), { recursive: true });
   const temporary = path.join(path.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
   await writeAndRename(temporary, destination, content);
 }
 
 /** Atomic temp-then-rename write; a failed write never leaves its temp file behind. */
-async function writeAndRename(temporary: string, destination: string, content: string): Promise<void> {
+async function writeAndRename(temporary: string, destination: string, content: string | Uint8Array): Promise<void> {
   try {
     await writeFile(temporary, content, "utf8");
     await rename(temporary, destination);

@@ -212,8 +212,9 @@ ownership.
 
 Declares the models opencode workers may name. It is the whole catalogue:
 Ensemble ships no models, so without this section every opencode call is
-refused before its worker spawns, with an error naming the section. Like
-`worker_environment`, it exists only in the file.
+refused before its worker spawns, with an error naming `opencode_models` and
+the resolved configuration file path. Like `worker_environment`, it exists
+only in the file.
 
 Each key is the name an `agent()` call passes as `model`; a call may also name
 the entry by its route. A key or route that would name two entries is invalid.

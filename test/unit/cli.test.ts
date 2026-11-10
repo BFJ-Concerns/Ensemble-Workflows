@@ -17,6 +17,7 @@ import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import { AppServerSystemError, EngineShutdownError } from "../../src/errors.js";
 import { HoldManager, enumerateHolds } from "../../src/holds.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
 import { isStatusFileName } from "../../src/status-file.js";
@@ -2508,12 +2509,17 @@ test("an unregistered opencode call archives and counts no workers", async () =>
       runRecordDir: path.join(directory, "records"),
       createRuntime: async (options) => new EnsembleRuntime({
         ...options,
-        engines: new EngineRegistry([new OpenCodeEngineAdapter()]),
+        engines: new EngineRegistry([new OpenCodeEngineAdapter({
+          modelRegistry: createOpenCodeModelRegistry(options?.openCodeModels ?? [], options?.openCodeModelSource)
+        })]),
         defaultMaxAttempts: 1
       })
     });
     assert.equal(exitCode, 1, stderr.text());
     assert.match(stdout.text(), /OpenCodeModelNotRegisteredError/);
+    const message = (JSON.parse(stdout.text()) as { error: { message: string } }).error.message;
+    assert.ok(message.includes(`opencode_models in the machine configuration (${path.join(directory, "config", "ensemble", "config.json")})`), message);
+    assert.ok(!message.includes("$XDG_CONFIG_HOME"), message);
     const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
     assert.ok(sentinelPath);
     const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as { workers: unknown };

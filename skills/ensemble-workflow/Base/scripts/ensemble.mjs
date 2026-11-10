@@ -14159,7 +14159,10 @@ var OpenCodeModelNotRegisteredError = class extends AgentOptionRejectedError {
 };
 function registeredOpenCodeModels(registry) {
   const registered = registry.names();
-  return registered.length > 0 ? `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}` : "no opencode models are declared; declare them under opencode_models in the machine configuration ($XDG_CONFIG_HOME/ensemble/config.json)";
+  if (registered.length > 0) {
+    return `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`;
+  }
+  return registry.source.kind === "machine-config" ? `no opencode models are declared; declare them under opencode_models in the machine configuration (${registry.source.file})` : "no opencode models are declared; supply model entries through openCodeModels or the adapter's modelRegistry";
 }
 function renderDiagnostic(value) {
   try {

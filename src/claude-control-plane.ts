@@ -536,10 +536,18 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // until a live test observes it at a real worker. Either
     // way the file carries only this dispatch's rules and never touches the
     // operator's own permission configuration.
-    const settings =
-      permissionDenyRules !== undefined && permissionDenyRules.length > 0
-        ? { env, permissions: { deny: permissionDenyRules } }
-        : { env };
+    const settings = {
+      env,
+      // Ensemble owns placement: cwd is the caller's checkout, or the
+      // worktree Ensemble created for isolation. Claude's default background
+      // isolation would move edits into a second, hidden worktree instead.
+      // This per-session setting reaches the daemon without changing the
+      // operator's project or user settings (measured on Claude Code 2.1.321).
+      worktree: { bgIsolation: "none" },
+      ...(permissionDenyRules !== undefined && permissionDenyRules.length > 0
+        ? { permissions: { deny: permissionDenyRules } }
+        : {})
+    };
     // The owner record is captured before the directory exists and written
     // first: a concurrent launcher's sweep that finds a directory with no
     // readable owner record leaves it alone, so the only window in which

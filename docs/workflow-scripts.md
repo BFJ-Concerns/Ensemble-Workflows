@@ -298,6 +298,14 @@ Each agent record lists the requested strips and how each was enforced.
 
 ### Worktree isolation
 
+`cwd` places edits in the requested directory on every engine. Claude
+background sessions receive a per-session `worktree.bgIsolation: "none"`
+setting, so Claude Code does not require a second worktree before editing.
+This leaves the operator's project and user settings unchanged. If a Claude
+session explicitly enters a worktree, its agent record retains the observed
+paths and branches in each attempt's `diagnostics.worktrees`; Ensemble does
+not manage or remove those native worktrees.
+
 With `isolation: "worktree"` the worker runs in a fresh linked git worktree on
 a temporary branch. With `cwd` as well, `cwd` selects the source repository; a
 `cwd` that is not in a git repository fails before the worker spawns.

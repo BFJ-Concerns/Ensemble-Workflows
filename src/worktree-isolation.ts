@@ -29,7 +29,7 @@ export interface WorktreeIsolationManager {
 
 interface RepositoryRoots {
   checkout: string;
-  main: string;
+  container: string;
 }
 
 export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
@@ -41,7 +41,7 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     const repoRoots = await this.#gitRepoRoots(baseCwd);
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path.join(path.dirname(repoRoots.main), `${path.basename(repoRoots.main)}.ensemble-workflows-worktrees`, name);
+    const worktreePath = path.join(repoRoots.container, name);
 
     await mkdir(path.dirname(worktreePath), { recursive: true });
     await git(repoRoots.checkout, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
@@ -121,19 +121,16 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
   async #resolveRepoRoots(cwd: string): Promise<RepositoryRoots> {
     const checkout = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
     const common = path.resolve(cwd, (await git(cwd, ["rev-parse", "--git-common-dir"])).trim());
-    const gitDir = (await git(cwd, ["rev-parse", "--absolute-git-dir"])).trim();
     const worktree = (await git(cwd, ["config", "--get", "--default", "", "core.worktree"])).trim();
-    // The non-linked checkout knows its own root, even with an external .git.
-    // A normal linked checkout stores its common directory at <main>/.git.
-    // Submodules record the main checkout relative to their common git dir.
-    // An external git dir without core.worktree records no main checkout path;
-    // from a linked checkout, an external .git is indistinguishable from the
-    // normal layout. Other external names fall back to the dispatch checkout.
-    const main = worktree.length > 0 ? path.resolve(common, worktree)
-      : gitDir === common ? checkout
+    // Placement depends only on shared metadata, including when no main
+    // checkout is recorded (bare repositories and separate git directories).
+    // A .git directory places the container beside its parent;
+    // other common directories place it beside the repository metadata.
+    const root = worktree.length > 0 ? path.resolve(common, worktree)
       : path.basename(common) === ".git" ? path.dirname(common)
-      : checkout;
-    return { checkout, main };
+      : common;
+    const container = path.join(path.dirname(root), `${path.basename(root)}.ensemble-workflows-worktrees`);
+    return { checkout, container };
   }
 
   #uniqueName(): string {

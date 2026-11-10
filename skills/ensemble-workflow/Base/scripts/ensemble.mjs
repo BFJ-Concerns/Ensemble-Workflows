@@ -16970,7 +16970,7 @@ var GitWorktreeIsolationManager = class {
     const repoRoots = await this.#gitRepoRoots(baseCwd);
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path8.join(path8.dirname(repoRoots.main), `${path8.basename(repoRoots.main)}.ensemble-workflows-worktrees`, name);
+    const worktreePath = path8.join(repoRoots.container, name);
     await mkdir5(path8.dirname(worktreePath), { recursive: true });
     await git2(repoRoots.checkout, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
     const baseCommit = (await git2(worktreePath, ["rev-parse", "HEAD"])).trim();
@@ -17033,10 +17033,10 @@ var GitWorktreeIsolationManager = class {
   async #resolveRepoRoots(cwd) {
     const checkout = (await git2(cwd, ["rev-parse", "--show-toplevel"])).trim();
     const common = path8.resolve(cwd, (await git2(cwd, ["rev-parse", "--git-common-dir"])).trim());
-    const gitDir = (await git2(cwd, ["rev-parse", "--absolute-git-dir"])).trim();
     const worktree = (await git2(cwd, ["config", "--get", "--default", "", "core.worktree"])).trim();
-    const main = worktree.length > 0 ? path8.resolve(common, worktree) : gitDir === common ? checkout : path8.basename(common) === ".git" ? path8.dirname(common) : checkout;
-    return { checkout, main };
+    const root = worktree.length > 0 ? path8.resolve(common, worktree) : path8.basename(common) === ".git" ? path8.dirname(common) : common;
+    const container = path8.join(path8.dirname(root), `${path8.basename(root)}.ensemble-workflows-worktrees`);
+    return { checkout, container };
   }
   #uniqueName() {
     this.#counter += 1;

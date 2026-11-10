@@ -181,28 +181,93 @@ test("a submodule stores isolated worktrees beside its checkout", async () => {
   }
 });
 
+test("linked checkouts of a bare repository share a container beside the repository", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-bare-"));
+  const source = path.join(directory, "source");
+  const bare = path.join(directory, "bare.git");
+  const first = path.join(directory, "first");
+  const second = path.join(directory, "second");
+  await initialiseRepo(source);
+  await git(directory, ["clone", "--bare", source, bare]);
+  await git(bare, ["worktree", "add", "-b", "first", first]);
+  await git(bare, ["worktree", "add", "-b", "second", second]);
+  await writeFile(path.join(first, "first-only.txt"), "a newer first revision\n");
+  await git(first, ["add", "first-only.txt"]);
+  await git(first, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "first revision"]);
+  const firstHead = (await git(first, ["rev-parse", "HEAD"])).trim();
+  const secondHead = (await git(second, ["rev-parse", "HEAD"])).trim();
+  assert.notEqual(firstHead, secondHead);
+  const container = path.join(directory, "bare.git.ensemble-workflows-worktrees");
+
+  try {
+    const firstManager = new GitWorktreeIsolationManager();
+    const secondManager = new GitWorktreeIsolationManager();
+    const fromFirst = await firstManager.create(first);
+    const fromSecond = await secondManager.create(second);
+    assert.equal(path.dirname(fromFirst.path), container);
+    assert.equal(path.dirname(fromSecond.path), container);
+    assert.equal(fromFirst.baseCommit, firstHead);
+    assert.equal(fromSecond.baseCommit, secondHead);
+    await writeFile(path.join(fromFirst.path, "result.txt"), "retained output\n");
+    assert.equal((await firstManager.finish(fromFirst)).removed, false);
+    assert.equal((await secondManager.finish(fromSecond)).removed, true);
+    await access(fromFirst.path);
+    await access(container);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 for (const gitDir of ["git-dir", "metadata/.git"]) {
-  test(`a separate git directory at ${gitDir} keeps worktrees beside the checkout`, async () => {
+  test(`checkouts with a separate git directory at ${gitDir} share one container`, async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-separate-git-"));
+    const repo = path.join(directory, "repo");
+    const common = path.join(directory, gitDir);
+    await mkdir(path.dirname(common), { recursive: true });
+    await initialiseRepo(repo, ["--separate-git-dir", common]);
+    const first = path.join(directory, "first");
+    const second = path.join(directory, "second");
+    await git(repo, ["worktree", "add", "-b", "first", first]);
+    await git(repo, ["worktree", "add", "-b", "second", second]);
+    const container = path.join(directory, `${gitDir === "git-dir" ? "git-dir" : "metadata"}.ensemble-workflows-worktrees`);
+
+    try {
+      assert.equal((await git(repo, ["config", "--get", "--default", "", "core.worktree"])).trim(), "");
+      const created = [];
+      for (const checkout of [first, second, repo]) {
+        const manager = new GitWorktreeIsolationManager();
+        const worktree = await manager.create(checkout);
+        created.push({ manager, worktree });
+        assert.equal(path.dirname(worktree.path), container);
+        assert.equal(worktree.baseCommit, (await git(checkout, ["rev-parse", "HEAD"])).trim());
+      }
+      await writeFile(path.join(created[0]!.worktree.path, "result.txt"), "retained output\n");
+      for (const [index, { manager, worktree }] of created.entries()) {
+        assert.equal((await manager.finish(worktree)).removed, index !== 0);
+      }
+      await access(created[0]!.worktree.path);
+      await access(container);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test(`a recorded main checkout locates the container with a separate git directory at ${gitDir}`, async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-recorded-main-"));
     const repo = path.join(directory, "repo");
     await mkdir(path.dirname(path.join(directory, gitDir)), { recursive: true });
     await initialiseRepo(repo, ["--separate-git-dir", path.join(directory, gitDir)]);
+    await git(repo, ["config", "core.worktree", repo]);
+    const linked = path.join(directory, "linked");
+    await git(repo, ["worktree", "add", "-b", "linked", linked]);
 
     try {
-      const manager = new GitWorktreeIsolationManager();
-      const worktree = await manager.create(repo).catch((error: unknown): never => {
-        assert.fail(`separate git directory must support worktree creation: ${String(error)}`);
-      });
-      assert.equal(path.dirname(worktree.path), path.join(directory, "repo.ensemble-workflows-worktrees"));
-      await manager.finish(worktree);
-
-      // An explicit main checkout path also makes linked dispatch unambiguous.
-      await git(repo, ["config", "core.worktree", repo]);
-      const linked = path.join(directory, "linked");
-      await git(repo, ["worktree", "add", "-b", "linked", linked]);
-      const fromLinked = await manager.create(linked);
-      assert.equal(path.dirname(fromLinked.path), path.join(directory, "repo.ensemble-workflows-worktrees"));
-      await manager.finish(fromLinked);
+      for (const checkout of [repo, linked]) {
+        const manager = new GitWorktreeIsolationManager();
+        const worktree = await manager.create(checkout);
+        assert.equal(path.dirname(worktree.path), path.join(directory, "repo.ensemble-workflows-worktrees"));
+        await manager.finish(worktree);
+      }
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

@@ -333,9 +333,10 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   the call fails before the worker spawns. The deadline defaults to 90
   seconds; a manually constructed Claude adapter can change
   [`config.stripPreparationTimeoutMs`](configuration.md#claude-adapter-configuration).
-  Polling shares that deadline. Probe teardown has a separate reclamation
-  deadline (30 seconds by default), plus the command's cancellation grace; unconfirmed
-  cleanup is [reported with the session name](configuration.md#worker_environment).
+  Opening delivery and polling share that deadline. Each cleanup phase has
+  a separate reclamation deadline (30 seconds by default), plus the
+  command's cancellation grace. Unconfirmed probe-session cleanup is
+  [reported with the session name](configuration.md#worker_environment).
   A provider-side tool that remains available under its removal settings
   also refuses the call. The result is reused for the rest of the run, for
   each working directory,

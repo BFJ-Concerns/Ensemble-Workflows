@@ -186,10 +186,11 @@ session had registered when it looked — stderr says so:
 
 A dispatch cancelled before registration holds no prompt, since Ensemble
 submits the opening only after registration. A registered tool-surface probe
-holds only its nonce marker. Probe cleanup uses a separate deadline and
-reports this same event if it cannot confirm teardown; it retains the
+holds only its nonce marker. Probe cleanup phases use independent deadlines;
+unconfirmed probe-session teardown reports this same event and retains the
 settings rather than claiming the session was reclaimed. `claude agents`
-lists it by that name, and `claude stop` and `claude rm` end it. Its settings file is left for the next launcher's sweep,
+lists it by that name, and `claude stop` and `claude rm` end it. Its settings
+file is left for the next launcher's sweep,
 which removes it once this launcher has ended. Library event listeners
 receive `claude/launchUnreclaimed` with the dispatch name and the reason. A
 library caller building `ClaudeCliControlPlane` itself sets the cancellation

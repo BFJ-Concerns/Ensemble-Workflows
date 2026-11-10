@@ -19283,6 +19283,7 @@ function itemTypeFromItem(item) {
 }
 
 // src/claude-control-plane.ts
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID3 } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { access, mkdtemp as mkdtemp2, readFile as readFile6, readdir as readdir5, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
@@ -19933,6 +19934,7 @@ function unitSafe(text) {
 }
 
 // src/claude-control-plane.ts
+var probeCommandContext = new AsyncLocalStorage();
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
@@ -20019,6 +20021,9 @@ var ClaudeCliControlPlane = class {
   async probeToolSurface(request) {
     const signal = AbortSignal.any([request.signal, this.#closeController.signal]);
     signal.throwIfAborted();
+    return probeCommandContext.run({ owner: this, signal }, () => this.#readProbeSurface(request, signal));
+  }
+  async #readProbeSurface(request, signal) {
     for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) {
       const value = this.#env[key];
       if (value !== void 0 && value !== "0" && value !== "false" && value !== "") {
@@ -20063,7 +20068,8 @@ var ClaudeCliControlPlane = class {
       try {
         if (handle !== void 0) {
           const cleanup = AbortSignal.timeout(this.#reclaimTimeoutMs);
-          const confirmed = await this.#stopSession(handle, true, cleanup).catch(() => false);
+          const session = handle;
+          const confirmed = await probeCommandContext.run({ owner: this, signal: cleanup }, () => this.#stopSession(session, true, cleanup)).catch(() => false);
           if (!confirmed) {
             this.#onEvent?.({
               method: "claude/launchUnreclaimed",
@@ -20355,7 +20361,10 @@ var ClaudeCliControlPlane = class {
     return null;
   }
   async steer(handle, message) {
-    if ((await this.poll(handle)).present === false) {
+    const signal = this.#probeSignal();
+    const status = await this.poll(handle);
+    signal?.throwIfAborted();
+    if (status.present === false) {
       return { submitted: false, reason: "the session is no longer in the daemon's roster" };
     }
     this.#valveCounter += 1;
@@ -20391,7 +20400,7 @@ var ClaudeCliControlPlane = class {
         `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
       ], { input: null, env: { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand } });
       if (!created.ok) return refused("tmux new-session", created);
-      await delay(this.#valveAttachSettleMs);
+      await delay(this.#valveAttachSettleMs, signal);
       const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
       if (!opened.ok) return refused("tmux send-keys (editor)", opened);
       const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
@@ -20405,13 +20414,13 @@ var ClaudeCliControlPlane = class {
         if (Date.now() >= copyDeadline) {
           return { submitted: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
         }
-        await delay(50);
+        await delay(50, signal);
       }
-      await delay(this.#valveSubmitSettleMs);
+      await delay(this.#valveSubmitSettleMs, signal);
       submitAttempted = true;
       const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
       if (!submitted.ok) return refused("tmux send-keys (submit)", submitted);
-      await delay(this.#valveKillSettleMs);
+      await delay(this.#valveKillSettleMs, signal);
       return { submitted: true };
     } catch (error) {
       return submitAttempted ? { submitted: true } : {
@@ -20419,7 +20428,7 @@ var ClaudeCliControlPlane = class {
         reason: `reply valve failed before submission: ${boundedEvidence(error instanceof Error ? error.message : String(error))}`
       };
     } finally {
-      await this.#run(this.#tmuxBin, [...server, "kill-server"]);
+      await this.#run(this.#tmuxBin, [...server, "kill-server"], AbortSignal.timeout(this.#reclaimTimeoutMs));
       await rm5(socketDir, { recursive: true, force: true }).catch(() => void 0);
     }
   }
@@ -20490,26 +20499,32 @@ var ClaudeCliControlPlane = class {
       if (typeof row?.pid === "number") await this.#observePlacement(this.#place(handle, row.pid), signal);
     }
   }
+  #probeSignal() {
+    const context = probeCommandContext.getStore();
+    return context?.owner === this ? context.signal : void 0;
+  }
   /** Observe shared placement work only while this caller still owns its wait. */
   async #observePlacement(pending, signal) {
+    signal ??= this.#probeSignal();
     if (signal === void 0) return pending;
+    const observed = signal;
     return new Promise((resolve, reject) => {
       const abort = () => {
-        signal.removeEventListener("abort", abort);
-        reject(signal.reason);
+        observed.removeEventListener("abort", abort);
+        reject(observed.reason);
       };
-      signal.addEventListener("abort", abort, { once: true });
+      observed.addEventListener("abort", abort, { once: true });
       pending.then(
         (value) => {
-          signal.removeEventListener("abort", abort);
+          observed.removeEventListener("abort", abort);
           resolve(value);
         },
         (error) => {
-          signal.removeEventListener("abort", abort);
+          observed.removeEventListener("abort", abort);
           reject(error);
         }
       );
-      if (signal.aborted) abort();
+      if (observed.aborted) abort();
     });
   }
   async stop(handle) {
@@ -20690,7 +20705,13 @@ var ClaudeCliControlPlane = class {
    * own end.
    */
   #launch(file, args, options) {
-    return runOwnedCommand(this.#scopes, file, args, { env: this.#env, ...options, bounds: this.#commandBounds });
+    const signal = options.signal ?? this.#probeSignal();
+    return runOwnedCommand(this.#scopes, file, args, {
+      env: this.#env,
+      ...options,
+      bounds: this.#commandBounds,
+      ...signal !== void 0 ? { signal } : {}
+    });
   }
 };
 function backgroundSessionNamed(rows, name) {

@@ -9,11 +9,13 @@ import type { RuntimeEvent } from "../../src/types.js";
 import { isLive } from "../../src/worker-scopes.js";
 import { waitForCondition } from "../wait-for-condition.js";
 
-for (const stalled of ["poll", "stop"] as const) {
+for (const stalled of ["open", "poll", "stop"] as const) {
   test(`a registered probe cancels a stalled ${stalled} command and bounds cleanup`, { timeout: 30_000 }, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), `claude-probe-${stalled}-`));
     const bin = path.join(dir, "claude.mjs");
     const argv = path.join(dir, "argv");
+    const tmux = path.join(dir, "tmux.mjs");
+    const valveClosed = path.join(dir, "valve-closed");
     const submitted = path.join(dir, "submitted");
     const blocked = path.join(dir, "blocked");
     const release = path.join(dir, "release");
@@ -38,12 +40,24 @@ for (const stalled of ["poll", "stop"] as const) {
       if (args[0] === "rm") writeFileSync(${JSON.stringify(removed)}, "");
     `);
     await chmod(bin, 0o755);
+    await writeFile(tmux, `#!/usr/bin/env node
+      import { existsSync, writeFileSync } from "node:fs";
+      const args = process.argv.slice(2);
+      if (args.includes("new-session")) {
+        writeFileSync(${JSON.stringify(blocked)}, String(process.pid));
+        while (!existsSync(${JSON.stringify(release)})) await new Promise(resolve => setTimeout(resolve, 10));
+        process.exit(1);
+      }
+      if (args.includes("kill-server")) writeFileSync(${JSON.stringify(valveClosed)}, "");
+    `);
+    await chmod(tmux, 0o755);
     class SubmittedProbe extends ClaudeCliControlPlane {
-      override async steer(_handle: unknown, prompt: string) {
+      override async steer(handle: Parameters<ClaudeCliControlPlane["steer"]>[0], prompt: string) {
         const args = JSON.parse(await readFile(argv, "utf8")) as string[];
         const file = args[args.indexOf("--settings") + 1]!;
         settingsDir = path.dirname(file);
         const settings = JSON.parse(await readFile(file, "utf8")) as { env: { ANTHROPIC_BASE_URL: string } };
+        if (stalled === "open") return super.steer(handle, prompt);
         await fetch(`${settings.env.ANTHROPIC_BASE_URL}/v1/messages`, {
           method: "POST", headers: { "content-type": "application/json", "user-agent": "claude-cli/2.1.fixture" },
           body: JSON.stringify({ tools: [{ name: "Read" }], messages: [{ role: "user", content: prompt }] })
@@ -53,7 +67,7 @@ for (const stalled of ["poll", "stop"] as const) {
       }
     }
     const plane = new SubmittedProbe({
-      claudeBin: bin, reclaimTimeoutMs: 5_000, commandBounds: { stopGraceMs: 50, drainMs: 50 }, reapGraceMs: 0,
+      claudeBin: bin, tmuxBin: tmux, valveAttachSettleMs: 0, reclaimTimeoutMs: 5_000, commandBounds: { stopGraceMs: 50, drainMs: 50 }, reapGraceMs: 0,
       workerEnv: { CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0" },
       onEvent: event => events.push(event)
     });
@@ -76,6 +90,7 @@ for (const stalled of ["poll", "stop"] as const) {
       assert.equal(settledWithoutRelease, true, `the probe still awaited the stalled ${stalled} command after its bound`);
       assert.ok(outcome && "error" in outcome && outcome.error === reason);
       await waitForCondition(() => !isLive(pid), `the stalled ${stalled} command to end`, 5_000);
+      if (stalled === "open") await access(valveClosed);
       if (stalled === "stop") {
         assert.equal(events.at(-1)?.method, "claude/launchUnreclaimed");
         assert.match(String(events.at(-1)?.params.reason), /probe.*cleanup.*not confirmed/);

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -16,6 +17,9 @@ import { startCaptureProvider } from "./provider-capture.js";
 import { DEFAULT_COMMAND_BOUNDS, runOwnedCommand, type CommandBounds, type CommandResult } from "./owned-command.js";
 import type { JsonObject, RuntimeEvent } from "./types.js";
 import { NoWorkerScopes, RUN_SCOPE_GROUP, processTree, type WorkerScopeGrouping, type ScopePlacement, type WorkerScopes } from "./worker-scopes.js";
+
+// One process-wide context; the owner check keeps sibling control planes independent.
+const probeCommandContext = new AsyncLocalStorage<{ owner: ClaudeCliControlPlane; signal: AbortSignal }>();
 
 /**
  * Per-dispatch ownership tag. The variable rides the same settings-file `env`
@@ -448,6 +452,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   async probeToolSurface(request: ClaudeToolSurfaceProbeRequest): Promise<ClaudeToolSurface> {
     const signal = AbortSignal.any([request.signal, this.#closeController.signal]);
     signal.throwIfAborted();
+    return probeCommandContext.run({ owner: this, signal }, () => this.#readProbeSurface(request, signal));
+  }
+
+  async #readProbeSurface(request: ClaudeToolSurfaceProbeRequest, signal: AbortSignal): Promise<ClaudeToolSurface> {
     // These provider switches ignore ANTHROPIC_BASE_URL. Refuse rather than
     // letting an inventory probe reach a hosted provider.
     for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) {
@@ -493,7 +501,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       try {
         if (handle !== undefined) {
           const cleanup = AbortSignal.timeout(this.#reclaimTimeoutMs);
-          const confirmed = await this.#stopSession(handle, true, cleanup).catch(() => false);
+          const session = handle;
+          const confirmed = await probeCommandContext.run({ owner: this, signal: cleanup }, () => this.#stopSession(session, true, cleanup)).catch(() => false);
           if (!confirmed) {
             this.#onEvent?.({
               method: "claude/launchUnreclaimed",
@@ -871,7 +880,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
-    if ((await this.poll(handle)).present === false) {
+    const signal = this.#probeSignal();
+    const status = await this.poll(handle);
+    signal?.throwIfAborted();
+    if (status.present === false) {
       return { submitted: false, reason: "the session is no longer in the daemon's roster" };
     }
 
@@ -918,7 +930,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       ], { input: null, env: { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand } });
       if (!created.ok) return refused("tmux new-session", created);
 
-      await delay(this.#valveAttachSettleMs);
+      await delay(this.#valveAttachSettleMs, signal);
       const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
       if (!opened.ok) return refused("tmux send-keys (editor)", opened);
       const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
@@ -932,14 +944,14 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         if (Date.now() >= copyDeadline) {
           return { submitted: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
         }
-        await delay(50);
+        await delay(50, signal);
       }
-      await delay(this.#valveSubmitSettleMs);
+      await delay(this.#valveSubmitSettleMs, signal);
       submitAttempted = true;
       const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
       if (!submitted.ok) return refused("tmux send-keys (submit)", submitted);
 
-      await delay(this.#valveKillSettleMs);
+      await delay(this.#valveKillSettleMs, signal);
       return { submitted: true };
     } catch (error) {
       return submitAttempted ? { submitted: true } : {
@@ -947,7 +959,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       };
     } finally {
       // The server and all editor files belong to this delivery alone.
-      await this.#run(this.#tmuxBin, [...server, "kill-server"]);
+      await this.#run(this.#tmuxBin, [...server, "kill-server"], AbortSignal.timeout(this.#reclaimTimeoutMs));
       await rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
@@ -1024,20 +1036,27 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
   }
 
+  #probeSignal(): AbortSignal | undefined {
+    const context = probeCommandContext.getStore();
+    return context?.owner === this ? context.signal : undefined;
+  }
+
   /** Observe shared placement work only while this caller still owns its wait. */
   async #observePlacement<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+    signal ??= this.#probeSignal();
     if (signal === undefined) return pending;
+    const observed = signal;
     return new Promise<T>((resolve, reject) => {
       const abort = (): void => {
-        signal.removeEventListener("abort", abort);
-        reject(signal.reason);
+        observed.removeEventListener("abort", abort);
+        reject(observed.reason);
       };
-      signal.addEventListener("abort", abort, { once: true });
+      observed.addEventListener("abort", abort, { once: true });
       pending.then(
-        value => { signal.removeEventListener("abort", abort); resolve(value); },
-        error => { signal.removeEventListener("abort", abort); reject(error); }
+        value => { observed.removeEventListener("abort", abort); resolve(value); },
+        error => { observed.removeEventListener("abort", abort); reject(error); }
       );
-      if (signal.aborted) abort();
+      if (observed.aborted) abort();
     });
   }
 
@@ -1252,7 +1271,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     args: string[],
     options: { input: string | null; cwd?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal }
   ): Promise<CommandResult> {
-    return runOwnedCommand(this.#scopes, file, args, { env: this.#env, ...options, bounds: this.#commandBounds });
+    const signal = options.signal ?? this.#probeSignal();
+    return runOwnedCommand(this.#scopes, file, args, {
+      env: this.#env, ...options, bounds: this.#commandBounds,
+      ...(signal !== undefined ? { signal } : {})
+    });
   }
 }
 

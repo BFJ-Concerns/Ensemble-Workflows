@@ -986,7 +986,7 @@ export class EnsembleRuntime {
       // Each turn is its own dispatch: budget admission is judged here, at
       // this send, exactly as for a one-shot call — a held session
       // buys no exemption from the ceiling.
-      this.budget.assertCanStart(engine.name);
+      this.budget.assertCanStart(engine.name, `session turn ${state.turnCount + 1}`);
       const queuedAt = Date.now();
       const agentId = this.progress.queueAgent({
         engine: engine.name,
@@ -1376,7 +1376,7 @@ export class EnsembleRuntime {
     let started = false;
     try {
       if (readmitting) {
-        this.budget.assertCanStart(engine.name);
+        this.budget.assertCanStart(engine.name, `fallback dispatch for agent ${agentId}`);
       }
       return await this.#admission.admit(engine.name, agentId, () =>
         engine.schedule(async () => {

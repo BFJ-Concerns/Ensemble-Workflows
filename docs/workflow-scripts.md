@@ -433,7 +433,10 @@ A call checks its engine's token ceiling (`--budget`) when it is dispatched,
 before it joins the concurrency queue, and again when a fallback step moves it
 to another engine. Once spend reaches the
 ceiling, a call that has not yet been dispatched throws a budget-exhausted
-error; a ceiling of 0 admits no call and says so. A call that started under
+error; a ceiling of 0 admits no dispatch and says so. The refusal names the
+dispatch, fallback dispatch (with its agent id), or numbered session turn it
+blocked. Earlier targets or session turns may already have run and caused
+side effects. A call that started under
 the ceiling runs its full retry bound even if concurrent spend crosses the
 ceiling, so turns already running can together overshoot it.
 

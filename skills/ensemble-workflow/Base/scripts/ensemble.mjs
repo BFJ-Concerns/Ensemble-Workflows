@@ -14083,10 +14083,9 @@ var BudgetExceededError = class extends EnsembleError {
   engine;
   total;
   spent;
-  constructor(engine, total, spent) {
-    super(
-      total === 0 ? `Token budget for ${engine} is 0, which admits no agent: this agent was not started` : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`
-    );
+  constructor(engine, total, spent, admission = "dispatch") {
+    const reason = total === 0 ? `Token budget for ${engine} is 0, which admits no dispatch` : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`;
+    super(`${reason}; refused ${admission}`);
     this.engine = engine;
     this.total = total;
     this.spent = spent;
@@ -17252,11 +17251,11 @@ var TokenBudget = class {
     }
     return Math.max(0, ceiling - this.spent(engine));
   }
-  assertCanStart(engine) {
+  assertCanStart(engine, admission = "dispatch") {
     const ceiling = this.ceilings[engine] ?? null;
     const spent = this.spent(engine);
     if (ceiling !== null && spent >= ceiling) {
-      throw new BudgetExceededError(engine, ceiling, spent);
+      throw new BudgetExceededError(engine, ceiling, spent, admission);
     }
   }
   record(engine, event) {
@@ -22930,7 +22929,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const engine = state.engine;
     state.inFlight = true;
     try {
-      this.budget.assertCanStart(engine.name);
+      this.budget.assertCanStart(engine.name, `session turn ${state.turnCount + 1}`);
       const queuedAt = Date.now();
       const agentId = this.progress.queueAgent({
         engine: engine.name,
@@ -23217,7 +23216,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let started = false;
     try {
       if (readmitting) {
-        this.budget.assertCanStart(engine.name);
+        this.budget.assertCanStart(engine.name, `fallback dispatch for agent ${agentId}`);
       }
       return await this.#admission.admit(
         engine.name,

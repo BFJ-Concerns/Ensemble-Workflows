@@ -444,7 +444,12 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
   });
 
   const recordsBefore = captured.length;
-  await assert.rejects(session.send("second turn"), BudgetExceededError);
+  await assert.rejects(session.send("second turn"), (error: unknown) => {
+    assert.ok(error instanceof BudgetExceededError);
+    assert.equal(error.message, "Token budget exhausted for codex: spent 500 of 100 tokens; refused session turn 2");
+    assert.doesNotMatch(error.message, /agent was not started/);
+    return true;
+  });
   // A blocked send is a pre-dispatch rejection: no engine reach, no record.
   assert.equal(transport.turns.length, 1);
   assert.equal(captured.length, recordsBefore);

@@ -429,7 +429,7 @@ export class CodexSchemaSubsetUnsupportedError extends EnsembleError {
 }
 
 /**
- * A token budget refused to start an agent. A ceiling of 0 never ran out —
+ * A token budget refused a dispatch or session turn. A ceiling of 0 never ran out —
  * it admitted nothing from the start — so it says that rather than
  * describing a spend that never happened.
  */
@@ -438,12 +438,11 @@ export class BudgetExceededError extends EnsembleError {
   readonly total: number;
   readonly spent: number;
 
-  constructor(engine: string, total: number, spent: number) {
-    super(
-      total === 0
-        ? `Token budget for ${engine} is 0, which admits no agent: this agent was not started`
-        : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`
-    );
+  constructor(engine: string, total: number, spent: number, admission = "dispatch") {
+    const reason = total === 0
+      ? `Token budget for ${engine} is 0, which admits no dispatch`
+      : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`;
+    super(`${reason}; refused ${admission}`);
     this.engine = engine;
     this.total = total;
     this.spent = spent;

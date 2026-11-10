@@ -3540,6 +3540,53 @@ test("a Codex turn that exhausted its own retries on a 429 advances the chain in
   await runtime.close();
 });
 
+test("a budget refusal names the fallback dispatch without denying the earlier target ran", async () => {
+  for (const ceiling of [0, 5]) {
+    const effects: string[] = [];
+    const codex = new ChainEngine("codex", [async () => {
+      effects.push("first target ran");
+      return codexRefusal("serverOverloaded")();
+    }]);
+    const claude = new ChainEngine("claude", []);
+    const runtime = new EnsembleRuntime({
+      engines: new EngineRegistry([codex, claude]),
+      budgetCeilings: { claude: ceiling },
+      defaultMaxAttempts: 1
+    });
+    // The positive ceiling is already spent; the zero ceiling admits nothing.
+    if (ceiling > 0) {
+      const tokens = { cachedInputTokens: 0, inputTokens: ceiling, outputTokens: 0, totalTokens: ceiling };
+      runtime.budget.record("claude", {
+        threadId: "earlier", turnId: "earlier", last: tokens, total: tokens, raw: {}
+      });
+    }
+    try {
+      await assert.rejects(runtime.agent("work with observable effects", {
+        engine: "codex",
+        fallback: [{ engine: "claude", model: "opus" }]
+      }), (error: unknown) => {
+        assert.ok(error instanceof BudgetExceededError);
+        assert.equal(error.engine, "claude");
+        assert.equal(error.total, ceiling);
+        assert.equal(error.spent, ceiling);
+        assert.match(error.message, /; refused fallback dispatch for agent \d+$/);
+        assert.doesNotMatch(error.message, /agent was not started/);
+        if (ceiling === 0) {
+          assert.match(error.message, /is 0, which admits no dispatch/);
+        } else {
+          assert.match(error.message, /spent 5 of 5 tokens/);
+        }
+        return true;
+      });
+      assert.deepEqual(effects, ["first target ran"]);
+      assert.equal(codex.dispatches.length, 1);
+      assert.equal(claude.dispatches.length, 0);
+    } finally {
+      await runtime.close();
+    }
+  }
+});
+
 test("a cross-engine advance releases the refused engine's slot and re-admits on the next engine", async () => {
   // Codex cap 1: if the refused Codex slot were held across the Claude step,
   // the second Codex call queued behind it could never start until the

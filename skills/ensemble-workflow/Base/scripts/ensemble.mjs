@@ -15870,21 +15870,32 @@ var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
 function isTimeoutFailureKind(kind) {
   return kind === "TurnTimeoutError" || kind.endsWith("-timeout");
 }
-function attemptEnding(agent, attempt) {
+function runEndingFailureKind(status) {
+  return `run-${status}`;
+}
+var RUN_ENDING_ATTEMPT_ENDING = {
+  "run-interrupted": "interrupted",
+  "run-failed": "interrupted",
+  "run-timed-out": "timed-out"
+};
+function isRunEndingFailureKind(kind) {
+  return Object.hasOwn(RUN_ENDING_ATTEMPT_ENDING, kind);
+}
+function attemptEnding(attempt) {
   if (!attempt.settled) {
     return "unsettled";
   }
-  if (attempt.failureKind !== null && REFUSED_BEFORE_WORKER_KINDS.has(attempt.failureKind)) {
+  const kind = attempt.failureKind;
+  if (kind === null) {
+    return "settled";
+  }
+  if (REFUSED_BEFORE_WORKER_KINDS.has(kind)) {
     return "refused";
   }
-  if (attempt.failureKind !== null && isTimeoutFailureKind(attempt.failureKind)) {
-    return "timed-out";
+  if (isRunEndingFailureKind(kind)) {
+    return RUN_ENDING_ATTEMPT_ENDING[kind];
   }
-  const last = agent.attempts.findLast((candidate) => candidate.settled) === attempt;
-  if (last && agent.status === "interrupted") {
-    return "interrupted";
-  }
-  if (last && agent.status === "timed-out") {
+  if (isTimeoutFailureKind(kind)) {
     return "timed-out";
   }
   return "settled";
@@ -15906,10 +15917,6 @@ function buildCostRollup(agents) {
     return bucket;
   };
   for (const agent of agents) {
-    if (agent.attempts.length === 0) {
-      bucketFor(agent.engine, "unresolved");
-      continue;
-    }
     const lastReporter = agent.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.engine ?? agent.engine;
     for (const attempt of agent.attempts) {
       const borrowed = attempt.engine === lastReporter ? agent.resolvedModel : null;
@@ -15921,7 +15928,7 @@ function buildCostRollup(agents) {
           addProviderCost(bucket.cost, event);
         }
       }
-      const ending = attemptEnding(agent, attempt);
+      const ending = attemptEnding(attempt);
       if (ending === "refused" || ending === "settled" && summary !== null) {
         continue;
       }
@@ -15931,6 +15938,12 @@ function buildCostRollup(agents) {
         reason: ending === "settled" ? "engine-reported-no-usage" : UNOBSERVED_REASON[ending],
         measured: summary === null ? "none" : "partial"
       });
+    }
+    if (agent.attempts.length === 0 || agent.mayHaveUnlistedAttempt) {
+      const bucket = bucketFor(agent.engine, "unresolved");
+      if (agent.mayHaveUnlistedAttempt) {
+        bucket.unobserved.push({ agent: agent.id, attempt: null, reason: "record-unsettled", measured: "none" });
+      }
     }
   }
   const rollup = {};
@@ -16365,7 +16378,7 @@ var RunRecordWriter = class _RunRecordWriter {
           tokenUsageEvents: []
         });
       }
-      return { id: record.id, engine: record.engine, status: record.status, resolvedModel: record.resolvedModel, attempts };
+      return { id: record.id, engine: record.engine, resolvedModel: record.resolvedModel, attempts, mayHaveUnlistedAttempt: false };
     });
   }
   async recordAgent(record) {
@@ -24562,7 +24575,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     for (const [, { record }] of closing) {
       if (record.status === "complete") {
         done += 1;
-      } else if (record.terminationCause?.kind === `run-${status}`) {
+      } else if (record.terminationCause?.kind === runEndingFailureKind(status)) {
         cutShort += 1;
         unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
       } else {
@@ -24631,7 +24644,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   #closeCause(stage) {
     return {
-      kind: `run-${this.#shutdownAgentStatus}`,
+      kind: runEndingFailureKind(this.#shutdownAgentStatus),
       message: this.#closeOccasion === "body-returned" ? `${BODY_RETURNED}; ${BODY_RETURNED_LEG[stage]}` : `the run ended (${this.#shutdownAgentStatus}) ${RUN_ENDED_LEG[stage]}`
     };
   }

@@ -4,7 +4,7 @@ import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
-import { isTimeoutFailureKind } from "./cost-rollup.js";
+import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure } from "./failure-classification.js";
 
 import type { DischargedEnforcement } from "./capability-stripping.js";
@@ -2005,7 +2005,7 @@ export class EnsembleRuntime {
     for (const [, { record }] of closing) {
       if (record.status === "complete") {
         done += 1;
-      } else if (record.terminationCause?.kind === `run-${status}`) {
+      } else if (record.terminationCause?.kind === runEndingFailureKind(status)) {
         cutShort += 1;
         unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
       } else {
@@ -2085,7 +2085,7 @@ export class EnsembleRuntime {
    */
   #closeCause(stage: CloseStage): TerminalErrorRecord {
     return {
-      kind: `run-${this.#shutdownAgentStatus}`,
+      kind: runEndingFailureKind(this.#shutdownAgentStatus),
       message:
         this.#closeOccasion === "body-returned"
           ? `${BODY_RETURNED}; ${BODY_RETURNED_LEG[stage]}`

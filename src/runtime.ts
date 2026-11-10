@@ -5,8 +5,10 @@ import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
 import { classifyAttemptFailure } from "./failure-classification.js";
+import { fallbackSourceOf } from "./fallback-source.js";
 
 import type { DischargedEnforcement } from "./capability-stripping.js";
+import type { FallbackSource } from "./fallback-source.js";
 import { harnessVersion } from "./harness-version.js";
 import {
   assertValidAgentOptions,
@@ -353,6 +355,8 @@ interface WorkerSessionState {
   resolvedModel: string | null;
   resolvedEffort: string | null;
   stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null;
+  /** The source of the creating turn's chain, read once at creation. */
+  fallbackSource: FallbackSource;
   stalenessThresholdMs: number;
   markStaleness: boolean;
   engineSession: EngineWorkerSession | null;
@@ -788,6 +792,9 @@ export class EnsembleRuntime {
       throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
+    // Read from the object the caller passed: the snapshot below is a new
+    // object, and a hand-off does not follow a copy.
+    const fallbackSource = fallbackSourceOf(options);
     // `cwd` is read here and nowhere else on this path: what follows works
     // from the snapshot this returns, so the value the placement check
     // judges is the value the dispatch record and the opened placement use.
@@ -855,7 +862,7 @@ export class EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(
-      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, stripRoutes
+      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, fallbackSource, stripRoutes
     );
     const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
@@ -952,6 +959,7 @@ export class EnsembleRuntime {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
+    const fallbackSource = fallbackSourceOf(options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === undefined) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -979,6 +987,7 @@ export class EnsembleRuntime {
       resolvedModel: null,
       resolvedEffort: null,
       stripRoutes,
+      fallbackSource,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
@@ -1068,7 +1077,13 @@ export class EnsembleRuntime {
         ...(turn.schema !== undefined ? { schema: turn.schema } : {}),
         ...(options.strip !== undefined ? { strip: options.strip } : {})
       };
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
+      // The creating turn records the session's chain and its source; a
+      // later turn records none, and says why, so it never reads as a call
+      // that declared nothing or switched its chain off.
+      const fallbackSource: FallbackSource = state.turnCount === 0 ? state.fallbackSource : { kind: "later-turn" };
+      const agentRecord = this.#newAgentRecord(
+        agentId, engine.name, prompt, recordOptions, fallbackSource, state.stripRoutes
+      );
       // The engine exposes the served model and effort when its held worker
       // first starts. Every later turn is still on that worker, so carry the
       // observed session identity into its dispatch-time record rather than
@@ -2754,6 +2769,7 @@ export class EnsembleRuntime {
     engine: EngineName,
     prompt: string,
     options: Partial<AgentOptions>,
+    fallbackSource: FallbackSource,
     stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null
   ): RuntimeAgentRecord {
     return {
@@ -2768,6 +2784,7 @@ export class EnsembleRuntime {
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
       fallback: options.fallback === undefined ? null : options.fallback.map((target) => ({ ...target })),
+      fallbackSource,
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,

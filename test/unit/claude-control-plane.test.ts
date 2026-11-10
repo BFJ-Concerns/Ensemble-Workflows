@@ -272,6 +272,7 @@ test("the run's own environment-layer settings are withheld from every claude ch
     // so it reaches the worker session by the settings file instead —
     // beneath the machine's declarations, above nothing else.
     assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), {
+      worktree: { bgIsolation: "none" },
       env: {
         ENSEMBLE_HOLD_SCOPE: "lead-session-42",
         ENSEMBLE_STATUS_DIR: path.join(dir, "declared-status"),
@@ -530,6 +531,7 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
     assert.notEqual(flagIndex, -1);
     const settingsPath = dispatchArgv[flagIndex + 1]!;
     assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), {
+      worktree: { bgIsolation: "none" },
       env: { ...declared, [WORKER_MARKER_VARIABLE]: name }
     });
 
@@ -599,6 +601,7 @@ test("a requested cache TTL joins the settings env block, and a machine declarat
     });
     const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir, cacheTtl: "1h" });
     assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), {
+      worktree: { bgIsolation: "none" },
       env: { [CLAUDE_CACHE_TTL_VARIABLE]: "5m", [WORKER_MARKER_VARIABLE]: name }
     });
     await controlPlane.stop(handle);
@@ -607,11 +610,11 @@ test("a requested cache TTL joins the settings env block, and a machine declarat
   }
 });
 
-test("an undeclared worker environment still dispatches with the ownership tag alone", async () => {
+test("an undeclared worker environment still dispatches with the ownership tag and placement setting", async () => {
   // The settings file is written on every dispatch now: the tag is what lets
   // stop() reap the worker's surviving descendants, and an untagged worker
-  // would be an unowned one. With nothing declared, the tag is the file's
-  // whole content.
+  // would be an unowned one. With no environment declared, the env block
+  // carries only the tag, beside the per-session placement setting.
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-no-settings-"));
   try {
     const argvPath = path.join(dir, "dispatch-argv.json");
@@ -654,6 +657,7 @@ test("an undeclared worker environment still dispatches with the ownership tag a
     const flagIndex = dispatchArgv.indexOf("--settings");
     assert.notEqual(flagIndex, -1);
     assert.deepEqual(JSON.parse(await readFile(dispatchArgv[flagIndex + 1]!, "utf8")), {
+      worktree: { bgIsolation: "none" },
       env: { [WORKER_MARKER_VARIABLE]: name }
     });
   } finally {
@@ -713,6 +717,7 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     const flagIndex = dispatchArgv.indexOf("--settings");
     assert.notEqual(flagIndex, -1);
     assert.deepEqual(JSON.parse(await readFile(dispatchArgv[flagIndex + 1]!, "utf8")), {
+      worktree: { bgIsolation: "none" },
       env: { [WORKER_MARKER_VARIABLE]: name },
       permissions: { deny: ["Skill", "Task", "Agent", "ListAgents", "SendMessage"] }
     });

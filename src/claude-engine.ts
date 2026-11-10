@@ -20,6 +20,7 @@ import {
 import {
   apiErrorSince,
   effortSince,
+  enteredWorktrees,
   endsInSyntheticReply,
   finalAssistantText,
   outstandingBackgroundTasks,
@@ -756,6 +757,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       firstDeltaMs: null,
       items: {},
       tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      diagnostics: { worktrees: enteredWorktrees(entries) },
       transcripts: [
         {
           filename: "transcript.claude.jsonl",
@@ -1014,7 +1016,10 @@ function failedTurnResult(
     // The refusal's structured account rides the attempt as diagnostics,
     // where the failure classifier reads it: a 429's status and code are
     // the engine's own word, which the diagnostic prose is not.
-    ...(evidence !== null && evidence.apiError !== null ? { diagnostics: { apiError: evidence.apiError } } : {}),
+    ...(evidence !== null ? { diagnostics: {
+      ...(evidence.apiError !== null ? { apiError: evidence.apiError } : {}),
+      worktrees: enteredWorktrees(evidence.transcript.entries)
+    } } : {}),
     ...(evidence === null
       ? {}
       : {

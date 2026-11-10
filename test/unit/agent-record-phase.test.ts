@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -9,7 +10,7 @@ import { EnsembleRuntime } from "../../src/runtime.js";
 import type { RuntimeTransport } from "../../src/types.js";
 
 test("archived phases capture queue-time run phases for agents and held-session turns", async () => {
-  const store = await mkdtemp("/mnt/ai-data/scratch/ensemble-agent-phases-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-agent-phases-"));
   let release!: () => void;
   let entered!: () => void;
   const blocked = new Promise<void>((resolve) => { release = resolve; });

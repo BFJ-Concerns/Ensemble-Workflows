@@ -19934,7 +19934,7 @@ function unitSafe(text) {
 }
 
 // src/claude-control-plane.ts
-var probeCommandContext = new AsyncLocalStorage();
+var controlCommandContext = new AsyncLocalStorage();
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
@@ -19984,6 +19984,8 @@ var ClaudeCliControlPlane = class {
   #unclaimed = /* @__PURE__ */ new Map();
   /** Dispatches still waiting for their session: `close()` cancels them and waits for each to settle. */
   #inFlight = /* @__PURE__ */ new Set();
+  /** Probes remain owned through capture closure and session teardown. */
+  #probes = /* @__PURE__ */ new Set();
   /** Aborted by `close()`; every dispatch listens to it beside its caller's own signal. */
   #closeController = new AbortController();
   #closing = null;
@@ -20021,7 +20023,14 @@ var ClaudeCliControlPlane = class {
   async probeToolSurface(request) {
     const signal = AbortSignal.any([request.signal, this.#closeController.signal]);
     signal.throwIfAborted();
-    return probeCommandContext.run({ owner: this, signal }, () => this.#readProbeSurface(request, signal));
+    const settled = Promise.withResolvers();
+    this.#probes.add(settled.promise);
+    try {
+      return await controlCommandContext.run({ owner: this, signal }, () => this.#readProbeSurface(request, signal));
+    } finally {
+      this.#probes.delete(settled.promise);
+      settled.resolve();
+    }
   }
   async #readProbeSurface(request, signal) {
     for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) {
@@ -20030,9 +20039,17 @@ var ClaudeCliControlPlane = class {
         throw new Error(`tool-surface capture cannot override ${key}`);
       }
     }
-    const provider = await startCaptureProvider();
+    const provider = await startCaptureProvider().catch((error) => {
+      throw new SubstrateRefusedError("Claude tool-surface capture provider could not start", { cause: error });
+    });
     const nonce = randomUUID3();
     let handle;
+    let established = false;
+    const readSurface = () => {
+      const surface = readClaudeToolSurface(provider.requests(), nonce);
+      established = true;
+      return surface;
+    };
     try {
       handle = await this.dispatch({
         prompt: claudeToolSurfaceProbePrompt(nonce),
@@ -20040,10 +20057,18 @@ var ClaudeCliControlPlane = class {
         cwd: request.cwd,
         ...request.model !== void 0 ? { model: request.model } : {},
         permissionDenyRules: [...request.permissionDenyRules],
-        settingsEnv: { ...request.settingsEnv, ANTHROPIC_BASE_URL: provider.origin },
+        settingsEnv: {
+          ...request.settingsEnv,
+          ANTHROPIC_BASE_URL: provider.origin,
+          // Per-session settings outrank a daemon's inherited environment
+          // and user/project settings, which the launcher cannot inspect.
+          CLAUDE_CODE_USE_BEDROCK: "0",
+          CLAUDE_CODE_USE_VERTEX: "0",
+          CLAUDE_CODE_USE_FOUNDRY: "0"
+        },
         signal
       });
-      if (handle.launchFailure !== void 0) throw new Error(handle.launchFailure.message);
+      if (handle.launchFailure !== void 0) throw new ClaudeDispatchError(handle.launchFailure.message);
       let count = 0;
       let lastCapture = Date.now();
       for (; ; ) {
@@ -20058,10 +20083,10 @@ var ClaudeCliControlPlane = class {
           surface = readClaudeToolSurface(captures, nonce);
         } catch {
         }
-        if (surface !== void 0 && Date.now() - lastCapture >= 1e3) return surface;
+        if (surface !== void 0 && Date.now() - lastCapture >= 1e3) return readSurface();
         const status = await this.#poll(handle, signal);
         signal.throwIfAborted();
-        if (!status.present || status.state === "done") return readClaudeToolSurface(provider.requests(), nonce);
+        if (!status.present || status.state === "done") return readSurface();
         await sleep(100, void 0, { signal });
       }
     } finally {
@@ -20069,7 +20094,7 @@ var ClaudeCliControlPlane = class {
         if (handle !== void 0) {
           const cleanup = AbortSignal.timeout(this.#reclaimTimeoutMs);
           const session = handle;
-          const confirmed = await probeCommandContext.run({ owner: this, signal: cleanup }, () => this.#stopSession(session, true, cleanup)).catch(() => false);
+          const confirmed = await controlCommandContext.run({ owner: this, signal: cleanup }, () => this.#stopSession(session, true, cleanup)).catch(() => false);
           if (!confirmed) {
             this.#onEvent?.({
               method: "claude/launchUnreclaimed",
@@ -20081,7 +20106,7 @@ var ClaudeCliControlPlane = class {
       } finally {
         await provider.close();
       }
-      signal.throwIfAborted();
+      if (!established) signal.throwIfAborted();
     }
   }
   async dispatch(options) {
@@ -20172,7 +20197,7 @@ var ClaudeCliControlPlane = class {
       this.#settingsDirs.set(handle.sessionId, settingsDir);
       signal?.throwIfAborted();
       openingStarted = true;
-      const delivery = await this.steer(handle, options.prompt);
+      const delivery = await controlCommandContext.run({ owner: this, signal }, () => this.steer(handle, options.prompt));
       if (!delivery.submitted) {
         throw new ClaudeRegistrationTimeoutError(
           `Claude opening submission failed for worker '${options.name}' in ${options.cwd}: ${delivery.reason}; ` + launchAccount(dispatch.result)
@@ -20193,22 +20218,27 @@ var ClaudeCliControlPlane = class {
         throw signal.reason;
       }
       if (unclaimed) throw error;
-      if (error instanceof Error) {
-        const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id]).catch(() => null);
+      const cleanup = signal.aborted ? AbortSignal.timeout(this.#reclaimTimeoutMs) : void 0;
+      const failure = signal.aborted ? new ClaudeRegistrationTimeoutError("Claude opening delivery was cancelled", { cause: error }) : error;
+      if (failure instanceof Error) {
+        const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id], cleanup).catch(() => null);
         const file = registered === null ? null : await this.transcriptPath(registered).catch(() => null);
         const transcript = file === null ? null : await readFile6(file, "utf8").catch(() => null);
         const diagnostics = { claudeLaunch: {
-          failure: error.message,
+          failure: failure.message,
           cleanupConfirmed: registered === null,
           command: dispatch.result === null ? null : { ...dispatch.result },
           roster: lastSeen === null ? null : JSON.parse(JSON.stringify(lastSeen.row)),
           logs: logs === null ? null : { ...logs }
         } };
         if (registered !== null) {
-          discarded = await this.#stopSession(registered, true).catch(() => false);
+          discarded = await controlCommandContext.run(
+            { owner: this, signal: cleanup ?? AbortSignal.timeout(this.#reclaimTimeoutMs) },
+            () => this.#stopSession(registered, true, cleanup)
+          ).catch(() => false);
           diagnostics.claudeLaunch.cleanupConfirmed = discarded;
           if (!discarded) {
-            registered.launchFailure = { message: error.message, diagnostics };
+            registered.launchFailure = { message: failure.message, diagnostics };
             accepted = true;
             this.#settingsDirs.set(registered.sessionId, settingsDir);
             if (!(this.#scopes instanceof NoWorkerScopes)) {
@@ -20218,7 +20248,7 @@ var ClaudeCliControlPlane = class {
             return registered;
           }
         }
-        attachFailedTurnResult(error, {
+        attachFailedTurnResult(failure, {
           text: "",
           deltaText: "",
           durationMs: null,
@@ -20236,7 +20266,7 @@ var ClaudeCliControlPlane = class {
           }] }
         });
       }
-      throw error;
+      throw failure;
     } finally {
       if (!accepted && !unclaimed) {
         if (registered !== null && !discarded) await this.stop(registered);
@@ -20372,7 +20402,7 @@ var ClaudeCliControlPlane = class {
     return null;
   }
   async steer(handle, message) {
-    const signal = this.#probeSignal();
+    const signal = this.#operationSignal();
     const status = await this.poll(handle);
     signal?.throwIfAborted();
     if (status.present === false) {
@@ -20510,13 +20540,13 @@ var ClaudeCliControlPlane = class {
       if (typeof row?.pid === "number") await this.#observePlacement(this.#place(handle, row.pid), signal);
     }
   }
-  #probeSignal() {
-    const context = probeCommandContext.getStore();
+  #operationSignal() {
+    const context = controlCommandContext.getStore();
     return context?.owner === this ? context.signal : void 0;
   }
   /** Observe shared placement work only while this caller still owns its wait. */
   async #observePlacement(pending, signal) {
-    signal ??= this.#probeSignal();
+    signal ??= this.#operationSignal();
     if (signal === void 0) return pending;
     const observed = signal;
     return new Promise((resolve, reject) => {
@@ -20574,6 +20604,7 @@ var ClaudeCliControlPlane = class {
     const expired = new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
     this.#closeController.abort(new EngineShutdownError("claude"));
     await Promise.race([Promise.all(this.#inFlight), expired]);
+    await Promise.all(this.#probes);
     if (this.#unclaimed.size === 0) return;
     const launches = [...this.#unclaimed.values()];
     this.#unclaimed.clear();
@@ -20716,7 +20747,7 @@ var ClaudeCliControlPlane = class {
    * own end.
    */
   #launch(file, args, options) {
-    const signal = options.signal ?? this.#probeSignal();
+    const signal = options.signal ?? this.#operationSignal();
     return runOwnedCommand(this.#scopes, file, args, {
       env: this.#env,
       ...options,
@@ -21241,6 +21272,7 @@ var ClaudeEngineInvocation = class {
   #settlement = null;
   #onClose;
   #onVersion;
+  #reportedVersion = null;
   constructor(options) {
     this.#turnPrompt = options.prompt;
     this.#turnSchema = options.options.schema;
@@ -21624,7 +21656,10 @@ var ClaudeEngineInvocation = class {
         }
         sawLife = true;
         const version2 = transcript.entries.findLast((entry) => typeof entry.version === "string")?.version;
-        if (typeof version2 === "string") this.#onVersion?.(version2);
+        if (typeof version2 === "string" && version2 !== this.#reportedVersion) {
+          this.#reportedVersion = version2;
+          this.#onVersion?.(version2);
+        }
         this.#reportUsage(handle, transcript.entries, observers);
         try {
           this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
@@ -22158,9 +22193,18 @@ var ClaudeStripPreparer = class {
       return confirmClaudeStrip(derived, confirmation);
     } catch (error) {
       if (this.#abort.signal.aborted) throw new EngineShutdownError("claude");
-      if (error instanceof CapabilityStripUnsupportedError) throw error;
-      const reason = signal.aborted ? `the live tool surface was not established within ${this.#timeoutMs}ms` : `the live tool surface could not be established: ${error instanceof Error ? error.message : String(error)}`;
-      throw new CapabilityStripUnsupportedError("claude", capability, reason);
+      if (error instanceof CapabilityStripUnsupportedError || error instanceof SubstrateRefusedError) throw error;
+      if (error instanceof ClaudeRegistrationTimeoutError) {
+        throw new ClaudeDispatchError(`Claude tool-surface probe failed to register or submit: ${error.message}`, { cause: error });
+      }
+      if (signal.aborted) {
+        throw new SubstrateRefusedError(`Claude tool-surface probe did not answer within ${this.#timeoutMs}ms`, { cause: error });
+      }
+      throw new CapabilityStripUnsupportedError(
+        "claude",
+        capability,
+        `the live tool surface could not be established: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 };
@@ -23568,8 +23612,7 @@ var ClaudeEngineAdapter = class {
     this.#onEvent = options.onEvent;
     this.#config = options.config;
     this.#strips = new ClaudeStripPreparer({
-      probe: this.#controlPlane.probeToolSurface?.bind(this.#controlPlane),
-      ...options.config?.stripPreparationTimeoutMs !== void 0 ? { timeoutMs: options.config.stripPreparationTimeoutMs } : {}
+      probe: this.#controlPlane.probeToolSurface?.bind(this.#controlPlane)
     });
   }
   schedule(task) {
@@ -24190,7 +24233,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const engine = this.#engineFor(options.engine);
     const strip = effectiveStrip(this.#strip, options.strip);
-    const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    const stripRoutes = strip.length > 0 ? this.#stripRoutesFor(engine, strip) : null;
     for (const target of options.fallback ?? []) {
       const targetEngine = this.#chainEngineFor(target);
       if (strip.length > 0) {
@@ -24305,7 +24348,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new MultiTurnUnsupportedError(engine.name);
     }
     const strip = effectiveStrip(this.#strip, options.strip);
-    const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    const stripRoutes = strip.length > 0 ? this.#stripRoutesFor(engine, strip) : null;
     for (const target of options.fallback ?? []) {
       const targetEngine = this.#chainEngineFor(target);
       if (targetEngine.createSession === void 0) {
@@ -24477,14 +24520,27 @@ var EnsembleRuntime = class _EnsembleRuntime {
       await this.#placement.close(placement).catch(() => void 0);
       throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
-    const preparedStrip = state.engineSession === null ? await this.#prepareStripFor(agentRecord, targetEngine, options, state.placement.cwd) : void 0;
+    agentRecord.resolvedCwd = state.placement.cwd;
+    this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
+    agentRecord.isolation = options.isolation ?? null;
+    let preparedStrip;
+    const preparationStartedAt = Date.now();
+    try {
+      preparedStrip = state.engineSession === null ? await this.#prepareStripFor(agentRecord, targetEngine, options, state.placement.cwd) : void 0;
+    } catch (error) {
+      if (error instanceof SubstrateRefusedError && this.#recordPreparationFailure(
+        agentRecord,
+        agentId,
+        error,
+        preparationStartedAt,
+        { target, ledger, chainRemains }
+      )) return { status: "refused" };
+      throw error;
+    }
     if (agentRecord.strip !== null) state.stripRoutes = agentRecord.strip.enforcement;
     if (state.closed || this.#closed) {
       throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
-    agentRecord.resolvedCwd = state.placement.cwd;
-    this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
-    agentRecord.isolation = options.isolation ?? null;
     const createSession = state.engine.createSession;
     if (createSession === void 0) {
       throw new MultiTurnUnsupportedError(state.engine.name);
@@ -25248,6 +25304,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let invocation;
     let completion;
     const attempts = { target, ledger, chainRemains };
+    const preparationStartedAt = Date.now();
     try {
       const preparedStrip = await this.#prepareStripFor(agentRecord, engine, options, placement.cwd);
       if (this.#closed) throw new EngineShutdownError(engine.name);
@@ -25274,7 +25331,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
         };
       }
     } catch (error) {
-      completion = { ok: false, error };
+      completion = invocation === void 0 && error instanceof SubstrateRefusedError && this.#recordPreparationFailure(
+        agentRecord,
+        agentId,
+        error,
+        preparationStartedAt,
+        attempts
+      ) ? { ok: true, execution: { status: "refused" } } : { ok: false, error };
     } finally {
       try {
         try {
@@ -25627,6 +25690,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
     );
     return { refused: refused2, failure: observed };
   }
+  /** A probe substrate refused before a requested worker could be constructed. */
+  #recordPreparationFailure(record, agentId, error, startedAt, attempts) {
+    const attempt = ++attempts.ledger.dispatched;
+    this.progress.noteAttempt(agentId, attempt);
+    return this.#recordThrownFailure(record, attempt, error, startedAt, attempts).refused;
+  }
   async #prepareStripFor(record, engine, options, cwd) {
     if (options.strip === void 0 || options.strip.length === 0 || engine.prepareStrip === void 0) return void 0;
     const prepared = await engine.prepareStrip(options.strip, {
@@ -25647,9 +25716,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (strip === void 0 || strip.length === 0) {
       return null;
     }
-    const enforcement = resolveStripEnforcement(engine.name, engine.capabilities, strip);
+    const enforcement = this.#stripRoutesFor(engine, strip);
     record.strip = { requested: [...strip], enforcement };
     return enforcement;
+  }
+  /** A declared live route is not evidence that preparation has discharged it. */
+  #stripRoutesFor(engine, strip) {
+    const declared = resolveStripEnforcement(engine.name, engine.capabilities, strip);
+    return engine.prepareStrip === void 0 ? declared : {};
   }
   /** One classification call for every failed attempt, so the archive's class always came from the same table. */
   #classify(engine, failure, appServerDiagnostic, diagnostics) {

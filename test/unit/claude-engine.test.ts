@@ -710,6 +710,25 @@ test("a held Claude strip prepares once and retains its measured enforcement on 
   });
 });
 
+test("an older held session reports its version once and does not repeatedly discard newer preparations", async () => {
+  await withControlPlane([
+    { assistant: { text: "first", version: "2.1.old" } },
+    { assistant: { text: "second", version: "2.1.old" } }
+  ], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const session = adapter.createSession({});
+    try {
+      await session.beginTurn("first", {}).runAttempt({ attempt: 1 });
+      // The daemon's current surface can differ from this held session's
+      // fixed version. Its repeated transcript reads must not invalidate it.
+      const prepared = await adapter.prepareStrip(["agents"], { cwd: "/fake/cwd" });
+      await session.beginTurn("second", {}).runAttempt({ attempt: 1 });
+      assert.equal(await adapter.prepareStrip(["agents"], { cwd: "/fake/cwd" }), prepared);
+      assert.equal(controlPlane.probed.length, 2);
+    } finally { await session.close(); await adapter.close(); }
+  });
+});
+
 test("native transcript versions invalidate the Claude surface cache for later dispatches", async () => {
   await withControlPlane([
     { assistant: { text: "first", version: "2.1.330" } },

@@ -329,10 +329,10 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   `CLAUDE_CODE_DISABLE_ADVISOR_TOOL`, over any value the machine declares
   for workers. A second probe under the derived settings must show none of
   the denied tools, no unclassified tool, and every unrelated one. If either
-  probe fails, or the check does not hold within the preparation deadline,
-  the call fails before the worker spawns. The deadline defaults to 90
-  seconds; a manually constructed Claude adapter can change
-  [`config.stripPreparationTimeoutMs`](configuration.md#claude-adapter-configuration).
+  surface cannot be read or the confirmation fails, the call refuses before
+  the worker spawns. A probe substrate that cannot start or answer within
+  the 90-second preparation deadline is recorded as an availability failure:
+  a remaining fallback target is tried, otherwise the refusal propagates.
   Opening delivery and polling share that deadline. Each cleanup phase has
   a separate reclamation deadline (30 seconds by default), plus the
   command's cancellation grace. Unconfirmed probe-session cleanup is

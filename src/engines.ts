@@ -190,7 +190,8 @@ export interface EngineAdapter {
    * it. The record's strip entry takes the returned `enforcement`, and
    * `EngineTurnOptions.preparedStrip` carries the object to the dispatch.
    * A rejection with `CapabilityStripUnsupportedError` refuses the worker
-   * before it spawns.
+   * before it spawns. A substrate refusal is recorded as an availability
+   * failure and advances a remaining chain entry without requesting a worker.
    */
   prepareStrip?(strip: readonly StrippableCapability[], context: StripPreparationContext): Promise<PreparedStrip>;
   schedule<T>(task: () => Promise<T>): Promise<T>;
@@ -593,8 +594,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     this.#onEvent = options.onEvent;
     this.#config = options.config;
     this.#strips = new ClaudeStripPreparer({
-      probe: this.#controlPlane.probeToolSurface?.bind(this.#controlPlane),
-      ...(options.config?.stripPreparationTimeoutMs !== undefined ? { timeoutMs: options.config.stripPreparationTimeoutMs } : {})
+      probe: this.#controlPlane.probeToolSurface?.bind(this.#controlPlane)
     });
   }
 

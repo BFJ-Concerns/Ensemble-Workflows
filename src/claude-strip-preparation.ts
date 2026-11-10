@@ -1,5 +1,5 @@
 import { confirmClaudeStrip, deriveClaudeStrip, CLAUDE_TOOL_CLASSIFICATION } from "./claude-tool-surface.js";
-import { CapabilityStripUnsupportedError, EngineShutdownError } from "./errors.js";
+import { CapabilityStripUnsupportedError, ClaudeDispatchError, ClaudeRegistrationTimeoutError, EngineShutdownError, SubstrateRefusedError } from "./errors.js";
 
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { ClaudeToolSurfaceProbe } from "./claude-control-plane.js";
@@ -48,11 +48,11 @@ interface Entry {
  * - Sharing: one preparation for each working directory, model and strip
  *   set, memoised as a promise, so concurrent dispatches share one in
  *   flight. No shared table is mutated.
- * - Failure: whatever stops the surface being established refuses the
- *   worker before it spawns (`CapabilityStripUnsupportedError`): no probe,
- *   a probe failure, an unreadable capture, a failed confirmation, or the
- *   time bound. A failed preparation is forgotten at once, so the next
- *   dispatch probes again rather than inheriting the refusal.
+ * - Failure: no probe, an unreadable capture or a failed confirmation
+ *   refuses the worker before it spawns (`CapabilityStripUnsupportedError`).
+ *   A substrate refusal or an expired preparation deadline is availability
+ *   failure (`SubstrateRefusedError`), eligible for the call's fallback
+ *   chain. Failed preparations are forgotten so later calls probe again.
  * - Version: a prepared entry holds for the run while the served version
  *   stays the same. When a worker reports serving another version (its
  *   transcript's `version`), `retainVersion` drops every entry prepared
@@ -120,11 +120,15 @@ export class ClaudeStripPreparer {
       return confirmClaudeStrip(derived, confirmation);
     } catch (error) {
       if (this.#abort.signal.aborted) throw new EngineShutdownError("claude");
-      if (error instanceof CapabilityStripUnsupportedError) throw error;
-      const reason = signal.aborted
-        ? `the live tool surface was not established within ${this.#timeoutMs}ms`
-        : `the live tool surface could not be established: ${error instanceof Error ? error.message : String(error)}`;
-      throw new CapabilityStripUnsupportedError("claude", capability, reason);
+      if (error instanceof CapabilityStripUnsupportedError || error instanceof SubstrateRefusedError) throw error;
+      if (error instanceof ClaudeRegistrationTimeoutError) {
+        throw new ClaudeDispatchError(`Claude tool-surface probe failed to register or submit: ${error.message}`, { cause: error });
+      }
+      if (signal.aborted) {
+        throw new SubstrateRefusedError(`Claude tool-surface probe did not answer within ${this.#timeoutMs}ms`, { cause: error });
+      }
+      throw new CapabilityStripUnsupportedError("claude", capability,
+        `the live tool surface could not be established: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }

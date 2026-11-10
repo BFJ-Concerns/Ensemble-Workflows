@@ -192,11 +192,7 @@ settings rather than claiming the session was reclaimed. `claude agents`
 lists it by that name, and `claude stop` and `claude rm` end it. Its settings
 file is left for the next launcher's sweep,
 which removes it once this launcher has ended. Library event listeners
-receive `claude/launchUnreclaimed` with the dispatch name and the reason. A
-library caller building `ClaudeCliControlPlane` itself sets the cancellation
-bounds with `commandBounds` (`stopGraceMs`, `drainMs`).
-`reclaimTimeoutMs` (30 seconds by default) sets the reclamation deadline
-used for probe teardown and run-end cleanup.
+receive `claude/launchUnreclaimed` with the dispatch name and the reason.
 
 Claude sessions and the Codex app-server are placed in transient scopes in
 the slice that holds the launcher. `worker_scope` chooses one scope per Claude
@@ -369,19 +365,3 @@ environment variable:
 `firstOutputTimeoutMs` is satisfied by any output-bearing turn frame, not only
 an agent-message delta; the run record's `first_delta_ms` still measures the
 time to the first agent-message delta.
-
-
-### Claude adapter configuration
-
-For a manually constructed `ClaudeEngineAdapter`,
-`config.stripPreparationTimeoutMs` sets the deadline in milliseconds for
-preparing a requested capability strip. It defaults to `90_000` and covers
-both the inventory probe and the confirming probe. Unstripped workers do
-not run these probes.
-
-For example, `new ClaudeEngineAdapter({ config: {
-stripPreparationTimeoutMs: 120_000 } })` gives that adapter a two-minute
-preparation deadline. Use the configured adapter in the `EngineRegistry`
-passed to `new EnsembleRuntime({ engines })`. This is an adapter option,
-not a `createRuntime()` option; it has no CLI flag, environment variable
-or machine-configuration key.

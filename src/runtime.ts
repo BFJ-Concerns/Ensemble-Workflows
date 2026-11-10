@@ -826,7 +826,7 @@ export class EnsembleRuntime {
     // entry now, before anything is paid for — a strip the fallback engine
     // cannot enforce must not surface on the day the chain first advances.
     const strip = effectiveStrip(this.#strip, options.strip);
-    const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    const stripRoutes = strip.length > 0 ? this.#stripRoutesFor(engine, strip) : null;
     for (const target of options.fallback ?? []) {
       const targetEngine = this.#chainEngineFor(target);
       if (strip.length > 0) {
@@ -974,7 +974,7 @@ export class EnsembleRuntime {
       throw new MultiTurnUnsupportedError(engine.name);
     }
     const strip = effectiveStrip(this.#strip, options.strip);
-    const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    const stripRoutes = strip.length > 0 ? this.#stripRoutesFor(engine, strip) : null;
     // The creating turn's chain targets are dispatches of their own:
     // each must hold sessions and enforce the strip, judged now.
     for (const target of options.fallback ?? []) {
@@ -1196,16 +1196,25 @@ export class EnsembleRuntime {
       await this.#placement.close(placement).catch(() => undefined);
       throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
-    const preparedStrip = state.engineSession === null
-      ? await this.#prepareStripFor(agentRecord, targetEngine, options, state.placement.cwd)
-      : undefined;
+    agentRecord.resolvedCwd = state.placement.cwd;
+    this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
+    agentRecord.isolation = options.isolation ?? null;
+    let preparedStrip: PreparedStrip | undefined;
+    const preparationStartedAt = Date.now();
+    try {
+      preparedStrip = state.engineSession === null
+        ? await this.#prepareStripFor(agentRecord, targetEngine, options, state.placement.cwd)
+        : undefined;
+    } catch (error) {
+      if (error instanceof SubstrateRefusedError && this.#recordPreparationFailure(
+        agentRecord, agentId, error, preparationStartedAt, { target, ledger, chainRemains }
+      )) return { status: "refused" };
+      throw error;
+    }
     if (agentRecord.strip !== null) state.stripRoutes = agentRecord.strip.enforcement;
     if (state.closed || this.#closed) {
       throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
-    agentRecord.resolvedCwd = state.placement.cwd;
-    this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
-    agentRecord.isolation = options.isolation ?? null;
     const createSession = state.engine.createSession;
     if (createSession === undefined) {
       throw new MultiTurnUnsupportedError(state.engine.name);
@@ -2192,6 +2201,7 @@ export class EnsembleRuntime {
     let invocation: EngineInvocation | undefined;
     let completion: AgentExecutionCompletion | undefined;
     const attempts = { target, ledger, chainRemains };
+    const preparationStartedAt = Date.now();
     try {
       const preparedStrip = await this.#prepareStripFor(agentRecord, engine, options, placement.cwd);
       if (this.#closed) throw new EngineShutdownError(engine.name);
@@ -2218,7 +2228,11 @@ export class EnsembleRuntime {
         };
       }
     } catch (error) {
-      completion = { ok: false, error };
+      completion = invocation === undefined && error instanceof SubstrateRefusedError && this.#recordPreparationFailure(
+        agentRecord, agentId, error, preparationStartedAt, attempts
+      )
+        ? { ok: true, execution: { status: "refused" } }
+        : { ok: false, error };
     } finally {
       try {
         try {
@@ -2661,6 +2675,19 @@ export class EnsembleRuntime {
     return { refused, failure: observed };
   }
 
+  /** A probe substrate refused before a requested worker could be constructed. */
+  #recordPreparationFailure(
+    record: RuntimeAgentRecord,
+    agentId: number,
+    error: SubstrateRefusedError,
+    startedAt: number,
+    attempts: TargetAttempts
+  ): boolean {
+    const attempt = ++attempts.ledger.dispatched;
+    this.progress.noteAttempt(agentId, attempt);
+    return this.#recordThrownFailure(record, attempt, error, startedAt, attempts).refused;
+  }
+
   async #prepareStripFor(
     record: RuntimeAgentRecord,
     engine: EngineAdapter,
@@ -2691,9 +2718,15 @@ export class EnsembleRuntime {
     if (strip === undefined || strip.length === 0) {
       return null;
     }
-    const enforcement = resolveStripEnforcement(engine.name, engine.capabilities, strip);
+    const enforcement = this.#stripRoutesFor(engine, strip);
     record.strip = { requested: [...strip], enforcement };
     return enforcement;
+  }
+
+  /** A declared live route is not evidence that preparation has discharged it. */
+  #stripRoutesFor(engine: EngineAdapter, strip: readonly StrippableCapability[]): Partial<Record<StrippableCapability, DischargedEnforcement>> {
+    const declared = resolveStripEnforcement(engine.name, engine.capabilities, strip);
+    return engine.prepareStrip === undefined ? declared : {};
   }
 
   /** One classification call for every failed attempt, so the archive's class always came from the same table. */

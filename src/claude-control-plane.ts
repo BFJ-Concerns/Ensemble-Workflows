@@ -8,7 +8,7 @@ import path from "node:path";
 
 import { claudeConfigDirectory, claudeValveDirectory, temporaryDirectory } from "./engine-resources.js";
 import { launchEnvironment, SANDBOXED_WORKSPACE_VARIABLE } from "./engine-environment.js";
-import { attachFailedTurnResult, ClaudeDispatchError, ClaudeRegistrationTimeoutError, EngineShutdownError } from "./errors.js";
+import { attachFailedTurnResult, ClaudeDispatchError, ClaudeRegistrationTimeoutError, EngineShutdownError, SubstrateRefusedError } from "./errors.js";
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
@@ -19,7 +19,7 @@ import type { JsonObject, RuntimeEvent } from "./types.js";
 import { NoWorkerScopes, RUN_SCOPE_GROUP, processTree, type WorkerScopeGrouping, type ScopePlacement, type WorkerScopes } from "./worker-scopes.js";
 
 // One process-wide context; the owner check keeps sibling control planes independent.
-const probeCommandContext = new AsyncLocalStorage<{ owner: ClaudeCliControlPlane; signal: AbortSignal }>();
+const controlCommandContext = new AsyncLocalStorage<{ owner: ClaudeCliControlPlane; signal: AbortSignal }>();
 
 /**
  * Per-dispatch ownership tag. The variable rides the same settings-file `env`
@@ -105,8 +105,9 @@ export interface ClaudeControlPlane {
    * declared value for that variable is overridden, because the probe must
    * not reach a real provider. A worker environment that routes Claude
    * through Bedrock, Vertex or another provider switch would bypass the
-   * capture provider, so the probe rejects it rather than send a request
-   * there. The opening prompt is `claudeToolSurfaceProbePrompt(nonce)`.
+   * capture provider, so the probe rejects a declared switch rather than
+   * send a request there. The per-session settings also force those switches
+   * off to override a daemon's inherited environment or user/project settings. The opening prompt is `claudeToolSurfaceProbePrompt(nonce)`.
    * The probe waits until the session stops sending requests: its turn has
    * ended, or one second has passed with no new capture. It then stops the
    * session with `stop`'s full teardown, closes the provider, and returns
@@ -406,6 +407,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #unclaimed = new Map<string, UnclaimedLaunch>();
   /** Dispatches still waiting for their session: `close()` cancels them and waits for each to settle. */
   #inFlight = new Set<Promise<void>>();
+  /** Probes remain owned through capture closure and session teardown. */
+  #probes = new Set<Promise<void>>();
   /** Aborted by `close()`; every dispatch listens to it beside its caller's own signal. */
   #closeController = new AbortController();
   #closing: Promise<void> | null = null;
@@ -452,7 +455,14 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   async probeToolSurface(request: ClaudeToolSurfaceProbeRequest): Promise<ClaudeToolSurface> {
     const signal = AbortSignal.any([request.signal, this.#closeController.signal]);
     signal.throwIfAborted();
-    return probeCommandContext.run({ owner: this, signal }, () => this.#readProbeSurface(request, signal));
+    const settled = Promise.withResolvers<void>();
+    this.#probes.add(settled.promise);
+    try {
+      return await controlCommandContext.run({ owner: this, signal }, () => this.#readProbeSurface(request, signal));
+    } finally {
+      this.#probes.delete(settled.promise);
+      settled.resolve();
+    }
   }
 
   async #readProbeSurface(request: ClaudeToolSurfaceProbeRequest, signal: AbortSignal): Promise<ClaudeToolSurface> {
@@ -464,9 +474,17 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         throw new Error(`tool-surface capture cannot override ${key}`);
       }
     }
-    const provider = await startCaptureProvider();
+    const provider = await startCaptureProvider().catch((error: unknown) => {
+      throw new SubstrateRefusedError("Claude tool-surface capture provider could not start", { cause: error });
+    });
     const nonce = randomUUID();
     let handle: ClaudeSessionHandle | undefined;
+    let established = false;
+    const readSurface = (): ClaudeToolSurface => {
+      const surface = readClaudeToolSurface(provider.requests(), nonce);
+      established = true;
+      return surface;
+    };
     try {
       handle = await this.dispatch({
         prompt: claudeToolSurfaceProbePrompt(nonce),
@@ -474,10 +492,15 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         cwd: request.cwd,
         ...(request.model !== undefined ? { model: request.model } : {}),
         permissionDenyRules: [...request.permissionDenyRules],
-        settingsEnv: { ...request.settingsEnv, ANTHROPIC_BASE_URL: provider.origin },
+        settingsEnv: {
+          ...request.settingsEnv, ANTHROPIC_BASE_URL: provider.origin,
+          // Per-session settings outrank a daemon's inherited environment
+          // and user/project settings, which the launcher cannot inspect.
+          CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0"
+        },
         signal
       });
-      if (handle.launchFailure !== undefined) throw new Error(handle.launchFailure.message);
+      if (handle.launchFailure !== undefined) throw new ClaudeDispatchError(handle.launchFailure.message);
       let count = 0;
       let lastCapture = Date.now();
       for (;;) {
@@ -491,10 +514,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         // telemetry request alone cannot establish the worker's surface.
         let surface: ClaudeToolSurface | undefined;
         try { surface = readClaudeToolSurface(captures, nonce); } catch { /* Keep waiting for the worker's request. */ }
-        if (surface !== undefined && Date.now() - lastCapture >= 1_000) return surface;
+        if (surface !== undefined && Date.now() - lastCapture >= 1_000) return readSurface();
         const status = await this.#poll(handle, signal);
         signal.throwIfAborted();
-        if (!status.present || status.state === "done") return readClaudeToolSurface(provider.requests(), nonce);
+        if (!status.present || status.state === "done") return readSurface();
         await sleep(100, undefined, { signal });
       }
     } finally {
@@ -502,7 +525,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         if (handle !== undefined) {
           const cleanup = AbortSignal.timeout(this.#reclaimTimeoutMs);
           const session = handle;
-          const confirmed = await probeCommandContext.run({ owner: this, signal: cleanup }, () => this.#stopSession(session, true, cleanup)).catch(() => false);
+          const confirmed = await controlCommandContext.run({ owner: this, signal: cleanup }, () => this.#stopSession(session, true, cleanup)).catch(() => false);
           if (!confirmed) {
             this.#onEvent?.({
               method: "claude/launchUnreclaimed",
@@ -512,7 +535,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           }
         }
       } finally { await provider.close(); }
-      signal.throwIfAborted();
+      if (!established) signal.throwIfAborted();
     }
   }
 
@@ -642,7 +665,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       this.#settingsDirs.set(handle.sessionId, settingsDir);
       signal?.throwIfAborted();
       openingStarted = true;
-      const delivery = await this.steer(handle, options.prompt);
+      const delivery = await controlCommandContext.run({ owner: this, signal }, () => this.steer(handle, options.prompt));
       if (!delivery.submitted) {
         throw new ClaudeRegistrationTimeoutError(
           `Claude opening submission failed for worker '${options.name}' in ${options.cwd}: ${delivery.reason}; ` +
@@ -666,25 +689,35 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         throw signal.reason;
       }
       if (unclaimed) throw error;
-      if (error instanceof Error) {
-        const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id]).catch(() => null);
+      // Opening may already have submitted. Reclaim it before reporting a
+      // failure, under a fresh cleanup bound, without mutating an abort
+      // reason shared by other dispatches.
+      const cleanup = signal.aborted ? AbortSignal.timeout(this.#reclaimTimeoutMs) : undefined;
+      const failure = signal.aborted
+        ? new ClaudeRegistrationTimeoutError("Claude opening delivery was cancelled", { cause: error })
+        : error;
+      if (failure instanceof Error) {
+        const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id], cleanup).catch(() => null);
         const file = registered === null ? null : await this.transcriptPath(registered).catch(() => null);
         const transcript = file === null ? null : await readFile(file, "utf8").catch(() => null);
         const diagnostics = { claudeLaunch: {
-          failure: error.message,
+          failure: failure.message,
           cleanupConfirmed: registered === null,
           command: dispatch.result === null ? null : { ...dispatch.result },
           roster: lastSeen === null ? null : JSON.parse(JSON.stringify(lastSeen.row)),
           logs: logs === null ? null : { ...logs }
         } };
         if (registered !== null) {
-          discarded = await this.#stopSession(registered, true).catch(() => false);
+          discarded = await controlCommandContext.run(
+            { owner: this, signal: cleanup ?? AbortSignal.timeout(this.#reclaimTimeoutMs) },
+            () => this.#stopSession(registered!, true, cleanup)
+          ).catch(() => false);
           diagnostics.claudeLaunch.cleanupConfirmed = discarded;
           if (!discarded) {
             // No rejection may hand this prompt to another target while a
             // launch we could not remove still exists. The engine owns its
             // receipt and subsequent teardown, including the original account.
-            registered.launchFailure = { message: error.message, diagnostics };
+            registered.launchFailure = { message: failure.message, diagnostics };
             accepted = true;
             this.#settingsDirs.set(registered.sessionId, settingsDir);
             if (!(this.#scopes instanceof NoWorkerScopes)) {
@@ -694,7 +727,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
             return registered;
           }
         }
-        attachFailedTurnResult(error, {
+        attachFailedTurnResult(failure, {
           text: "", deltaText: "", durationMs: null, firstDeltaMs: null, items: {}, tokenUsageEvents: [],
           diagnostics,
           ...(transcript === null ? {} : { transcripts: [{
@@ -703,7 +736,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           }] })
         });
       }
-      throw error;
+      throw failure;
     } finally {
       if (!accepted && !unclaimed) {
         if (registered !== null && !discarded) await this.stop(registered);
@@ -891,7 +924,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
-    const signal = this.#probeSignal();
+    const signal = this.#operationSignal();
     const status = await this.poll(handle);
     signal?.throwIfAborted();
     if (status.present === false) {
@@ -1047,14 +1080,14 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
   }
 
-  #probeSignal(): AbortSignal | undefined {
-    const context = probeCommandContext.getStore();
+  #operationSignal(): AbortSignal | undefined {
+    const context = controlCommandContext.getStore();
     return context?.owner === this ? context.signal : undefined;
   }
 
   /** Observe shared placement work only while this caller still owns its wait. */
   async #observePlacement<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
-    signal ??= this.#probeSignal();
+    signal ??= this.#operationSignal();
     if (signal === undefined) return pending;
     const observed = signal;
     return new Promise<T>((resolve, reject) => {
@@ -1109,6 +1142,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     const expired = new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
     this.#closeController.abort(new EngineShutdownError("claude"));
     await Promise.race([Promise.all(this.#inFlight), expired]);
+    // Each probe uses its own bounded cleanup. Keep shared placement
+    // resources alive until those teardowns and capture closures settle.
+    await Promise.all(this.#probes);
     if (this.#unclaimed.size === 0) return;
     const launches = [...this.#unclaimed.values()];
     this.#unclaimed.clear();
@@ -1282,7 +1318,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     args: string[],
     options: { input: string | null; cwd?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal }
   ): Promise<CommandResult> {
-    const signal = options.signal ?? this.#probeSignal();
+    const signal = options.signal ?? this.#operationSignal();
     return runOwnedCommand(this.#scopes, file, args, {
       env: this.#env, ...options, bounds: this.#commandBounds,
       ...(signal !== undefined ? { signal } : {})

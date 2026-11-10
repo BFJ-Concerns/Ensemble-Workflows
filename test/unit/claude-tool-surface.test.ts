@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { ClaudeStripPreparer } from "../../src/claude-strip-preparation.js";
 import { confirmClaudeStrip, deriveClaudeStrip, readClaudeToolSurface } from "../../src/claude-tool-surface.js";
-import { CapabilityStripUnsupportedError, EngineShutdownError } from "../../src/errors.js";
+import { CapabilityStripUnsupportedError, ClaudeDispatchError, ClaudeRegistrationTimeoutError, EngineShutdownError, SubstrateRefusedError } from "../../src/errors.js";
 
 import type { ClaudeToolSurfaceProbeRequest } from "../../src/claude-control-plane.js";
 import type { ClaudeToolSurface } from "../../src/claude-tool-surface.js";
@@ -137,16 +137,16 @@ test("concurrent dispatches with the same inputs share one preparation; other in
   assert.equal(calls.length, 4);
 });
 
-test("a failed preparation refuses before spawn and is not remembered", async () => {
+test("an unreadable capture refuses before spawn and is not remembered", async () => {
   let fail = true;
   const preparer = new ClaudeStripPreparer({
     probe: async () => {
-      if (fail) throw new Error("probe session never registered");
+      if (fail) throw new Error("capture has no readable version");
       return surface(["Bash"]);
     }
   });
   await assert.rejects(preparer.prepare({ strip: ["agents"], cwd: "/a" }), (error: unknown) =>
-    error instanceof CapabilityStripUnsupportedError && /never registered/.test(error.message));
+    error instanceof CapabilityStripUnsupportedError && /no readable version/.test(error.message));
   fail = false;
   await preparer.prepare({ strip: ["agents"], cwd: "/a" });
 });
@@ -156,7 +156,7 @@ test("no probe, an expired bound, and the engine closing each end a preparation"
 
   const hanging = (request: ClaudeToolSurfaceProbeRequest): Promise<ClaudeToolSurface> =>
     new Promise((_resolve, reject) => request.signal.addEventListener("abort", () => reject(request.signal.reason as Error)));
-  await assert.rejects(new ClaudeStripPreparer({ probe: hanging, timeoutMs: 20 }).prepare({ strip: ["skills"], cwd: "/a" }), /within 20ms/);
+  await assert.rejects(new ClaudeStripPreparer({ probe: hanging, timeoutMs: 20 }).prepare({ strip: ["skills"], cwd: "/a" }), (error: unknown) => error instanceof SubstrateRefusedError && /within 20ms/.test(error.message));
 
   const closing = new ClaudeStripPreparer({ probe: hanging });
   const pending = closing.prepare({ strip: ["skills"], cwd: "/a" });
@@ -175,3 +175,10 @@ test("a worker serving another version drops preparations made for the old one",
   await preparer.prepare({ strip: ["skills"], cwd: "/a" });
   assert.equal(calls.length, 4);
 });
+
+for (const error of [new ClaudeDispatchError("substrate down"), new ClaudeRegistrationTimeoutError("no registration")]) {
+  test(`a probe ${error.name} remains availability failure rather than a capability refusal`, async () => {
+    const preparer = new ClaudeStripPreparer({ probe: async () => { throw error; } });
+    await assert.rejects(preparer.prepare({ strip: ["agents"], cwd: "/a" }), SubstrateRefusedError);
+  });
+}

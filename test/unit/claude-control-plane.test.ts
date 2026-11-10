@@ -1708,7 +1708,7 @@ test("a launch whose cleanup is refused resolves its owned session with the orig
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("a tool-surface probe overrides only its provider URL, carries deny rules and tears down its session", async () => {
+test("a tool-surface probe fixes its provider route in settings, carries deny rules and tears down its session", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-surface-probe-"));
   const argvPath = path.join(dir, "argv.json");
   const stub = path.join(dir, "claude.mjs");
@@ -1751,11 +1751,14 @@ test("a tool-surface probe overrides only its provider URL, carries deny rules a
     CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0"
   } });
   try {
-    const surface = await plane.probeToolSurface({ cwd: dir, permissionDenyRules: ["Agent"], settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" }, signal: AbortSignal.timeout(10_000) });
+    const surface = await plane.probeToolSurface({ cwd: dir, permissionDenyRules: ["Agent"], settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_USE_VERTEX: "1", CLAUDE_CODE_USE_FOUNDRY: "1" }, signal: AbortSignal.timeout(10_000) });
     assert.equal(surface.cliVersion, "2.1.fixture");
     assert.deepEqual(surface.tools, [{ name: "Read", exposure: "loaded" }]);
     assert.equal(await readFile(actionsPath, "utf8"), "stop\nrm\n");
     assert.equal(settings[0]?.env.DECLARED_VALUE, "kept");
+    for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) {
+      assert.equal(settings[0]?.env[key], "0", `probe settings must override ${key} in every inherited settings layer`);
+    }
     assert.equal(settings[0]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "1");
     assert.deepEqual(settings[0]?.permissions?.deny, ["Agent"]);
     const handle = await plane.dispatch({ cwd: dir, name: "unstripped", prompt: "ordinary" });

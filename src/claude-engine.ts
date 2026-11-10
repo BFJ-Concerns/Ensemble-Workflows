@@ -91,8 +91,6 @@ export interface ClaudeEngineConfig {
   blockedRecoveryBound?: number;
   /** Prefix for the unique per-dispatch session name. */
   namePrefix?: string;
-  /** Bound on one strip preparation, both tool-surface probes included (`ClaudeStripPreparer`). */
-  stripPreparationTimeoutMs?: number;
 }
 
 export interface ClaudeEngineInvocationOptions {
@@ -312,6 +310,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #settlement: Promise<EngineAttemptResult> | null = null;
   #onClose: ((invocation: ClaudeEngineInvocation) => void) | undefined;
   #onVersion: ((version: string) => void) | undefined;
+  #reportedVersion: string | null = null;
 
   constructor(options: ClaudeEngineInvocationOptions) {
     this.#turnPrompt = options.prompt;
@@ -805,7 +804,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         }
         sawLife = true;
         const version = transcript.entries.findLast((entry) => typeof entry.version === "string")?.version;
-        if (typeof version === "string") this.#onVersion?.(version);
+        if (typeof version === "string" && version !== this.#reportedVersion) {
+          this.#reportedVersion = version;
+          this.#onVersion?.(version);
+        }
         this.#reportUsage(handle, transcript.entries, observers);
         try {
           this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;

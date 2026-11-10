@@ -3411,7 +3411,7 @@ test("a direct agent whose --cwd is missing is rejected the same way, before any
 });
 
 test("the durable surfaces name what ended a failed run, discriminating one cause from another", async () => {
-  // Four causes that all read as bare `failed` on status alone. Each must
+  // Different causes all read as bare `failed` on status alone. Each must
   // be told apart by a consumer holding only the archive.
   const cases = [
     {
@@ -3429,6 +3429,22 @@ test("the durable surfaces name what ended a failed run, discriminating one caus
     {
       name: "budget-refusal",
       source: `export const meta = { name: "cause-budget" };\nawait agent("hi", { engine: "codex" });`,
+      kind: "BudgetExceededError",
+      message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
+    },
+    {
+      name: "budget-refusal-parallel",
+      source: `export const meta = { name: "cause-budget-parallel" };
+await parallel([() => agent("hi", { engine: "codex", label: "blocked", identity: true })]);
+return { continuedAfterBudgetRefusal: true };`,
+      kind: "BudgetExceededError",
+      message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
+    },
+    {
+      name: "budget-refusal-pipeline",
+      source: `export const meta = { name: "cause-budget-pipeline" };
+await pipeline(["hi"], (prompt) => agent(prompt, { engine: "codex", label: "blocked" }));
+return { continuedAfterBudgetRefusal: true };`,
       kind: "BudgetExceededError",
       message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
     }
@@ -3453,11 +3469,16 @@ test("the durable surfaces name what ended a failed run, discriminating one caus
           defaultMaxAttempts: 1,
           // A zero ceiling refuses the first codex dispatch outright; the
           // other two cases never reach the budget.
-          ...(terminal.name === "budget-refusal" ? { budgetCeilings: { codex: 0 } } : {})
+          ...(terminal.name.startsWith("budget-refusal") ? { budgetCeilings: { codex: 0 } } : {})
         })
     });
 
     assert.equal(exitCode, 1, `${terminal.name}: ${stderr.text()}`);
+    const envelope = JSON.parse(stdout.text()) as { partial: boolean; reason: string; error: { kind: string; message: string } };
+    assert.equal(envelope.partial, true, terminal.name);
+    assert.equal(envelope.reason, "failed", terminal.name);
+    assert.equal(envelope.error.kind, terminal.kind, `${terminal.name} stdout kind`);
+    assert.match(envelope.error.message, terminal.message, `${terminal.name} stdout message`);
 
     const archive = announcedRunRecord(stderr.text()).archive_path;
     const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8")) as {
@@ -3480,9 +3501,14 @@ test("the durable surfaces name what ended a failed run, discriminating one caus
     const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
       outcome: string;
       error: { kind: string; message: string } | null;
+      workers: { done: number; failed: number; cut_short: number; unsettled: number };
     };
     assert.equal(sentinel.outcome, "failed", terminal.name);
     assert.equal(sentinel.error?.kind, terminal.kind, `${terminal.name} sentinel kind`);
+    assert.match(sentinel.error?.message ?? "", terminal.message, `${terminal.name} sentinel message`);
+    if (terminal.name.startsWith("budget-refusal")) {
+      assert.deepEqual(sentinel.workers, { done: 0, failed: 0, cut_short: 0, unsettled: 0 });
+    }
   }
 });
 

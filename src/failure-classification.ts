@@ -36,7 +36,7 @@ export interface FailureClassification {
 export interface AttemptFailureEvidence {
   engine: EngineName;
   failure: { kind: string; message: string };
-  appServerDiagnostic: { code: number | string | null } | null;
+  appServerDiagnostic: { code: number | string | null; httpStatusCode?: number | null } | null;
   diagnostics: JsonObject | undefined;
 }
 
@@ -57,6 +57,26 @@ const CODEX_AVAILABILITY_CODES = new Map<string, string>([
   ["responseStreamConnectionFailed", "codex.provider-unreachable"],
   ["internalServerError", "codex.provider-internal-error"]
 ]);
+
+/**
+ * Codex conditions that report a failure past its own retries without
+ * naming its cause, forwarding the provider's last HTTP status instead
+ * (`responseTooManyFailedAttempts`: "exceeded retry limit, last status:
+ * 429 Too Many Requests"). The status decides the class: a rate limit or a
+ * provider-side 5xx is availability; any other status, or none, is left
+ * `unclassified` with `rule: null`.
+ */
+const CODEX_STATUS_FORWARDING_CODES = new Set(["responseTooManyFailedAttempts"]);
+
+function codexRuleForHttpStatus(status: number | null | undefined): string | undefined {
+  if (status === 429) {
+    return "codex.rate-limit";
+  }
+  if (typeof status === "number" && status >= 500 && status <= 599) {
+    return "codex.provider-internal-error";
+  }
+  return undefined;
+}
 
 /** Thrown error classes (the attempt's `failure.kind`) whose meaning is fixed by this harness. */
 const CODEX_ERROR_CLASSES = new Map<string, FailureClassification>([
@@ -94,8 +114,21 @@ const CLAUDE_AVAILABILITY_CODES = new Map<string, string>([
   ["overloaded_error", "claude.overloaded"]
 ]);
 
+/**
+ * The availability class moves a call down its fallback chain, where the
+ * same prompt is launched on another target. A kind the engine raises may
+ * therefore sit in that class only when the failure shows the session never
+ * held the prompt: the launch was refused, no session registered, or the
+ * session never wrote a transcript. Once a transcript exists the session
+ * took something, and a prompt that did not arrive as sent is a delivery
+ * failure: retried on the same target, after the engine has stopped that
+ * session or followed its turn to the end, and never a reason to start the
+ * work a second time elsewhere. (A refusal by the API is classed from the
+ * status the transcript records, in `classifyClaudeFailure`: the provider
+ * declined the turn, whatever the session held.)
+ */
 const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
-  // Claude Code refused to start the worker at all. The engine throws
+  // The Claude dispatch command failed before a worker registered. The engine throws
   // it rather than returning a failed turn, so the kind is the thrown class
   // name, as the Codex rows are keyed; the runtime spends no attempt on it —
   // it advances the chain or propagates as a pre-spawn refusal.
@@ -108,8 +141,18 @@ const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
   ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],
   ["claude-blocked", { class: "unclassified", rule: "claude.blocked" }],
   ["claude-valve-error", { class: "unclassified", rule: "claude.valve" }],
+  // Submitted, but the transcript never showed the session holding the text
+  // as sent: evidence about the delivery, not about the engine's availability.
+  ["claude-delivery-error", { class: "unclassified", rule: "claude.delivery" }],
   ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
+]);
+
+// The opencode runner's failure kinds: a run that exited in error, and the
+// harness's own per-turn deadline ending the subprocess.
+const OPENCODE_FAILURE_KINDS = new Map<string, FailureClassification>([
+  ["opencode-run-error", { class: "unclassified", rule: "opencode.run-error" }],
+  ["TurnTimeoutError", { class: "unclassified", rule: "opencode.deadline" }]
 ]);
 
 /**
@@ -128,7 +171,7 @@ export function classifyAttemptFailure(evidence: AttemptFailureEvidence): Failur
     return { class: "unclassified", rule: "run-settlement" };
   }
   if (kind === "EngineShutdownError") {
-    return { class: "unclassified", rule: "run-settlement" };
+    return { class: "unclassified", rule: "engine-shutdown" };
   }
   switch (evidence.engine) {
     case "codex":
@@ -136,22 +179,22 @@ export function classifyAttemptFailure(evidence: AttemptFailureEvidence): Failur
     case "claude":
       return classifyClaudeFailure(kind, evidence.diagnostics);
     case "opencode":
-      return kind === "opencode-run-error"
-        ? { class: "unclassified", rule: "opencode.run-error" }
-        : { class: "unclassified", rule: null };
+      return OPENCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
   }
 }
 
 function classifyCodexFailure(
   kind: string,
-  diagnostic: { code: number | string | null } | null
+  diagnostic: AttemptFailureEvidence["appServerDiagnostic"]
 ): FailureClassification {
   // The app-server's own code outranks the harness's error class: the
   // class says how the failure reached us, the code says what the provider
   // reported, and the provider's word is the classification's evidence.
   const code = diagnostic?.code;
   if (typeof code === "string") {
-    const rule = CODEX_AVAILABILITY_CODES.get(code);
+    const rule = CODEX_STATUS_FORWARDING_CODES.has(code)
+      ? codexRuleForHttpStatus(diagnostic?.httpStatusCode)
+      : CODEX_AVAILABILITY_CODES.get(code);
     if (rule !== undefined) {
       return { class: "availability", rule };
     }

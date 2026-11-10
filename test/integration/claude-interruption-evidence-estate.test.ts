@@ -9,6 +9,7 @@ import test from "node:test";
 import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const fakeTmuxPath = path.resolve("test/fixtures/claude/prompt-editor-tmux.mjs");
 const fakeClaudePath = path.resolve("test/fixtures/claude/blocked-worker-cli.mjs");
 const archiveReaderPath = path.resolve("test/consumers/read-claude-interruption-evidence.mjs");
 // The readiness poll guards against a fixture that never dispatches, not
@@ -31,6 +32,8 @@ test("built CLI archives an interrupted Claude worker's already-served evidence"
     await mkdir(workerHome);
     await writeFile(path.join(binDirectory, "claude"), `#!/usr/bin/env node\nimport ${JSON.stringify(fakeClaudePath)};\n`);
     await chmod(path.join(binDirectory, "claude"), 0o755);
+    await writeFile(path.join(binDirectory, "tmux"), `#!/usr/bin/env node\nimport ${JSON.stringify(fakeTmuxPath)};\n`);
+    await chmod(path.join(binDirectory, "tmux"), 0o755);
 
     const run = await runInterruptedCli(
       [bundledCliPath, "agent", "--engine", "claude", "--max-attempts", "1", "keep working"],
@@ -86,6 +89,8 @@ test("built CLI retains Claude evidence when interruption races the initial disp
     await mkdir(workerHome);
     await writeFile(path.join(binDirectory, "claude"), `#!/usr/bin/env node\nimport ${JSON.stringify(fakeClaudePath)};\n`);
     await chmod(path.join(binDirectory, "claude"), 0o755);
+    await writeFile(path.join(binDirectory, "tmux"), `#!/usr/bin/env node\nimport ${JSON.stringify(fakeTmuxPath)};\n`);
+    await chmod(path.join(binDirectory, "tmux"), 0o755);
 
     const run = await runInterruptedCli(
       [bundledCliPath, "agent", "--engine", "claude", "--max-attempts", "1", "keep working"],
@@ -106,8 +111,8 @@ test("built CLI retains Claude evidence when interruption races the initial disp
       async (child) => {
         child.kill("SIGINT");
         // Give the CLI's signal handler a turn to mark the invocation closed
-        // before allowing the fixture's dispatch command to return its
-        // already-published session handle.
+        // before allowing the fixture's opening delivery to acknowledge its
+        // already-published transcript.
         await new Promise<void>((resolve) => setTimeout(resolve, 50));
         await writeFile(dispatchGatePath, "release\n");
       }
@@ -166,8 +171,10 @@ async function runInterruptedCli(
 async function waitForDispatch(statePath: string, requirePoll: boolean): Promise<void> {
   for (let attempt = 0; attempt < readinessPollAttempts; attempt += 1) {
     try {
-      const state = JSON.parse(await readFile(statePath, "utf8")) as { sessions?: unknown[]; polls?: number };
-      if ((state.sessions?.length ?? 0) > 0 && (!requirePoll || (state.polls ?? 0) > 0)) {
+      const state = JSON.parse(await readFile(statePath, "utf8")) as { sessions?: unknown[] };
+      const polled = await readFile(`${statePath}.polled`).then(() => true, () => false);
+      const delivered = await readFile(`${statePath}.delivered`).then(() => true, () => false);
+      if ((state.sessions?.length ?? 0) > 0 && delivered && (!requirePoll || polled)) {
         return;
       }
     } catch {

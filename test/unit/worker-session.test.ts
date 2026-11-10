@@ -15,6 +15,7 @@ import {
   UnrecognisedAgentOptionError
 } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { parallel, pipeline } from "../../src/hooks.js";
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 
 import type {
@@ -22,13 +23,16 @@ import type {
   ClaudeDispatchOptions,
   ClaudeSessionHandle,
   ClaudeSessionStatus,
-  ValveDelivery
+  ValveSubmission
 } from "../../src/claude-control-plane.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import type { EngineAdapter, EngineAttemptResult } from "../../src/engines.js";
 import type { OpenCodeRunner } from "../../src/opencode-engine.js";
 import type { RuntimeTransport, ThreadStartOptions, TurnResult, TurnStartOptions } from "../../src/types.js";
+
+const ignoreAttemptStart: RunRecordWriter["recordAttemptStart"] = async () => undefined;
+const ignoreAttemptEnd: RunRecordWriter["recordAttemptEnd"] = async () => undefined;
 
 // ---------------------------------------------------------------------------
 // Codex side: a scripted transport. Each runTurn consumes the next response;
@@ -182,6 +186,8 @@ test("a session turn's schema failure corrects in-session, on the same thread", 
 test("per-turn records carry session identity, their own prompts, and dispatch-time writes", async () => {
   const captured: RuntimeAgentRecord[] = [];
   const recorder = {
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => {
       captured.push(structuredClone(record));
     }
@@ -218,6 +224,8 @@ test("per-turn records carry session identity, their own prompts, and dispatch-t
 test("a failed first Codex turn carries served identity into the next dispatch", async () => {
   const captured: RuntimeAgentRecord[] = [];
   const recorder = {
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => {
       captured.push(structuredClone(record));
     }
@@ -422,6 +430,8 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
   const session = runtime.createWorkerSession({ engine: "codex" });
   const captured: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => {
       captured.push(structuredClone(record));
     }
@@ -440,6 +450,40 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
   assert.equal(transport.turns.length, 1);
   assert.equal(captured.length, recordsBefore);
   await runtime.close();
+});
+
+test("identified session budget refusals keep their envelope through combinators before and after opening", async () => {
+  for (const opened of [false, true]) {
+    for (const identity of [true, false]) {
+      const transport = new ScriptedTransport([turnResult("first answer")]);
+      const runtime = codexRuntime(transport, { codexBudget: opened ? 100 : 0 });
+      const session = runtime.createWorkerSession({ engine: "codex", identity, label: "held", phase: "build" });
+      try {
+        if (opened) {
+          await session.send("first turn");
+          runtime.budget.record("codex", spendEvent("thread-1", 100));
+        }
+        const recordBefore = runtime.lastAgentRecord();
+        for (const combinator of ["parallel", "pipeline"]) {
+          const send = () => session.send("blocked turn");
+          const result = combinator === "parallel"
+            ? await parallel([send], () => {})
+            : await pipeline(["go"], [send], () => {});
+          const failure = new BudgetExceededError("codex", opened ? 100 : 0, opened ? 100 : 0);
+          assert.deepEqual(result, [identity ? {
+            label: "held", phase: "build", output: null, failure: { message: failure.message }
+          } : null]);
+        }
+        // Direct sends still reject, and admission never opens or records a turn.
+        await assert.rejects(session.send("blocked directly"), BudgetExceededError);
+        assert.equal(transport.openedThreads.length, opened ? 1 : 0);
+        assert.equal(transport.turns.length, opened ? 1 : 0);
+        assert.equal(runtime.lastAgentRecord(), recordBefore);
+      } finally {
+        await runtime.close();
+      }
+    }
+  }
 });
 
 test("turns are strictly sequential: a send during an unsettled turn throws", async () => {
@@ -477,8 +521,8 @@ test("session creation is validated pre-spawn: schema and unknown keys are rejec
     UnrecognisedAgentOptionError
   );
   assert.throws(
-    () => runtime.createWorkerSession({ engine: "codex", identity: true } as never),
-    UnrecognisedAgentOptionError
+    () => runtime.createWorkerSession({ engine: "codex", identity: "yes" } as never),
+    InvalidAgentOptionValueError
   );
   // Effort is fixed at creation and judged there against the canonical
   // vocabulary, before the held worker spawns.
@@ -489,6 +533,85 @@ test("session creation is validated pre-spawn: schema and unknown keys are rejec
   const session = runtime.createWorkerSession({ engine: "codex" });
   await assert.rejects(session.send("fine", { effort: "high" } as never), UnrecognisedAgentOptionError);
   assert.equal(transport.openedThreads.length, 0);
+  await runtime.close();
+});
+
+test("an identified held session distinguishes a failed schema turn from a valid null answer", async () => {
+  const transport = new ScriptedTransport([turnResult("{}"), turnResult("null")]);
+  const runtime = codexRuntime(transport);
+  let session: ReturnType<EnsembleRuntime["createWorkerSession"]> | undefined;
+  assert.doesNotThrow(() => {
+    session = runtime.createWorkerSession({ engine: "codex", identity: true, label: "held", maxAttempts: 1 });
+  });
+  assert.ok(session);
+  runtime.notePhase("Check");
+  const first = await session.send("fail", { schema: { type: "null" } }) as {
+    label: string | null; phase: string | null; output: unknown; failure: { message: string } | null;
+  };
+  runtime.notePhase("Answer");
+  const second = await session.send("answer null", { schema: { type: "null" } });
+  assert.equal(first.label, "held");
+  assert.equal(first.phase, "Check");
+  assert.equal(first.output, null);
+  assert.match(first.failure?.message ?? "", /schema-validation/);
+  assert.deepEqual(second, { label: "held", phase: "Answer", output: null, failure: null });
+  assert.deepEqual(transport.turns.map((turn) => turn.threadId), ["thread-1", "thread-1"]);
+  await runtime.close();
+});
+
+test("identified session setup failures retain their envelope through both combinators", async () => {
+  for (const failureAt of ["placement", "session"]) {
+    for (const nonError of [false, true]) {
+      const transport = new ScriptedTransport([]);
+      const adapter = new CodexEngineAdapter({ transport, concurrency: 1 });
+      const fail = () => { throw nonError ? "setup failed" : new Error("setup failed"); };
+      if (failureAt === "session") adapter.createSession = fail;
+      const runtime = new EnsembleRuntime({
+        engines: new EngineRegistry([adapter]),
+        defaultMaxAttempts: 1,
+        worktreeManager: { create: fail, finish: async () => { throw new Error("no worktree was created"); } }
+      });
+      try {
+        runtime.notePhase("build");
+        for (const identity of [true, false]) {
+          for (const combinator of ["parallel", "pipeline"]) {
+            const session = runtime.createWorkerSession({
+              engine: "codex", identity, label: "held",
+              ...(failureAt === "placement" ? { isolation: "worktree" } : {})
+            });
+            const send = () => session.send("go");
+            const result = combinator === "parallel"
+              ? await parallel([send], () => {})
+              : await pipeline(["go"], [send], () => {});
+            assert.deepEqual(result, [identity ? {
+              label: "held", phase: "build", output: null, failure: { message: "setup failed" }
+            } : null]);
+            assert.equal(runtime.lastAgentRecord()?.attempts.length, 0);
+          }
+        }
+        assert.equal(transport.openedThreads.length, 0);
+      } finally {
+        await runtime.close();
+      }
+    }
+  }
+});
+
+test("a fresh handle reports whether staleness marking is enabled", async () => {
+  const runtime = codexRuntime(new ScriptedTransport([]));
+  const marked = runtime.createWorkerSession({ engine: "codex" });
+  const disabled = runtime.createWorkerSession({ engine: "codex", stalenessMark: false });
+  assert.equal(marked.stale, false);
+  assert.equal(disabled.stale, false);
+  assert.equal(marked.stalenessMark, true);
+  assert.equal(disabled.stalenessMark, false);
+  await runtime.close();
+});
+
+test("a disabled staleness mark has no active threshold on its handle", async () => {
+  const runtime = codexRuntime(new ScriptedTransport([]));
+  const disabled = runtime.createWorkerSession({ engine: "codex", stalenessMark: false });
+  assert.equal(disabled.staleAfterMs, null);
   await runtime.close();
 });
 
@@ -545,20 +668,20 @@ test("the staleness mark trips at the threshold, stays off when disabled, and ne
   await runtime.close();
 });
 
-test("a machine-declared Claude cache TTL sets the staleness cliff, so mark and cache share one clock", async () => {
-  // create() wires the declared worker environment through to the session
-  // threshold; construction is lazy, so no engine process ever starts.
+test("Claude staleness uses one hour unless the library option overrides it", async () => {
+  // API-billing TTL variables do not change the subscription threshold.
+  // Construction is lazy, so no engine process ever starts.
   const declared = await EnsembleRuntime.create({
     workerEnvironment: { claude: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" } }
   });
-  assert.equal(declared.createWorkerSession({ engine: "claude" }).staleAfterMs, 300_000);
+  assert.equal(declared.createWorkerSession({ engine: "claude" }).staleAfterMs, 3_600_000);
   await declared.close();
 
   const undeclared = await EnsembleRuntime.create({});
   assert.equal(undeclared.createWorkerSession({ engine: "claude" }).staleAfterMs, 3_600_000);
   await undeclared.close();
 
-  // The explicit library option still outranks the declaration.
+  // The explicit library option controls the advisory threshold.
   const explicit = await EnsembleRuntime.create({
     workerEnvironment: { claude: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" } },
     claudeSessionStaleAfterMs: 1_000
@@ -570,13 +693,28 @@ test("a machine-declared Claude cache TTL sets the staleness cliff, so mark and 
 // ---------------------------------------------------------------------------
 // Claude side: the follow-up turn rides the valve into the *same* session.
 // The scripted control plane reproduces the live daemon's settle quirk; a
-// dispatch consumes one scripted turn, each steer appends the next.
+// dispatch consumes one scripted turn, each steer the next. A steered
+// message reaches the transcript as the session's own user row, as Claude
+// Code records a submission, so the engine's receipt is read from the same
+// evidence it is read from live.
 // ---------------------------------------------------------------------------
 
 interface ScriptedClaudeTurn {
   text?: string;
   /** Script this turn as Claude Code's synthetic API refusal, annotated as the live transcript annotates it. */
   apiError?: { status: number; code: string };
+  /**
+   * How the message that draws this turn fares: the opening prompt for the
+   * dispatch's turn, the steered message for every later one. Omitted: it
+   * arrives exactly as sent. A function: the session records the text it
+   * returns — altered in transit. `"withheld"`: the valve submits it but
+   * nothing reaches the transcript until `land()`. `"refused"`: the valve
+   * never submits it. The last two are the valve's alone; a dispatch
+   * ignores them.
+   */
+  arrival?: ((sent: string) => string) | "withheld" | "refused";
+  /** How many polls the session stays busy on this turn before its reply is written. Default 0. */
+  busyPolls?: number;
 }
 
 class SessionFakeControlPlane implements ClaudeControlPlane {
@@ -584,6 +722,8 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
   stopCount = 0;
   readonly dispatched: ClaudeDispatchOptions[] = [];
   readonly steered: string[] = [];
+  /** For each steer, whether the session was still inside a turn when the valve submitted. */
+  readonly steeredMidTurn: boolean[] = [];
 
   #dir: string;
   #turns: ScriptedClaudeTurn[];
@@ -591,6 +731,9 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
   #sessionSeq = 0;
   #path: string | null = null;
   #present = false;
+  /** The turn the session is inside: its reply is written once the busy polls run out. */
+  #open: { turn: ScriptedClaudeTurn; busyPolls: number } | null = null;
+  #withheld: { message: string; turn: ScriptedClaudeTurn } | null = null;
 
   constructor(dir: string, turns: ScriptedClaudeTurn[], options: { tmux?: boolean } = {}) {
     this.#dir = dir;
@@ -605,13 +748,24 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
     const sessionId = `fake-session-${this.#sessionSeq}`;
     this.#path = path.join(this.#dir, `${sessionId}.jsonl`);
     this.#present = true;
-    await writeFile(this.#path, this.#nextLine());
+    // The launch submits the opening prompt, and the new session records it
+    // as any submission is recorded: the opening has a receipt too.
+    await writeFile(this.#path, "");
+    const turn = this.#turns.shift() ?? {};
+    await this.#receive(typeof turn.arrival === "function" ? turn.arrival(options.prompt) : options.prompt, turn);
     return { id: `fake-${this.#sessionSeq}`, sessionId, name: options.name, cwd: options.cwd };
   }
 
   async poll(): Promise<ClaudeSessionStatus> {
     if (!this.#present) {
       return { status: "absent", state: "unknown", present: false };
+    }
+    if (this.#open !== null) {
+      this.#open.busyPolls -= 1;
+      if (this.#open.busyPolls <= 0) {
+        await this.#reply();
+      }
+      return { status: "busy", state: "working", present: true };
     }
     // The live settle quirk: idle status, state stuck at "working".
     return { status: "idle", state: "working", present: true };
@@ -621,12 +775,48 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
     return this.#path;
   }
 
-  async steer(_handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery> {
+  async steer(_handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
     this.steered.push(message);
-    if (this.#path !== null) {
-      await appendFile(this.#path, this.#nextLine());
+    this.steeredMidTurn.push(this.#open !== null);
+    const turn = this.#turns.shift() ?? {};
+    if (turn.arrival === "refused") {
+      return { submitted: false, reason: "fake valve refused" };
     }
-    return { delivered: true };
+    if (turn.arrival === "withheld") {
+      this.#withheld = { message, turn };
+      return { submitted: true };
+    }
+    await this.#receive(turn.arrival === undefined ? message : turn.arrival(message), turn);
+    return { submitted: true };
+  }
+
+  /** The withheld submission reaches the session now, exactly as sent. */
+  async land(): Promise<void> {
+    const withheld = this.#withheld;
+    this.#withheld = null;
+    if (withheld !== null) {
+      await this.#receive(withheld.message, withheld.turn);
+    }
+  }
+
+  /** The session records a submission as its own user row and starts the turn it draws. */
+  async #receive(text: string, turn: ScriptedClaudeTurn): Promise<void> {
+    if (this.#path === null) {
+      return;
+    }
+    await appendFile(this.#path, `${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`);
+    this.#open = { turn, busyPolls: turn.busyPolls ?? 0 };
+    if (this.#open.busyPolls <= 0) {
+      await this.#reply();
+    }
+  }
+
+  async #reply(): Promise<void> {
+    const open = this.#open;
+    this.#open = null;
+    if (open !== null && this.#path !== null) {
+      await appendFile(this.#path, replyLine(open.turn));
+    }
   }
 
   async stop(): Promise<void> {
@@ -638,30 +828,31 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
     return this.#tmux;
   }
 
-  #nextLine(): string {
-    const turn = this.#turns.shift();
-    if (turn?.text === undefined) {
-      return "";
-    }
-    if (turn.apiError !== undefined) {
-      return `${JSON.stringify({
-        type: "assistant",
-        message: {
-          role: "assistant",
-          model: "<synthetic>",
-          content: [{ type: "text", text: `API Error: Request rejected (${turn.apiError.status})` }],
-          stop_reason: "stop_sequence"
-        },
-        isApiErrorMessage: true,
-        apiErrorStatus: turn.apiError.status,
-        error: turn.apiError.code
-      })}\n`;
-    }
+}
+
+/** The assistant row a scripted turn ends with, or nothing for a turn scripted without a reply. */
+function replyLine(turn: ScriptedClaudeTurn | undefined): string {
+  if (turn?.text === undefined) {
+    return "";
+  }
+  if (turn.apiError !== undefined) {
     return `${JSON.stringify({
       type: "assistant",
-      message: { role: "assistant", content: [{ type: "text", text: turn.text }], stop_reason: "end_turn" }
+      message: {
+        role: "assistant",
+        model: "<synthetic>",
+        content: [{ type: "text", text: `API Error: Request rejected (${turn.apiError.status})` }],
+        stop_reason: "stop_sequence"
+      },
+      isApiErrorMessage: true,
+      apiErrorStatus: turn.apiError.status,
+      error: turn.apiError.code
     })}\n`;
   }
+  return `${JSON.stringify({
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "text", text: turn.text }], stop_reason: "end_turn" }
+  })}\n`;
 }
 
 async function withClaudeRuntime(
@@ -717,16 +908,71 @@ test("a claude session's follow-up turn steers the created session, never a fres
   });
 });
 
-test("a claude session is dispatched with the 1-hour cache TTL; a one-shot worker is not", async () => {
+for (const prompt of [
+  "\n\t wanted fixture\r\n \t\n",
+  "\uFEFF\u00A0wanted fixture\u2028\u2003",
+  "\t wanted fixture",
+  "wanted fixture\n",
+  "\n<ensemble_task_0>literal</ensemble_task_0> ensemble_task_1\n"
+]) {
+  for (const schema of [undefined, { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }]) {
+    test(`a Claude follow-up preserves edge whitespace in one attempt: ${JSON.stringify(prompt)}, schema ${schema !== undefined}`, async () => {
+      await withClaudeRuntime(
+        [{ text: "first reply" }, { text: '{"ok":true}', arrival: sent => sent.trim() }],
+        async (runtime, controlPlane) => {
+          const records = captureRecords(runtime);
+          const held = runtime.createWorkerSession({ engine: "claude" });
+          await held.send("orient yourself");
+          assert.deepEqual(await held.send(prompt, schema === undefined ? {} : { schema }), schema === undefined ? '{"ok":true}' : { ok: true });
+          const sent = controlPlane.steered[0]!;
+          assert.equal(sent.trim(), sent);
+          const boundary = /\n<(ensemble_task_\d+)>/.exec(sent);
+          assert.ok(boundary);
+          const tag = boundary[1]!;
+          assert.equal(prompt.includes(tag), false);
+          assert.deepEqual(Buffer.from(sent.slice(boundary.index + boundary[0].length, -`</${tag}>`.length)), Buffer.from(prompt));
+          assert.equal(records.at(-1)?.attempts.length, 1);
+          assert.equal(records.at(-1)?.attempts[0]?.failure, null);
+          assert.equal(controlPlane.steered.length, 1);
+          assert.equal(controlPlane.dispatchCount, 1);
+          await runtime.close();
+        }
+      );
+    });
+  }
+}
+
+test("a whitespace follow-up's replacement retains its boundary under native trimming", async () => {
+  await withClaudeRuntime(
+    [{ text: "first reply" }, { text: "altered reply", arrival: sent => sent.replace("wanted", "warped"), busyPolls: 3 },
+      { text: "replacement reply", arrival: sent => sent.trim() }],
+    async (runtime, controlPlane) => {
+      const records = captureRecords(runtime);
+      const held = runtime.createWorkerSession({ engine: "claude" });
+      await held.send("orient yourself");
+      const prompt = "\n\t wanted fixture \n";
+      assert.equal(await held.send(prompt), "replacement reply");
+      assert.equal(controlPlane.steered.length, 2);
+      assert.match(controlPlane.steered[1]!, REPLACEMENT);
+      assert.ok(controlPlane.steered[1]!.endsWith(`\n\n${controlPlane.steered[0]}`));
+      assert.ok(controlPlane.steered[1]!.includes(prompt));
+      assert.deepEqual(controlPlane.steeredMidTurn, [false, false]);
+      assert.deepEqual(records.at(-1)?.attempts.map(attempt => attempt.failure?.kind ?? null), ["claude-delivery-error", null]);
+      await runtime.close();
+    }
+  );
+});
+
+test("Claude sessions and one-shot workers dispatch without a cache TTL", async () => {
   await withClaudeRuntime([{ text: "session reply" }, { text: "one-shot reply" }], async (runtime, controlPlane) => {
     const session = runtime.createWorkerSession({ engine: "claude" });
     await session.send("loiter");
     await runtime.agent("one and done", { engine: "claude" });
 
-    assert.equal(controlPlane.dispatched[0]?.cacheTtl, "1h");
-    // The negative arm is the discriminating case: a blanket raise would
-    // spend the write premium on workers that gain nothing from it.
-    assert.equal(controlPlane.dispatched[1]?.cacheTtl, undefined);
+    assert.equal(controlPlane.dispatched.length, 2);
+    for (const dispatch of controlPlane.dispatched) {
+      assert.equal(Object.hasOwn(dispatch, "cacheTtl"), false);
+    }
     await runtime.close();
   });
 });
@@ -783,6 +1029,199 @@ test("without the valve a follow-up fails loud — the session never silently re
   );
 });
 
+// ---------------------------------------------------------------------------
+// A follow-up is delivered when its receipt verifies, not when the valve
+// submits it. These are the held session's rules for a submission whose
+// receipt did not verify: what the attempt records, and what the retry may
+// send. Each scripts how the steered message fares (`arrival`) and reads the
+// valve's own log — what was submitted, and whether the session was inside a
+// turn at that moment.
+// ---------------------------------------------------------------------------
+
+/** Capture every record write, and let a test act at the start of an attempt. */
+function captureRecords(
+  runtime: EnsembleRuntime,
+  onAttemptStart: (attempt: number) => Promise<void> = async () => undefined
+): RuntimeAgentRecord[] {
+  const captured: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAttemptStart: async (_id: number, attempt: number) => onAttemptStart(attempt),
+    recordAttemptEnd: ignoreAttemptEnd,
+    recordAgent: async (record: RuntimeAgentRecord) => {
+      captured.push(structuredClone(record));
+    }
+  } as unknown as RunRecordWriter);
+  return captured;
+}
+
+const REPLACEMENT = /^An earlier copy of the message below was submitted to you but did not arrive as sent/;
+
+test("a follow-up the session received altered is never submitted again as it was: its turn ends first, then a replacement goes", async () => {
+  // Alter the task content, rather than the native submission boundary.
+  const altered = (sent: string): string => sent.replace("wanted", "warped");
+  await withClaudeRuntime(
+    [
+      { text: "first reply" },
+      { text: "reply to the altered copy", arrival: altered, busyPolls: 3 },
+      { text: "reply to the altered replacement", arrival: altered, busyPolls: 3 },
+      { text: "third reply" }
+    ],
+    async (runtime, controlPlane) => {
+      const records = captureRecords(runtime);
+      const session = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await session.send("orient yourself"), "first reply");
+
+      // The session answered both copies, and neither reply is the turn's
+      // value: a reply to text nobody sent answers nothing.
+      assert.equal(await session.send("wanted fixture"), null);
+
+      // The discriminating assertions. Two submissions, and the second is
+      // not the first again: it says it replaces an earlier copy.
+      assert.equal(controlPlane.steered.length, 2);
+      assert.equal(controlPlane.steered[0], "wanted fixture");
+      assert.match(controlPlane.steered[1] ?? "", REPLACEMENT);
+      assert.ok(controlPlane.steered[1]?.endsWith("\n\nwanted fixture"));
+      // And nothing was submitted into a turn still running: the altered
+      // turn was followed to its end before the retry sent anything.
+      assert.deepEqual(controlPlane.steeredMidTurn, [false, false]);
+
+      // Each attempt is a delivery failure that says so, keeping the text
+      // the altered turn produced.
+      const settled = records.at(-1);
+      assert.deepEqual(settled?.attempts.map((attempt) => attempt.failure?.kind), ["claude-delivery-error", "claude-delivery-error"]);
+      assert.deepEqual(settled?.attempts.map((attempt) => attempt.rawOutput), ["reply to the altered copy", "reply to the altered replacement"]);
+      assert.match(
+        settled?.attempts[0]?.failure?.message ?? "",
+        /^the follow-up turn was submitted, but the session received different text: sent 14 UTF-8 bytes, sha256 [0-9a-f]{64}; received 14 UTF-8 bytes, sha256 [0-9a-f]{64}$/
+      );
+
+      // The session is at a turn boundary and takes its next turn as usual.
+      assert.equal(await session.send("carry on"), "third reply");
+      assert.equal(controlPlane.steered[2], "carry on");
+      assert.equal(controlPlane.dispatchCount, 1);
+      await runtime.close();
+    }
+  );
+});
+
+test("a replacement that arrives as sent answers the turn", async () => {
+  await withClaudeRuntime(
+    [
+      { text: "first reply" },
+      { text: "reply to the altered copy", arrival: (sent) => sent.replace("tests", "tsets") },
+      { text: "reply to the replacement" }
+    ],
+    async (runtime, controlPlane) => {
+      const session = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await session.send("orient yourself"), "first reply");
+
+      assert.equal(await session.send("now fix the tests"), "reply to the replacement");
+      assert.equal(controlPlane.steered.length, 2);
+      assert.match(controlPlane.steered[1] ?? "", REPLACEMENT);
+      await runtime.close();
+    }
+  );
+});
+
+test("a submitted follow-up with no receipt is read again before anything is sent, and collected once it has landed", async () => {
+  await withClaudeRuntime(
+    [{ text: "first reply" }, { text: "late reply", arrival: "withheld" }],
+    async (runtime, controlPlane) => {
+      // The submission lands between the attempts: after the first gave up
+      // on its receipt, before the second does anything.
+      const records = captureRecords(runtime, async (attempt) => {
+        if (attempt === 2) {
+          await controlPlane.land();
+        }
+      });
+      const session = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await session.send("orient yourself"), "first reply");
+
+      assert.equal(await session.send("now fix the tests"), "late reply");
+
+      // One submission, ever: the retry found the first one delivered and
+      // collected its reply instead of sending a second copy.
+      assert.deepEqual(controlPlane.steered, ["now fix the tests"]);
+      const settled = records.at(-1);
+      assert.equal(settled?.attempts.length, 2);
+      assert.equal(settled?.attempts[0]?.failure?.kind, "claude-delivery-error");
+      assert.match(settled?.attempts[0]?.failure?.message ?? "", /^the follow-up turn was submitted, but no receipt for it appeared in the transcript within 200ms/);
+      await runtime.close();
+    }
+  );
+});
+
+test("a submitted follow-up that never lands is replaced, not repeated", async () => {
+  await withClaudeRuntime(
+    [{ text: "first reply" }, { arrival: "withheld" }, { text: "reply to the replacement" }],
+    async (runtime, controlPlane) => {
+      const session = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await session.send("orient yourself"), "first reply");
+
+      assert.equal(await session.send("now fix the tests"), "reply to the replacement");
+      assert.equal(controlPlane.steered.length, 2);
+      assert.match(controlPlane.steered[1] ?? "", REPLACEMENT);
+      await runtime.close();
+    }
+  );
+});
+
+test("a follow-up the valve never submitted is sent again as it was", async () => {
+  await withClaudeRuntime(
+    [{ text: "first reply" }, { arrival: "refused" }, { text: "second reply" }],
+    async (runtime, controlPlane) => {
+      const records = captureRecords(runtime);
+      const session = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await session.send("orient yourself"), "first reply");
+
+      // Nothing reached the session, so there is no earlier copy to replace.
+      assert.equal(await session.send("now fix the tests"), "second reply");
+      assert.deepEqual(controlPlane.steered, ["now fix the tests", "now fix the tests"]);
+      assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "claude-valve-error");
+      await runtime.close();
+    }
+  );
+});
+
+test("a held session whose opening prompt arrived altered is never launched again: its turn ends first, then the whole opening goes again through the valve", async () => {
+  await withClaudeRuntime(
+    [
+      { text: "reply to the altered opening", arrival: (sent) => sent.replace("orient", "oriment"), busyPolls: 3 },
+      { text: "reply to the replacement" },
+      { text: "second reply" }
+    ],
+    async (runtime, controlPlane) => {
+      const records = captureRecords(runtime);
+      const session = runtime.createWorkerSession({ engine: "claude" });
+
+      assert.equal(await session.send("orient yourself"), "reply to the replacement");
+
+      // One launch, ever: the session that took the altered opening is the
+      // session that answers, so its context is never split across two.
+      assert.equal(controlPlane.dispatchCount, 1);
+      // The replacement repeats everything the launch carried — the
+      // preamble a later turn's message leaves out, not the task alone —
+      // and went in only once the altered turn had ended.
+      const opening = controlPlane.dispatched[0]?.prompt ?? "";
+      assert.ok(opening.length > "orient yourself".length);
+      assert.equal(controlPlane.steered.length, 1);
+      assert.match(controlPlane.steered[0] ?? "", REPLACEMENT);
+      assert.ok(controlPlane.steered[0]?.endsWith(`\n\n${opening}`));
+      assert.deepEqual(controlPlane.steeredMidTurn, [false]);
+
+      const settled = records.at(-1);
+      assert.deepEqual(settled?.attempts.map((attempt) => attempt.failure?.kind ?? null), ["claude-delivery-error", null]);
+      assert.match(settled?.attempts[0]?.failure?.message ?? "", /^the opening prompt was submitted, but the session received different text: /);
+      assert.equal(settled?.attempts[0]?.rawOutput, "reply to the altered opening");
+
+      // The session is at a turn boundary and takes its next turn as usual.
+      assert.equal(await session.send("carry on"), "second reply");
+      assert.equal(controlPlane.steered[1], "carry on");
+      await runtime.close();
+    }
+  );
+});
+
 test("the run's end closes every held session, and later sends throw", async () => {
   await withClaudeRuntime([{ text: "only reply" }], async (runtime, controlPlane) => {
     const session = runtime.createWorkerSession({ engine: "claude" });
@@ -834,6 +1273,8 @@ test("a session's chain applies to the creating turn alone, and the answering ta
     async (runtime, controlPlane) => {
       const records: RuntimeAgentRecord[] = [];
       runtime.setRunRecorder({
+        recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
         recordAgent: async (record) => {
           records.push(structuredClone(record));
         }
@@ -884,4 +1325,36 @@ test("a session's chain applies to the creating turn alone, and the answering ta
     },
     { alongside: [codex], staleAfterMs: 7_000, codexStaleAfterMs: 60_000 }
   );
+});
+
+
+test("held turns publish separate live records and ignore prior-turn callbacks", async () => {
+  const transport = new ScriptedTransport([turnResult("first"), turnResult("second")]);
+  const starts: Array<[number, number]> = [];
+  const writes: Array<[number, number, unknown]> = [];
+  const callbacks: TurnStartOptions[] = [];
+  const runTurn = transport.runTurn.bind(transport);
+  transport.runTurn = async (thread, prompt, options) => {
+    callbacks.at(-1)?.onTranscriptEvent?.({ stale: true });
+    callbacks.push(options);
+    options.onTranscriptEvent?.({ prompt });
+    return runTurn(thread, prompt, options);
+  };
+  const runtime = codexRuntime(transport);
+  runtime.setRunRecorder({
+    recordAgent: async () => undefined,
+    recordAttemptEnd: ignoreAttemptEnd,
+    recordAttemptStart: async (id: number, attempt: number) => { starts.push([id, attempt]); },
+    appendCodexTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); }
+  } as unknown as RunRecordWriter);
+  const session = runtime.createWorkerSession({ engine: "codex" });
+  try {
+    assert.equal(await session.send("first"), "first");
+    assert.equal(await session.send("second"), "second");
+    assert.deepEqual(starts, [[1, 1], [2, 1]], "each held turn must publish a distinct agent record");
+    assert.deepEqual(writes, [[1, 1, { prompt: "first" }], [2, 1, { prompt: "second" }]]);
+  } finally {
+    await session.close();
+    await runtime.close();
+  }
 });

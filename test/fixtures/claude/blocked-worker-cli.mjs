@@ -9,12 +9,12 @@
  * with it.
  *
  * The fixture supplies the condition and nothing else: it speaks the real
- * control plane's three surfaces (`--bg` dispatch on stdin, `agents --json`
+ * control plane's three surfaces (`--bg` empty dispatch, prompt-editor input, `agents --json`
  * roster, `stop`/`rm` teardown) and writes a genuine session transcript at
  * the real path, so the built CLI runs its own dispatch, poll, evidence and
  * archive paths unmodified. The dispatched worker writes a usage-bearing
  * assistant entry that is still mid-turn (`stop_reason: tool_use`), then
- * reports `blocked` for ever; with no reply valve on PATH the engine's
+ * reports `blocked` for ever; with recovery disabled by the tmux fixture the engine's
  * blocked-recovery bound is spent immediately and the turn fails carrying
  * the spend the transcript proves.
  *
@@ -24,8 +24,8 @@
  *   JSON; defaults to 120 input / 30 output / 9 cache-read.
  * - `ENSEMBLE_FAKE_CLAUDE_GENERATING` — leave the worker generating after
  *   its transcript is written, so the caller can interrupt the real CLI.
- * - `ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE` — when set, hold the dispatch
- *   command open after publishing its session and transcript until this file
+ * - `ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE` — when set, hold opening
+ *   delivery open after publishing its transcript until this file
  *   exists. This supplies the initial-dispatch interruption race. It requires
  *   `ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE_TIMEOUT_MS`, supplied by the consumer
  *   from its own readiness budget.
@@ -107,8 +107,31 @@ async function waitForDispatchGate() {
 
 async function dispatch() {
   const name = flagValue("--name") ?? "unnamed";
-  const prompt = await readStdin();
+  await readStdin();
   const sessionId = randomUUID();
+
+  const state = await readState();
+  const id = `bg-${state.sessions.length + 1}`;
+  state.sessions.push({
+    id,
+    sessionId,
+    name,
+    kind: "background",
+    cwd: process.cwd(),
+    pid: process.pid,
+    model: flagValue("--model") ?? "claude-fake-worker",
+    status: "idle",
+    state: "done"
+  });
+  await writeState(state);
+  process.stdout.write(`${id}\n`);
+}
+
+async function receive(file) {
+  const prompt = await readFile(file, "utf8");
+  const state = await readState();
+  const session = state.sessions[0];
+  const sessionId = session.sessionId;
   const projectDir = path.join(homedir(), ".claude", "projects", "fake-worker-project");
   await mkdir(projectDir, { recursive: true });
   const transcript = [
@@ -117,7 +140,7 @@ async function dispatch() {
       type: "assistant",
       message: {
         role: "assistant",
-        model: flagValue("--model") ?? "claude-fake-worker",
+        model: session.model,
         content: [{ type: "text", text: "started work, calling a tool" }],
         stop_reason: "tool_use",
         usage: usageBlock()
@@ -129,27 +152,21 @@ async function dispatch() {
     `${transcript.map((entry) => JSON.stringify(entry)).join("\n")}\n`
   );
 
-  const state = await readState();
-  const id = `bg-${state.sessions.length + 1}`;
-  state.sessions.push({
-    id,
-    sessionId,
-    name,
-    kind: "background",
-    cwd: process.cwd(),
-    status: "busy",
-    state: isGenerating() ? "working" : "blocked",
-    ...(isGenerating() ? {} : { waitingFor: "a permission prompt the fixture never answers" })
-  });
+  session.status = "busy";
+  session.state = isGenerating() ? "working" : "blocked";
+  if (!isGenerating()) session.waitingFor = "a permission prompt the fixture never answers";
   await writeState(state);
-  process.stdout.write(`${id}\n`);
+  await writeFile(`${statePath}.delivered`, "");
   await waitForDispatchGate();
 }
 
 async function roster() {
   const state = await readState();
-  state.polls = (state.polls ?? 0) + 1;
-  await writeState(state);
+  // Roster reads can overlap dispatch. Keep readiness separate so a stale
+  // empty snapshot cannot overwrite a session that dispatch just published.
+  if (state.sessions.length > 0) {
+    await writeFile(`${statePath}.polled`, "");
+  }
   process.stdout.write(`${JSON.stringify(state.sessions)}\n`);
 }
 
@@ -180,6 +197,8 @@ async function remove(id) {
 
 if (argv.includes("--bg")) {
   await dispatch();
+} else if (argv[0] === "receive") {
+  await receive(argv[1]);
 } else if (argv[0] === "agents") {
   await roster();
 } else if (argv[0] === "stop") {

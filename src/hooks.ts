@@ -1,5 +1,5 @@
 import { assertValidAgentOptions } from "./engine-option-validation.js";
-import { PreSpawnAuthorError, agentIdentityOf } from "./errors.js";
+import { PreSpawnAuthorError, agentIdentityOf, isRunEnding } from "./errors.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 
 import type {
@@ -26,6 +26,13 @@ export interface WorkflowRuntime {
    * it validates against the module default, as before.
    */
   readonly openCodeModelRegistry?: OpenCodeModelRegistry | undefined;
+  /**
+   * Holds a combinator's promise open from creation to settlement as the
+   * runtime holds `agent()`'s own, so the run's ending rejecting it is
+   * marked handled at close when the script never awaited it. Optional: a
+   * runtime without it leaves an un-awaited combinator's rejection to Node.
+   */
+  trackCallPromise?: <T>(promise: Promise<T>) => Promise<T>;
   // The canonical overload set, not a Parameters/ReturnType projection of
   // the runtime method: TypeScript resolves those utility types to the
   // *last* overload alone, which is exactly the collapse that hid the
@@ -36,7 +43,7 @@ export interface WorkflowRuntime {
    * Optional so a minimal WorkflowRuntime (a test fake, an embedding) stays
    * valid; the `session` hook fails loud, pre-spawn, when it is absent.
    */
-  createWorkerSession?: (options: WorkerSessionOptions) => WorkerSession;
+  createWorkerSession?: (options: WorkerSessionOptions) => WorkerSession<boolean>;
   /**
    * Runtime holds; see EnsembleRuntime.raiseHold. Optional on the
    * same terms as createWorkerSession; the `hold` hook fails loud when
@@ -74,7 +81,11 @@ export interface WorkflowHooks {
    * as for `agent()`: the session's engine block supplies model, effort,
    * and the fallback chain where the call leaves them unset.
    */
-  session: (options: WorkerSessionOptions) => WorkerSession;
+  session: {
+    (options: WorkerSessionOptions & { identity: true }): WorkerSession<true>;
+    (options: WorkerSessionOptions & { identity?: false }): WorkerSession<false>;
+    (options: WorkerSessionOptions): WorkerSession<boolean>;
+  };
   /**
    * Raise a hold and await its decision: content and accepted
    * verdicts in, the decider's verdict (and note) back, from a decision
@@ -115,6 +126,11 @@ export function createWorkflowHooks(options: {
     options.log(message);
   };
   const defaults = options.defaults ?? {};
+  // The combinators' promises are the script's to await or not; the run's
+  // ending rejects them (hooks rethrow it), so they are held open like a
+  // call's own promise and marked handled at close when nothing awaits.
+  const track = <T,>(promise: Promise<T>): Promise<T> =>
+    options.runtime.trackCallPromise !== undefined ? options.runtime.trackCallPromise(promise) : promise;
 
   // The defaults-merging wrapper restates the canonical signatures so each
   // call site narrows exactly as a direct runtime call would; the merged
@@ -130,7 +146,7 @@ export function createWorkflowHooks(options: {
 
   return {
     agent: agentWithDefaults,
-    session: (sessionOptions) => {
+    session: ((sessionOptions: WorkerSessionOptions) => {
       const createWorkerSession = options.runtime.createWorkerSession;
       if (createWorkerSession === undefined) {
         // Pre-spawn and loud, like every capability the runtime cannot
@@ -138,7 +154,7 @@ export function createWorkflowHooks(options: {
         throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
       }
       return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions));
-    },
+    }) as WorkflowHooks["session"],
     hold: (holdOptions) => {
       const raiseHold = options.runtime.raiseHold;
       if (raiseHold === undefined) {
@@ -147,8 +163,8 @@ export function createWorkflowHooks(options: {
       return raiseHold.call(options.runtime, holdOptions);
     },
     workflow: options.workflow,
-    parallel: (thunks) => parallel(thunks, writeLog, options.presentError),
-    pipeline: (items, ...stages) => pipeline(items, stages, writeLog, options.presentError),
+    parallel: (thunks) => track(parallel(thunks, writeLog, options.presentError)),
+    pipeline: (items, ...stages) => track(pipeline(items, stages, writeLog, options.presentError)),
     phase: (title) => {
       options.runtime.notePhase(title);
       writeLog(`[phase] ${title}`);
@@ -187,7 +203,10 @@ export async function parallel<T>(
         // The exempt family, not one class: any pre-spawn author error —
         // a rejected option, an unresolvable workflow() reference, a
         // nesting violation — fails the run rather than nulling the slot.
-        if (error instanceof PreSpawnAuthorError) {
+        // The run's own ending passes through likewise: a leg the shutdown
+        // tore down is not a worker failing, and collapsing it would let
+        // the body resume past this await and act on a run that has ended.
+        if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
           throw error;
         }
         presentError?.(error);
@@ -232,7 +251,9 @@ export async function pipeline<Item>(
         try {
           previous = await stage(previous, item, index);
         } catch (error) {
-          if (error instanceof PreSpawnAuthorError) {
+          // Same two pass-throughs as parallel(): the author family, and
+          // the run's own ending.
+          if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
             throw error;
           }
           presentError?.(error);

@@ -3242,8 +3242,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path15) {
-      let input = path15;
+    function removeDotSegments(path16) {
+      let input = path16;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3495,8 +3495,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path15, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path15 && path15 !== "/" ? path15 : void 0;
+        const [path16, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path16 && path16 !== "/" ? path16 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -7999,7 +7999,7 @@ var require_acorn = __commonJS({
       Parser3.parse = function parse5(input, options) {
         return new this(options, input).parse();
       };
-      Parser3.parseExpressionAt = function parseExpressionAt3(input, pos, options) {
+      Parser3.parseExpressionAt = function parseExpressionAt4(input, pos, options) {
         var parser = new this(options, input, pos);
         parser.nextToken();
         return parser.parseExpression();
@@ -13104,7 +13104,7 @@ var require_acorn = __commonJS({
       function parse4(input, options) {
         return Parser3.parse(input, options);
       }
-      function parseExpressionAt2(input, pos, options) {
+      function parseExpressionAt3(input, pos, options) {
         return Parser3.parseExpressionAt(input, pos, options);
       }
       function tokenizer2(input, options) {
@@ -13127,7 +13127,7 @@ var require_acorn = __commonJS({
       exports2.lineBreakG = lineBreakG2;
       exports2.nonASCIIwhitespace = nonASCIIwhitespace2;
       exports2.parse = parse4;
-      exports2.parseExpressionAt = parseExpressionAt2;
+      exports2.parseExpressionAt = parseExpressionAt3;
       exports2.tokContexts = types2;
       exports2.tokTypes = types$12;
       exports2.tokenizer = tokenizer2;
@@ -13834,19 +13834,19 @@ var require_acorn_globals = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path14 from "node:path";
+import path15 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile9, stat as stat3 } from "node:fs/promises";
+import { readFile as readFile10, stat as stat4 } from "node:fs/promises";
 import { hostname as hostname4 } from "node:os";
-import path13 from "node:path";
+import path14 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/ambient-settings.ts
-import { readFileSync as readFileSync2, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import path6 from "node:path";
+import path4 from "node:path";
 
 // src/concurrency-defaults.ts
 function defaultCodexConcurrency() {
@@ -13861,9 +13861,9 @@ function defaultOpenCodeConcurrency() {
 
 // src/holds.ts
 import { randomUUID } from "node:crypto";
-import { mkdir as mkdir2, readFile as readFile4, readdir as readdir3, rename as rename3, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
+import { mkdir as mkdir2, readFile as readFile3, readdir as readdir2, rename as rename2, rm, stat, writeFile as writeFile2 } from "node:fs/promises";
 import { homedir, hostname as hostname2 } from "node:os";
-import path5 from "node:path";
+import path3 from "node:path";
 
 // src/errors.ts
 var EnsembleError = class extends Error {
@@ -14034,6 +14034,13 @@ function agentIdentityOf(error) {
   }
   return null;
 }
+function markRunEnding(error) {
+  error.ensembleRunEnding = true;
+  return error;
+}
+function isRunEnding(error) {
+  return error instanceof Error && error.ensembleRunEnding === true;
+}
 var AppServerExitedError = class extends EnsembleError {
 };
 var AppServerRequestError = class extends EnsembleError {
@@ -14132,6 +14139,8 @@ var ClaudeRegistrationTimeoutError = class extends ClaudeWorkerError {
 var ClaudeBlockedError = class extends ClaudeWorkerError {
 };
 var ClaudeValveError = class extends ClaudeWorkerError {
+};
+var ClaudeDeliveryError = class extends ClaudeWorkerError {
 };
 var ClaudeTranscriptError = class extends ClaudeWorkerError {
 };
@@ -14400,30 +14409,60 @@ function assertValidAgentOptions(options) {
     }
   }
   const values = options;
-  collect(() => {
-    if (values.cwd !== void 0 && typeof values.cwd !== "string") {
-      throw new InvalidAgentOptionValueError("cwd", values.cwd, "a string path");
+  const unreadable = /* @__PURE__ */ Symbol("unreadable option");
+  const read = (key, expected) => {
+    try {
+      return values[key];
+    } catch (error) {
+      errors.push(new UnreadableAgentOptionError(key, expected, error));
+      return unreadable;
     }
-  });
-  collect(() => {
-    if (values.isolation !== void 0 && values.isolation !== "worktree") {
-      throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
-    }
-  });
-  if (values.engine !== "opencode") {
-    collect(() => assertCanonicalEffortSupported(values.effort));
+  };
+  const cwd = read("cwd", "a string path");
+  if (cwd !== unreadable) {
+    collect(() => {
+      if (cwd !== void 0 && typeof cwd !== "string") {
+        throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
+      }
+    });
   }
-  collect(() => assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS));
-  collect(() => assertPositiveIntegerOption(values, "maxAttempts"));
-  collect(() => {
-    if (values.identity !== void 0 && typeof values.identity !== "boolean") {
-      throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
-    }
-  });
-  if (values.strip !== void 0) {
-    collect(() => assertValidStripOption(values.strip));
+  const isolation = read("isolation", 'exactly "worktree"');
+  if (isolation !== unreadable) {
+    collect(() => {
+      if (isolation !== void 0 && isolation !== "worktree") {
+        throw new InvalidAgentOptionValueError("isolation", isolation, 'exactly "worktree"');
+      }
+    });
   }
-  collect(() => assertValidFallbackChain(values.fallback));
+  const engine = read("engine", "an engine name");
+  if (engine !== unreadable && engine !== "opencode") {
+    const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+    if (effort !== unreadable) {
+      collect(() => assertCanonicalEffortSupported(effort));
+    }
+  }
+  for (const key of ["timeoutMs", "maxAttempts"]) {
+    const value = read(key, "a positive integer");
+    if (value !== unreadable) {
+      collect(() => assertPositiveIntegerOption({ [key]: value }, key, key === "timeoutMs" ? MAX_TIMER_DELAY_MS : void 0));
+    }
+  }
+  const identity = read("identity", "a boolean");
+  if (identity !== unreadable) {
+    collect(() => {
+      if (identity !== void 0 && typeof identity !== "boolean") {
+        throw new InvalidAgentOptionValueError("identity", identity, "a boolean");
+      }
+    });
+  }
+  const strip = read("strip", "a list of capabilities");
+  if (strip !== unreadable && strip !== void 0) {
+    collect(() => assertValidStripOption(strip));
+  }
+  const fallback = read("fallback", "a valid fallback chain");
+  if (fallback !== unreadable) {
+    collect(() => assertValidFallbackChain(fallback));
+  }
   if (errors.length === 1) {
     throw errors[0];
   }
@@ -14443,7 +14482,8 @@ var WORKER_SESSION_OPTION_KEYS = Object.keys({
   label: true,
   phase: true,
   strip: true,
-  stalenessMark: true
+  stalenessMark: true,
+  identity: true
 });
 var WORKER_SESSION_OPTION_KEY_SET = new Set(WORKER_SESSION_OPTION_KEYS);
 function assertValidWorkerSessionOptions(options) {
@@ -14466,6 +14506,9 @@ function assertValidWorkerSessionOptions(options) {
   assertPositiveIntegerOption(values, "maxAttempts");
   if (values.stalenessMark !== void 0 && typeof values.stalenessMark !== "boolean") {
     throw new InvalidAgentOptionValueError("stalenessMark", values.stalenessMark, "a boolean");
+  }
+  if (values.identity !== void 0 && typeof values.identity !== "boolean") {
+    throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
   }
   if (values.strip !== void 0) {
     assertValidStripOption(values.strip);
@@ -14590,7 +14633,7 @@ async function readProcessStartTicks(procDir, pid) {
 }
 
 // src/status-file.ts
-import { readdir, readFile as readFile2, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile as readFile2, rename, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path2 from "node:path";
 var STATUS_FILE_PREFIX = "ensemble.";
@@ -14623,7 +14666,7 @@ async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
   }
   return true;
 }
-var DEFAULT_FILE_OPERATIONS = { readFile: readFile2, readdir, rename, unlink, writeFile };
+var DEFAULT_FILE_OPERATIONS = { mkdir, readFile: readFile2, readdir, rename, unlink, writeFile };
 var StatusFileWriter = class {
   #progress;
   #target;
@@ -14632,6 +14675,8 @@ var StatusFileWriter = class {
   #unsubscribe;
   #writing = null;
   #dirty = false;
+  #published = false;
+  #unavailable = false;
   #closed = false;
   #tmpSeq = 0;
   #heartbeat;
@@ -14650,11 +14695,26 @@ var StatusFileWriter = class {
       pid: process.pid,
       start_ticks: await readProcessStartTicks(procDir, process.pid)
     }))();
-    this.#initialSweep = this.#sweepDeadRuns(options.dir);
+    const fileOperations = this.#fileOperations;
+    this.#initialSweep = (async () => {
+      if (options.createDirectory === true) {
+        await fileOperations.mkdir(options.dir, { recursive: true });
+      }
+      await this.#sweepDeadRuns(options.dir);
+      return true;
+    })().catch((error) => {
+      this.#reportError(error);
+      return false;
+    });
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
     this.#heartbeat.unref();
     this.#request();
+  }
+  /** Wait for the initial publication before announcing its location. */
+  async ready() {
+    await this.#writing;
+    return this.#published;
   }
   /** The path this run publishes to. */
   get path() {
@@ -14668,6 +14728,9 @@ var StatusFileWriter = class {
     while (this.#writing !== null) {
       await this.#writing;
     }
+    if (!this.#published) {
+      return;
+    }
     try {
       await this.#fileOperations.unlink(this.#target);
     } catch (error) {
@@ -14677,7 +14740,7 @@ var StatusFileWriter = class {
     }
   }
   #request() {
-    if (this.#closed) {
+    if (this.#closed || this.#unavailable) {
       return;
     }
     this.#dirty = true;
@@ -14697,18 +14760,24 @@ var StatusFileWriter = class {
     try {
       await this.#writeAtomic(this.#progress.snapshot());
     } catch (error) {
-      if (!isNodeError(error) || error.code !== "ENOENT") {
-        this.#reportError(error);
+      if (!this.#published) {
+        this.#unavailable = true;
+        this.#dirty = false;
       }
+      if (this.#published && isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#reportError(error);
     }
   }
   async #writeAtomic(snapshot) {
-    await this.#initialSweep;
+    if (!await this.#initialSweep) return;
     const tmp = `${this.#target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
     const published = { ...snapshot, owner: await this.#ownerEvidence };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
 `, "utf8");
     await this.#fileOperations.rename(tmp, this.#target);
+    this.#published = true;
   }
   /**
    * The new-writer trigger for what a killed run left behind (the same
@@ -14783,1046 +14852,6 @@ function isNodeError(error) {
   return typeof error === "object" && error !== null && "code" in error;
 }
 
-// src/run-record.ts
-import { createHash as createHash2 } from "node:crypto";
-import { mkdir, readdir as readdir2, readFile as readFile3, realpath, rename as rename2, rm, stat, writeFile as writeFile2 } from "node:fs/promises";
-import os from "node:os";
-import path4 from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-
-// src/canonical-document.ts
-import { createHash } from "node:crypto";
-function canonicalJson(value) {
-  return JSON.stringify(sortJson(value), null, 2);
-}
-var DIGEST_RECIPE = "sha256 hex of the document with this digest field set to null, serialised as ECMA-262 JSON.stringify with two-space indent and no trailing newline, object keys sorted by UTF-16 code unit at every level (integer-index keys first in ascending numeric order, as ECMA-262 property enumeration places them)";
-function compareCodeUnits(a, b) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-function sortJson(value) {
-  if (Array.isArray(value)) {
-    return value.map(sortJson);
-  }
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value).sort(([a], [b]) => compareCodeUnits(a, b));
-    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
-  }
-  return value;
-}
-function sha256(text) {
-  return createHash("sha256").update(text).digest("hex");
-}
-
-// src/node-version.ts
-import { readFileSync } from "node:fs";
-import path3 from "node:path";
-import { fileURLToPath } from "node:url";
-function requiredNodeRange(fromUrl = import.meta.url) {
-  if (">=24.14.0".trim().length > 0) {
-    return ">=24.14.0".trim();
-  }
-  const metadata = readHarnessPackageMetadata(fromUrl);
-  const range = metadata.engines?.node;
-  if (typeof range !== "string" || range.trim().length === 0) {
-    throw new Error("package.json is missing engines.node");
-  }
-  return range.trim();
-}
-function nodeVersionError(version2 = process.versions.node, range = requiredNodeRange()) {
-  return satisfiesNodeRange(version2, range) ? null : `Ensemble requires Node ${range}; detected Node ${version2}.`;
-}
-function satisfiesNodeRange(version2, range) {
-  const minimum = parseMinimumRange(range);
-  const actual = parseVersion(version2);
-  if (minimum === null || actual === null) {
-    throw new Error(`Unsupported Node version range: ${range}`);
-  }
-  if (actual.major !== minimum.major) {
-    return actual.major > minimum.major;
-  }
-  if (actual.minor !== minimum.minor) {
-    return actual.minor > minimum.minor;
-  }
-  return actual.patch >= minimum.patch;
-}
-function parseMinimumRange(range) {
-  const match = /^>=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(range.trim());
-  if (match === null) {
-    return null;
-  }
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2] ?? 0),
-    patch: Number(match[3] ?? 0)
-  };
-}
-function parseVersion(version2) {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version2.trim());
-  if (match === null) {
-    return null;
-  }
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3])
-  };
-}
-function readHarnessPackageMetadata(fromUrl) {
-  let current2 = path3.dirname(fileURLToPath(fromUrl));
-  while (true) {
-    const candidate = path3.join(current2, "package.json");
-    try {
-      const metadata = JSON.parse(readFileSync(candidate, "utf8"));
-      if (metadata.name === "ensemble-workflows") {
-        return metadata;
-      }
-    } catch {
-    }
-    const parent = path3.dirname(current2);
-    if (parent === current2) {
-      throw new Error("Could not locate ensemble-workflows package.json");
-    }
-    current2 = parent;
-  }
-}
-
-// src/harness-version.ts
-function harnessVersion(fromUrl = import.meta.url) {
-  if ("0.0.1".trim().length > 0) {
-    return "0.0.1".trim();
-  }
-  const version2 = readHarnessPackageMetadata(fromUrl).version;
-  return typeof version2 === "string" && version2.trim().length > 0 ? version2.trim() : "0.0.0";
-}
-
-// src/usage-summary.ts
-function subtractUsage(total, previous) {
-  const before = previous ?? {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0
-  };
-  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 ? void 0 : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
-  const reasoningOutputTokens = total.reasoningOutputTokens === void 0 ? void 0 : Math.max(0, total.reasoningOutputTokens - (before.reasoningOutputTokens ?? 0));
-  return {
-    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
-    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
-    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
-    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
-    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
-    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
-  };
-}
-var ENGINE_INCLUSION_RULES = {
-  codex: { cachedWithinInput: true, reasoningWithinOutput: true },
-  claude: { cachedWithinInput: false, reasoningWithinOutput: true },
-  opencode: { cachedWithinInput: false, reasoningWithinOutput: false }
-};
-function summariseUsage(engine, events) {
-  if (events.length === 0) {
-    return null;
-  }
-  const rules = ENGINE_INCLUSION_RULES[engine];
-  let fresh = 0;
-  let cached = 0;
-  let cacheCreation = 0;
-  let cacheCreationSeparable = true;
-  let output = 0;
-  let reasoning = 0;
-  let reasoningSeparable = true;
-  let unclassified = 0;
-  for (const event of events) {
-    const delta = event.last;
-    cached += delta.cachedInputTokens;
-    if (delta.cacheCreationInputTokens === void 0) {
-      cacheCreationSeparable = false;
-    } else {
-      cacheCreation += delta.cacheCreationInputTokens;
-    }
-    const deltaFresh = rules.cachedWithinInput ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
-    const deltaReasoning = delta.reasoningOutputTokens;
-    if (deltaReasoning === void 0) {
-      reasoningSeparable = false;
-    }
-    const reportedReasoning = deltaReasoning ?? 0;
-    const deltaOutput = rules.reasoningWithinOutput && deltaReasoning !== void 0 ? Math.max(0, delta.outputTokens - reportedReasoning) : delta.outputTokens;
-    fresh += deltaFresh;
-    reasoning += reportedReasoning;
-    output += deltaOutput;
-    unclassified += Math.max(
-      0,
-      delta.totalTokens - (deltaFresh + delta.cachedInputTokens + deltaOutput + reportedReasoning)
-    );
-  }
-  const separableReasoning = reasoningSeparable ? reasoning : null;
-  return {
-    freshInputTokens: fresh,
-    cachedInputTokens: cached,
-    ...cacheCreationSeparable ? { cacheReadTokens: Math.max(0, cached - cacheCreation), cacheCreationTokens: cacheCreation } : {},
-    outputTokens: separableReasoning === null ? output + reasoning : output,
-    reasoningOutputTokens: separableReasoning,
-    unclassifiedTokens: unclassified,
-    // The total is the class sum by construction, so the vocabulary's
-    // disjoint-and-summing invariant cannot drift from the fields beside it.
-    totalTokens: fresh + cached + output + reasoning + unclassified
-  };
-}
-function addUsageSummary(target, delta) {
-  const splitSurvives = target.cacheReadTokens !== void 0 && target.cacheCreationTokens !== void 0 && delta.cacheReadTokens !== void 0 && delta.cacheCreationTokens !== void 0;
-  const reasoningSurvives = target.reasoningOutputTokens !== null && delta.reasoningOutputTokens !== null;
-  return {
-    freshInputTokens: target.freshInputTokens + delta.freshInputTokens,
-    cachedInputTokens: target.cachedInputTokens + delta.cachedInputTokens,
-    ...splitSurvives ? {
-      cacheReadTokens: (target.cacheReadTokens ?? 0) + (delta.cacheReadTokens ?? 0),
-      cacheCreationTokens: (target.cacheCreationTokens ?? 0) + (delta.cacheCreationTokens ?? 0)
-    } : {},
-    outputTokens: reasoningSurvives || target.reasoningOutputTokens === null && delta.reasoningOutputTokens === null ? target.outputTokens + delta.outputTokens : target.outputTokens + (target.reasoningOutputTokens ?? 0) + delta.outputTokens + (delta.reasoningOutputTokens ?? 0),
-    reasoningOutputTokens: reasoningSurvives ? (target.reasoningOutputTokens ?? 0) + (delta.reasoningOutputTokens ?? 0) : null,
-    unclassifiedTokens: target.unclassifiedTokens + delta.unclassifiedTokens,
-    totalTokens: target.totalTokens + delta.totalTokens
-  };
-}
-
-// src/run-record.ts
-var execFileAsync = promisify(execFile);
-var SCHEMA_VERSION = 4;
-var MANIFEST_PATH = "manifest.json";
-async function recordRetiredHold(archiveDir, retired) {
-  const manifestPath = path4.join(archiveDir, MANIFEST_PATH);
-  const manifest = JSON.parse(await readFile3(manifestPath, "utf8"));
-  if (manifest.kind !== "run_manifest" || manifest.run_uuid !== retired.run_id || !manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "raised")) {
-    throw new Error("retired hold does not belong to the named run archive");
-  }
-  if (manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "retired")) {
-    return;
-  }
-  manifest.hold_events.push({
-    hold_id: retired.hold_id,
-    event: "retired",
-    verdict: null,
-    reason: retired.retirement_reason,
-    attempted_verdict: null,
-    attempted_verdict_state: null,
-    answered_by: null,
-    note: null,
-    at: retired.retired_at
-  });
-  await writeAttestedManifest(manifestPath, manifest);
-}
-var RunRecordWriter = class _RunRecordWriter {
-  archiveDir;
-  manifest;
-  #cwd;
-  #files = /* @__PURE__ */ new Map();
-  #agents = /* @__PURE__ */ new Map();
-  #tmpSeq = 0;
-  #writeChain = Promise.resolve();
-  #sealed = false;
-  constructor(archiveDir, cwd, manifest) {
-    this.archiveDir = archiveDir;
-    this.#cwd = cwd;
-    this.manifest = manifest;
-  }
-  /**
-   * Concurrent agents settle independently, but the manifest is one shared
-   * read-modify-write document: interleaved writes would race each other (and
-   * previously collided on same-millisecond temp names). Every mutating public
-   * operation runs through this chain, so each snapshot on disk reflects all
-   * operations before it. One failed write must not poison later ones.
-   */
-  #serialise(task) {
-    const next = this.#writeChain.then(task, task);
-    this.#writeChain = next.catch(() => void 0);
-    return next;
-  }
-  static async start(options) {
-    try {
-      return await _RunRecordWriter.#open(options);
-    } catch (error) {
-      throw new RunRecordStartError(options.storeDir, error);
-    }
-  }
-  static async #open(options) {
-    const namespace = await deriveNamespace(options.cwd);
-    const runId = `${namespace.id}:${options.runUuid}`;
-    const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
-    await mkdir(archiveDir, { recursive: true });
-    const harnessRoot = await findHarnessRoot();
-    const packageInfo = await readPackageInfo(harnessRoot ?? path4.dirname(fileURLToPath2(import.meta.url)));
-    const harnessCommit = harnessRoot === null ? null : await git(["rev-parse", "HEAD"], harnessRoot);
-    const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
-    const canonicalArgs = canonicalJson(options.args);
-    const writer = new _RunRecordWriter(archiveDir, options.cwd, {
-      schema_version: SCHEMA_VERSION,
-      kind: "run_manifest",
-      run_id: runId,
-      run_uuid: options.runUuid,
-      caller_identity: options.callerIdentity ?? null,
-      namespace,
-      status: "in-progress",
-      owner: await captureProcessOwner(options.procDir ?? "/proc", os.hostname()),
-      started_at: options.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
-      ended_at: null,
-      workflow: {
-        path: options.workflowPath,
-        archive_path: "workflow.js",
-        sha256: sha256(options.workflowSource)
-      },
-      args: {
-        archive_path: "args.json",
-        canonical_archive_path: "args.canonical.json",
-        sha256: sha256(canonicalArgs)
-      },
-      meta: {
-        task: null,
-        raw: null
-      },
-      cli_flags: options.cliFlags,
-      concurrency: {
-        agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
-        engines: options.concurrency?.engines ?? {}
-      },
-      budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
-      run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
-      git: {
-        start: gitStart,
-        end: null
-      },
-      environment: {
-        os: {
-          platform: os.platform(),
-          release: os.release(),
-          arch: os.arch()
-        },
-        node: process.version,
-        tools: await toolVersions()
-      },
-      harness: {
-        package_name: packageInfo.name,
-        package_version: packageInfo.version,
-        commit: harnessCommit,
-        commit_unavailable: harnessCommit !== null ? null : harnessRoot === null ? "bundle-has-no-embedded-commit" : "git-head-unavailable"
-      },
-      result: {
-        archive_path: null,
-        exit_code: null
-      },
-      error: null,
-      workflow_invocations: [
-        {
-          ordinal: 0,
-          parent: null,
-          path: options.workflowPath,
-          source: {
-            archive_path: "workflow.js",
-            sha256: sha256(options.workflowSource)
-          },
-          args: {
-            archive_path: "args.json",
-            canonical_archive_path: "args.canonical.json",
-            sha256: sha256(canonicalArgs)
-          }
-        }
-      ],
-      hold_events: [],
-      tallies: {},
-      tallies_unavailable: "none-recorded",
-      cost_rollup: {},
-      files: [],
-      integrity: {
-        algorithm: "sha256",
-        recipe: DIGEST_RECIPE,
-        manifest_sha256: null,
-        files_lost: []
-      }
-    });
-    await writer.#writeText("workflow.js", options.workflowSource);
-    await writer.#writeJson("args.json", {
-      schema_version: SCHEMA_VERSION,
-      kind: "run_args",
-      value: options.args
-    });
-    await writer.#writeText("args.canonical.json", canonicalArgs);
-    if (gitStart.diffPath !== null) {
-      await writer.#trackFile(gitStart.diffPath);
-    }
-    await writer.#writeManifest();
-    await reapAbandonedRuns({
-      namespaceDir: path4.dirname(archiveDir),
-      skipRunUuid: options.runUuid,
-      procDir: options.procDir ?? "/proc",
-      observer: { pid: process.pid, runUuid: options.runUuid }
-    });
-    return writer;
-  }
-  async noteMeta(meta) {
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      this.manifest.meta = {
-        task: extractTask(meta),
-        raw: meta
-      };
-      await this.#writeManifest();
-    });
-  }
-  /**
-   * Record a composed child's invocation: its source and args are archived
-   * beside the root's (same hashing, same canonicalisation), the manifest
-   * gains an ordered entry carrying the parent link, and the assigned
-   * ordinal is returned so nested provenance (if a deeper level is ever
-   * permitted) can name its parent. One run identity throughout — a child
-   * never opens a second archive.
-   */
-  async recordWorkflowInvocation(invocation) {
-    const args = structuredClone(invocation.args);
-    return await this.#serialise(async () => {
-      if (this.#sealed) {
-        return -1;
-      }
-      const ordinal = this.manifest.workflow_invocations.length;
-      const directory = `workflows/${padId(ordinal)}`;
-      const sourcePath = `${directory}/workflow.js`;
-      const argsPath = `${directory}/args.json`;
-      const canonicalArgsPath = `${directory}/args.canonical.json`;
-      const canonicalArgs = canonicalJson(args);
-      await this.#writeText(sourcePath, invocation.source);
-      await this.#writeJson(argsPath, {
-        schema_version: SCHEMA_VERSION,
-        kind: "workflow_args",
-        value: args
-      });
-      await this.#writeText(canonicalArgsPath, canonicalArgs);
-      this.manifest.workflow_invocations.push({
-        ordinal,
-        parent: invocation.parentOrdinal,
-        path: invocation.scriptPath,
-        source: {
-          archive_path: sourcePath,
-          sha256: sha256(invocation.source)
-        },
-        args: {
-          archive_path: argsPath,
-          canonical_archive_path: canonicalArgsPath,
-          sha256: sha256(canonicalArgs)
-        }
-      });
-      await this.#writeManifest();
-      return ordinal;
-    });
-  }
-  /**
-   * Append one hold lifecycle event from the runtime's event stream.
-   * Same intent-before-outcome principle as the dispatch-time agent write:
-   * the raise is recorded when it happens, so a run that dies mid-hold
-   * still shows what it was waiting on. Unrecognised methods are ignored —
-   * the runtime forwards its hold events unfiltered.
-   */
-  async recordHoldEvent(event) {
-    const kind = holdEventKind(event.method);
-    if (kind === null || typeof event.params.holdId !== "string") {
-      return;
-    }
-    const entry = {
-      hold_id: event.params.holdId,
-      event: kind,
-      verdict: kind === "answered" && typeof event.params.verdict === "string" ? event.params.verdict : null,
-      reason: (kind === "answer-rejected" || kind === "retired") && typeof event.params.reason === "string" ? event.params.reason : null,
-      attempted_verdict: kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string" ? event.params.attemptedVerdict : null,
-      attempted_verdict_state: kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState) ? event.params.attemptedVerdictState : null,
-      answered_by: (kind === "answered" || kind === "answer-rejected") && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
-      note: (kind === "answered" || kind === "answer-rejected") && typeof event.params.note === "string" ? event.params.note : null,
-      at: new Date(event.receivedAt).toISOString()
-    };
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      this.manifest.hold_events.push(entry);
-      await this.#writeManifest();
-    });
-  }
-  /**
-   * Record one named count from the script body. Last write wins per
-   * name, and the write lands in the manifest at once — a count recorded
-   * before the run ends by any handleable path is in the archive whether
-   * or not `finish()` is ever reached.
-   */
-  async recordTally(name, value) {
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      Object.defineProperty(this.manifest.tallies, name, { value, enumerable: true, writable: true, configurable: true });
-      this.manifest.tallies_unavailable = null;
-      await this.#writeManifest();
-    });
-  }
-  async recordAgent(record) {
-    const snapshot = structuredClone(record);
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      await this.#recordAgent(snapshot);
-    });
-  }
-  async #recordAgent(record) {
-    this.#agents.set(record.id, record);
-    const agentDir = `agents/${padId(record.id)}`;
-    const transcriptRefs = [];
-    for (const attempt of record.attempts) {
-      let index = 0;
-      for (const transcript of attempt.transcripts) {
-        if (transcript.content.length === 0) {
-          continue;
-        }
-        index += 1;
-        const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
-        const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
-        await this.#writeText(relativePath, transcript.content);
-        transcriptRefs.push({
-          attempt: attempt.attempt,
-          path: relativePath,
-          format: transcript.format,
-          source: transcript.source,
-          partial: transcript.partial === true,
-          thread_id: transcript.threadId ?? null,
-          session_id: transcript.sessionId ?? null
-        });
-      }
-    }
-    const agentJsonPath = `${agentDir}/agent.json`;
-    await this.#writeJson(agentJsonPath, {
-      schema_version: SCHEMA_VERSION,
-      kind: "agent_record",
-      id: record.id,
-      engine: record.engine,
-      header_identity: record.headerIdentity,
-      prompt: record.prompt,
-      options: {
-        timeout_ms: record.options.timeoutMs,
-        max_attempts: record.options.maxAttempts
-      },
-      model: record.model,
-      effort: record.effort,
-      fallback: record.fallback,
-      answered_by: record.answeredBy,
-      resolved_model: record.resolvedModel,
-      resolved_effort: record.resolvedEffort,
-      resolved_cwd: record.resolvedCwd,
-      isolation: record.isolation,
-      worktree: record.worktree === null ? null : {
-        branch: record.worktree.branch,
-        base_commit: record.worktree.baseCommit,
-        tip_commit: record.worktree.tipCommit,
-        changed: record.worktree.changed,
-        removed: record.worktree.removed
-      },
-      label: record.label,
-      phase: record.phase,
-      status: record.status,
-      termination_cause: record.terminationCause,
-      creation_order: record.creationOrder,
-      concurrency_group: record.concurrencyGroup,
-      schema: record.schema,
-      strip: record.strip,
-      session: record.session,
-      transcript_capture: record.transcriptCapture,
-      parse_route: record.parseRoute,
-      decode_failure: record.decodeFailure === null ? null : {
-        byte_length: record.decodeFailure.byteLength,
-        line_prefix: record.decodeFailure.linePrefix
-      },
-      raw_output: record.rawOutput,
-      validated_output: record.validatedOutput,
-      // Summary usage in the declared vocabulary, or the reason there is
-      // none — an agent with no usage data must be legible as "unknown for
-      // this reason", never indistinguishable from zero spend.
-      usage: agentUsage(record),
-      queued_ms: record.queuedMs,
-      execution_ms: record.executionMs,
-      attempts: record.attempts.map((attempt) => ({
-        attempt: attempt.attempt,
-        status: attempt.status,
-        target: attempt.target,
-        failure: attempt.failure,
-        classification: attempt.classification,
-        chain_decision: attempt.chainDecision,
-        observed_failure: attempt.observedFailure,
-        worker_exit: attempt.workerExit === null ? null : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
-        app_server_diagnostic: attempt.appServerDiagnostic === null ? null : {
-          code: attempt.appServerDiagnostic.code,
-          message: attempt.appServerDiagnostic.message,
-          payload: attempt.appServerDiagnostic.payload
-        },
-        background_waits: attempt.backgroundWaits.map((wait) => ({
-          task_id: wait.taskId,
-          description: wait.description,
-          observed_at: wait.observedAt,
-          ended_at: wait.endedAt
-        })),
-        raw_output: attempt.rawOutput,
-        validated_output: attempt.validatedOutput,
-        resolved_model: attempt.resolvedModel,
-        resolved_effort: attempt.resolvedEffort,
-        started_at: attempt.startedAt,
-        ended_at: attempt.endedAt,
-        duration_ms: attempt.durationMs,
-        first_delta_ms: attempt.firstDeltaMs,
-        token_usage_events: attempt.tokenUsageEvents,
-        diagnostics: attempt.diagnostics ?? {}
-      })),
-      // Keep the documented v3 array shape in every outcome. Its sibling
-      // preserves why it is empty, so a consumer can distinguish an absent
-      // transcript from one lost by the archive.
-      transcripts: transcriptRefs,
-      transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
-    });
-    this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
-    await this.#writeManifest();
-  }
-  async finish(options) {
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      this.manifest.status = options.status;
-      this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
-      this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
-      if (this.manifest.git.end.diffPath !== null) {
-        await this.#trackFile(this.manifest.git.end.diffPath);
-      }
-      this.manifest.result = {
-        archive_path: "result.json",
-        exit_code: options.exitCode
-      };
-      this.manifest.error = options.error ?? null;
-      await this.#writeJson("result.json", {
-        schema_version: SCHEMA_VERSION,
-        kind: "run_result",
-        // The run's own outcome as the launcher reported it. Where the
-        // manifest later degrades to `incomplete`, the two are answering
-        // different questions: this envelope says how the run ended, the
-        // manifest says whether the archive recording it is whole.
-        status: options.status,
-        exit_code: options.exitCode,
-        error: options.error ?? null,
-        value: options.result
-      });
-      this.manifest.integrity.files_lost = await this.#reconcileFiles();
-      if (this.manifest.integrity.files_lost.length > 0 && this.manifest.status === "complete") {
-        this.manifest.status = "incomplete";
-      }
-      await this.#writeManifest();
-      this.#sealed = true;
-    });
-  }
-  async #writeJson(relativePath, value) {
-    await this.#writeText(relativePath, `${canonicalJson(value)}
-`);
-  }
-  async #writeText(relativePath, content) {
-    const destination = path4.join(this.archiveDir, relativePath);
-    await mkdir(path4.dirname(destination), { recursive: true });
-    const temporary = path4.join(path4.dirname(destination), `.${path4.basename(destination)}${this.#tmpSuffix()}`);
-    await writeAndRename(temporary, destination, content);
-    await this.#trackFile(relativePath);
-  }
-  async #writeManifest() {
-    this.manifest.files = [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path));
-    const destination = path4.join(this.archiveDir, MANIFEST_PATH);
-    await writeAttestedManifest(
-      destination,
-      this.manifest,
-      true,
-      path4.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`)
-    );
-  }
-  // pid + sequence keeps names unique within the process; Date.now() alone
-  // collided when two agents settled in the same millisecond.
-  #tmpSuffix() {
-    this.#tmpSeq += 1;
-    return `.${process.pid}.${this.#tmpSeq}.tmp`;
-  }
-  /**
-   * Checks every file the manifest declares against the archive directory,
-   * returning what is no longer accountable. Presence and size only: the
-   * recorded digest is what a consumer walks, and re-hashing the whole
-   * archive at seal would repeat that walk for no extra evidence.
-   */
-  async #reconcileFiles() {
-    const lost = [];
-    for (const entry of [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path))) {
-      const metadata = await stat(path4.join(this.archiveDir, entry.path)).catch(() => null);
-      if (metadata === null) {
-        lost.push({ path: entry.path, reason: "missing" });
-      } else if (metadata.size !== entry.size) {
-        lost.push({ path: entry.path, reason: "size-mismatch" });
-      }
-    }
-    return lost;
-  }
-  /**
-   * The sealed manifest's self-digest, for a consumer of this writer that
-   * publishes an attestation elsewhere (the completion sentinel). Null
-   * until the archive seals: a mid-run digest is real but perishable —
-   * `finish()` rewrites the manifest — so publishing it outside the file
-   * it covers would attest bytes the seal then replaces.
-   */
-  sealedManifestDigest() {
-    return this.#sealed ? this.manifest.integrity.manifest_sha256 : null;
-  }
-  async #trackFile(relativePath) {
-    const absolute = path4.join(this.archiveDir, relativePath);
-    const [metadata, contentHash] = await Promise.all([stat(absolute), hashFile(absolute)]);
-    this.#files.set(relativePath, {
-      path: relativePath,
-      size: metadata.size,
-      sha256: contentHash
-    });
-  }
-};
-function transcriptAbsenceReason(record) {
-  if (record.status === "in-progress") {
-    return "record-unsettled";
-  }
-  if (record.attempts.length === 0) {
-    return "no-attempt-ran";
-  }
-  if (record.attempts.every(
-    (attempt) => attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
-  )) {
-    return "substrate-never-started";
-  }
-  if (record.status === "interrupted") {
-    return "worker-interrupted";
-  }
-  if (record.status === "timed-out") {
-    return "worker-timed-out";
-  }
-  if (record.transcriptCapture === "lost") {
-    return "session-client-capture-gap";
-  }
-  return "engine-produced-no-transcript";
-}
-function agentUsage(record) {
-  let summary = null;
-  for (const attempt of record.attempts) {
-    const attemptSummary = summariseUsage(attempt.target.engine, attempt.tokenUsageEvents);
-    if (attemptSummary !== null) {
-      summary = summary === null ? attemptSummary : addUsageSummary(summary, attemptSummary);
-    }
-  }
-  if (summary !== null) {
-    return { summary };
-  }
-  if (record.status === "in-progress") {
-    return { unavailable: "record-unsettled" };
-  }
-  return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
-}
-function buildCostRollup(records) {
-  const rollup = {};
-  const accumulators = /* @__PURE__ */ new Map();
-  const noteAbsentUsage = (engine, model) => {
-    rollup[engine] ??= {};
-    rollup[engine][model] ??= { unavailable: "no-usage-reported" };
-  };
-  for (const record of records) {
-    if (record.attempts.length === 0) {
-      noteAbsentUsage(record.engine, "unresolved");
-    }
-    const lastReporter = record.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.target.engine ?? record.engine;
-    for (const attempt of record.attempts) {
-      const engine = attempt.target.engine;
-      const summary = summariseUsage(engine, attempt.tokenUsageEvents);
-      const borrowed = engine === lastReporter ? record.resolvedModel : null;
-      const model = attempt.resolvedModel ?? borrowed ?? "unresolved";
-      if (summary === null) {
-        noteAbsentUsage(engine, model);
-        continue;
-      }
-      rollup[engine] ??= {};
-      const existing = rollup[engine][model];
-      const key = `${engine}\0${model}`;
-      const accumulator = accumulators.get(key) ?? { amount: 0, currency: null, reported: false, unlike: false };
-      accumulators.set(key, accumulator);
-      for (const event of attempt.tokenUsageEvents) {
-        addProviderCost(accumulator, event);
-      }
-      rollup[engine][model] = {
-        tokens: existing === void 0 || "unavailable" in existing ? summary : addUsageSummary(existing.tokens, summary),
-        cost: publishedCost(accumulator)
-      };
-    }
-  }
-  return rollup;
-}
-function publishedCost(accumulator) {
-  if (accumulator.unlike) {
-    return { unavailable: "unlike-currencies" };
-  }
-  if (!accumulator.reported) {
-    return { unavailable: "no-provider-cost-reported" };
-  }
-  return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
-}
-function addProviderCost(target, event) {
-  if (target.unlike) {
-    return;
-  }
-  const cost = event.raw.cost;
-  if (typeof cost !== "number" || !Number.isFinite(cost)) {
-    return;
-  }
-  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
-  if (target.currency !== null && currency !== null && currency !== target.currency) {
-    target.unlike = true;
-    return;
-  }
-  target.amount += cost;
-  target.reported = true;
-  if (currency !== null && target.currency === null) {
-    target.currency = currency;
-  }
-}
-async function resolveRunDirectory(storeDir, cwd, runUuid) {
-  return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
-}
-async function reapAbandonedRuns(options) {
-  const procDir = options.procDir ?? "/proc";
-  const host = options.host ?? os.hostname();
-  const reaped = [];
-  const entries = await readdir2(options.namespaceDir, { withFileTypes: true }).catch(() => null);
-  if (entries === null) {
-    return reaped;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name === options.skipRunUuid) {
-      continue;
-    }
-    try {
-      const manifestPath = path4.join(options.namespaceDir, entry.name, MANIFEST_PATH);
-      const manifest = JSON.parse(await readFile3(manifestPath, "utf8"));
-      if (manifest.status !== "in-progress") {
-        continue;
-      }
-      const reason = await judgeOwnerGone(manifest.owner, procDir, host);
-      if (reason === null) {
-        continue;
-      }
-      const fresh = JSON.parse(await readFile3(manifestPath, "utf8"));
-      if (fresh.status !== "in-progress") {
-        continue;
-      }
-      const abandonment = {
-        observed_at: (/* @__PURE__ */ new Date()).toISOString(),
-        reason,
-        observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
-      };
-      const rewritten = await resolveAbandonedAgentRecords(path4.join(options.namespaceDir, entry.name), abandonment);
-      if (Array.isArray(fresh.files)) {
-        for (const fileEntry of fresh.files) {
-          const update = rewritten.get(fileEntry.path);
-          if (update !== void 0) {
-            fileEntry.size = update.size;
-            fileEntry.sha256 = update.sha256;
-          }
-        }
-      }
-      fresh.status = "abandoned";
-      fresh.abandonment = abandonment;
-      await writeAttestedManifest(manifestPath, fresh);
-      reaped.push(entry.name);
-    } catch {
-    }
-  }
-  return reaped;
-}
-async function resolveAbandonedAgentRecords(runDir, abandonment) {
-  const rewritten = /* @__PURE__ */ new Map();
-  const agentsDir = path4.join(runDir, "agents");
-  const agentEntries = await readdir2(agentsDir, { withFileTypes: true }).catch(() => null);
-  if (agentEntries === null) {
-    return rewritten;
-  }
-  for (const agentEntry of agentEntries) {
-    if (!agentEntry.isDirectory()) {
-      continue;
-    }
-    try {
-      const agentJsonPath = path4.join(agentsDir, agentEntry.name, "agent.json");
-      const agentRecord = JSON.parse(await readFile3(agentJsonPath, "utf8"));
-      if (agentRecord.status !== "in-progress") {
-        continue;
-      }
-      agentRecord.status = "abandoned";
-      agentRecord.abandonment = abandonment;
-      const content = `${canonicalJson(agentRecord)}
-`;
-      await writeStandaloneText(agentJsonPath, content);
-      rewritten.set(`agents/${agentEntry.name}/agent.json`, {
-        size: Buffer.byteLength(content),
-        sha256: sha256(content)
-      });
-    } catch {
-    }
-  }
-  return rewritten;
-}
-function runDirectoryFor(storeDir, namespace, runUuid) {
-  return path4.join(storeDir, "runs", "cwd", namespace.hash.slice(0, 24), runUuid);
-}
-async function deriveNamespace(cwd) {
-  const gitRoot = await git(["rev-parse", "--show-toplevel"], cwd);
-  const material = await realpath(gitRoot ?? cwd);
-  const hash = sha256(material);
-  return {
-    strategy: "git-root-realpath-sha256",
-    id: `cwd:${hash.slice(0, 24)}`,
-    material,
-    hash
-  };
-}
-async function readGitState(cwd, diffPath, archiveDir) {
-  const root = await git(["rev-parse", "--show-toplevel"], cwd);
-  const head = await git(["rev-parse", "HEAD"], cwd);
-  const porcelain = await git(["status", "--porcelain"], cwd);
-  const dirty = porcelain === null ? null : porcelain.length > 0;
-  let archivedDiffPath = null;
-  if (dirty === true) {
-    const diff = await git(["diff", "HEAD", "--binary"], cwd) ?? await git(["diff", "--binary"], cwd);
-    if (diff !== null && diff.length > 0) {
-      await writeStandaloneText(path4.join(archiveDir, diffPath), diff);
-      archivedDiffPath = diffPath;
-    }
-  }
-  return { root, head, dirty, diffPath: archivedDiffPath };
-}
-async function readPackageInfo(cwd) {
-  try {
-    const text = await readFile3(path4.join(cwd, "package.json"), "utf8");
-    const parsed = JSON.parse(text);
-    return {
-      name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
-      version: typeof parsed.version === "string" ? parsed.version : harnessVersion()
-    };
-  } catch {
-    return { name: "ensemble-workflows", version: harnessVersion() };
-  }
-}
-async function findHarnessRoot() {
-  let current2 = path4.dirname(fileURLToPath2(import.meta.url));
-  for (; ; ) {
-    try {
-      const text = await readFile3(path4.join(current2, "package.json"), "utf8");
-      const parsed = JSON.parse(text);
-      if (parsed.name === "ensemble-workflows") {
-        return current2;
-      }
-    } catch {
-    }
-    const parent = path4.dirname(current2);
-    if (parent === current2) {
-      return null;
-    }
-    current2 = parent;
-  }
-}
-async function toolVersions() {
-  const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
-    commandVersion("git", ["--version"]),
-    commandVersion("codex", ["--version"]),
-    commandVersion("claude", ["--version"]),
-    commandVersion("opencode", ["--version"])
-  ]);
-  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
-}
-async function commandVersion(command, args) {
-  try {
-    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5e3 });
-    return (stdout || stderr).trim() || null;
-  } catch {
-    return null;
-  }
-}
-async function git(args, cwd) {
-  try {
-    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 1e4, maxBuffer: 20 * 1024 * 1024 });
-    return stdout.trim();
-  } catch {
-    return null;
-  }
-}
-function holdEventKind(method) {
-  switch (method) {
-    case "hold/raised":
-      return "raised";
-    case "hold/answered":
-      return "answered";
-    case "hold/answerRejected":
-      return "answer-rejected";
-    case "hold/timedOut":
-      return "timed-out";
-    case "hold/retired":
-      return "retired";
-    default:
-      return null;
-  }
-}
-function isAttemptedVerdictState(value) {
-  return value === "submitted" || value === "missing-or-non-string" || value === "unparseable";
-}
-function extractTask(meta) {
-  if (typeof meta !== "object" || meta === null || !("task" in meta)) {
-    return null;
-  }
-  return meta.task ?? null;
-}
-async function hashFile(filePath) {
-  const text = await readFile3(filePath);
-  return createHash2("sha256").update(text).digest("hex");
-}
-async function writeAttestedManifest(destination, manifest, initialise = false, temporary) {
-  if (manifest.integrity !== void 0 && manifest.integrity !== null && (initialise || typeof manifest.integrity.manifest_sha256 === "string")) {
-    manifest.integrity.manifest_sha256 = null;
-    manifest.integrity.manifest_sha256 = sha256(canonicalJson(manifest));
-  }
-  await writeStandaloneText(destination, `${canonicalJson(manifest)}
-`, temporary);
-}
-async function writeStandaloneText(destination, content, temporary) {
-  await mkdir(path4.dirname(destination), { recursive: true });
-  const staging = temporary ?? path4.join(path4.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
-  await writeAndRename(staging, destination, content);
-}
-async function writeAndRename(temporary, destination, content) {
-  try {
-    await writeFile2(temporary, content, "utf8");
-    await rename2(temporary, destination);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
-}
-function padId(id) {
-  return String(id).padStart(6, "0");
-}
-function padAttempt(attempt) {
-  return String(attempt).padStart(3, "0");
-}
-function safeName(filename, suffix) {
-  const cleaned = filename.replace(/[^a-zA-Z0-9._-]/g, "-");
-  return cleaned.endsWith(`.${suffix}`) ? cleaned : `${cleaned}.${suffix}`;
-}
-
 // src/holds.ts
 var HOLD_SCOPE_ENV = "ENSEMBLE_HOLD_SCOPE";
 function resolveHoldScope(explicit, env = process.env) {
@@ -15836,10 +14865,9 @@ function holdScopeSegment(scope) {
   return scope === null ? "shared" : `scope-${encodeURIComponent(scope)}`;
 }
 var DECISION_SUFFIX = ".decision.json";
-var RETIRED_SUFFIX = ".retired.json";
 function defaultHoldsDirectory(env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path5.join(homedir(), ".local", "share");
-  return path5.join(dataHome2, "ensemble", "holds");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path3.join(homedir(), ".local", "share");
+  return path3.join(dataHome2, "ensemble", "holds");
 }
 var HoldManager = class {
   #dir;
@@ -15858,7 +14886,7 @@ var HoldManager = class {
   #abort = new AbortController();
   #sweepDone = false;
   constructor(options) {
-    this.#dir = path5.join(options.dir, holdScopeSegment(options.scope));
+    this.#dir = path3.join(options.dir, holdScopeSegment(options.scope));
     this.#runId = options.runId;
     this.#cwd = options.cwd;
     this.#scope = options.scope;
@@ -15878,8 +14906,8 @@ var HoldManager = class {
     this.#sequence += 1;
     const holdId = `${this.#runId}-${this.#sequence}`;
     const nonce = randomUUID();
-    const holdPath = path5.join(this.#dir, `${holdId}.json`);
-    const decisionPath = path5.join(this.#dir, `${holdId}${DECISION_SUFFIX}`);
+    const holdPath = path3.join(this.#dir, `${holdId}.json`);
+    const decisionPath = path3.join(this.#dir, `${holdId}${DECISION_SUFFIX}`);
     const raisedAt = this.#now();
     const deadline = options.timeoutMs === void 0 ? null : raisedAt + options.timeoutMs;
     const record = {
@@ -15920,7 +14948,7 @@ var HoldManager = class {
       return await this.#awaitDecision(record, holdPath, decisionPath, deadline);
     } finally {
       this.#onSettled?.(holdId);
-      await rm2(holdPath, { force: true }).catch(() => void 0);
+      await rm(holdPath, { force: true }).catch(() => void 0);
     }
   }
   /** Reject the waits and stop polling; the finally blocks remove the files. */
@@ -15940,10 +14968,10 @@ var HoldManager = class {
     }
     this.#sweepDone = true;
     try {
-      await enumerateScopeDirectory(this.#dir, {
-        procDir: this.#procDir,
-        onRetired: (record) => this.#emit("hold/retired", { holdId: record.hold_id, scope: record.scope, reason: record.retirement_reason })
-      });
+      const { retired } = await enumerateScopeDirectory(this.#dir, { procDir: this.#procDir });
+      for (const record of retired) {
+        this.#emit("hold/retired", { holdId: record.hold_id, scope: record.scope });
+      }
     } catch {
     }
   }
@@ -15962,8 +14990,6 @@ var HoldManager = class {
       }
       if (deadline !== null && this.#now() >= deadline) {
         this.#emit("hold/timedOut", { holdId: record.hold_id });
-        await retireHold(record, holdPath, "timed-out");
-        await rm2(decisionPath, { force: true });
         throw new HoldTimeoutError(record.hold_id, record.timeout_at ?? "");
       }
       await this.#delay();
@@ -15979,7 +15005,7 @@ var HoldManager = class {
   async #readDecision(record, holdPath, decisionPath, grace) {
     let raw;
     try {
-      raw = await readFile4(decisionPath, "utf8");
+      raw = await readFile3(decisionPath, "utf8");
     } catch {
       grace.lastUnparseable = null;
       return null;
@@ -15989,7 +15015,6 @@ var HoldManager = class {
     try {
       const parsed = JSON.parse(raw);
       grace.lastUnparseable = null;
-      const submissionId = typeof parsed.submission_id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parsed.submission_id) ? parsed.submission_id : null;
       if (parsed.nonce !== record.nonce) {
         rejection = rejectedAnswer("stale-nonce", parsed.verdict, this.#now());
       } else if (typeof parsed.verdict !== "string" || !record.verdicts.includes(parsed.verdict)) {
@@ -16000,14 +15025,11 @@ var HoldManager = class {
           note: typeof parsed.note === "string" ? parsed.note : null,
           // Read from the decision file as written: a hand-authored answer
           // that names no answerer records none — never a guess.
-          answeredBy: typeof parsed.answered_by === "string" ? parsed.answered_by : null,
-          submissionId
+          answeredBy: typeof parsed.answered_by === "string" ? parsed.answered_by : null
         };
       }
       if (rejection !== null) {
         rejection.answered_by = typeof parsed.answered_by === "string" ? parsed.answered_by : null;
-        rejection.note = typeof parsed.note === "string" ? parsed.note : null;
-        rejection.submission_id = submissionId;
       }
     } catch {
       if (grace.lastUnparseable !== raw) {
@@ -16023,11 +15045,7 @@ var HoldManager = class {
       };
     }
     if (decision !== null || rejection !== null) {
-      const submissionId = decision?.submissionId ?? rejection?.submission_id;
-      if (submissionId) {
-        await publishDecisionReceipt(decisionPath, submissionId, decision, rejection);
-      }
-      await rm2(decisionPath, { force: true }).catch(() => void 0);
+      await rm(decisionPath, { force: true }).catch(() => void 0);
     }
     if (rejection !== null) {
       record.answer_rejection = rejection;
@@ -16037,9 +15055,7 @@ var HoldManager = class {
         reason: rejection.reason,
         attemptedVerdict: rejection.attempted_verdict,
         attemptedVerdictState: rejection.attempted_verdict_state,
-        answeredBy: rejection.answered_by ?? null,
-        note: rejection.note ?? null,
-        submissionId: rejection.submission_id ?? null
+        answeredBy: rejection.answered_by ?? null
       });
       return null;
     }
@@ -16070,17 +15086,6 @@ var HoldManager = class {
 function holdListingState(record) {
   return record.answer_rejection === void 0 ? "open" : "bounced";
 }
-function decisionReceiptPath(decisionPath, submissionId) {
-  return `${decisionPath}.${submissionId}.receipt.json`;
-}
-async function publishDecisionReceipt(decisionPath, submissionId, decision, rejection) {
-  const receipt = decision !== null ? { submission_id: submissionId, outcome: "consumed" } : { submission_id: submissionId, outcome: "bounced", rejection };
-  const dest = decisionReceiptPath(decisionPath, submissionId);
-  const temp = `${dest}.${process.pid}.tmp`;
-  await writeFile3(temp, `${JSON.stringify(receipt)}
-`);
-  await rename3(temp, dest);
-}
 async function answerHold(options) {
   const enumeration = await enumerateHolds(options.dir, options.procDir !== void 0 ? { procDir: options.procDir } : {});
   const found = enumeration.holds.find((hold) => hold.record.hold_id === options.holdId);
@@ -16088,39 +15093,24 @@ async function answerHold(options) {
     return { outcome: "not-found", hold_id: options.holdId };
   }
   const { record, path: holdPath } = found;
-  const submissionId = randomUUID();
-  const answer = { nonce: record.nonce, verdict: options.verdict, submission_id: submissionId };
+  const priorRejection = JSON.stringify(record.answer_rejection ?? null);
+  const answer = { nonce: record.nonce, verdict: options.verdict };
   if (options.note !== void 0) {
     answer.note = options.note;
   }
   answer.answered_by = options.answeredBy;
-  const tmp = `${record.decision_path}.${submissionId}.tmp`;
-  await writeFile3(tmp, `${JSON.stringify(answer)}
+  const tmp = `${record.decision_path}.${process.pid}.tmp`;
+  await writeFile2(tmp, `${JSON.stringify(answer)}
 `, { encoding: "utf8" });
-  await rename3(tmp, record.decision_path);
+  await rename2(tmp, record.decision_path);
   const cadence = typeof record.poll_interval_ms === "number" && record.poll_interval_ms > 0 ? record.poll_interval_ms : 500;
   const waitMs = options.waitMs ?? cadence * 4 + 1e3;
   const checkIntervalMs = options.checkIntervalMs ?? Math.min(100, cadence);
   const started = Date.now();
-  async function readReceipt() {
-    const receiptPath = decisionReceiptPath(record.decision_path, submissionId);
-    let receipt;
-    try {
-      receipt = JSON.parse(await readFile4(receiptPath, "utf8"));
-    } catch (error) {
-      if (error instanceof Error && error.code === "ENOENT") return null;
-      throw error;
-    }
-    await rm2(receiptPath, { force: true });
-    if (receipt.submission_id !== submissionId) return null;
-    return receipt.outcome === "consumed" ? { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict } : { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: receipt.rejection };
-  }
   for (; ; ) {
-    const receipt = await readReceipt();
-    if (receipt !== null) return receipt;
     let current2;
     try {
-      current2 = JSON.parse(await (options.readHoldFile?.(holdPath) ?? readFile4(holdPath, "utf8")));
+      current2 = JSON.parse(await readFile3(holdPath, "utf8"));
     } catch (error) {
       if (error instanceof Error && error.code === "ENOENT") {
         current2 = null;
@@ -16129,20 +15119,22 @@ async function answerHold(options) {
       }
     }
     if (current2 === null) {
-      const settled = await readReceipt();
-      if (settled !== null) return settled;
-      return { outcome: "not-attributable", hold_id: record.hold_id, verdict: options.verdict };
+      try {
+        await stat(record.decision_path);
+      } catch (error) {
+        if (error instanceof Error && error.code === "ENOENT") {
+          return { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict };
+        }
+        throw error;
+      }
+      await rm(record.decision_path, { force: true });
+      return { outcome: "retired", hold_id: record.hold_id, verdict: options.verdict };
+    }
+    if (current2.answer_rejection !== void 0 && JSON.stringify(current2.answer_rejection) !== priorRejection) {
+      return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: current2.answer_rejection };
     }
     const waited = Date.now() - started;
     if (waited >= waitMs) {
-      let pending = null;
-      try {
-        pending = JSON.parse(await readFile4(record.decision_path, "utf8"));
-      } catch {
-      }
-      if (pending?.submission_id !== submissionId) {
-        return { outcome: "not-attributable", hold_id: record.hold_id, verdict: options.verdict };
-      }
       return {
         outcome: "not-consumed",
         hold_id: record.hold_id,
@@ -16157,11 +15149,11 @@ async function answerHold(options) {
 async function enumerateHolds(dir, options = {}) {
   const procDir = options.procDir ?? "/proc";
   if (options.scope !== void 0) {
-    return enumerateScopeDirectory(path5.join(dir, holdScopeSegment(options.scope)), { procDir });
+    return enumerateScopeDirectory(path3.join(dir, holdScopeSegment(options.scope)), { procDir });
   }
   let entries;
   try {
-    entries = await readdir3(dir, { withFileTypes: true });
+    entries = await readdir2(dir, { withFileTypes: true });
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return { holds: [], retired: [] };
@@ -16173,7 +15165,7 @@ async function enumerateHolds(dir, options = {}) {
     if (!entry.isDirectory()) {
       continue;
     }
-    const scoped = await enumerateScopeDirectory(path5.join(dir, entry.name), { procDir });
+    const scoped = await enumerateScopeDirectory(path3.join(dir, entry.name), { procDir });
     result.holds.push(...scoped.holds);
     result.retired.push(...scoped.retired);
   }
@@ -16182,7 +15174,7 @@ async function enumerateHolds(dir, options = {}) {
 async function enumerateScopeDirectory(scopeDir, options) {
   let entries;
   try {
-    entries = await readdir3(scopeDir);
+    entries = await readdir2(scopeDir);
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return { holds: [], retired: [] };
@@ -16194,29 +15186,18 @@ async function enumerateScopeDirectory(scopeDir, options) {
     if (!entry.endsWith(".json") || entry.endsWith(DECISION_SUFFIX)) {
       continue;
     }
-    const holdPath = path5.join(scopeDir, entry);
+    const holdPath = path3.join(scopeDir, entry);
     try {
-      if (entry.endsWith(RETIRED_SUFFIX)) {
-        const retired = JSON.parse(await readFile4(holdPath, "utf8"));
-        if (retired.kind === "ensemble_hold" && retired.state === "retired") {
-          if (retired.retirement_reason === "dead-raiser" && retired.run_identity?.archive_path) {
-            await recordRetirementEvidence(retired, holdPath);
-          }
-          result.retired.push(retired);
-        }
-        continue;
-      }
-      const record = JSON.parse(await readFile4(holdPath, "utf8"));
+      const record = JSON.parse(await readFile3(holdPath, "utf8"));
       if (record.kind !== "ensemble_hold" || typeof record.hold_id !== "string") {
         continue;
       }
       if (await snapshotOwnerGone(record.owner, options.procDir)) {
-        const retired = await retireHold(record, holdPath, "dead-raiser");
+        await rm(holdPath, { force: true }).catch(() => void 0);
         if (typeof record.decision_path === "string") {
-          await rm2(record.decision_path, { force: true }).catch(() => void 0);
+          await rm(record.decision_path, { force: true }).catch(() => void 0);
         }
-        result.retired.push(retired);
-        options.onRetired?.(retired);
+        result.retired.push(record);
         continue;
       }
       result.holds.push({ record, path: holdPath });
@@ -16225,37 +15206,11 @@ async function enumerateScopeDirectory(scopeDir, options) {
   }
   return result;
 }
-async function retireHold(record, holdPath, reason) {
-  const retired = {
-    ...record,
-    state: "retired",
-    retired_at: (/* @__PURE__ */ new Date()).toISOString(),
-    retirement_reason: reason
-  };
-  await publishHoldRecord(holdPath.replace(/\.json$/, RETIRED_SUFFIX), retired);
-  await rm2(holdPath, { force: true });
-  if (reason === "dead-raiser" && record.run_identity?.archive_path) {
-    await recordRetirementEvidence(retired, holdPath.replace(/\.json$/, RETIRED_SUFFIX));
-  }
-  return retired;
-}
-async function recordRetirementEvidence(retired, tombstonePath) {
-  try {
-    await recordRetiredHold(retired.run_identity.archive_path, retired);
-    if (retired.archive_error === void 0) return;
-    delete retired.archive_error;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (retired.archive_error === message) return;
-    retired.archive_error = message;
-  }
-  await publishHoldRecord(tombstonePath, retired);
-}
 async function publishHoldRecord(holdPath, record) {
-  const tmp = `${holdPath}.${randomUUID()}.tmp`;
-  await writeFile3(tmp, `${JSON.stringify(record, null, 2)}
+  const tmp = `${holdPath}.${process.pid}.tmp`;
+  await writeFile2(tmp, `${JSON.stringify(record, null, 2)}
 `, { encoding: "utf8" });
-  await rename3(tmp, holdPath);
+  await rename2(tmp, holdPath);
 }
 function rejectedAnswer(reason, verdict, now) {
   return {
@@ -16291,12 +15246,14 @@ function assertValidRaiseHoldOptions(options) {
 }
 
 // src/ambient-settings.ts
+var WORKER_SCOPE_ENV = "ENSEMBLE_WORKER_SCOPE";
 var CONFIG_SCHEMA_VERSION = 1;
 var AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
 var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
 var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
 var CALLER_IDENTITY_ENV = "ENSEMBLE_CALLER_IDENTITY";
 var RUN_SCOPED_ENVIRONMENT_VARIABLES = /* @__PURE__ */ new Set([
+  WORKER_SCOPE_ENV,
   AGENT_CEILING_ENV,
   RUN_RECORD_ENV,
   RUN_RECORD_DIR_ENV,
@@ -16338,6 +15295,7 @@ function resolveAmbientSettings(input) {
   };
   return {
     configFile,
+    workerScope: input.flags?.workerScope !== void 0 ? { value: parseWorkerScopeGrouping(input.flags.workerScope, "--worker-scope"), layer: "flag" } : input.env[WORKER_SCOPE_ENV] !== void 0 ? { value: parseWorkerScopeGrouping(input.env[WORKER_SCOPE_ENV], WORKER_SCOPE_ENV), layer: "env" } : config?.worker_scope !== void 0 ? { value: config.worker_scope, layer: "config-file" } : { value: "worker", layer: "default" },
     agentCeiling: resolveAgentCeiling({
       flag: input.flags?.agentCeiling,
       env: input.env[AGENT_CEILING_ENV],
@@ -16360,19 +15318,19 @@ function resolveAmbientSettings(input) {
     ),
     runRecordDir: resolveRunRecord(config, input.env),
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd),
+    statusDir: resolveStatus(config, input.env),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
 }
 function machineConfigPath(env) {
-  const configHome = env.XDG_CONFIG_HOME !== void 0 && env.XDG_CONFIG_HOME.length > 0 ? env.XDG_CONFIG_HOME : path6.join(homedir2(), ".config");
-  return path6.join(configHome, "ensemble", "config.json");
+  const configHome = env.XDG_CONFIG_HOME !== void 0 && env.XDG_CONFIG_HOME.length > 0 ? env.XDG_CONFIG_HOME : path4.join(homedir2(), ".config");
+  return path4.join(configHome, "ensemble", "config.json");
 }
 function readMachineConfig(configFile) {
   let source;
   try {
-    source = readFileSync2(configFile, "utf8");
+    source = readFileSync(configFile, "utf8");
   } catch (error) {
     if (isNodeError2(error, "ENOENT")) {
       return null;
@@ -16390,13 +15348,16 @@ function readMachineConfig(configFile) {
   }
   assertKnownKeys(
     parsed,
-    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+    ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
     configFile
   );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
     throw new AmbientConfigError(
       `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
     );
+  }
+  if (parsed.worker_scope !== void 0) {
+    parseWorkerScopeGrouping(parsed.worker_scope, `worker_scope in ${configFile}`);
   }
   validateOptionalPositiveInteger(parsed, "agent_ceiling", configFile);
   validateSection(parsed, "concurrency", ENGINES, configFile, validateOptionalPositiveInteger);
@@ -16580,7 +15541,7 @@ function resolveRunRecord(config, env) {
     env[RUN_RECORD_DIR_ENV],
     RUN_RECORD_DIR_ENV,
     config?.run_record?.dir,
-    path6.join(dataHome(env), "ensemble")
+    path4.join(dataHome(env), "ensemble")
   );
   return directory;
 }
@@ -16589,10 +15550,10 @@ function resolveRunRecordStoreDir(config, env) {
     env[RUN_RECORD_DIR_ENV],
     RUN_RECORD_DIR_ENV,
     config?.run_record?.dir,
-    path6.join(dataHome(env), "ensemble")
+    path4.join(dataHome(env), "ensemble")
   );
 }
-function resolveStatus(config, env, cwd) {
+function resolveStatus(config, env) {
   const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
   if (!enabled.value) {
     return { value: null, layer: enabled.layer };
@@ -16601,7 +15562,7 @@ function resolveStatus(config, env, cwd) {
     env.ENSEMBLE_STATUS_DIR,
     "ENSEMBLE_STATUS_DIR",
     config?.status?.dir,
-    path6.join(cwd, ".claude")
+    path4.join(dataHome(env), "ensemble", "status")
   );
   if (isDirectory(directory.value)) {
     return directory;
@@ -16611,7 +15572,7 @@ function resolveStatus(config, env, cwd) {
       `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} (from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
     );
   }
-  return { value: null, layer: directory.layer };
+  return directory;
 }
 function resolveEnabled(envValue, envKey, fileValue) {
   if (envValue !== void 0) {
@@ -16664,7 +15625,7 @@ function fileValueError(configFile, key, detail) {
   return new AmbientConfigError(`Invalid machine configuration key ${key} in ${configFile}: ${detail}`);
 }
 function dataHome(env) {
-  return env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path6.join(homedir2(), ".local", "share");
+  return env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path4.join(homedir2(), ".local", "share");
 }
 function isDirectory(candidate) {
   try {
@@ -16682,10 +15643,1119 @@ function isNodeError2(error, code) {
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
+function parseWorkerScopeGrouping(value, source) {
+  if (value !== "worker" && value !== "run") {
+    throw new AmbientConfigError(`Invalid value for ${source}: expected worker or run; got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
 
 // src/completion-sentinel.ts
-import { mkdir as mkdir3, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir4, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
 import path7 from "node:path";
+
+// src/canonical-document.ts
+import { createHash } from "node:crypto";
+function canonicalJson(value) {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+var DIGEST_RECIPE = "sha256 hex of the document with this digest field set to null, serialised as ECMA-262 JSON.stringify with two-space indent and no trailing newline, object keys sorted by UTF-16 code unit at every level (integer-index keys first in ascending numeric order, as ECMA-262 property enumeration places them)";
+function compareCodeUnits(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+function sortJson(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value).sort(([a], [b]) => compareCodeUnits(a, b));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
+  }
+  return value;
+}
+function sha256(text) {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+// src/run-record.ts
+import { createHash as createHash2 } from "node:crypto";
+import { appendFile, mkdir as mkdir3, readdir as readdir3, readFile as readFile4, realpath, rename as rename3, rm as rm2, stat as stat2, writeFile as writeFile3 } from "node:fs/promises";
+import os from "node:os";
+import path6 from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/node-version.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import path5 from "node:path";
+import { fileURLToPath } from "node:url";
+function requiredNodeRange(fromUrl = import.meta.url) {
+  if (">=24.14.0".trim().length > 0) {
+    return ">=24.14.0".trim();
+  }
+  const metadata = readHarnessPackageMetadata(fromUrl);
+  const range = metadata.engines?.node;
+  if (typeof range !== "string" || range.trim().length === 0) {
+    throw new Error("package.json is missing engines.node");
+  }
+  return range.trim();
+}
+function nodeVersionError(version2 = process.versions.node, range = requiredNodeRange()) {
+  return satisfiesNodeRange(version2, range) ? null : `Ensemble requires Node ${range}; detected Node ${version2}.`;
+}
+function satisfiesNodeRange(version2, range) {
+  const minimum = parseMinimumRange(range);
+  const actual = parseVersion(version2);
+  if (minimum === null || actual === null) {
+    throw new Error(`Unsupported Node version range: ${range}`);
+  }
+  if (actual.major !== minimum.major) {
+    return actual.major > minimum.major;
+  }
+  if (actual.minor !== minimum.minor) {
+    return actual.minor > minimum.minor;
+  }
+  return actual.patch >= minimum.patch;
+}
+function parseMinimumRange(range) {
+  const match = /^>=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(range.trim());
+  if (match === null) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2] ?? 0),
+    patch: Number(match[3] ?? 0)
+  };
+}
+function parseVersion(version2) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version2.trim());
+  if (match === null) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3])
+  };
+}
+function readHarnessPackageMetadata(fromUrl) {
+  let current2 = path5.dirname(fileURLToPath(fromUrl));
+  while (true) {
+    const candidate = path5.join(current2, "package.json");
+    try {
+      const metadata = JSON.parse(readFileSync2(candidate, "utf8"));
+      if (metadata.name === "ensemble-workflows") {
+        return metadata;
+      }
+    } catch {
+    }
+    const parent = path5.dirname(current2);
+    if (parent === current2) {
+      throw new Error("Could not locate ensemble-workflows package.json");
+    }
+    current2 = parent;
+  }
+}
+
+// src/harness-version.ts
+function harnessVersion(fromUrl = import.meta.url) {
+  if ("0.0.1".trim().length > 0) {
+    return "0.0.1".trim();
+  }
+  const version2 = readHarnessPackageMetadata(fromUrl).version;
+  return typeof version2 === "string" && version2.trim().length > 0 ? version2.trim() : "0.0.0";
+}
+
+// src/usage-summary.ts
+function subtractUsage(total, previous) {
+  const before = previous ?? {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0
+  };
+  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 ? void 0 : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
+  const reasoningOutputTokens = total.reasoningOutputTokens === void 0 ? void 0 : Math.max(0, total.reasoningOutputTokens - (before.reasoningOutputTokens ?? 0));
+  return {
+    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
+    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
+    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
+    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
+    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
+  };
+}
+var ENGINE_INCLUSION_RULES = {
+  codex: { cachedWithinInput: true, reasoningWithinOutput: true },
+  claude: { cachedWithinInput: false, reasoningWithinOutput: true },
+  opencode: { cachedWithinInput: false, reasoningWithinOutput: false }
+};
+function summariseUsage(engine, events) {
+  if (events.length === 0) {
+    return null;
+  }
+  const rules = ENGINE_INCLUSION_RULES[engine];
+  let fresh = 0;
+  let cached = 0;
+  let cacheCreation = 0;
+  let cacheCreationSeparable = true;
+  let output = 0;
+  let reasoning = 0;
+  let reasoningSeparable = true;
+  let unclassified = 0;
+  for (const event of events) {
+    const delta = event.last;
+    cached += delta.cachedInputTokens;
+    if (delta.cacheCreationInputTokens === void 0) {
+      cacheCreationSeparable = false;
+    } else {
+      cacheCreation += delta.cacheCreationInputTokens;
+    }
+    const deltaFresh = rules.cachedWithinInput ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
+    const deltaReasoning = delta.reasoningOutputTokens;
+    if (deltaReasoning === void 0) {
+      reasoningSeparable = false;
+    }
+    const reportedReasoning = deltaReasoning ?? 0;
+    const deltaOutput = rules.reasoningWithinOutput && deltaReasoning !== void 0 ? Math.max(0, delta.outputTokens - reportedReasoning) : delta.outputTokens;
+    fresh += deltaFresh;
+    reasoning += reportedReasoning;
+    output += deltaOutput;
+    unclassified += Math.max(
+      0,
+      delta.totalTokens - (deltaFresh + delta.cachedInputTokens + deltaOutput + reportedReasoning)
+    );
+  }
+  const separableReasoning = reasoningSeparable ? reasoning : null;
+  return {
+    freshInputTokens: fresh,
+    cachedInputTokens: cached,
+    ...cacheCreationSeparable ? { cacheReadTokens: Math.max(0, cached - cacheCreation), cacheCreationTokens: cacheCreation } : {},
+    outputTokens: separableReasoning === null ? output + reasoning : output,
+    reasoningOutputTokens: separableReasoning,
+    unclassifiedTokens: unclassified,
+    // The total is the class sum by construction, so the vocabulary's
+    // disjoint-and-summing invariant cannot drift from the fields beside it.
+    totalTokens: fresh + cached + output + reasoning + unclassified
+  };
+}
+function addUsageSummary(target, delta) {
+  const splitSurvives = target.cacheReadTokens !== void 0 && target.cacheCreationTokens !== void 0 && delta.cacheReadTokens !== void 0 && delta.cacheCreationTokens !== void 0;
+  const reasoningSurvives = target.reasoningOutputTokens !== null && delta.reasoningOutputTokens !== null;
+  return {
+    freshInputTokens: target.freshInputTokens + delta.freshInputTokens,
+    cachedInputTokens: target.cachedInputTokens + delta.cachedInputTokens,
+    ...splitSurvives ? {
+      cacheReadTokens: (target.cacheReadTokens ?? 0) + (delta.cacheReadTokens ?? 0),
+      cacheCreationTokens: (target.cacheCreationTokens ?? 0) + (delta.cacheCreationTokens ?? 0)
+    } : {},
+    outputTokens: reasoningSurvives || target.reasoningOutputTokens === null && delta.reasoningOutputTokens === null ? target.outputTokens + delta.outputTokens : target.outputTokens + (target.reasoningOutputTokens ?? 0) + delta.outputTokens + (delta.reasoningOutputTokens ?? 0),
+    reasoningOutputTokens: reasoningSurvives ? (target.reasoningOutputTokens ?? 0) + (delta.reasoningOutputTokens ?? 0) : null,
+    unclassifiedTokens: target.unclassifiedTokens + delta.unclassifiedTokens,
+    totalTokens: target.totalTokens + delta.totalTokens
+  };
+}
+
+// src/run-record.ts
+var execFileAsync = promisify(execFile);
+var SCHEMA_VERSION = 4;
+var MANIFEST_PATH = "manifest.json";
+var RunRecordWriter = class _RunRecordWriter {
+  archiveDir;
+  manifest;
+  #cwd;
+  #files = /* @__PURE__ */ new Map();
+  #agents = /* @__PURE__ */ new Map();
+  #tmpSeq = 0;
+  #writeChain = Promise.resolve();
+  #sealed = false;
+  #currentAttempts = /* @__PURE__ */ new Map();
+  #liveCodex = /* @__PURE__ */ new Map();
+  #liveCodexHashes = /* @__PURE__ */ new Map();
+  constructor(archiveDir, cwd, manifest) {
+    this.archiveDir = archiveDir;
+    this.#cwd = cwd;
+    this.manifest = manifest;
+  }
+  /**
+   * Concurrent agents settle independently, but the manifest is one shared
+   * read-modify-write document: interleaved writes would race each other (and
+   * previously collided on same-millisecond temp names). Every mutating public
+   * operation runs through this chain, so each snapshot on disk reflects all
+   * operations before it. One failed write must not poison later ones.
+   */
+  #serialise(task) {
+    const next = this.#writeChain.then(task, task);
+    this.#writeChain = next.catch(() => void 0);
+    return next;
+  }
+  static async start(options) {
+    try {
+      return await _RunRecordWriter.#open(options);
+    } catch (error) {
+      throw new RunRecordStartError(options.storeDir, error);
+    }
+  }
+  static async #open(options) {
+    const namespace = await deriveNamespace(options.cwd);
+    const runId = `${namespace.id}:${options.runUuid}`;
+    const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
+    await mkdir3(archiveDir, { recursive: true });
+    const harnessRoot = await findHarnessRoot();
+    const packageInfo = await readPackageInfo(harnessRoot ?? path6.dirname(fileURLToPath2(import.meta.url)));
+    const harnessCommit = harnessRoot === null ? null : await git(["rev-parse", "HEAD"], harnessRoot);
+    const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
+    const canonicalArgs = canonicalJson(options.args);
+    const writer = new _RunRecordWriter(archiveDir, options.cwd, {
+      schema_version: SCHEMA_VERSION,
+      kind: "run_manifest",
+      run_id: runId,
+      run_uuid: options.runUuid,
+      caller_identity: options.callerIdentity ?? null,
+      namespace,
+      status: "in-progress",
+      owner: await captureProcessOwner(options.procDir ?? "/proc", os.hostname()),
+      started_at: options.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+      ended_at: null,
+      workflow: {
+        path: options.workflowPath,
+        archive_path: "workflow.js",
+        sha256: sha256(options.workflowSource)
+      },
+      args: {
+        archive_path: "args.json",
+        canonical_archive_path: "args.canonical.json",
+        sha256: sha256(canonicalArgs)
+      },
+      meta: {
+        task: null,
+        raw: null
+      },
+      cli_flags: options.cliFlags,
+      worker_scope: options.workerScope ?? { value: "worker", layer: "default" },
+      concurrency: {
+        agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
+        engines: options.concurrency?.engines ?? {}
+      },
+      budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
+      run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
+      git: {
+        start: gitStart,
+        end: null
+      },
+      environment: {
+        os: {
+          platform: os.platform(),
+          release: os.release(),
+          arch: os.arch()
+        },
+        node: process.version,
+        tools: await toolVersions()
+      },
+      harness: {
+        package_name: packageInfo.name,
+        package_version: packageInfo.version,
+        commit: harnessCommit,
+        commit_unavailable: harnessCommit !== null ? null : harnessRoot === null ? "bundle-has-no-embedded-commit" : "git-head-unavailable"
+      },
+      result: {
+        archive_path: null,
+        exit_code: null
+      },
+      error: null,
+      workflow_invocations: [
+        {
+          ordinal: 0,
+          parent: null,
+          path: options.workflowPath,
+          source: {
+            archive_path: "workflow.js",
+            sha256: sha256(options.workflowSource)
+          },
+          args: {
+            archive_path: "args.json",
+            canonical_archive_path: "args.canonical.json",
+            sha256: sha256(canonicalArgs)
+          }
+        }
+      ],
+      hold_events: [],
+      tallies: {},
+      tallies_unavailable: "none-recorded",
+      cost_rollup: {},
+      files: [],
+      integrity: {
+        algorithm: "sha256",
+        recipe: DIGEST_RECIPE,
+        manifest_sha256: null,
+        files_lost: []
+      }
+    });
+    await writer.#writeText("workflow.js", options.workflowSource);
+    await writer.#writeJson("args.json", {
+      schema_version: SCHEMA_VERSION,
+      kind: "run_args",
+      value: options.args
+    });
+    await writer.#writeText("args.canonical.json", canonicalArgs);
+    if (gitStart.diffPath !== null) {
+      await writer.#trackFile(gitStart.diffPath);
+    }
+    await writer.#writeManifest();
+    await reapAbandonedRuns({
+      namespaceDir: path6.dirname(archiveDir),
+      skipRunUuid: options.runUuid,
+      procDir: options.procDir ?? "/proc",
+      observer: { pid: process.pid, runUuid: options.runUuid }
+    });
+    return writer;
+  }
+  async noteMeta(meta) {
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.meta = {
+        task: extractTask(meta),
+        raw: meta
+      };
+      await this.#writeManifest();
+    });
+  }
+  /**
+   * Record a composed child's invocation: its source and args are archived
+   * beside the root's (same hashing, same canonicalisation), the manifest
+   * gains an ordered entry carrying the parent link, and the assigned
+   * ordinal is returned so nested provenance (if a deeper level is ever
+   * permitted) can name its parent. One run identity throughout — a child
+   * never opens a second archive.
+   */
+  async recordWorkflowInvocation(invocation) {
+    const args = structuredClone(invocation.args);
+    return await this.#serialise(async () => {
+      if (this.#sealed) {
+        return -1;
+      }
+      const ordinal = this.manifest.workflow_invocations.length;
+      const directory = `workflows/${padId(ordinal)}`;
+      const sourcePath = `${directory}/workflow.js`;
+      const argsPath = `${directory}/args.json`;
+      const canonicalArgsPath = `${directory}/args.canonical.json`;
+      const canonicalArgs = canonicalJson(args);
+      await this.#writeText(sourcePath, invocation.source);
+      await this.#writeJson(argsPath, {
+        schema_version: SCHEMA_VERSION,
+        kind: "workflow_args",
+        value: args
+      });
+      await this.#writeText(canonicalArgsPath, canonicalArgs);
+      this.manifest.workflow_invocations.push({
+        ordinal,
+        parent: invocation.parentOrdinal,
+        path: invocation.scriptPath,
+        source: {
+          archive_path: sourcePath,
+          sha256: sha256(invocation.source)
+        },
+        args: {
+          archive_path: argsPath,
+          canonical_archive_path: canonicalArgsPath,
+          sha256: sha256(canonicalArgs)
+        }
+      });
+      await this.#writeManifest();
+      return ordinal;
+    });
+  }
+  /**
+   * Append one hold lifecycle event from the runtime's event stream.
+   * Same intent-before-outcome principle as the dispatch-time agent write:
+   * the raise is recorded when it happens, so a run that dies mid-hold
+   * still shows what it was waiting on. Unrecognised methods are ignored —
+   * the runtime forwards its hold events unfiltered.
+   */
+  async recordHoldEvent(event) {
+    const kind = holdEventKind(event.method);
+    if (kind === null || typeof event.params.holdId !== "string") {
+      return;
+    }
+    const entry = {
+      hold_id: event.params.holdId,
+      event: kind,
+      verdict: kind === "answered" && typeof event.params.verdict === "string" ? event.params.verdict : null,
+      reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
+      attempted_verdict: kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string" ? event.params.attemptedVerdict : null,
+      attempted_verdict_state: kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState) ? event.params.attemptedVerdictState : null,
+      answered_by: (kind === "answered" || kind === "answer-rejected") && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
+      note: kind === "answered" && typeof event.params.note === "string" ? event.params.note : null,
+      at: new Date(event.receivedAt).toISOString()
+    };
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.hold_events.push(entry);
+      await this.#writeManifest();
+    });
+  }
+  /**
+   * Record one named count from the script body. Last write wins per
+   * name, and the write lands in the manifest at once — a count recorded
+   * before the run ends by any handleable path is in the archive whether
+   * or not `finish()` is ever reached.
+   */
+  async recordTally(name, value) {
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      Object.defineProperty(this.manifest.tallies, name, { value, enumerable: true, writable: true, configurable: true });
+      this.manifest.tallies_unavailable = null;
+      await this.#writeManifest();
+    });
+  }
+  /** Publish execution start separately from dispatch and settlement. */
+  async recordAttemptStart(id, attempt, startedAt) {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const record = this.#agents.get(id);
+      if (record === void 0 || record.status !== "in-progress") return;
+      this.#currentAttempts.set(id, { attempt, started_at: startedAt, transcript: null });
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+  /** Clear execution metadata before another target waits for admission. */
+  async recordAttemptEnd(id, attempt) {
+    await this.#serialise(async () => {
+      if (this.#sealed || this.#currentAttempts.get(id)?.attempt !== attempt) return;
+      this.#currentAttempts.delete(id);
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+  /** Reference Claude's own readable transcript without copying a growing file. */
+  async recordClaudeTranscript(id, attempt, transcriptPath) {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const current2 = this.#currentAttempts.get(id);
+      if (current2?.attempt !== attempt) return;
+      await stat2(transcriptPath);
+      current2.transcript = transcriptPath;
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+  /** Append an event before publishing its archive reference. */
+  async appendCodexTranscript(id, attempt, event) {
+    const content = `${JSON.stringify(event)}
+`;
+    return await this.#serialise(async () => {
+      if (this.#sealed) return null;
+      const current2 = this.#currentAttempts.get(id);
+      if (current2?.attempt !== attempt) return null;
+      const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-transcript.codex.jsonl`;
+      await mkdir3(path6.dirname(path6.join(this.archiveDir, relativePath)), { recursive: true });
+      await appendFile(path6.join(this.archiveDir, relativePath), content);
+      const digest = this.#liveCodexHashes.get(relativePath) ?? { hash: createHash2("sha256"), size: 0 };
+      digest.hash.update(content);
+      digest.size += Buffer.byteLength(content);
+      this.#liveCodexHashes.set(relativePath, digest);
+      this.#files.set(relativePath, {
+        path: relativePath,
+        size: digest.size,
+        sha256: digest.hash.copy().digest("hex")
+      });
+      this.#liveCodex.set(`${id}:${attempt}`, relativePath);
+      if (current2.transcript !== relativePath) {
+        current2.transcript = relativePath;
+        await this.#publishCurrentAttempt(id);
+      } else {
+        await this.#writeManifest();
+      }
+      return relativePath;
+    });
+  }
+  /** Update live metadata without replaying settled attempt artefact writes. */
+  async #publishCurrentAttempt(id) {
+    const relativePath = `agents/${padId(id)}/agent.json`;
+    const record = JSON.parse(await readFile4(path6.join(this.archiveDir, relativePath), "utf8"));
+    const current2 = this.#currentAttempts.get(id);
+    if (current2 === void 0) {
+      delete record.current_attempt;
+    } else {
+      record.current_attempt = { ...current2 };
+    }
+    await this.#writeJson(relativePath, record);
+    await this.#writeManifest();
+  }
+  async recordAgent(record) {
+    const snapshot = structuredClone(record);
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      await this.#recordAgent(snapshot);
+    });
+  }
+  async #recordAgent(record) {
+    this.#agents.set(record.id, record);
+    if (record.status !== "in-progress") this.#currentAttempts.delete(record.id);
+    const agentDir = `agents/${padId(record.id)}`;
+    const transcriptRefs = [];
+    for (const attempt of record.attempts) {
+      let index = 0;
+      for (const transcript of attempt.transcripts) {
+        if (transcript.content.length === 0) {
+          continue;
+        }
+        index += 1;
+        const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
+        const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
+        const liveFile = this.#files.get(relativePath);
+        const liveMatches = this.#liveCodex.get(`${record.id}:${attempt.attempt}`) === relativePath && liveFile?.sha256 === sha256(transcript.content) && (await stat2(path6.join(this.archiveDir, relativePath)).catch(() => null))?.size === liveFile.size;
+        if (liveMatches) {
+          await this.#trackFile(relativePath);
+        } else {
+          await this.#writeText(relativePath, transcript.content);
+        }
+        transcriptRefs.push({
+          attempt: attempt.attempt,
+          path: relativePath,
+          format: transcript.format,
+          source: transcript.source,
+          partial: transcript.partial === true,
+          thread_id: transcript.threadId ?? null,
+          session_id: transcript.sessionId ?? null
+        });
+      }
+    }
+    const agentJsonPath = `${agentDir}/agent.json`;
+    const unsettledTiming = record.status === "in-progress" || record.status === "abandoned";
+    await this.#writeJson(agentJsonPath, {
+      ...this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id) } } : {},
+      schema_version: SCHEMA_VERSION,
+      kind: "agent_record",
+      id: record.id,
+      engine: record.engine,
+      header_identity: record.headerIdentity,
+      prompt: record.prompt,
+      options: {
+        timeout_ms: record.options.timeoutMs,
+        max_attempts: record.options.maxAttempts
+      },
+      model: record.model,
+      effort: record.effort,
+      fallback: record.fallback,
+      answered_by: record.answeredBy,
+      resolved_model: record.resolvedModel,
+      resolved_effort: record.resolvedEffort,
+      resolved_cwd: record.resolvedCwd,
+      isolation: record.isolation,
+      worktree: record.worktree === null ? null : {
+        branch: record.worktree.branch,
+        base_commit: record.worktree.baseCommit,
+        tip_commit: record.worktree.tipCommit,
+        changed: record.worktree.changed,
+        removed: record.worktree.removed
+      },
+      label: record.label,
+      phase: record.phase,
+      status: record.status,
+      termination_cause: record.status === "in-progress" && record.terminationCause === null ? { kind: "record-unsettled", message: "the writer has not observed this worker's outcome" } : record.terminationCause,
+      creation_order: record.creationOrder,
+      concurrency_group: record.concurrencyGroup,
+      schema: record.schema,
+      strip: record.strip,
+      session: record.session,
+      transcript_capture: record.transcriptCapture,
+      parse_route: record.parseRoute,
+      decode_failure: record.decodeFailure === null ? null : {
+        byte_length: record.decodeFailure.byteLength,
+        line_prefix: record.decodeFailure.linePrefix
+      },
+      raw_output: record.rawOutput,
+      validated_output: record.validatedOutput,
+      // Summary usage in the declared vocabulary, or the reason there is
+      // none — an agent with no usage data must be legible as "unknown for
+      // this reason", never indistinguishable from zero spend.
+      usage: agentUsage(record),
+      queued_ms: unsettledTiming && record.queuedMs === 0 ? null : record.queuedMs,
+      execution_ms: unsettledTiming && record.executionMs === 0 ? null : record.executionMs,
+      attempts: record.attempts.map((attempt) => ({
+        attempt: attempt.attempt,
+        status: attempt.status,
+        target: attempt.target,
+        failure: attempt.failure,
+        classification: attempt.classification,
+        chain_decision: attempt.chainDecision,
+        observed_failure: attempt.observedFailure,
+        worker_exit: attempt.workerExit === null ? null : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
+        app_server_diagnostic: attempt.appServerDiagnostic === null ? null : {
+          code: attempt.appServerDiagnostic.code,
+          http_status_code: attempt.appServerDiagnostic.httpStatusCode,
+          message: attempt.appServerDiagnostic.message,
+          payload: attempt.appServerDiagnostic.payload
+        },
+        background_waits: attempt.backgroundWaits.map((wait) => ({
+          task_id: wait.taskId,
+          description: wait.description,
+          observed_at: wait.observedAt,
+          ended_at: wait.endedAt
+        })),
+        raw_output: attempt.rawOutput,
+        validated_output: attempt.validatedOutput,
+        resolved_model: attempt.resolvedModel,
+        resolved_effort: attempt.resolvedEffort,
+        started_at: attempt.startedAt,
+        ended_at: attempt.endedAt,
+        duration_ms: attempt.durationMs,
+        first_delta_ms: attempt.firstDeltaMs,
+        token_usage_events: attempt.tokenUsageEvents,
+        diagnostics: attempt.diagnostics ?? {}
+      })),
+      // Keep the documented v3 array shape in every outcome. Its sibling
+      // preserves why it is empty, so a consumer can distinguish an absent
+      // transcript from one lost by the archive.
+      transcripts: transcriptRefs,
+      transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
+    });
+    this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
+    await this.#writeManifest();
+  }
+  async finish(options) {
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.status = options.status;
+      this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
+      this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
+      if (this.manifest.git.end.diffPath !== null) {
+        await this.#trackFile(this.manifest.git.end.diffPath);
+      }
+      this.manifest.result = {
+        archive_path: "result.json",
+        exit_code: options.exitCode
+      };
+      this.manifest.error = options.error ?? null;
+      await this.#writeJson("result.json", {
+        schema_version: SCHEMA_VERSION,
+        kind: "run_result",
+        // The run's own outcome as the launcher reported it. Where the
+        // manifest later degrades to `incomplete`, the two are answering
+        // different questions: this envelope says how the run ended, the
+        // manifest says whether the archive recording it is whole.
+        status: options.status,
+        exit_code: options.exitCode,
+        error: options.error ?? null,
+        value: options.result
+      });
+      this.manifest.integrity.files_lost = await this.#reconcileFiles();
+      if (this.manifest.integrity.files_lost.length > 0 && this.manifest.status === "complete") {
+        this.manifest.status = "incomplete";
+      }
+      await this.#writeManifest();
+      this.#sealed = true;
+    });
+  }
+  async #writeJson(relativePath, value) {
+    await this.#writeText(relativePath, `${canonicalJson(value)}
+`);
+  }
+  async #writeText(relativePath, content) {
+    const destination = path6.join(this.archiveDir, relativePath);
+    await mkdir3(path6.dirname(destination), { recursive: true });
+    const temporary = path6.join(path6.dirname(destination), `.${path6.basename(destination)}${this.#tmpSuffix()}`);
+    await writeAndRename(temporary, destination, content);
+    await this.#trackFile(relativePath);
+  }
+  async #writeManifest() {
+    this.manifest.files = [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path));
+    this.manifest.integrity.manifest_sha256 = null;
+    this.manifest.integrity.manifest_sha256 = sha256(canonicalJson(this.manifest));
+    const destination = path6.join(this.archiveDir, MANIFEST_PATH);
+    const temporary = path6.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
+    await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}
+`);
+  }
+  // pid + sequence keeps names unique within the process; Date.now() alone
+  // collided when two agents settled in the same millisecond.
+  #tmpSuffix() {
+    this.#tmpSeq += 1;
+    return `.${process.pid}.${this.#tmpSeq}.tmp`;
+  }
+  /**
+   * Checks every file the manifest declares against the archive directory,
+   * returning what is no longer accountable. Presence and size only: the
+   * recorded digest is what a consumer walks, and re-hashing the whole
+   * archive at seal would repeat that walk for no extra evidence.
+   */
+  async #reconcileFiles() {
+    const lost = [];
+    for (const entry of [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path))) {
+      const metadata = await stat2(path6.join(this.archiveDir, entry.path)).catch(() => null);
+      if (metadata === null) {
+        lost.push({ path: entry.path, reason: "missing" });
+      } else if (metadata.size !== entry.size) {
+        lost.push({ path: entry.path, reason: "size-mismatch" });
+      }
+    }
+    return lost;
+  }
+  /**
+   * The sealed manifest's self-digest, for a consumer of this writer that
+   * publishes an attestation elsewhere (the completion sentinel). Null
+   * until the archive seals: a mid-run digest is real but perishable —
+   * `finish()` rewrites the manifest — so publishing it outside the file
+   * it covers would attest bytes the seal then replaces.
+   */
+  sealedManifestDigest() {
+    return this.#sealed ? this.manifest.integrity.manifest_sha256 : null;
+  }
+  async #trackFile(relativePath) {
+    const absolute = path6.join(this.archiveDir, relativePath);
+    const [metadata, contentHash] = await Promise.all([stat2(absolute), hashFile(absolute)]);
+    this.#files.set(relativePath, {
+      path: relativePath,
+      size: metadata.size,
+      sha256: contentHash
+    });
+  }
+};
+function transcriptAbsenceReason(record) {
+  if (record.status === "in-progress") {
+    return "record-unsettled";
+  }
+  if (record.attempts.length === 0) {
+    return "no-attempt-ran";
+  }
+  if (record.attempts.every(
+    (attempt) => attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
+  )) {
+    return "substrate-never-started";
+  }
+  if (record.status === "interrupted") {
+    return "worker-interrupted";
+  }
+  if (record.status === "timed-out") {
+    return "worker-timed-out";
+  }
+  if (record.transcriptCapture === "lost") {
+    return "session-client-capture-gap";
+  }
+  return "engine-produced-no-transcript";
+}
+function agentUsage(record) {
+  let summary = null;
+  for (const attempt of record.attempts) {
+    const attemptSummary = summariseUsage(attempt.target.engine, attempt.tokenUsageEvents);
+    if (attemptSummary !== null) {
+      summary = summary === null ? attemptSummary : addUsageSummary(summary, attemptSummary);
+    }
+  }
+  if (summary !== null) {
+    return { summary };
+  }
+  if (record.status === "in-progress") {
+    return { unavailable: "record-unsettled" };
+  }
+  return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
+}
+function buildCostRollup(records) {
+  const rollup = {};
+  const accumulators = /* @__PURE__ */ new Map();
+  const noteAbsentUsage = (engine, model) => {
+    rollup[engine] ??= {};
+    rollup[engine][model] ??= { unavailable: "no-usage-reported" };
+  };
+  for (const record of records) {
+    if (record.attempts.length === 0) {
+      noteAbsentUsage(record.engine, "unresolved");
+    }
+    const lastReporter = record.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.target.engine ?? record.engine;
+    for (const attempt of record.attempts) {
+      const engine = attempt.target.engine;
+      const summary = summariseUsage(engine, attempt.tokenUsageEvents);
+      const borrowed = engine === lastReporter ? record.resolvedModel : null;
+      const model = attempt.resolvedModel ?? borrowed ?? "unresolved";
+      if (summary === null) {
+        noteAbsentUsage(engine, model);
+        continue;
+      }
+      rollup[engine] ??= {};
+      const existing = rollup[engine][model];
+      const key = `${engine}\0${model}`;
+      const accumulator = accumulators.get(key) ?? { amount: 0, currency: null, reported: false, unlike: false };
+      accumulators.set(key, accumulator);
+      for (const event of attempt.tokenUsageEvents) {
+        addProviderCost(accumulator, event);
+      }
+      rollup[engine][model] = {
+        tokens: existing === void 0 || "unavailable" in existing ? summary : addUsageSummary(existing.tokens, summary),
+        cost: publishedCost(accumulator)
+      };
+    }
+  }
+  return rollup;
+}
+function publishedCost(accumulator) {
+  if (accumulator.unlike) {
+    return { unavailable: "unlike-currencies" };
+  }
+  if (!accumulator.reported) {
+    return { unavailable: "no-provider-cost-reported" };
+  }
+  return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
+}
+function addProviderCost(target, event) {
+  if (target.unlike) {
+    return;
+  }
+  const cost = event.raw.cost;
+  if (typeof cost !== "number" || !Number.isFinite(cost)) {
+    return;
+  }
+  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
+  if (target.currency !== null && currency !== null && currency !== target.currency) {
+    target.unlike = true;
+    return;
+  }
+  target.amount += cost;
+  target.reported = true;
+  if (currency !== null && target.currency === null) {
+    target.currency = currency;
+  }
+}
+async function resolveRunDirectory(storeDir, cwd, runUuid) {
+  return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
+}
+async function reapAbandonedRuns(options) {
+  const procDir = options.procDir ?? "/proc";
+  const host = options.host ?? os.hostname();
+  const reaped = [];
+  const entries = await readdir3(options.namespaceDir, { withFileTypes: true }).catch(() => null);
+  if (entries === null) {
+    return reaped;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === options.skipRunUuid) {
+      continue;
+    }
+    try {
+      const manifestPath = path6.join(options.namespaceDir, entry.name, MANIFEST_PATH);
+      const manifest = JSON.parse(await readFile4(manifestPath, "utf8"));
+      if (manifest.status !== "in-progress") {
+        continue;
+      }
+      const reason = await judgeOwnerGone(manifest.owner, procDir, host);
+      if (reason === null) {
+        continue;
+      }
+      const fresh = JSON.parse(await readFile4(manifestPath, "utf8"));
+      if (fresh.status !== "in-progress") {
+        continue;
+      }
+      const abandonment = {
+        observed_at: (/* @__PURE__ */ new Date()).toISOString(),
+        reason,
+        observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
+      };
+      const rewritten = await resolveAbandonedAgentRecords(path6.join(options.namespaceDir, entry.name), abandonment);
+      if (Array.isArray(fresh.files)) {
+        for (const fileEntry of fresh.files) {
+          const update = rewritten.get(fileEntry.path);
+          if (update !== void 0) {
+            fileEntry.size = update.size;
+            fileEntry.sha256 = update.sha256;
+          }
+        }
+      }
+      fresh.status = "abandoned";
+      fresh.abandonment = abandonment;
+      if (fresh.integrity !== void 0 && fresh.integrity !== null && typeof fresh.integrity.manifest_sha256 === "string") {
+        fresh.integrity.manifest_sha256 = null;
+        fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
+      }
+      await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}
+`);
+      reaped.push(entry.name);
+    } catch {
+    }
+  }
+  return reaped;
+}
+async function resolveAbandonedAgentRecords(runDir, abandonment) {
+  const rewritten = /* @__PURE__ */ new Map();
+  const agentsDir = path6.join(runDir, "agents");
+  const agentEntries = await readdir3(agentsDir, { withFileTypes: true }).catch(() => null);
+  if (agentEntries === null) {
+    return rewritten;
+  }
+  for (const agentEntry of agentEntries) {
+    if (!agentEntry.isDirectory()) {
+      continue;
+    }
+    try {
+      const agentJsonPath = path6.join(agentsDir, agentEntry.name, "agent.json");
+      const agentRecord = JSON.parse(await readFile4(agentJsonPath, "utf8"));
+      if (agentRecord.status !== "in-progress") {
+        continue;
+      }
+      agentRecord.status = "abandoned";
+      agentRecord.abandonment = abandonment;
+      delete agentRecord.current_attempt;
+      const content = `${canonicalJson(agentRecord)}
+`;
+      await writeStandaloneText(agentJsonPath, content);
+      rewritten.set(`agents/${agentEntry.name}/agent.json`, {
+        size: Buffer.byteLength(content),
+        sha256: sha256(content)
+      });
+    } catch {
+    }
+  }
+  return rewritten;
+}
+function runDirectoryFor(storeDir, namespace, runUuid) {
+  return path6.join(storeDir, "runs", "cwd", namespace.hash.slice(0, 24), runUuid);
+}
+async function deriveNamespace(cwd) {
+  const gitRoot = await git(["rev-parse", "--show-toplevel"], cwd);
+  const material = await realpath(gitRoot ?? cwd);
+  const hash = sha256(material);
+  return {
+    strategy: "git-root-realpath-sha256",
+    id: `cwd:${hash.slice(0, 24)}`,
+    material,
+    hash
+  };
+}
+async function readGitState(cwd, diffPath, archiveDir) {
+  const root = await git(["rev-parse", "--show-toplevel"], cwd);
+  const head = await git(["rev-parse", "HEAD"], cwd);
+  const porcelain = await git(["status", "--porcelain"], cwd);
+  const dirty = porcelain === null ? null : porcelain.length > 0;
+  let archivedDiffPath = null;
+  if (dirty === true) {
+    const diff = await git(["diff", "HEAD", "--binary"], cwd) ?? await git(["diff", "--binary"], cwd);
+    if (diff !== null && diff.length > 0) {
+      await writeStandaloneText(path6.join(archiveDir, diffPath), diff);
+      archivedDiffPath = diffPath;
+    }
+  }
+  return { root, head, dirty, diffPath: archivedDiffPath };
+}
+async function readPackageInfo(cwd) {
+  try {
+    const text = await readFile4(path6.join(cwd, "package.json"), "utf8");
+    const parsed = JSON.parse(text);
+    return {
+      name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
+      version: typeof parsed.version === "string" ? parsed.version : harnessVersion()
+    };
+  } catch {
+    return { name: "ensemble-workflows", version: harnessVersion() };
+  }
+}
+async function findHarnessRoot() {
+  let current2 = path6.dirname(fileURLToPath2(import.meta.url));
+  for (; ; ) {
+    try {
+      const text = await readFile4(path6.join(current2, "package.json"), "utf8");
+      const parsed = JSON.parse(text);
+      if (parsed.name === "ensemble-workflows") {
+        return current2;
+      }
+    } catch {
+    }
+    const parent = path6.dirname(current2);
+    if (parent === current2) {
+      return null;
+    }
+    current2 = parent;
+  }
+}
+async function toolVersions() {
+  const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
+    commandVersion("git", ["--version"]),
+    commandVersion("codex", ["--version"]),
+    commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
+    commandVersion("opencode", ["--version"])
+  ]);
+  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
+}
+async function commandVersion(command, args, env) {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5e3, env });
+    return (stdout || stderr).trim() || null;
+  } catch {
+    return null;
+  }
+}
+async function git(args, cwd) {
+  try {
+    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 1e4, maxBuffer: 20 * 1024 * 1024 });
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+function holdEventKind(method) {
+  switch (method) {
+    case "hold/raised":
+      return "raised";
+    case "hold/answered":
+      return "answered";
+    case "hold/answerRejected":
+      return "answer-rejected";
+    case "hold/timedOut":
+      return "timed-out";
+    case "hold/retired":
+      return "retired";
+    default:
+      return null;
+  }
+}
+function isAttemptedVerdictState(value) {
+  return value === "submitted" || value === "missing-or-non-string" || value === "unparseable";
+}
+function extractTask(meta) {
+  if (typeof meta !== "object" || meta === null || !("task" in meta)) {
+    return null;
+  }
+  return meta.task ?? null;
+}
+async function hashFile(filePath) {
+  const text = await readFile4(filePath);
+  return createHash2("sha256").update(text).digest("hex");
+}
+async function writeStandaloneText(destination, content) {
+  await mkdir3(path6.dirname(destination), { recursive: true });
+  const temporary = path6.join(path6.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
+  await writeAndRename(temporary, destination, content);
+}
+async function writeAndRename(temporary, destination, content) {
+  try {
+    await writeFile3(temporary, content, "utf8");
+    await rename3(temporary, destination);
+  } catch (error) {
+    await rm2(temporary, { force: true });
+    throw error;
+  }
+}
+function padId(id) {
+  return String(id).padStart(6, "0");
+}
+function padAttempt(attempt) {
+  return String(attempt).padStart(3, "0");
+}
+function safeName(filename, suffix) {
+  const cleaned = filename.replace(/[^a-zA-Z0-9._-]/g, "-");
+  return cleaned.endsWith(`.${suffix}`) ? cleaned : `${cleaned}.${suffix}`;
+}
+
+// src/completion-sentinel.ts
 var SENTINEL_FILENAME = "completion-sentinel.json";
 var SENTINEL_SCHEMA_VERSION = 3;
 var CompletionSentinel = class {
@@ -16705,7 +16775,7 @@ var CompletionSentinel = class {
     let runDir;
     try {
       runDir = await resolveRunDirectory(options.storeDir, options.cwd, options.runUuid);
-      await mkdir3(runDir, { recursive: true });
+      await mkdir4(runDir, { recursive: true });
     } catch (error) {
       onError(new SentinelUnavailableError(`no sentinel will be written for this run \u2014 cannot create ${sentinelDirectory(options, error)}: ${causeMessage(error)}`, { cause: error }));
       return null;
@@ -16751,7 +16821,7 @@ var CompletionSentinel = class {
     };
     payload.integrity.sentinel_sha256 = sha256(canonicalJson(payload));
     try {
-      await mkdir3(path7.dirname(this.#path), { recursive: true });
+      await mkdir4(path7.dirname(this.#path), { recursive: true });
       const temporary = `${this.#path}.${process.pid}.tmp`;
       try {
         await writeFile4(temporary, `${canonicalJson(payload)}
@@ -16927,16 +16997,16 @@ function findErrorCode(error, code) {
 }
 
 // src/runtime.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID6 } from "node:crypto";
 
 // src/agent-placement.ts
-import { stat as stat2 } from "node:fs/promises";
+import { stat as stat3 } from "node:fs/promises";
 import path9 from "node:path";
 
 // src/worktree-isolation.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { execFile as execFile2 } from "node:child_process";
-import { mkdir as mkdir4, rmdir } from "node:fs/promises";
+import { mkdir as mkdir5, rmdir } from "node:fs/promises";
 import path8 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var execFileAsync2 = promisify2(execFile2);
@@ -16945,14 +17015,14 @@ var GitWorktreeIsolationManager = class {
   #repoRoots = /* @__PURE__ */ new Map();
   #worktreeRoots = /* @__PURE__ */ new Map();
   async create(baseCwd) {
-    const repoRoot = await this.#gitRepoRoot(baseCwd);
+    const repoRoots = await this.#gitRepoRoots(baseCwd);
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path8.join(path8.dirname(repoRoot), `${path8.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
-    await mkdir4(path8.dirname(worktreePath), { recursive: true });
-    await git2(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+    const worktreePath = path8.join(repoRoots.container, name);
+    await mkdir5(path8.dirname(worktreePath), { recursive: true });
+    await git2(repoRoots.checkout, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
     const baseCommit = (await git2(worktreePath, ["rev-parse", "HEAD"])).trim();
-    this.#worktreeRoots.set(worktreePath, repoRoot);
+    this.#worktreeRoots.set(worktreePath, repoRoots.checkout);
     return {
       path: worktreePath,
       branch,
@@ -16990,23 +17060,31 @@ var GitWorktreeIsolationManager = class {
       removed: true
     };
   }
-  async #gitRepoRoot(baseCwd) {
+  async #gitRepoRoots(baseCwd) {
     const resolvedCwd = path8.resolve(baseCwd);
-    let repoRoot = this.#repoRoots.get(resolvedCwd);
-    if (repoRoot === void 0) {
-      repoRoot = git2(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
+    let repoRoots = this.#repoRoots.get(resolvedCwd);
+    if (repoRoots === void 0) {
+      repoRoots = this.#resolveRepoRoots(resolvedCwd).catch((error) => {
         throw new WorktreePlacementRejectedError(resolvedCwd, {
           cause: error
         });
       });
-      this.#repoRoots.set(resolvedCwd, repoRoot);
+      this.#repoRoots.set(resolvedCwd, repoRoots);
     }
     try {
-      return (await repoRoot).trim();
+      return await repoRoots;
     } catch (error) {
       this.#repoRoots.delete(resolvedCwd);
       throw error;
     }
+  }
+  async #resolveRepoRoots(cwd) {
+    const checkout = (await git2(cwd, ["rev-parse", "--show-toplevel"])).trim();
+    const common = (await git2(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+    const worktree = (await git2(cwd, ["--git-dir", common, "config", "--get", "--default", "", "core.worktree"])).trim();
+    const root = worktree.length > 0 ? path8.resolve(common, worktree) : path8.basename(common) === ".git" ? path8.dirname(common) : common;
+    const container = path8.join(path8.dirname(root), `${path8.basename(root)}.ensemble-workflows-worktrees`);
+    return { checkout, container };
   }
   #uniqueName() {
     this.#counter += 1;
@@ -17046,7 +17124,7 @@ var AgentPlacementManager = class {
   async assertUsableCwd(options) {
     const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
     try {
-      if (!(await stat2(requestedCwd)).isDirectory()) {
+      if (!(await stat3(requestedCwd)).isDirectory()) {
         throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`);
       }
     } catch (error) {
@@ -17297,6 +17375,16 @@ var CODEX_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
   ["responseStreamConnectionFailed", "codex.provider-unreachable"],
   ["internalServerError", "codex.provider-internal-error"]
 ]);
+var CODEX_STATUS_FORWARDING_CODES = /* @__PURE__ */ new Set(["responseTooManyFailedAttempts"]);
+function codexRuleForHttpStatus(status) {
+  if (status === 429) {
+    return "codex.rate-limit";
+  }
+  if (typeof status === "number" && status >= 500 && status <= 599) {
+    return "codex.provider-internal-error";
+  }
+  return void 0;
+}
 var CODEX_ERROR_CLASSES = /* @__PURE__ */ new Map([
   // The substrate died or never came up: the worker was lost before answering.
   ["AppServerExitedError", { class: "availability", rule: "codex.substrate-dead" }],
@@ -17325,7 +17413,7 @@ var CLAUDE_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
   ["overloaded_error", "claude.overloaded"]
 ]);
 var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
-  // Claude Code refused to start the worker at all. The engine throws
+  // The Claude dispatch command failed before a worker registered. The engine throws
   // it rather than returning a failed turn, so the kind is the thrown class
   // name, as the Codex rows are keyed; the runtime spends no attempt on it —
   // it advances the chain or propagates as a pre-spawn refusal.
@@ -17338,8 +17426,15 @@ var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],
   ["claude-blocked", { class: "unclassified", rule: "claude.blocked" }],
   ["claude-valve-error", { class: "unclassified", rule: "claude.valve" }],
+  // Submitted, but the transcript never showed the session holding the text
+  // as sent: evidence about the delivery, not about the engine's availability.
+  ["claude-delivery-error", { class: "unclassified", rule: "claude.delivery" }],
   ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
+]);
+var OPENCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
+  ["opencode-run-error", { class: "unclassified", rule: "opencode.run-error" }],
+  ["TurnTimeoutError", { class: "unclassified", rule: "opencode.deadline" }]
 ]);
 function classifyAttemptFailure(evidence) {
   const { kind } = evidence.failure;
@@ -17350,7 +17445,7 @@ function classifyAttemptFailure(evidence) {
     return { class: "unclassified", rule: "run-settlement" };
   }
   if (kind === "EngineShutdownError") {
-    return { class: "unclassified", rule: "run-settlement" };
+    return { class: "unclassified", rule: "engine-shutdown" };
   }
   switch (evidence.engine) {
     case "codex":
@@ -17358,13 +17453,13 @@ function classifyAttemptFailure(evidence) {
     case "claude":
       return classifyClaudeFailure(kind, evidence.diagnostics);
     case "opencode":
-      return kind === "opencode-run-error" ? { class: "unclassified", rule: "opencode.run-error" } : { class: "unclassified", rule: null };
+      return OPENCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
   }
 }
 function classifyCodexFailure(kind, diagnostic) {
   const code = diagnostic?.code;
   if (typeof code === "string") {
-    const rule = CODEX_AVAILABILITY_CODES.get(code);
+    const rule = CODEX_STATUS_FORWARDING_CODES.has(code) ? codexRuleForHttpStatus(diagnostic?.httpStatusCode) : CODEX_AVAILABILITY_CODES.get(code);
     if (rule !== void 0) {
       return { class: "availability", rule };
     }
@@ -17399,16 +17494,1800 @@ function claudeApiErrorOf(diagnostics) {
   };
 }
 
+// src/progress.ts
+var RunProgress = class {
+  runId;
+  #budget;
+  #now;
+  #pid;
+  #archiveDir = null;
+  #finished = /* @__PURE__ */ new Map();
+  #workflow = null;
+  #currentPhase = null;
+  #state = "running";
+  #startedAt;
+  #updatedAt;
+  #finishedAt = null;
+  #nextAgentId = 0;
+  #live = /* @__PURE__ */ new Map();
+  #openHolds = /* @__PURE__ */ new Map();
+  #engines = /* @__PURE__ */ new Map();
+  #reportedSpend = /* @__PURE__ */ new Map();
+  #listeners = /* @__PURE__ */ new Set();
+  constructor(options) {
+    this.runId = options.runId;
+    this.#budget = options.budget;
+    this.#now = options.now ?? (() => Date.now());
+    this.#pid = options.pid ?? process.pid;
+    this.#startedAt = this.#now();
+    this.#updatedAt = this.#startedAt;
+  }
+  /** An open hold joins the snapshot the moment it is raised. */
+  noteHoldRaised(hold) {
+    this.#openHolds.set(hold.id, {
+      id: hold.id,
+      content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}\u2026` : hold.content,
+      verdicts: [...hold.verdicts],
+      raisedAtMs: this.#now()
+    });
+    this.#touch();
+  }
+  /** Settled holds — answered, timed out, or abandoned — leave the snapshot. */
+  noteHoldSettled(id) {
+    if (this.#openHolds.delete(id)) {
+      this.#touch();
+    }
+  }
+  /** Records an engine's concurrency cap so the snapshot can show saturation. */
+  registerEngine(engine, cap) {
+    this.#counters(engine).cap = cap;
+    this.#touch();
+  }
+  setArchiveDir(path16) {
+    this.#archiveDir = path16;
+    this.#touch();
+  }
+  /** Publishes only observed identity; served values must not echo the request. */
+  noteAgentIdentity(id, identity) {
+    const record = this.#live.get(id);
+    if (record === void 0) return;
+    Object.assign(record, identity);
+    this.#touch();
+  }
+  noteAgentTranscript(id, path16) {
+    const record = this.#live.get(id);
+    if (record === void 0) return;
+    record.transcript = path16;
+    this.#touch();
+  }
+  noteAgentWorktree(id, path16) {
+    const record = this.#live.get(id);
+    if (record === void 0) return;
+    record.worktree = path16;
+    this.#touch();
+  }
+  /** Cumulative worker tokens across attempts and targets; null means unobserved. */
+  noteAgentSpend(id, spent) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.spent === spent) return;
+    if (spent !== null && (!Number.isFinite(spent) || spent < 0)) {
+      throw new RangeError("Worker spend must be finite and non-negative");
+    }
+    record.spent = spent;
+    this.#touch();
+  }
+  setWorkflow(name) {
+    this.#workflow = name;
+    this.#touch();
+  }
+  setPhase(title) {
+    this.#currentPhase = title;
+    this.#touch();
+  }
+  /**
+   * Registers a worker as queued and returns its id. The phase is captured at
+   * queue time: an explicit `phase` wins, otherwise the run's current phase.
+   */
+  queueAgent(input) {
+    const id = this.#nextAgentId += 1;
+    this.#live.set(id, {
+      id,
+      requestedModel: null,
+      requestedEffort: null,
+      resolvedModel: null,
+      resolvedEffort: null,
+      transcript: null,
+      worktree: null,
+      spent: null,
+      lastEvidenceAtMs: null,
+      finishedAtMs: null,
+      failure: null,
+      engine: input.engine,
+      label: input.label,
+      phase: input.phase ?? this.#currentPhase,
+      state: "queued",
+      attempt: 1,
+      startedAt: null,
+      firstEvidenceAt: null,
+      waitingOn: null
+    });
+    this.#counters(input.engine).queued += 1;
+    this.#touch();
+    return id;
+  }
+  /** The phase fixed for a worker when it entered the queue. */
+  queuedAgentPhase(id) {
+    return this.#live.get(id)?.phase ?? null;
+  }
+  /**
+   * Returns a running worker to the queue on another engine: a fallback
+   * chain step across engines releases the refused engine's slot and
+   * waits for admission on the next, and the live view says so — the leg
+   * reads queued on its new engine, its evidence timestamps reset for the
+   * fresh dispatch, its earlier engine's counters restored.
+   */
+  requeueAgent(id, engine) {
+    const record = this.#live.get(id);
+    if (record === void 0) {
+      return;
+    }
+    const previous = this.#counters(record.engine);
+    if (record.state === "running") {
+      previous.active -= 1;
+    } else {
+      previous.queued -= 1;
+    }
+    record.engine = engine;
+    record.state = "queued";
+    record.startedAt = null;
+    record.firstEvidenceAt = null;
+    record.lastEvidenceAtMs = null;
+    record.resolvedModel = null;
+    record.resolvedEffort = null;
+    record.transcript = null;
+    record.waitingOn = null;
+    this.#counters(engine).queued += 1;
+    this.#touch();
+  }
+  /** Moves a queued worker into the running state (a scheduler slot freed up). */
+  startAgent(id) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.state !== "queued") {
+      return;
+    }
+    record.state = "running";
+    record.startedAt = this.#now();
+    const counters = this.#counters(record.engine);
+    counters.queued -= 1;
+    counters.active += 1;
+    this.#touch();
+  }
+  /**
+   * Records the first observed sign of worker output for a live agent.
+   * Each observation advances the last-output stamp; the first stamp stays fixed
+   * across retries on the same target.
+   */
+  noteAgentEvidence(id) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.state !== "running") {
+      return;
+    }
+    const now = this.#now();
+    record.firstEvidenceAt ??= now;
+    record.lastEvidenceAtMs = now;
+    this.#touch();
+  }
+  /**
+   * Records what a live worker is waiting on — a background task its
+   * session started — or that it no longer is (`null`). Last write wins:
+   * the engine reports each change as it observes it.
+   */
+  noteAgentWaiting(id, wait) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.waitingOn === null && wait === null) {
+      return;
+    }
+    record.waitingOn = wait;
+    this.#touch();
+  }
+  /** Updates a running worker's attempt number (retry / in-session correction); a fresh attempt waits on nothing yet. */
+  noteAttempt(id, attempt) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.attempt === attempt) {
+      return;
+    }
+    record.attempt = attempt;
+    record.waitingOn = null;
+    this.#touch();
+  }
+  /** Retires a worker, tallying it as done or failed and freeing its slot. */
+  settleAgent(id, outcome, failure = null) {
+    const record = this.#live.get(id);
+    if (record === void 0) {
+      return;
+    }
+    this.#live.delete(id);
+    const counters = this.#counters(record.engine);
+    if (record.state === "running") {
+      counters.active -= 1;
+    } else {
+      counters.queued -= 1;
+    }
+    if (outcome === "done") {
+      counters.done += 1;
+    } else {
+      counters.failed += 1;
+    }
+    record.state = outcome;
+    record.finishedAtMs = this.#now();
+    record.failure = outcome === "failed" && failure !== null ? { ...failure } : null;
+    record.waitingOn = null;
+    this.#finished.set(id, record);
+    this.#touch();
+  }
+  /** Marks the run finished. The serialiser writes one final snapshot after. */
+  finish() {
+    if (this.#state === "finished") {
+      return;
+    }
+    this.#state = "finished";
+    this.#finishedAt = this.#now();
+    this.#touch();
+  }
+  /**
+   * Publishes a changed per-engine spend figure to live consumers. Repeated
+   * reports of the same value are deliberately inert: accounting producers
+   * may observe the same running turn more than once.
+   */
+  noteEngineSpend(engine) {
+    const spent = this.#budget.spent(engine);
+    if (this.#reportedSpend.get(engine) === spent) {
+      return;
+    }
+    this.#reportedSpend.set(engine, spent);
+    this.#touch();
+  }
+  /** Refreshes the live snapshot without changing its modelled state. */
+  markChanged() {
+    this.#touch();
+  }
+  onChange(listener) {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+  snapshot() {
+    const engines = {};
+    const totals = { active: 0, queued: 0, done: 0, failed: 0 };
+    for (const engine of this.#engines.keys()) {
+      const counters = this.#counters(engine);
+      const remaining = this.#budget.remaining(engine);
+      engines[engine] = {
+        cap: counters.cap,
+        active: counters.active,
+        queued: counters.queued,
+        done: counters.done,
+        failed: counters.failed,
+        spent: this.#budget.spent(engine),
+        ceiling: this.#budget.ceilings[engine] ?? null,
+        remaining: Number.isFinite(remaining) ? remaining : null
+      };
+      totals.active += counters.active;
+      totals.queued += counters.queued;
+      totals.done += counters.done;
+      totals.failed += counters.failed;
+    }
+    return {
+      schema: 3,
+      runId: this.runId,
+      pid: this.#pid,
+      archiveDir: this.#archiveDir,
+      workflow: this.#workflow,
+      state: this.#state,
+      startedAt: this.#startedAt,
+      updatedAt: this.#updatedAt,
+      finishedAt: this.#finishedAt,
+      currentPhase: this.#currentPhase,
+      totals,
+      engines,
+      agents: this.#agents(),
+      holds: [...this.#openHolds.values()]
+    };
+  }
+  #agents() {
+    const records = [...this.#live.values(), ...this.#finished.values()];
+    records.sort((a, b) => rank(a.state) - rank(b.state) || (rank(a.state) === 2 ? b.id - a.id : a.id - b.id));
+    return records.map((record) => ({
+      requestedModel: record.requestedModel,
+      requestedEffort: record.requestedEffort,
+      resolvedModel: record.resolvedModel,
+      resolvedEffort: record.resolvedEffort,
+      transcript: record.transcript,
+      worktree: record.worktree,
+      spent: record.spent,
+      lastEvidenceAtMs: record.lastEvidenceAtMs,
+      finishedAtMs: record.finishedAtMs,
+      failure: record.failure === null ? null : { ...record.failure },
+      id: record.id,
+      engine: record.engine,
+      label: record.label,
+      phase: record.phase,
+      state: record.state,
+      attempt: record.attempt,
+      startedAtMs: record.startedAt,
+      firstEvidenceAtMs: record.firstEvidenceAt,
+      waitingOn: record.waitingOn
+    }));
+  }
+  #counters(engine) {
+    const counters = this.#engines.get(engine);
+    if (counters === void 0) {
+      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0 };
+      this.#engines.set(engine, fresh);
+      return fresh;
+    }
+    return counters;
+  }
+  #touch() {
+    this.#updatedAt = this.#now();
+    for (const listener of this.#listeners) {
+      listener();
+    }
+  }
+};
+function rank(state) {
+  return state === "running" ? 0 : state === "queued" ? 1 : 2;
+}
+
+// src/engines.ts
+import { randomUUID as randomUUID5 } from "node:crypto";
+
+// src/app-server.ts
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
+var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
+var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+var STDIN_CLOSE_EXIT_GRACE_MS = 500;
+var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
+var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
+var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
+var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
+var SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1e3;
+var MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
+var SKILL_DISCOVERY_DEADLINE_MS = 3e4;
+var MAX_REMEMBERED_SETTLED_TURN_IDS = 256;
+var LazyCodexAppServerTransport = class {
+  cwd;
+  #options;
+  #transportPromise;
+  #closed = false;
+  constructor(options) {
+    this.cwd = options.cwd;
+    this.#options = options;
+  }
+  async openThread(options) {
+    const transport = await this.#transport();
+    return transport.openThread(options);
+  }
+  async listSkills(cwd) {
+    const transport = await this.#transport();
+    return transport.listSkills(cwd);
+  }
+  async runTurn(threadId, prompt, options) {
+    const transport = await this.#transport();
+    return transport.runTurn(threadId, prompt, options);
+  }
+  async close() {
+    this.#closed = true;
+    if (this.#transportPromise === void 0) {
+      return;
+    }
+    let transport;
+    try {
+      transport = await this.#transportPromise;
+    } catch {
+      return;
+    }
+    await transport.close();
+  }
+  #transport() {
+    if (this.#closed) {
+      return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
+    }
+    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
+    return this.#transportPromise;
+  }
+};
+var CodexAppServerTransport = class _CodexAppServerTransport {
+  cwd;
+  #process;
+  #requestTimeoutMs;
+  #retryPromiseSilenceTimeoutMs;
+  #firstOutputTimeoutMs;
+  #startupHandshakeTimeoutMs;
+  #skillDiscoveryStabilityIntervalMs;
+  #skillDiscoveryDeadlineMs;
+  #nextId = 0;
+  #pending = /* @__PURE__ */ new Map();
+  #turns = /* @__PURE__ */ new Map();
+  #transcripts = /* @__PURE__ */ new Map();
+  /**
+   * Each open thread's served identity as its `thread/start` answer reported
+   * it — the model and reasoning effort the thread runs at for its whole
+   * life. `#completeTurn` prunes a turn's transcript buffer, so a held
+   * session's later turns re-register from here rather than from nothing:
+   * the engine confirmed the identity once, and every turn on the thread is
+   * served under it.
+   */
+  #threadIdentity = /* @__PURE__ */ new Map();
+  /** Ids of turns this transport has settled, insertion-ordered so the bound evicts the oldest. */
+  #settledTurnIds = /* @__PURE__ */ new Set();
+  #stderrTail = [];
+  #exitStatus = null;
+  #hasExited = false;
+  #stdinFailureGrace;
+  #terminalError;
+  #writeFailureWaiters = /* @__PURE__ */ new Set();
+  #onEvent;
+  constructor(options) {
+    this.cwd = options.cwd;
+    this.#requestTimeoutMs = options.requestTimeoutMs;
+    this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
+    this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
+    this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
+    this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
+    this.#skillDiscoveryDeadlineMs = options.skillDiscoveryDeadlineMs ?? SKILL_DISCOVERY_DEADLINE_MS;
+    this.#onEvent = options.onEvent;
+    this.#process = spawn(options.codexBin, ["app-server"], {
+      cwd: options.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      // Declared variables sit above inherited ones; everything undeclared
+      // still inherits, so a configured parent keeps working unchanged.
+      env: { ...process.env, ...options.workerEnv }
+    });
+    this.#wireReader();
+    this.#wireStderr();
+    this.#process.stdin.on("error", () => {
+      this.#scheduleStdinFailure();
+    });
+    this.#process.once("exit", (code, signal) => {
+      this.#exitStatus = { exitCode: code, signal };
+      this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
+    });
+    this.#process.once("error", (error) => {
+      this.#failAll(new AppServerExitedError(`codex app-server process error: ${error.message}`));
+    });
+  }
+  static async start(options) {
+    const transport = new _CodexAppServerTransport(options);
+    try {
+      if (transport.#process.pid !== void 0 && options.scopes !== void 0) {
+        const pid = transport.#process.pid;
+        const outcome = await options.scopes.place(options.scopeGroup ?? "codex", [pid]);
+        if (outcome.kind !== "placed") {
+          options.onEvent?.({
+            method: "codex/workerScopePlacement",
+            params: { pid, kind: outcome.kind, ...outcome.kind === "refused" ? { reason: outcome.reason } : {} },
+            receivedAt: Date.now()
+          });
+        }
+      }
+      await transport.#handshake(options.clientName, options.clientVersion);
+    } catch (error) {
+      await transport.close();
+      throw error;
+    }
+    return transport;
+  }
+  async openThread(options) {
+    const config = threadStartConfig(options);
+    const requestParams = {
+      cwd: options.cwd ?? this.cwd,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      ephemeral: true,
+      ...options.model !== void 0 ? { model: options.model } : {},
+      ...config !== void 0 ? { config } : {}
+    };
+    const result = await this.#request("thread/start", requestParams);
+    const resultObject = asJsonObject(result);
+    const directThreadId = resultObject?.threadId;
+    const nestedThread = asJsonObject(resultObject?.thread);
+    const nestedThreadId = nestedThread?.id;
+    const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
+    if (threadId !== null) {
+      const resolvedModel = resultObject?.model;
+      const resolvedEffort = resultObject?.reasoningEffort;
+      const identity = {
+        resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
+        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null
+      };
+      this.#threadIdentity.set(threadId, identity);
+      this.#transcripts.set(threadId, {
+        ...identity,
+        events: [
+          {
+            direction: "client",
+            method: "thread/start",
+            params: requestParams,
+            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+          },
+          {
+            direction: "server",
+            method: "thread/start/result",
+            result,
+            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+          }
+        ]
+      });
+      return threadId;
+    }
+    throw new AppServerRequestError("thread/start", {
+      code: void 0,
+      message: "response did not contain result.thread.id or result.threadId",
+      data: result
+    });
+  }
+  async listSkills(cwd = this.cwd) {
+    const startedAt = Date.now();
+    let previousNames;
+    let observedExpansion = false;
+    let unchangedSinceFirstSample = true;
+    for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
+      const names = await this.#listSkillsOnce(cwd);
+      if (observedExpansion && previousNames !== void 0 && sameStrings(previousNames, names)) {
+        return names;
+      }
+      if (previousNames !== void 0) {
+        if (!sameStrings(previousNames, names)) {
+          unchangedSinceFirstSample = false;
+        }
+        if (strictlyContainsAll(names, previousNames)) {
+          observedExpansion = true;
+        } else if (!sameStrings(previousNames, names)) {
+          observedExpansion = false;
+        }
+      }
+      if (unchangedSinceFirstSample && attempt === MAX_SKILL_DISCOVERY_ATTEMPTS) {
+        return names;
+      }
+      previousNames = names;
+      if (Date.now() - startedAt >= this.#skillDiscoveryDeadlineMs) {
+        throw new AppServerRequestError("skills/list", {
+          code: "discovery_deadline",
+          message: `skill discovery exceeded its ${this.#skillDiscoveryDeadlineMs}ms aggregate bound before stabilising`
+        });
+      }
+      if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
+      }
+    }
+    throw new AppServerRequestError("skills/list", {
+      code: "unstable_discovery",
+      message: `skill discovery observed neither a growing set followed by stability nor one set unchanged across all ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
+    });
+  }
+  async #listSkillsOnce(cwd) {
+    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
+    const entries = result?.data;
+    if (!Array.isArray(entries)) {
+      throw new AppServerRequestError("skills/list", {
+        code: "invalid_response",
+        message: "response omitted the discovered skill entries"
+      });
+    }
+    const names = /* @__PURE__ */ new Set();
+    for (const entry of entries) {
+      const entryObject = asJsonObject(entry);
+      const errors = entryObject?.errors;
+      const skills = entryObject?.skills;
+      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
+        throw new AppServerRequestError("skills/list", {
+          code: "incomplete_discovery",
+          message: "could not establish the complete discovered skill set"
+        });
+      }
+      for (const skill of skills) {
+        const name = asJsonObject(skill)?.name;
+        if (typeof name !== "string" || name.length === 0) {
+          throw new AppServerRequestError("skills/list", {
+            code: "invalid_response",
+            message: "response included a skill without a name"
+          });
+        }
+        names.add(name);
+      }
+    }
+    return [...names].sort();
+  }
+  async runTurn(threadId, prompt, options) {
+    if (!this.#transcripts.has(threadId)) {
+      this.#transcripts.set(threadId, {
+        ...this.#threadIdentity.get(threadId) ?? { resolvedModel: null, resolvedEffort: null },
+        events: []
+      });
+    }
+    const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
+    state.onTranscriptEvent = options.onTranscriptEvent;
+    state.progress = options;
+    this.#reportTurnIdentity(threadId, state);
+    this.#turns.set(threadId, state);
+    for (const event of this.#transcripts.get(threadId).events) {
+      this.#observeTranscriptEvent(state, event);
+    }
+    state.promise.catch(() => void 0);
+    try {
+      const params = {
+        threadId,
+        input: [{ type: "text", text: prompt }],
+        sandboxPolicy: { type: "dangerFullAccess" }
+      };
+      if (options.schema !== void 0) {
+        params.outputSchema = options.schema;
+      }
+      if (options.model !== void 0) {
+        params.model = options.model;
+      }
+      this.#appendTranscript(threadId, {
+        direction: "client",
+        method: "turn/start",
+        params,
+        recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      const result = asJsonObject(await this.#request("turn/start", params));
+      const startedTurn = asJsonObject(result?.turn);
+      if (typeof startedTurn?.id === "string") {
+        state.turnId = startedTurn.id;
+      }
+      return await state.promise;
+    } catch (error) {
+      if (this.#turns.get(threadId) === state) {
+        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      }
+      return await state.promise;
+    }
+  }
+  /** Number of thread transcripts currently held in memory. Observability for tests. */
+  openTranscripts() {
+    return this.#transcripts.size;
+  }
+  async close() {
+    if (!this.#hasExited) {
+      this.#failAll(new AppServerExitedError("codex app-server closed"));
+    }
+    this.#threadIdentity.clear();
+    this.#transcripts.clear();
+    if (this.#exitStatus !== null || this.#process.pid === void 0) {
+      return;
+    }
+    this.#process.stdin.end();
+    this.#process.kill("SIGTERM");
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.#process.kill("SIGKILL");
+        resolve();
+      }, 5e3);
+      this.#process.once("exit", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+  }
+  async #handshake(clientName, clientVersion) {
+    try {
+      await this.#request(
+        "initialize",
+        {
+          clientInfo: {
+            name: clientName,
+            version: clientVersion
+          }
+        },
+        this.#startupHandshakeTimeoutMs
+      );
+    } catch (error) {
+      if (error instanceof TurnTimeoutError) {
+        throw new AppServerStartupTimeoutError(this.#startupHandshakeTimeoutMs);
+      }
+      throw error;
+    }
+    this.#sendNotification("initialized", {});
+  }
+  #request(method, params, timeoutMs = this.#requestTimeoutMs) {
+    const id = this.#nextId + 1;
+    this.#nextId = id;
+    const payload = JSON.stringify({ id, method, params });
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(
+          new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`, {
+            kind: "request",
+            timeoutMs,
+            method
+          })
+        );
+      }, timeoutMs);
+      this.#pending.set(id, { method, resolve, reject, timeout });
+      this.#writeLine(payload).catch((error) => {
+        this.#pending.delete(id);
+        clearTimeout(timeout);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
+  }
+  #sendNotification(method, params) {
+    void this.#writeLine(JSON.stringify({ method, params })).catch(() => {
+    });
+  }
+  /** Sends a request through stdin without retaining or awaiting its response. */
+  async #sendUnacknowledgedRequest(method, params) {
+    const id = this.#nextId + 1;
+    this.#nextId = id;
+    await this.#writeLine(JSON.stringify({ id, method, params }));
+  }
+  async #writeLine(line) {
+    if (this.#hasExited) {
+      const failure = new AppServerExitedError(this.#terminalError?.message ?? "codex app-server is not running");
+      if (this.#exitStatus !== null) {
+        attachWorkerExitStatus(failure, this.#exitStatus);
+      }
+      throw failure;
+    }
+    const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+    await new Promise((resolve, reject) => {
+      this.#process.stdin.write(`${framedLine}
+`, (error) => {
+        if (error !== null && error !== void 0) {
+          this.#scheduleStdinFailure();
+          if (this.#terminalError !== void 0) {
+            reject(this.#terminalError);
+          } else {
+            this.#writeFailureWaiters.add(reject);
+          }
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+  #wireReader() {
+    let chunks = [];
+    let byteLength = 0;
+    let prefix = Buffer.alloc(0);
+    let discardingOversizedLine = false;
+    let oversizedLineByteLength = 0;
+    const resetLine = () => {
+      chunks = [];
+      byteLength = 0;
+      prefix = Buffer.alloc(0);
+      discardingOversizedLine = false;
+      oversizedLineByteLength = 0;
+    };
+    const retain = (chunk) => {
+      if (chunk.length === 0) {
+        return;
+      }
+      chunks.push(chunk);
+      byteLength += chunk.length;
+      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
+        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
+      }
+    };
+    const reportOversizedLine = () => {
+      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
+    };
+    const handleRetainedLine = () => {
+      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+      resetLine();
+      this.#handleLine(line);
+    };
+    this.#process.stdout.on("data", (chunk) => {
+      let offset2 = 0;
+      while (offset2 < chunk.length) {
+        const newline = chunk.indexOf(10, offset2);
+        const end = newline === -1 ? chunk.length : newline;
+        const segment = chunk.subarray(offset2, end);
+        if (discardingOversizedLine) {
+          oversizedLineByteLength += segment.length;
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
+          retain(segment);
+          if (newline !== -1) {
+            handleRetainedLine();
+          }
+        } else {
+          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
+          retain(segment.subarray(0, retainedBytes));
+          discardingOversizedLine = true;
+          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        }
+        offset2 = newline === -1 ? chunk.length : newline + 1;
+      }
+    });
+    this.#process.stdout.once("end", () => {
+      if (discardingOversizedLine) {
+        reportOversizedLine();
+        resetLine();
+      } else if (byteLength > 0) {
+        handleRetainedLine();
+      }
+      if (this.#hasExited) {
+        return;
+      }
+      const grace = setTimeout(() => {
+        this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
+      }, STDOUT_CLOSE_EXIT_GRACE_MS);
+      grace.unref();
+      this.#process.once("exit", () => {
+        clearTimeout(grace);
+      });
+    });
+  }
+  #wireStderr() {
+    const reader = createInterface({ input: this.#process.stderr });
+    reader.on("line", (line) => {
+      this.#stderrTail.push(line);
+      if (this.#stderrTail.length > 50) {
+        this.#stderrTail.shift();
+      }
+    });
+  }
+  #handleLine(line) {
+    if (line.trim().length === 0) {
+      return;
+    }
+    const parsed = parseRpcMessage(line);
+    if (parsed === null) {
+      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_CHARACTERS));
+      return;
+    }
+    const id = typeof parsed.id === "number" ? parsed.id : null;
+    const method = typeof parsed.method === "string" ? parsed.method : null;
+    if (id !== null && method !== null) {
+      this.#onEvent?.({
+        method: "server/request/denied",
+        params: { requestId: id, requestMethod: method },
+        receivedAt: Date.now()
+      });
+      const requestParams = asJsonObject(parsed.params);
+      if (requestParams !== null) {
+        const turn = this.#turnCorrelatedBy(requestParams);
+        if (turn !== void 0) {
+          this.#disarmRetryPromiseSilenceDeadline(turn);
+          this.#disarmFirstOutputDeadline(turn);
+          this.#noteTurnFirstOutput(turn);
+          try {
+            turn.progress.onOutput?.();
+          } catch {
+          }
+        }
+      }
+      this.#sendApprovalDenial(id);
+      return;
+    }
+    if (id !== null && ("result" in parsed || "error" in parsed)) {
+      this.#handleResponse(id, parsed);
+      return;
+    }
+    if (method !== null) {
+      this.#handleNotification(method, asJsonObject(parsed.params) ?? {});
+    }
+  }
+  #reportDecodeFailure(byteLength, linePrefix) {
+    this.#onEvent?.({
+      method: "transport/decodeFailed",
+      params: { byteLength, linePrefix },
+      receivedAt: Date.now()
+    });
+  }
+  #handleResponse(id, message) {
+    const pending = this.#pending.get(id);
+    if (pending === void 0) {
+      return;
+    }
+    this.#pending.delete(id);
+    clearTimeout(pending.timeout);
+    if (message.error !== void 0) {
+      pending.reject(appServerErrorFromPayload(pending.method, asRpcError(message.error)));
+      return;
+    }
+    pending.resolve(message.result);
+  }
+  #handleNotification(method, params) {
+    this.#onEvent?.({ method, params, receivedAt: Date.now() });
+    const threadId = params.threadId;
+    if (typeof threadId !== "string") {
+      return;
+    }
+    this.#appendTranscript(threadId, {
+      direction: "server",
+      method,
+      params,
+      recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    const turn = this.#turns.get(threadId);
+    if (turn === void 0) {
+      return;
+    }
+    const speaksForTurn = this.#correlatesWithTurn(turn, params);
+    if (speaksForTurn) {
+      this.#disarmRetryPromiseSilenceDeadline(turn);
+      if (isOutputBearingTurnFrame(method)) {
+        this.#disarmFirstOutputDeadline(turn);
+        this.#noteTurnFirstOutput(turn);
+        try {
+          turn.progress.onOutput?.();
+        } catch {
+        }
+      }
+    }
+    const now = Date.now();
+    if (isTurnProgressNotification(method)) {
+      turn.consecutiveRetryPromises = 0;
+    }
+    if (method === "turn/started") {
+      return;
+    }
+    if (method === "model/rerouted") {
+      if (!speaksForTurn) {
+        return;
+      }
+      const toModel = params.toModel;
+      const transcript = this.#transcripts.get(threadId);
+      if (transcript !== void 0 && typeof toModel === "string" && toModel.length > 0) {
+        transcript.resolvedModel = toModel;
+        this.#reportTurnIdentity(threadId, turn);
+      }
+      return;
+    }
+    if (method === "item/started") {
+      const item = asJsonObject(params.item);
+      const itemType = itemTypeFromItem(item);
+      turn.items.set(itemType, (turn.items.get(itemType) ?? 0) + 1);
+      return;
+    }
+    if (method === "item/agentMessage/delta") {
+      if (turn.firstDeltaAt === null) {
+        turn.firstDeltaAt = now;
+      }
+      if (typeof params.delta === "string") {
+        turn.deltaText += params.delta;
+      }
+      return;
+    }
+    if (method === "item/completed") {
+      const item = asJsonObject(params.item);
+      const itemType = itemTypeFromItem(item);
+      if (itemType === "agentMessage" && typeof item?.text === "string") {
+        turn.itemText = item.text;
+      }
+      return;
+    }
+    if (method === "thread/tokenUsage/updated") {
+      const event = tokenUsageEventFromParams(params);
+      if (event !== null) {
+        turn.tokenUsageEvents.push(event);
+        try {
+          turn.progress.onUsage?.(event);
+        } catch {
+        }
+      }
+      return;
+    }
+    if (method === "thread/status/changed") {
+      const status = asJsonObject(params.status);
+      if (status?.type === "systemError") {
+        this.#armSystemErrorDiagnosticGrace(threadId, turn, method, params);
+      }
+      return;
+    }
+    if (method === "turn/completed") {
+      if (!speaksForTurn) {
+        return;
+      }
+      turn.completedAt = now;
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+        return;
+      }
+      this.#completeTurn(threadId, turn);
+      return;
+    }
+    if (method === "error") {
+      if (!speaksForTurn) {
+        return;
+      }
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+        return;
+      }
+      if (params.willRetry === true) {
+        turn.consecutiveRetryPromises += 1;
+        if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
+          const diagnostic = errorPayloadFromNotification(params);
+          void this.#rejectTurn(
+            threadId,
+            turn,
+            attachAppServerDiagnostic(
+              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
+              appServerDiagnosticFromPayload(diagnostic)
+            )
+          );
+          return;
+        }
+        this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
+        return;
+      }
+      void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+    }
+  }
+  /**
+   * Whether an inbound frame speaks for the live turn on its thread. Thread
+   * identity has already matched; a frame naming a different turn (a
+   * straggler from an abandoned turn on a recycled thread) must neither
+   * disarm the live turn's deadline, settle it, nor stamp its served model.
+   * Frames carrying no turn identity are thread-scoped and count: ephemeral
+   * threads run one turn, so the thread speaking is the turn's server
+   * speaking.
+   *
+   * A turn learns its id from the first correlated frame when the
+   * `turn/start` response has not yet named it — except that an id this
+   * transport has already settled is never learned: a straggler arriving in
+   * that window would otherwise teach the live turn the abandoned turn's
+   * identity, and every later straggler would correlate.
+   */
+  #correlatesWithTurn(turn, params) {
+    const turnId = turnIdFromParams(params);
+    if (turnId === void 0) {
+      return true;
+    }
+    if (turn.turnId === void 0) {
+      if (this.#settledTurnIds.has(turnId)) {
+        return false;
+      }
+      turn.turnId = turnId;
+      return true;
+    }
+    return turn.turnId === turnId;
+  }
+  /** Remember a settled turn's id so its stragglers can never be learned as a later turn's identity. */
+  #rememberSettledTurn(turn) {
+    if (turn.turnId === void 0) {
+      return;
+    }
+    this.#settledTurnIds.add(turn.turnId);
+    if (this.#settledTurnIds.size > MAX_REMEMBERED_SETTLED_TURN_IDS) {
+      const oldest = this.#settledTurnIds.values().next().value;
+      if (oldest !== void 0) {
+        this.#settledTurnIds.delete(oldest);
+      }
+    }
+  }
+  /** Resolves an inbound frame's params to the live turn they speak for, if any. */
+  #turnCorrelatedBy(params) {
+    const threadId = params.threadId;
+    if (typeof threadId !== "string") {
+      return void 0;
+    }
+    const turn = this.#turns.get(threadId);
+    if (turn === void 0 || !this.#correlatesWithTurn(turn, params)) {
+      return void 0;
+    }
+    return turn;
+  }
+  #disarmRetryPromiseSilenceDeadline(turn) {
+    if (turn.retryPromiseSilenceDeadline !== void 0) {
+      clearTimeout(turn.retryPromiseSilenceDeadline);
+      turn.retryPromiseSilenceDeadline = void 0;
+    }
+  }
+  #disarmSystemErrorDiagnosticGrace(turn) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
+      turn.systemErrorDiagnosticGraceDeadline = void 0;
+    }
+  }
+  #armSystemErrorDiagnosticGrace(threadId, turn, method, statusParams) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      return;
+    }
+    const diagnostic = {
+      code: void 0,
+      message: "Codex app-server reported terminal systemError without a diagnostic",
+      data: statusParams
+    };
+    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
+      new AppServerSystemError(method, diagnostic),
+      appServerDiagnosticFromPayload(diagnostic)
+    );
+    turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+    }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
+  }
+  #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
+    const diagnostic = errorPayloadFromNotification(promiseParams);
+    turn.retryPromiseSilenceDeadline = setTimeout(() => {
+      void this.#rejectTurn(
+        threadId,
+        turn,
+        attachAppServerDiagnostic(
+          new AppServerRetryPromiseBrokenError(
+            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
+            diagnostic
+          ),
+          appServerDiagnosticFromPayload(diagnostic)
+        )
+      );
+    }, this.#retryPromiseSilenceTimeoutMs);
+  }
+  #disarmFirstOutputDeadline(turn) {
+    if (turn.firstOutputDeadline !== void 0) {
+      clearTimeout(turn.firstOutputDeadline);
+      turn.firstOutputDeadline = void 0;
+    }
+  }
+  #reportTurnIdentity(threadId, turn) {
+    const identity = this.#transcripts.get(threadId);
+    if (identity === void 0) return;
+    try {
+      turn.progress.onIdentity?.({ resolvedModel: identity.resolvedModel, resolvedEffort: identity.resolvedEffort });
+    } catch {
+    }
+  }
+  /**
+   * Fire the supervisor-facing first-output callback, once per turn. Called
+   * only from the frame-driven sites (an output-bearing notification, a
+   * turn-scoped server request) — never from the completion/rejection
+   * teardown, which also disarms the deadline but proves nothing about
+   * output. The callback is observability: a throw inside it must never
+   * affect the turn.
+   */
+  #noteTurnFirstOutput(turn) {
+    if (turn.firstOutputSeen) {
+      return;
+    }
+    turn.firstOutputSeen = true;
+    try {
+      turn.onFirstOutput?.();
+    } catch {
+    }
+  }
+  #armFirstOutputDeadline(threadId, turn) {
+    turn.firstOutputDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstOutputTimeoutMs));
+    }, this.#firstOutputTimeoutMs);
+  }
+  /**
+   * The single terminal path for a failing turn. Every way a turn can end
+   * short of completion — error notification, retry-promise bound,
+   * systemError, per-turn timeout, transport close, process death — comes
+   * through here, so the terminalisation invariant is enforced once: the
+   * worker's accumulated text rides the rejection instead of being deleted
+   * with the turn state.
+   */
+  #rejectTurn(threadId, turn, error) {
+    this.#turns.delete(threadId);
+    if (turn.firstDeltaAt !== null) {
+      attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
+    }
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript?.events.some((event) => event.direction === "server")) {
+      attachPartialTranscript(error, {
+        filename: "transcript.codex.jsonl",
+        format: "jsonl",
+        source: "codex-app-server-events",
+        threadId,
+        content: this.#transcriptText(threadId),
+        partial: turn.completedAt === null
+      });
+    }
+    this.#transcripts.delete(threadId);
+    this.#rememberSettledTurn(turn);
+    clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
+    this.#disarmFirstOutputDeadline(turn);
+    if (turn.turnId !== void 0) {
+      void this.#sendUnacknowledgedRequest("turn/interrupt", {
+        threadId,
+        turnId: turn.turnId
+      }).catch(() => {
+      });
+    }
+    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
+  }
+  #completeTurn(threadId, turn) {
+    this.#turns.delete(threadId);
+    this.#rememberSettledTurn(turn);
+    clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
+    this.#disarmFirstOutputDeadline(turn);
+    const text = turn.itemText ?? turn.deltaText;
+    const transcript = this.#transcripts.get(threadId);
+    const result = {
+      text,
+      ...transcript?.resolvedModel !== null && transcript?.resolvedModel !== void 0 ? { resolvedModel: transcript.resolvedModel } : {},
+      ...transcript?.resolvedEffort !== null && transcript?.resolvedEffort !== void 0 ? { resolvedEffort: transcript.resolvedEffort } : {},
+      deltaText: turn.deltaText,
+      durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
+      firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
+      items: Object.fromEntries(turn.items),
+      tokenUsageEvents: turn.tokenUsageEvents,
+      transcriptCapture: transcript === void 0 ? "lost" : "retained",
+      transcripts: [
+        {
+          filename: "transcript.codex.jsonl",
+          format: "jsonl",
+          source: "codex-app-server-events",
+          threadId,
+          content: this.#transcriptText(threadId)
+        }
+      ]
+    };
+    if (turn.itemText !== void 0) {
+      result.itemText = turn.itemText;
+    }
+    this.#transcripts.delete(threadId);
+    turn.resolve(result);
+  }
+  #appendTranscript(threadId, event) {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === void 0) {
+      return;
+    }
+    transcript.events.push(event);
+    const turn = this.#turns.get(threadId);
+    if (turn !== void 0) {
+      this.#observeTranscriptEvent(turn, event);
+    }
+  }
+  #observeTranscriptEvent(turn, event) {
+    try {
+      turn.onTranscriptEvent?.(event);
+    } catch {
+    }
+  }
+  #transcriptText(threadId) {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === void 0) {
+      return "";
+    }
+    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}
+`;
+  }
+  #createTurnState(threadId, timeoutMs, onFirstOutput) {
+    let resolveTurn = () => void 0;
+    let rejectTurn = () => void 0;
+    const promise = new Promise((resolve, reject) => {
+      resolveTurn = resolve;
+      rejectTurn = reject;
+    });
+    const state = {
+      threadId,
+      turnId: void 0,
+      startedAt: Date.now(),
+      firstDeltaAt: null,
+      firstOutputSeen: false,
+      progress: {},
+      onFirstOutput,
+      onTranscriptEvent: void 0,
+      completedAt: null,
+      deltaText: "",
+      items: /* @__PURE__ */ new Map(),
+      tokenUsageEvents: [],
+      consecutiveRetryPromises: 0,
+      retryPromiseSilenceDeadline: void 0,
+      systemErrorDiagnosticGraceDeadline: void 0,
+      systemErrorDiagnosticFallback: void 0,
+      firstOutputDeadline: void 0,
+      promise,
+      resolve: resolveTurn,
+      reject: rejectTurn,
+      // No timeoutMs → no per-turn deadline; the turn runs until it completes or
+      // the run is stopped. A backstop is the orchestrator's responsibility.
+      timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
+        void this.#rejectTurn(
+          threadId,
+          state,
+          new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`, {
+            kind: "turn",
+            timeoutMs,
+            threadId
+          })
+        );
+      }, timeoutMs)
+    };
+    this.#armFirstOutputDeadline(threadId, state);
+    return state;
+  }
+  #sendApprovalDenial(id) {
+    void this.#writeLine(
+      JSON.stringify({
+        id,
+        result: {
+          decision: "denied",
+          reason: "Ensemble workers run with approvalPolicy never"
+        }
+      })
+    ).catch(() => {
+    });
+  }
+  #scheduleStdinFailure() {
+    if (this.#hasExited || this.#stdinFailureGrace !== void 0) {
+      return;
+    }
+    this.#stdinFailureGrace = setTimeout(() => {
+      this.#failAll(new AppServerExitedError("codex app-server stdin closed unexpectedly"));
+    }, STDIN_CLOSE_EXIT_GRACE_MS);
+    this.#stdinFailureGrace.unref();
+  }
+  #failAll(error) {
+    if (this.#hasExited) {
+      return;
+    }
+    this.#hasExited = true;
+    if (this.#stdinFailureGrace !== void 0) {
+      clearTimeout(this.#stdinFailureGrace);
+      this.#stdinFailureGrace = void 0;
+    }
+    const stderr = this.#stderrTail.length > 0 ? `
+Recent stderr:
+${this.#stderrTail.join("\n")}` : "";
+    const wrapped = new AppServerExitedError(`${error.message}${stderr}`);
+    this.#terminalError = wrapped;
+    if (this.#exitStatus !== null) {
+      attachWorkerExitStatus(wrapped, this.#exitStatus);
+    }
+    for (const reject of this.#writeFailureWaiters) {
+      reject(wrapped);
+    }
+    this.#writeFailureWaiters.clear();
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(wrapped);
+    }
+    this.#pending.clear();
+    for (const [threadId, turn] of [...this.#turns]) {
+      const perTurn = new AppServerExitedError(wrapped.message);
+      if (this.#exitStatus !== null) {
+        attachWorkerExitStatus(perTurn, this.#exitStatus);
+      }
+      void this.#rejectTurn(threadId, turn, perTurn);
+    }
+    this.#turns.clear();
+    this.#transcripts.clear();
+  }
+};
+function appServerErrorFromPayload(method, errorPayload) {
+  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
+  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
+  return attachAppServerDiagnostic(error, diagnostic);
+}
+function appServerErrorFromNotification(params) {
+  const errorPayload = errorPayloadFromNotification(params);
+  if (errorPayload.code === "serverOverloaded") {
+    return attachAppServerDiagnostic(
+      new AppServerOverloadedError("turn notification", errorPayload),
+      appServerDiagnosticFromPayload(errorPayload)
+    );
+  }
+  return appServerErrorFromPayload("turn notification", errorPayload);
+}
+function appServerDiagnosticFromPayload(payload) {
+  return {
+    code: payload.code ?? null,
+    httpStatusCode: payload.httpStatusCode ?? null,
+    message: payload.message ?? "unknown app-server error",
+    payload: renderPayloadSafely(payload.data)
+  };
+}
+function codexErrorInfoOf(value) {
+  if (typeof value === "string") {
+    return { code: value, httpStatusCode: void 0 };
+  }
+  const variants = Object.entries(asJsonObject(value) ?? {});
+  const variant = variants.length === 1 ? variants[0] : void 0;
+  if (variant === void 0) {
+    return null;
+  }
+  const [code, detail] = variant;
+  const status = asJsonObject(detail)?.httpStatusCode;
+  return { code, httpStatusCode: Number.isInteger(status) ? status : void 0 };
+}
+function errorPayloadFromNotification(params) {
+  const turnError = asJsonObject(params.error);
+  const codexErrorInfo = turnError?.codexErrorInfo;
+  const errorInfoParts = codexErrorInfoOf(codexErrorInfo);
+  const errorInfo = typeof codexErrorInfo === "string" ? codexErrorInfo : asJsonObject(codexErrorInfo) === null ? void 0 : renderPayloadSafely(codexErrorInfo);
+  const message = typeof turnError?.message === "string" ? turnError.message : void 0;
+  const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
+  const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
+  return {
+    code: errorInfoParts?.code,
+    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
+    data: params,
+    ...errorInfoParts?.httpStatusCode === void 0 ? {} : { httpStatusCode: errorInfoParts.httpStatusCode }
+  };
+}
+function renderPayloadSafely(payload) {
+  try {
+    return JSON.stringify(payload) ?? "undefined";
+  } catch (error) {
+    return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
+  }
+}
+function isTurnProgressNotification(method) {
+  return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || // MCP progress is a tool saying it is alive, not the response stream
+  // resuming — the reset set's rationale. Counting it would let a
+  // promise/heartbeat alternation defeat the consecutive-promise bound.
+  method.startsWith("item/") && method !== "item/mcpToolCall/progress";
+}
+function isOutputBearingTurnFrame(method) {
+  return method !== "turn/started";
+}
+function turnIdFromParams(params) {
+  if (typeof params.turnId === "string") {
+    return params.turnId;
+  }
+  const turn = asJsonObject(params.turn);
+  return typeof turn?.id === "string" ? turn.id : void 0;
+}
+var MAX_INBOUND_PAYLOAD_DEPTH = 64;
+function payloadContainsInvalidJsonSchema(value, depth = 0) {
+  if (depth >= MAX_INBOUND_PAYLOAD_DEPTH) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return value.includes("invalid_json_schema");
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
+  }
+  const object = asJsonObject(value);
+  if (object === null) {
+    return false;
+  }
+  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
+}
+function parseRpcMessage(line) {
+  try {
+    const parsed = JSON.parse(line);
+    return asJsonObject(parsed);
+  } catch {
+    return null;
+  }
+}
+function threadStartConfig(options) {
+  if (options.threadConfig === void 0 && options.effort === void 0) {
+    return void 0;
+  }
+  return {
+    ...options.threadConfig,
+    ...options.effort !== void 0 ? { model_reasoning_effort: options.effort } : {}
+  };
+}
+function asJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function sameStrings(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+function strictlyContainsAll(candidate, baseline) {
+  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
+}
+function asRpcError(value) {
+  const object = asJsonObject(value);
+  if (object === null) {
+    return { code: void 0, message: String(value) };
+  }
+  return {
+    code: typeof object.code === "number" ? object.code : void 0,
+    message: typeof object.message === "string" ? object.message : void 0,
+    data: object.data
+  };
+}
+function itemTypeFromItem(item) {
+  if (item === null) {
+    return "?";
+  }
+  const itemType = item.itemType ?? item.type;
+  return typeof itemType === "string" ? itemType : "?";
+}
+
 // src/claude-control-plane.ts
-import { execFile as execFile3, spawn } from "node:child_process";
-import { access, mkdtemp, readFile as readFile5, readdir as readdir4, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
+import { access, mkdtemp, readFile as readFile6, readdir as readdir5, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
 import { homedir as homedir3, hostname as hostname3, tmpdir } from "node:os";
+import path11 from "node:path";
+
+// src/worker-scopes.ts
+import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
+import { readFile as readFile5, readdir as readdir4 } from "node:fs/promises";
 import path10 from "node:path";
+var RUN_SCOPE_GROUP = "run";
+var SystemdWorkerScopes = class {
+  slice;
+  #label;
+  #busctlBin;
+  #systemdRunBin;
+  #systemctlBin;
+  #env;
+  #procDir;
+  #moveTimeoutMs;
+  /** Units this manager created, by group: the set `close()` stops. */
+  #units = /* @__PURE__ */ new Map();
+  /** One placement at a time per group, so concurrent first placements create one scope rather than race for the name. */
+  #groupTurns = /* @__PURE__ */ new Map();
+  #closed = false;
+  constructor(options = {}) {
+    this.slice = options.slice ?? null;
+    this.#label = options.label ?? String(process.pid);
+    this.#busctlBin = options.busctlBin ?? "busctl";
+    this.#systemdRunBin = options.systemdRunBin ?? "systemd-run";
+    this.#systemctlBin = options.systemctlBin ?? "systemctl";
+    this.#env = options.env ?? process.env;
+    this.#procDir = options.procDir ?? "/proc";
+    this.#moveTimeoutMs = options.moveTimeoutMs ?? 5e3;
+  }
+  /** The unit a group's processes are placed in: `ensemble-<label>-<group>.scope`, the group made unit-name safe. */
+  unitFor(group) {
+    return `ensemble-${unitSafe(this.#label)}-${unitSafe(group)}.scope`;
+  }
+  async place(group, pids) {
+    if (this.#closed) {
+      return { kind: "refused", reason: "the scope manager is closed" };
+    }
+    const turn = (this.#groupTurns.get(group) ?? Promise.resolve()).then(() => this.#placeInTurn(group, pids));
+    this.#groupTurns.set(group, turn.catch(() => void 0));
+    return turn;
+  }
+  async #placeInTurn(group, requested) {
+    if (this.#closed) {
+      return { kind: "refused", reason: "the scope manager is closed" };
+    }
+    const unit = this.unitFor(group);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const pids = requested.filter(isLive);
+      if (pids.length === 0) {
+        return { kind: "refused", reason: "every process to place had already exited" };
+      }
+      const outcome = this.#units.has(group) ? await this.#attach(unit, pids, true) : await this.#start(unit, pids, true);
+      if (outcome === null) {
+        this.#units.set(group, unit);
+        if (!await this.#moved(unit, pids)) {
+          return { kind: "refused", reason: `the manager accepted ${unit} but its processes had not moved within ${this.#moveTimeoutMs}ms` };
+        }
+        return { kind: "placed", unit, pids };
+      }
+      if (/No such process/.test(outcome)) {
+        continue;
+      }
+      return { kind: "refused", reason: outcome };
+    }
+    return { kind: "refused", reason: "the processes to place exited while being placed" };
+  }
+  /**
+   * Create the group's scope around these processes. A unit of that name
+   * already loaded — a leftover of an earlier launcher with this label, or
+   * a concurrent creation — is joined instead. Null on success; otherwise
+   * the manager's refusal. Each route falls back to the other once: the
+   * unit's state can change between the two calls, and a second flip is
+   * reported rather than chased.
+   */
+  async #start(unit, pids, joinExisting) {
+    const properties = [
+      ["PIDs", "au", String(pids.length), ...pids.map(String)],
+      ["Delegate", "b", "true"],
+      ["CollectMode", "s", "inactive-or-failed"],
+      ...this.slice !== null ? [["Slice", "s", this.slice]] : []
+    ];
+    const started = await this.#manager("StartTransientUnit", "ssa(sv)a(sa(sv))", [
+      unit,
+      "fail",
+      String(properties.length),
+      ...properties.flat(),
+      "0"
+    ]);
+    if (started === null || !joinExisting || !/already loaded/.test(started)) {
+      return started;
+    }
+    return this.#attach(unit, pids, false);
+  }
+  /** Add processes to the group's existing scope; a scope that ended with its last process is created again. */
+  async #attach(unit, pids, recreateGone) {
+    const attached = await this.#manager("AttachProcessesToUnit", "ssau", [unit, "/", String(pids.length), ...pids.map(String)]);
+    if (attached === null || !recreateGone || !/not loaded/.test(attached)) {
+      return attached;
+    }
+    return this.#start(unit, pids, false);
+  }
+  /** Whether every listed process that is still alive sits in the unit, waited for up to the move timeout. */
+  async #moved(unit, pids) {
+    const deadline = Date.now() + this.#moveTimeoutMs;
+    for (; ; ) {
+      const lines = await Promise.all(
+        pids.map((pid) => readFile5(path10.join(this.#procDir, String(pid), "cgroup"), "utf8").catch(() => null))
+      );
+      if (lines.every((line) => line === null || line.trimEnd().endsWith(`/${unit}`))) {
+        return true;
+      }
+      if (Date.now() >= deadline) {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  /**
+   * The slice a launched command's scope goes in: the parent of the
+   * launcher's own slice, so the command — and a supervisor it starts —
+   * sits outside the box the launcher's slice draws, whether that box is
+   * the slice itself or a scope inside it. A launcher in `agents-run1.slice`
+   * launches into `agents.slice`; one in `agents.slice` or `app.slice`
+   * launches into the user manager's root slice. A root-slice launcher also
+   * launches into the root slice, in a scope separate from its own. Null
+   * where the launcher's slice is unknown: the manager's default applies.
+   */
+  get launchSlice() {
+    return this.slice === null ? null : parentSlice(this.slice);
+  }
+  async launch(file, args, options) {
+    const slice = this.launchSlice;
+    return spawn2(
+      this.#systemdRunBin,
+      [
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        ...slice !== null ? [`--slice=${slice}`] : [],
+        `--description=ensemble: ${file} ${args[0] ?? ""}`.trimEnd(),
+        "--",
+        file,
+        ...args
+      ],
+      options
+    );
+  }
+  async close() {
+    this.#closed = true;
+    await Promise.all([...this.#groupTurns.values()]);
+    this.#groupTurns.clear();
+    const units = [...this.#units.values()];
+    this.#units.clear();
+    await Promise.all(
+      units.map(
+        (unit) => new Promise((resolve) => {
+          execFile3(this.#systemctlBin, ["--user", "stop", "--no-block", unit], { env: this.#env }, () => resolve());
+        })
+      )
+    );
+  }
+  /** One call on the manager object. Null when it succeeded; otherwise the bounded text of its refusal. */
+  #manager(method, signature, args) {
+    return new Promise((resolve) => {
+      execFile3(
+        this.#busctlBin,
+        [
+          "--user",
+          "--",
+          "call",
+          "org.freedesktop.systemd1",
+          "/org/freedesktop/systemd1",
+          "org.freedesktop.systemd1.Manager",
+          method,
+          signature,
+          ...args
+        ],
+        { env: this.#env },
+        (error, _stdout, stderr) => {
+          resolve(error === null ? null : boundedEvidence(stderr.trim() || error.message));
+        }
+      );
+    });
+  }
+};
+var NoWorkerScopes = class {
+  slice = null;
+  async place() {
+    return { kind: "unavailable" };
+  }
+  async launch(file, args, options) {
+    return spawn2(file, [...args], options);
+  }
+  async close() {
+  }
+};
+async function createWorkerScopes(options = {}) {
+  const { procDir = "/proc", ...systemd } = options;
+  const env = systemd.env ?? process.env;
+  if (!await userManagerAnswers(systemd.busctlBin ?? "busctl", env)) {
+    return new NoWorkerScopes();
+  }
+  const cgroup = await readFile5(path10.join(procDir, "self", "cgroup"), "utf8").catch(() => "");
+  return new SystemdWorkerScopes({ ...systemd, slice: containingSlice(cgroup) });
+}
+function containingSlice(cgroupFile) {
+  const line = cgroupFile.split("\n").find((entry) => entry.startsWith("0::"));
+  if (line === void 0) {
+    return null;
+  }
+  const segments = line.slice("0::".length).split("/").filter((segment) => segment.length > 0);
+  const userManager = segments.findIndex((segment) => /^user@\d+\.service$/.test(segment));
+  if (userManager === -1) {
+    return null;
+  }
+  for (let index = segments.length - 1; index > userManager; index -= 1) {
+    const segment = segments[index];
+    if (segment.endsWith(".slice")) {
+      return segment;
+    }
+  }
+  return "-.slice";
+}
+function parentSlice(slice) {
+  if (slice === "-.slice") return slice;
+  const name = slice.slice(0, -".slice".length);
+  const dash = name.lastIndexOf("-");
+  return dash === -1 ? "-.slice" : `${name.slice(0, dash)}.slice`;
+}
+async function processTree(pid, procDir = "/proc") {
+  const seen = /* @__PURE__ */ new Set([pid]);
+  const queue = [pid];
+  while (queue.length > 0) {
+    const parent = queue.shift();
+    const taskDir = path10.join(procDir, String(parent), "task");
+    const tasks = await readdir4(taskDir).catch(() => []);
+    for (const task of tasks) {
+      const children = await readFile5(path10.join(taskDir, task, "children"), "utf8").catch(() => "");
+      for (const child of children.split(/\s+/).filter((entry) => /^\d+$/.test(entry)).map(Number)) {
+        if (!seen.has(child)) {
+          seen.add(child);
+          queue.push(child);
+        }
+      }
+    }
+  }
+  return [...seen];
+}
+function userManagerAnswers(busctlBin, env) {
+  return new Promise((resolve) => {
+    execFile3(
+      busctlBin,
+      ["--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.DBus.Peer", "Ping"],
+      { env, timeout: 5e3 },
+      (error) => resolve(error === null)
+    );
+  });
+}
+function isLive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function unitSafe(text) {
+  return text.replace(/[^A-Za-z0-9:_.-]/g, "_").slice(0, 64);
+}
+
+// src/claude-control-plane.ts
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
 var OWNER_FILENAME = "owner.json";
-var CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
 var ClaudeCliControlPlane = class {
   #claudeBin;
@@ -17420,6 +19299,19 @@ var ClaudeCliControlPlane = class {
   #valveAttachSettleMs;
   #valveSubmitSettleMs;
   #valveKillSettleMs;
+  #valveDeliveryTimeoutMs;
+  #scopes;
+  #workerScope;
+  #placementSettleMs;
+  #placementWatchIntervalMs;
+  #onEvent;
+  /** Last placement attempt per session: refused attempts remain eligible at the same pid. */
+  #placements = /* @__PURE__ */ new Map();
+  /** Session ownership lasts through idle gaps, independently of turn polling. */
+  #watchedSessions = /* @__PURE__ */ new Map();
+  #placementTimer = null;
+  #placementSweep = null;
+  #placing = /* @__PURE__ */ new Map();
   #valveCounter = 0;
   /**
    * Where each valve's socket directory is made: where tmux keeps its own
@@ -17446,14 +19338,28 @@ var ClaudeCliControlPlane = class {
       ...this.#workerEnv,
       [SANDBOXED_WORKSPACE_VARIABLE]: "1"
     };
-    this.#projectsDir = options.projectsDir ?? path10.join(homedir3(), ".claude", "projects");
+    const configDir = this.#env.CLAUDE_CONFIG_DIR || path11.join(homedir3(), ".claude");
+    this.#projectsDir = options.projectsDir ?? path11.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
-    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
-    this.#valveKillSettleMs = options.valveKillSettleMs ?? 2e3;
+    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 0;
+    this.#valveKillSettleMs = options.valveKillSettleMs ?? 0;
+    this.#valveDeliveryTimeoutMs = options.valveDeliveryTimeoutMs ?? 3e4;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
+    this.#workerScope = options.workerScope ?? "worker";
+    this.#scopes = options.scopes ?? new NoWorkerScopes();
+    this.#placementSettleMs = options.placementSettleMs ?? 1e4;
+    this.#placementWatchIntervalMs = options.placementWatchIntervalMs ?? 1e3;
+    if (!Number.isInteger(this.#placementWatchIntervalMs) || this.#placementWatchIntervalMs < 1 || this.#placementWatchIntervalMs > 2147483647) {
+      throw new RangeError("placementWatchIntervalMs must be an integer from 1 to 2147483647");
+    }
+    this.#onEvent = options.onEvent;
+  }
+  /** How the session's process was last placed, or null before the roster has named a pid for it. */
+  placementOf(handle) {
+    return this.#placements.get(handle.sessionId)?.outcome ?? null;
   }
   async dispatch(options) {
     const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
@@ -17465,41 +19371,121 @@ var ClaudeCliControlPlane = class {
     }
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
-    args.push("--settings", path10.join(settingsDir, "settings.json"));
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
+    args.push("--settings", path11.join(settingsDir, "settings.json"));
     let registered = null;
+    let candidate = null;
+    const dispatch = { result: null };
+    let accepted = false;
+    let discarded = false;
+    let lastSeen = null;
     try {
-      const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
-      if (!dispatch.ok && await this.#findByName(options.name) === null) {
-        throw new ClaudeDispatchError(
-          `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + boundedEvidence(dispatch.stderr.trim() || dispatch.stdout.trim() || "claude --bg exited without a message")
+      void this.#runWithInput(this.#claudeBin, args, "", options.cwd).then(
+        (result) => dispatch.result = result,
+        (error) => dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error), exitCode: null, signal: null }
+      );
+      let deadline = null;
+      let placementDeadline = null;
+      let placed = false;
+      let placementPid = null;
+      for (; ; ) {
+        candidate = await this.#findByName(options.name);
+        if (candidate !== null) {
+          registered = candidate.handle;
+          lastSeen = candidate;
+          if (candidate.pid !== placementPid) {
+            placed = false;
+            placementDeadline = null;
+            placementPid = candidate.pid;
+          }
+          if (candidate.pid !== null && !placed) {
+            placementDeadline ??= Date.now() + this.#placementSettleMs;
+            const outcome = await this.#place(registered, candidate.pid);
+            placed = outcome.kind !== "refused" || Date.now() >= placementDeadline;
+          }
+        }
+        if (dispatch.result !== null) {
+          if (!dispatch.result.ok) {
+            throw new ClaudeDispatchError(
+              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + launchAccount(dispatch.result)
+            );
+          }
+          deadline ??= Date.now() + this.#dispatchTimeoutMs;
+          if (candidate !== null && candidate.pid !== null && placed) break;
+          if (Date.now() >= deadline) {
+            throw new ClaudeRegistrationTimeoutError(
+              `dispatched session '${options.name}' in ${options.cwd} did not start within ${this.#dispatchTimeoutMs}ms; ` + launchAccount(dispatch.result) + `; roster: ${boundedEvidence(JSON.stringify(lastSeen))}`
+            );
+          }
+        }
+        await delay(100);
+      }
+      if (registered === null || dispatch.result === null) throw new Error("Claude dispatch lost its ready session");
+      const handle = registered;
+      this.#settingsDirs.set(handle.sessionId, settingsDir);
+      const delivery = await this.steer(handle, options.prompt);
+      if (!delivery.submitted) {
+        throw new ClaudeRegistrationTimeoutError(
+          `Claude opening submission failed for worker '${options.name}' in ${options.cwd}: ${delivery.reason}; ` + launchAccount(dispatch.result)
         );
       }
-      const deadline = Date.now() + this.#dispatchTimeoutMs;
-      for (; ; ) {
-        const handle = await this.#findByName(options.name);
-        if (handle !== null) {
-          registered = handle;
-          break;
-        }
-        if (Date.now() >= deadline) {
-          throw new ClaudeRegistrationTimeoutError(
-            `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
-          );
-        }
-        await delay(500);
+      accepted = true;
+      if (!(this.#scopes instanceof NoWorkerScopes)) {
+        this.#watchedSessions.set(handle.sessionId, handle);
+        this.#schedulePlacementWatch();
       }
+      return handle;
+    } catch (error) {
+      if (error instanceof Error) {
+        const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id]).catch(() => null);
+        const file = registered === null ? null : await this.transcriptPath(registered).catch(() => null);
+        const transcript = file === null ? null : await readFile6(file, "utf8").catch(() => null);
+        const diagnostics = { claudeLaunch: {
+          failure: error.message,
+          cleanupConfirmed: registered === null,
+          command: dispatch.result === null ? null : { ...dispatch.result },
+          roster: lastSeen === null ? null : JSON.parse(JSON.stringify(lastSeen.row)),
+          logs: logs === null ? null : { ...logs }
+        } };
+        if (registered !== null) {
+          discarded = await this.#stopSession(registered, true).catch(() => false);
+          diagnostics.claudeLaunch.cleanupConfirmed = discarded;
+          if (!discarded) {
+            registered.launchFailure = { message: error.message, diagnostics };
+            accepted = true;
+            this.#settingsDirs.set(registered.sessionId, settingsDir);
+            if (!(this.#scopes instanceof NoWorkerScopes)) {
+              this.#watchedSessions.set(registered.sessionId, registered);
+              this.#schedulePlacementWatch();
+            }
+            return registered;
+          }
+        }
+        attachFailedTurnResult(error, {
+          text: "",
+          deltaText: "",
+          durationMs: null,
+          firstDeltaMs: null,
+          items: {},
+          tokenUsageEvents: [],
+          diagnostics,
+          ...transcript === null ? {} : { transcripts: [{
+            filename: "transcript.claude.jsonl",
+            format: "jsonl",
+            source: "claude-session-jsonl",
+            sessionId: registered.sessionId,
+            content: transcript,
+            partial: true
+          }] }
+        });
+      }
+      throw error;
     } finally {
-      if (registered === null) {
+      if (!accepted) {
+        if (registered !== null && !discarded) await this.stop(registered);
         await this.#removeSettingsDir(settingsDir);
-      } else {
-        this.#settingsDirs.set(registered.sessionId, settingsDir);
       }
     }
-    if (registered === null) {
-      throw new ClaudeRegistrationTimeoutError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
-    }
-    return registered;
   }
   /**
    * Write the per-dispatch settings file carrying the declared worker
@@ -17512,20 +19498,28 @@ var ClaudeCliControlPlane = class {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName, permissionDenyRules, cacheTtl) {
+  async #writeWorkerSettings(dispatchName, permissionDenyRules) {
     const env = {
       ...this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {},
-      ...cacheTtl !== void 0 ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {},
       ...this.#workerEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
-    const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
+    const settings = {
+      env,
+      // Ensemble owns placement: cwd is the caller's checkout, or the
+      // worktree Ensemble created for isolation. Claude's default background
+      // isolation would move edits into a second, hidden worktree instead.
+      // This per-session setting reaches the daemon without changing the
+      // operator's project or user settings (measured on Claude Code 2.1.321).
+      worktree: { bgIsolation: "none" },
+      ...permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { permissions: { deny: permissionDenyRules } } : {}
+    };
     const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
 `;
-    const dir = await mkdtemp(path10.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
+    const dir = await mkdtemp(path11.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
-      await writeFile5(path10.join(dir, OWNER_FILENAME), owner, { mode: 384 });
-      await writeFile5(path10.join(dir, "settings.json"), `${JSON.stringify(settings)}
+      await writeFile5(path11.join(dir, OWNER_FILENAME), owner, { mode: 384 });
+      await writeFile5(path11.join(dir, "settings.json"), `${JSON.stringify(settings)}
 `, {
         mode: 384
       });
@@ -17558,15 +19552,15 @@ var ClaudeCliControlPlane = class {
    */
   async #sweepOrphanedSettingsDirs() {
     const root = tmpdir();
-    const entries = await readdir4(root, { withFileTypes: true }).catch(() => []);
+    const entries = await readdir5(root, { withFileTypes: true }).catch(() => []);
     const host = hostname3();
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name.startsWith(SETTINGS_DIR_PREFIX)) {
         continue;
       }
-      const dir = path10.join(root, entry.name);
+      const dir = path11.join(root, entry.name);
       try {
-        const owner = JSON.parse(await readFile5(path10.join(dir, OWNER_FILENAME), "utf8"));
+        const owner = JSON.parse(await readFile6(path11.join(dir, OWNER_FILENAME), "utf8"));
         if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
           await this.#removeSettingsDir(dir);
         }
@@ -17583,6 +19577,10 @@ var ClaudeCliControlPlane = class {
     if (record === null) {
       return { status: "absent", state: "unknown", present: false };
     }
+    const previous = this.#placements.get(handle.sessionId);
+    if (typeof record.pid === "number" && (previous?.pid !== record.pid || previous.outcome.kind === "refused")) {
+      await this.#place(handle, record.pid);
+    }
     const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : void 0;
     return {
       status: typeof record.status === "string" ? record.status : "unknown",
@@ -17595,13 +19593,13 @@ var ClaudeCliControlPlane = class {
     const filename = `${handle.sessionId}.jsonl`;
     let projectDirs;
     try {
-      const entries = await readdir4(this.#projectsDir, { withFileTypes: true });
+      const entries = await readdir5(this.#projectsDir, { withFileTypes: true });
       projectDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     } catch {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path10.join(this.#projectsDir, dir, filename);
+      const candidate = path11.join(this.#projectsDir, dir, filename);
       try {
         await access(candidate);
         return candidate;
@@ -17612,20 +19610,31 @@ var ClaudeCliControlPlane = class {
   }
   async steer(handle, message) {
     if ((await this.poll(handle)).present === false) {
-      return { delivered: false, reason: "the session is no longer in the daemon's roster" };
+      return { submitted: false, reason: "the session is no longer in the daemon's roster" };
     }
     this.#valveCounter += 1;
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
     let socketDir;
     try {
-      socketDir = await mkdtemp(path10.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+      socketDir = await mkdtemp(path11.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
-      return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
+      return { submitted: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
     }
-    const server = ["-S", path10.join(socketDir, "tmux.sock")];
+    const server = ["-S", path11.join(socketDir, "tmux.sock")];
+    let submitAttempted = false;
     try {
-      const created = await this.#run(this.#tmuxBin, [
+      const payload = path11.join(socketDir, "prompt.txt");
+      const editor = path11.join(socketDir, "editor.cjs");
+      const copied = path11.join(socketDir, "copied");
+      await writeFile5(payload, message, { mode: 384 });
+      await writeFile5(editor, `#!${process.execPath}
+        const fs = require("node:fs");
+        fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
+        fs.writeFileSync(${JSON.stringify(copied)}, "complete", { mode: 0o600 });
+      `, { mode: 448 });
+      const editorCommand = editor;
+      const created = await this.#launch(this.#tmuxBin, [
         ...server,
         "-f",
         "/dev/null",
@@ -17633,40 +19642,129 @@ var ClaudeCliControlPlane = class {
         "-d",
         "-s",
         valve,
-        `${this.#claudeBin} attach ${handle.id}`
-      ]);
-      if (!created.ok) {
-        return refused("tmux new-session", created);
-      }
+        `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
+      ], null, void 0, { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand });
+      if (!created.ok) return refused("tmux new-session", created);
       await delay(this.#valveAttachSettleMs);
-      const slices = valveSlices(message);
-      for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", slice]);
-        if (!typed.ok) {
-          return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
+      const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
+      if (!opened.ok) return refused("tmux send-keys (editor)", opened);
+      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
+      for (; ; ) {
+        try {
+          await access(copied);
+          break;
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
         }
+        if (Date.now() >= copyDeadline) {
+          return { submitted: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
+        }
+        await delay(50);
       }
       await delay(this.#valveSubmitSettleMs);
+      submitAttempted = true;
       const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
-      if (!submitted.ok) {
-        return refused("tmux send-keys (submit)", submitted);
-      }
+      if (!submitted.ok) return refused("tmux send-keys (submit)", submitted);
       await delay(this.#valveKillSettleMs);
-      return { delivered: true };
+      return { submitted: true };
+    } catch (error) {
+      return submitAttempted ? { submitted: true } : {
+        submitted: false,
+        reason: `reply valve failed before submission: ${boundedEvidence(error instanceof Error ? error.message : String(error))}`
+      };
     } finally {
       await this.#run(this.#tmuxBin, [...server, "kill-server"]);
       await rm4(socketDir, { recursive: true, force: true }).catch(() => void 0);
     }
   }
+  /**
+   * Place the session's process and its live descendants in the scope
+   * chosen by the run's grouping. The tree, not the pid alone: helpers the
+   * session forked before this moment (MCP servers, shells) would
+   * otherwise stay in the supervisor's cgroup. Best-effort — the outcome
+   * is recorded, never thrown.
+   */
+  async #place(handle, pid) {
+    const pending = (this.#placing.get(handle.sessionId) ?? Promise.resolve()).then(() => this.#placeInTurn(handle, pid));
+    this.#placing.set(handle.sessionId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.#placing.get(handle.sessionId) === pending) this.#placing.delete(handle.sessionId);
+    }
+  }
+  async #placeInTurn(handle, pid) {
+    const previous = this.#placements.get(handle.sessionId);
+    if (previous?.pid === pid && previous.outcome.kind !== "refused") return previous.outcome;
+    const outcome = await this.#scopes.place(this.#workerScope === "run" ? RUN_SCOPE_GROUP : handle.name, await processTree(pid, this.#procDir));
+    this.#placements.set(handle.sessionId, { pid, outcome });
+    const changedRefusal = outcome.kind === "refused" && (previous?.pid !== pid || previous.outcome.kind !== "refused" || previous.outcome.reason !== outcome.reason);
+    const recovered = outcome.kind === "placed" && previous?.outcome.kind === "refused";
+    if (changedRefusal || recovered) {
+      this.#onEvent?.({
+        method: "claude/workerScopePlacement",
+        params: {
+          sessionId: handle.sessionId,
+          name: handle.name,
+          pid,
+          kind: outcome.kind,
+          ...outcome.kind === "refused" ? { reason: boundedEvidence(outcome.reason) } : {},
+          ...outcome.kind === "placed" ? { unit: outcome.unit } : {}
+        },
+        receivedAt: Date.now()
+      });
+    }
+    return outcome;
+  }
+  /** One roster read serves every owned session, including those between turns. */
+  #schedulePlacementWatch() {
+    if (this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
+    this.#placementTimer = setTimeout(() => {
+      this.#placementTimer = null;
+      this.#placementSweep = this.#refreshPlacements().catch((error) => {
+        this.#onEvent?.({
+          method: "claude/workerScopeWatchError",
+          params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
+          receivedAt: Date.now()
+        });
+      }).finally(() => {
+        this.#placementSweep = null;
+        this.#schedulePlacementWatch();
+      });
+    }, this.#placementWatchIntervalMs);
+    this.#placementTimer.unref();
+  }
+  async #refreshPlacements() {
+    const roster = await this.#roster();
+    if (!roster.ok) return;
+    for (const handle of this.#watchedSessions.values()) {
+      const row = roster.rows.find((entry) => matchesHandle(entry, handle));
+      if (typeof row?.pid === "number") await this.#place(handle, row.pid);
+    }
+  }
   async stop(handle) {
-    await this.#run(this.#claudeBin, ["stop", handle.id]);
+    await this.#stopSession(handle).catch(() => false);
+  }
+  async #stopSession(handle, requireClean = false) {
+    this.#watchedSessions.delete(handle.sessionId);
+    if (this.#watchedSessions.size === 0 && this.#placementTimer !== null) {
+      clearTimeout(this.#placementTimer);
+      this.#placementTimer = null;
+    }
+    await this.#placementSweep;
+    await this.#placing.get(handle.sessionId);
+    const stopped = await this.#run(this.#claudeBin, ["stop", handle.id]);
+    this.#placements.delete(handle.sessionId);
     await this.#reapTaggedDescendants(handle.name);
-    await this.#run(this.#claudeBin, ["rm", handle.id]);
+    const removed = await this.#run(this.#claudeBin, ["rm", handle.id]);
+    const roster = await this.#roster();
+    const clean = stopped.ok && removed.ok && roster.ok && !roster.rows.some((row) => matchesHandle(row, handle)) && (await this.#findTaggedProcesses(handle.name)).length === 0;
     const settingsDir = this.#settingsDirs.get(handle.sessionId);
-    if (settingsDir !== void 0) {
+    if (settingsDir !== void 0 && (clean || !requireClean)) {
       this.#settingsDirs.delete(handle.sessionId);
       await this.#removeSettingsDir(settingsDir);
     }
+    return clean;
   }
   /**
    * Kill every surviving process tagged with this dispatch's marker:
@@ -17700,7 +19798,7 @@ var ClaudeCliControlPlane = class {
     const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
     let entries;
     try {
-      entries = await readdir4(this.#procDir);
+      entries = await readdir5(this.#procDir);
     } catch {
       return [];
     }
@@ -17715,7 +19813,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile5(path10.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile6(path11.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -17728,6 +19826,7 @@ var ClaudeCliControlPlane = class {
   async tmuxAvailable() {
     return (await this.#run(this.#tmuxBin, ["-V"])).ok;
   }
+  /** The roster's row for a dispatch, as a handle plus the pid the row names (null until the supervisor reports one). */
   async #findByName(name) {
     const { rows } = await this.#roster();
     const match = rows.find(
@@ -17738,10 +19837,14 @@ var ClaudeCliControlPlane = class {
     }
     const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
     return {
-      id,
-      sessionId: match.sessionId,
-      name,
-      cwd: typeof match.cwd === "string" ? match.cwd : ""
+      handle: {
+        id,
+        sessionId: match.sessionId,
+        name,
+        cwd: typeof match.cwd === "string" ? match.cwd : ""
+      },
+      pid: typeof match.pid === "number" && match.pid > 0 ? match.pid : null,
+      row: match
     };
   }
   // `ok: false` means the query could not be performed (process error, empty or
@@ -17764,24 +19867,25 @@ var ClaudeCliControlPlane = class {
     return { ok: true, rows: parsed.filter((row) => typeof row === "object" && row !== null) };
   }
   #run(file, args, cwd) {
-    return new Promise((resolve) => {
-      execFile3(
-        file,
-        args,
-        { ...cwd !== void 0 ? { cwd } : {}, maxBuffer: 32 * 1024 * 1024, env: this.#env },
-        (error, stdout, stderr) => {
-          resolve({ ok: error === null, stdout, stderr });
-        }
-      );
-    });
+    return this.#launch(file, args, null, cwd);
   }
   #runWithInput(file, args, input, cwd) {
+    return this.#launch(file, args, input, cwd);
+  }
+  /**
+   * The one route every control-plane child takes: launched by the scope
+   * manager (outside the launcher's box, where a systemd user manager is
+   * reachable), under the spread `#env`, with its output collected and its
+   * exit status read as the verdict. `input` is streamed to stdin and the
+   * stream then closed; null closes it at once.
+   */
+  async #launch(file, args, input, cwd, env = this.#env) {
+    const child = await this.#scopes.launch(file, args, {
+      ...cwd !== void 0 ? { cwd } : {},
+      env,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
     return new Promise((resolve) => {
-      const child = spawn(file, args, {
-        ...cwd !== void 0 ? { cwd } : {},
-        env: this.#env,
-        stdio: ["pipe", "pipe", "pipe"]
-      });
       const stdout = [];
       const stderr = [];
       let settled = false;
@@ -17791,20 +19895,22 @@ var ClaudeCliControlPlane = class {
           resolve(result);
         }
       };
-      child.stdout.on("data", (chunk) => stdout.push(chunk));
-      child.stderr.on("data", (chunk) => stderr.push(chunk));
+      child.stdout?.on("data", (chunk) => stdout.push(chunk));
+      child.stderr?.on("data", (chunk) => stderr.push(chunk));
       child.on("error", (error) => {
-        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
+        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message, exitCode: null, signal: null });
       });
-      child.on("close", (code) => {
+      child.on("close", (code, signal) => {
         finish({
           ok: code === 0,
+          exitCode: code,
+          signal,
           stdout: Buffer.concat(stdout).toString(),
           stderr: Buffer.concat(stderr).toString()
         });
       });
-      child.stdin.on("error", () => void 0);
-      child.stdin.end(input);
+      child.stdin?.on("error", () => void 0);
+      child.stdin?.end(input ?? void 0);
     });
   }
 };
@@ -17817,29 +19923,15 @@ function normaliseState(state) {
   }
   return "unknown";
 }
-var VALVE_SLICE_BYTES = 8 * 1024;
 function refused(step, result) {
   const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
-  return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
+  return { submitted: false, reason: `${step} failed: ${boundedEvidence(said)}` };
 }
-function valveSlices(message) {
-  const slices = [];
-  let current2 = "";
-  let currentBytes = 0;
-  for (const character of message) {
-    const characterBytes = Buffer.byteLength(character, "utf8");
-    if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
-      slices.push(current2);
-      current2 = "";
-      currentBytes = 0;
-    }
-    current2 += character;
-    currentBytes += characterBytes;
-  }
-  if (current2 !== "") {
-    slices.push(current2);
-  }
-  return slices;
+function launchAccount(result) {
+  return `dispatch exit ${result.exitCode ?? "unknown"}, signal ${result.signal ?? "none"}; stdout: ${boundedEvidence(result.stdout.trim() || "(empty)")}; stderr: ${boundedEvidence(result.stderr.trim() || "(empty)")}`;
+}
+function shellQuote(value) {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
 }
 function delay(ms) {
   return new Promise((resolve) => {
@@ -17848,10 +19940,31 @@ function delay(ms) {
 }
 
 // src/claude-engine.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
 
 // src/claude-transcript.ts
-import { readFile as readFile6 } from "node:fs/promises";
+import { readFile as readFile7 } from "node:fs/promises";
+function submittedUserText(entry) {
+  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
+  const content = entry.message?.content;
+  if (typeof content !== "string") return null;
+  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
+  if (command === null) return content;
+  const name = command[1] ?? "";
+  const args = command[2] ?? "";
+  return args === "" ? name : `${name} ${args}`;
+}
+function submissionReceipt(entries, mark, message) {
+  for (let index = Math.max(0, mark); index < entries.length; index += 1) {
+    const entry = entries[index];
+    const received = entry === void 0 ? null : submittedUserText(entry);
+    if (received === null) {
+      continue;
+    }
+    return received === message || entry?.message?.content === message ? { state: "verified" } : { state: "differing", received };
+  }
+  return { state: "missing" };
+}
 function parseTranscriptText(text) {
   const entries = [];
   for (const line of text.split("\n")) {
@@ -17865,14 +19978,27 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscriptFile(path15) {
+function enteredWorktrees(entries) {
+  const worktrees = [];
+  for (const entry of entries) {
+    if (entry.type !== "worktree-state" || entry.worktreeSession === null || typeof entry.worktreeSession !== "object" || Array.isArray(entry.worktreeSession)) continue;
+    const state = entry.worktreeSession;
+    if (typeof state.worktreePath !== "string" || state.worktreePath.length === 0) continue;
+    const branch = typeof state.worktreeBranch === "string" && state.worktreeBranch.length > 0 ? state.worktreeBranch : null;
+    if (!worktrees.some((tree) => tree.path === state.worktreePath && tree.branch === branch)) {
+      worktrees.push({ path: state.worktreePath, branch });
+    }
+  }
+  return worktrees;
+}
+async function readTranscriptFile(path16) {
   let text;
   try {
-    text = await readFile6(path15, "utf8");
+    text = await readFile7(path16, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path15}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path16}`, { cause: error });
   }
-  return { path: path15, text, entries: parseTranscriptText(text) };
+  return { path: path16, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -18196,19 +20322,6 @@ var CAPABILITY_DENY_RULES = {
 function permissionDenyRulesFor(strip) {
   return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
 }
-var CLAUDE_MULTITURN_CACHE_TTL = "1h";
-function claudeCacheTtlToMs(value) {
-  const match = /^(\d+)([smh]?)$/.exec(value.trim());
-  if (match === null) {
-    return null;
-  }
-  const amount = Number(match[1]);
-  if (!Number.isSafeInteger(amount) || amount <= 0) {
-    return null;
-  }
-  const unit = match[2];
-  return amount * (unit === "h" ? 36e5 : unit === "m" ? 6e4 : 1e3);
-}
 var CLAUDE_NATIVE_EFFORT = {
   minimal: "low",
   low: "low",
@@ -18239,26 +20352,45 @@ var ClaudeEngineInvocation = class {
   #controlPlane;
   #onEvent;
   #reportedUsage = null;
+  /** Cumulative native usage already covered by settled attempts in each session. */
+  #settledUsage = /* @__PURE__ */ new Map();
+  #usageAtSettlement = null;
   /** The background tasks this attempt's turn waited on, in the order observed; reset per attempt. */
   #waits = [];
+  /**
+   * Blocked-worker nudges sent this attempt; reset per attempt. One count
+   * for the attempt, however many turns it follows, so recovery stays
+   * bounded when a nudge's own delivery fails and its turn is followed.
+   */
+  #nudges = 0;
   #multiTurn;
   /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
   #turnPrompt;
   /** The current turn's schema — the one thing a session varies per turn. */
   #turnSchema;
+  /** How far the current turn's prompt has got into the session; it decides what a retry sends. */
+  #turn = "unsent";
   /**
-   * Whether the current turn's prompt has reached the worker. A follow-up
-   * turn is delivered by the valve, and a retry after a failed delivery
-   * must re-send the prompt itself — a correction message would ask the
-   * worker to fix an answer it was never asked for.
+   * The turn's prompt as the session first accepted it: the opening prompt
+   * its launch carried, preamble included, or the turn message the valve
+   * carried. A redelivery repeats this copy. Read only while `#turn` is
+   * `accepted`.
    */
-  #turnDelivered = false;
+  #acceptedTurnCopy = "";
+  /** The submission the session accepted whose receipt has not verified, if any. Outlives the turn that made it. */
+  #pending = null;
+  /** A differing receipt survives nudges until a fresh answer is requested. */
+  #deliveryFailure = null;
+  /** Start of the current answer's work; recovery-nudge receipts never move it. */
+  #collectionMark = 0;
   #pollIntervalMs;
   #receiptTimeoutMs;
   #firstLifeTimeoutMs;
   #blockedRecoveryBound;
   #namePrefix;
   #handle = null;
+  #resolvedModel = null;
+  #resolvedEffort = null;
   #budgetEventCounter = 0;
   #abortController = new AbortController();
   #closed = false;
@@ -18291,37 +20423,64 @@ var ClaudeEngineInvocation = class {
   beginTurn(prompt, turn) {
     this.#turnPrompt = prompt;
     this.#turnSchema = turn.schema;
-    this.#turnDelivered = false;
+    this.#turn = "unsent";
+    this.#deliveryFailure = null;
+    if (this.#pending !== null) {
+      this.#pending = { ...this.#pending, answersTurn: false };
+    }
     return {
       runAttempt: (context) => this.runAttempt(context)
     };
   }
   runAttempt(context) {
-    const settlement = this.#runAttempt(context);
+    const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
     this.#settlement = settlement;
     return settlement.finally(() => {
+      if (this.#usageAtSettlement !== null) {
+        this.#settledUsage.set(this.#usageAtSettlement.sessionId, this.#usageAtSettlement.total);
+        this.#usageAtSettlement = null;
+      }
       if (this.#settlement === settlement) {
         this.#settlement = null;
       }
     });
   }
+  #withObservedIdentity(result) {
+    return {
+      ...result,
+      ...result.resolvedModel === void 0 && this.#resolvedModel !== null ? { resolvedModel: this.#resolvedModel } : {},
+      ...result.resolvedEffort === void 0 && this.#resolvedEffort !== null ? { resolvedEffort: this.#resolvedEffort } : {}
+    };
+  }
   async #runAttempt(context) {
     this.#assertOpen();
     this.#reportedUsage = null;
+    this.#usageAtSettlement = null;
     this.#waits = [];
+    this.#nudges = 0;
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
-      if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
-        const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
-        this.#requireValve(await this.#controlPlane.tmuxAvailable());
-        return await this.#sendTurnInSession(handle, fromIndex, context);
+      const held = this.#multiTurn ? this.#handle : null;
+      if (held !== null) {
+        const pending = this.#pending;
+        if (pending !== null) {
+          fromIndex = this.#collectionMark;
+          const answered = await this.#accountForPending(held, pending, context);
+          if (answered !== null) {
+            return answered;
+          }
+        }
+        if (this.#turn !== "verified") {
+          fromIndex = (await this.#readTranscript(held, context)).entries.length;
+          this.#requireValve(await this.#controlPlane.tmuxAvailable());
+          return await this.#sendTurnInSession(held, fromIndex, context);
+        }
       }
       const correcting = previousFailure !== void 0 && this.#handle !== null;
       if (correcting && await this.#controlPlane.tmuxAvailable()) {
         const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
         return await this.#correctInSession(handle, previousFailure, fromIndex, context);
       }
       if (correcting && this.#multiTurn) {
@@ -18332,13 +20491,24 @@ var ClaudeEngineInvocation = class {
       }
       return await this.#dispatchAndCollect(previousFailure, context);
     } catch (error) {
+      if (error instanceof Error && this.#handle?.launchFailure !== void 0) {
+        attachFailedTurnResult(error, {
+          text: "",
+          deltaText: "",
+          durationMs: null,
+          firstDeltaMs: null,
+          items: {},
+          tokenUsageEvents: [],
+          diagnostics: this.#handle.launchFailure.diagnostics
+        });
+      }
       const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex) : null;
+      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex, error) : null;
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
       if (error instanceof EngineShutdownError && evidence !== null) {
-        attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+        attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       }
       if (error instanceof ClaudeWorkerError) {
         if (!this.#multiTurn) {
@@ -18365,41 +20535,46 @@ var ClaudeEngineInvocation = class {
     await this.#closePromise;
   }
   async #dispatchAndCollect(previousFailure, observers) {
+    this.#resolvedModel = null;
+    this.#resolvedEffort = null;
+    try {
+      observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null });
+    } catch {
+    }
     const denyRules = permissionDenyRulesFor(this.#options.strip);
+    const prompt = this.#buildDispatchPrompt(previousFailure);
     const handle = await this.#controlPlane.dispatch({
-      prompt: this.#buildDispatchPrompt(previousFailure),
+      prompt,
       name: this.#nextName(),
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
-      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {},
-      // Loiter pricing: only a session meant to be resumed pays the
-      // 1-hour cache-write premium; one-shot workers keep the 5m default.
-      ...this.#multiTurn ? { cacheTtl: CLAUDE_MULTITURN_CACHE_TTL } : {}
+      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {}
     });
     this.#handle = handle;
-    this.#turnDelivered = true;
+    const opening = { message: prompt, mark: 0, what: "the opening prompt", carriesTurn: true };
+    this.#accept(opening);
     if (this.#closed) {
       const error = new EngineShutdownError("claude");
       const evidence = await this.#tryFailureEvidence(0);
       if (evidence !== null) {
         this.#attachWorkerText(error, evidence, 0);
       }
-      attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+      attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       await this.#teardown();
       throw error;
     }
-    const transcript = await this.#runToCompletion(handle, 0, observers);
+    const transcript = await this.#runToCompletion(handle, 0, observers, opening);
     return this.#buildResult(handle, transcript, 0);
   }
-  /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
+  /**
+   * Put the turn's prompt into the held session and collect its reply. The
+   * first submission is the prompt itself; once a submission of it has been
+   * accepted without a verified receipt, what goes is the redelivery.
+   */
   async #sendTurnInSession(handle, fromIndex, observers) {
-    const delivery = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
-    if (!delivery.delivered) {
-      throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
-    }
-    await this.#awaitReceipt(handle, fromIndex);
-    this.#turnDelivered = true;
+    const message = this.#turn === "accepted" ? this.#redeliveryMessage() : this.#buildTurnMessage();
+    await this.#deliver(handle, { message, mark: fromIndex, what: "the follow-up turn", carriesTurn: true }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
@@ -18416,33 +20591,136 @@ var ClaudeEngineInvocation = class {
     }
   }
   async #correctInSession(handle, previousFailure, fromIndex, observers) {
-    const delivery = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
-    if (!delivery.delivered) {
-      throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
-    }
-    await this.#awaitReceipt(handle, fromIndex);
+    this.#collectionMark = fromIndex;
+    this.#deliveryFailure = null;
+    const message = this.#correctionMessage(previousFailure);
+    await this.#deliver(handle, { message, mark: fromIndex, what: "the correction", carriesTurn: false }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
-  /** Confirm the steered worker received the message (started generating, or the transcript grew). */
-  async #awaitReceipt(handle, mark) {
+  /**
+   * The one way a message enters a live session: submit it through the
+   * valve, then require its receipt. Returns only when the transcript shows
+   * the session holding the message exactly as sent. The valve did not
+   * submit → `ClaudeValveError`: nothing reached the session and nothing is
+   * pending.
+   */
+  async #deliver(handle, submission, observers) {
+    const outcome = await this.#controlPlane.steer(handle, submission.message);
+    if (!outcome.submitted) {
+      throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
+    }
+    this.#accept(submission);
+    await this.#requireReceipt(handle, submission, observers);
+  }
+  /**
+   * Record that the session accepted a submission, the moment the launch or
+   * the valve says so and before anything can fail: from here the session
+   * may be running a turn on it, and nothing else is sent until its receipt
+   * has been judged.
+   */
+  #accept(submission) {
+    this.#pending = { ...submission, answersTurn: true };
+    if (submission.carriesTurn) {
+      if (this.#turn === "unsent") {
+        this.#acceptedTurnCopy = submission.message;
+      }
+      this.#turn = "accepted";
+      this.#deliveryFailure = null;
+      this.#collectionMark = submission.mark;
+    }
+  }
+  /**
+   * Require an accepted submission's receipt, whichever of the launch and
+   * the valve submitted it. Returns only when the transcript shows the
+   * session holding the message exactly as sent.
+   *
+   * - The receipt differs → `ClaudeDeliveryError`. The session took a turn
+   *   on text nobody sent. In a held session that turn is followed to its
+   *   end before the failure is raised: the session must be at a turn
+   *   boundary before anything else is sent, and the turn's text and spend
+   *   belong on the attempt that started it. A one-shot call is torn down
+   *   by its failure, which ends the turn with it.
+   * - The receipt is missing at the deadline → `ClaudeDeliveryError`, with
+   *   the submission left pending: it may yet land, so the next attempt
+   *   reads its receipt again before sending (`#accountForPending`).
+   */
+  async #requireReceipt(handle, submission, observers) {
+    const receipt = await this.#awaitReceipt(handle, submission, observers);
+    if (receipt.state === "verified") {
+      this.#pending = null;
+      if (submission.carriesTurn) {
+        this.#turn = "verified";
+        this.#deliveryFailure = null;
+      }
+      return;
+    }
+    const failure = new ClaudeDeliveryError(
+      receipt.state === "differing" ? `${submission.what} was submitted, but the session received different text: ${differenceAccount(submission.message, receipt.received)}` : `${submission.what} was submitted, but no receipt for it appeared in the transcript within ${this.#receiptTimeoutMs}ms: sent ${textIdentity(submission.message)}`
+    );
+    if (receipt.state === "differing" && this.#deliveryFailure === null) this.#deliveryFailure = failure;
+    if (receipt.state === "differing" && this.#multiTurn) {
+      await this.#runToCompletion(handle, this.#collectionMark, observers);
+      this.#pending = null;
+    }
+    throw failure;
+  }
+  /** Read the submission's receipt until the transcript shows one, or the receipt deadline passes with it still missing. */
+  async #awaitReceipt(handle, submission, observers) {
     const deadline = Date.now() + this.#receiptTimeoutMs;
     for (; ; ) {
       this.#assertOpen();
-      const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
-      if (status.status === "busy") {
-        return;
-      }
-      const transcript = await this.#tryReadTranscript(handle);
-      if (transcript !== null && transcript.entries.length > mark) {
-        return;
-      }
-      if (Date.now() >= deadline) {
-        throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
+      const transcript = await this.#tryReadTranscript(handle, observers);
+      const receipt = transcript === null ? { state: "missing" } : submissionReceipt(transcript.entries, submission.mark, submission.message);
+      if (receipt.state !== "missing" || Date.now() >= deadline) {
+        return receipt;
       }
       await this.#pollDelay();
     }
+  }
+  /**
+   * Account for a submission an earlier attempt left pending, before this
+   * attempt sends anything: read its receipt again from its own mark.
+   *
+   * - Still missing → the session took no turn on it. It is dropped, and
+   *   the attempt goes on to send (returns null).
+   * - Verified, and it answers the turn in progress → it was delivered
+   *   after all, only late. Its reply is this attempt's result, and nothing
+   *   is sent.
+   * - Anything else — it arrived as different text, or it belongs to a turn
+   *   that has already settled — is a turn nobody is waiting on. It is
+   *   followed to its end and the attempt fails with its text and spend, so
+   *   that one attempt covers one stretch of the transcript.
+   *
+   * The submission stays pending if following its turn fails, so the next
+   * attempt accounts for it again instead of sending on top of it.
+   */
+  async #accountForPending(handle, pending, observers) {
+    const seen = await this.#readTranscript(handle, observers);
+    const receipt = submissionReceipt(seen.entries, pending.mark, pending.message);
+    if (receipt.state === "missing") {
+      this.#pending = null;
+      return null;
+    }
+    if (pending.answersTurn) {
+      if (pending.carriesTurn && receipt.state === "verified") {
+        this.#turn = "verified";
+        this.#deliveryFailure = null;
+      } else if (receipt.state === "differing" && this.#deliveryFailure === null) {
+        this.#deliveryFailure = new ClaudeDeliveryError(
+          `${pending.what} was submitted, but the session received different text: ${differenceAccount(pending.message, receipt.received)}`
+        );
+      }
+    }
+    const transcript = await this.#runToCompletion(handle, this.#collectionMark, observers);
+    this.#pending = null;
+    if (receipt.state === "verified" && pending.answersTurn && this.#turn === "verified" && this.#deliveryFailure === null) {
+      return this.#buildResult(handle, transcript, this.#collectionMark);
+    }
+    if (pending.answersTurn && this.#deliveryFailure !== null) throw this.#deliveryFailure;
+    throw new ClaudeDeliveryError(
+      receipt.state === "differing" ? `${pending.what} submitted earlier reached the session late and as different text: ${differenceAccount(pending.message, receipt.received)}` : `${pending.what} submitted for an earlier turn reached the session after that turn had settled, so its reply answers no turn`
+    );
   }
   /**
    * Poll until the worker's turn is complete, returning the transcript at that
@@ -18482,22 +20760,36 @@ var ClaudeEngineInvocation = class {
    * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
    * live worker.
    */
-  async #runToCompletion(handle, fromIndex, observers) {
+  async #runToCompletion(handle, fromIndex, observers, opening) {
     const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
     const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
     let sawLife = fromIndex > 0;
-    let nudges = 0;
     let absences = 0;
     let settledPolls = 0;
     let evidenceReported = false;
+    let assistantEvidence = "";
     let waitingOn = null;
     let awaitingTask = false;
     for (; ; ) {
       this.#assertOpen();
-      const transcript = await this.#tryReadTranscript(handle);
+      const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null) {
+        if (!sawLife && opening !== void 0) {
+          await this.#requireReceipt(handle, opening, observers);
+        }
         sawLife = true;
-        this.#reportUsage(handle, transcript.entries, fromIndex);
+        this.#reportUsage(handle, transcript.entries, observers);
+        try {
+          this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
+          this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
+          observers.onIdentity?.({ resolvedModel: this.#resolvedModel, resolvedEffort: this.#resolvedEffort });
+          const evidence = JSON.stringify(transcript.entries.slice(fromIndex).filter((entry) => entry.type === "assistant"));
+          if (evidence !== assistantEvidence && hasAssistantEntrySince(transcript.entries, fromIndex)) {
+            assistantEvidence = evidence;
+            observers.onOutput?.();
+          }
+        } catch {
+        }
         if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
           evidenceReported = true;
           try {
@@ -18520,7 +20812,8 @@ var ClaudeEngineInvocation = class {
         }
       }
       if (!sawLife && Date.now() >= firstLifeDeadline) {
-        throw new ClaudeFirstLifeTimeoutError(
+        throw this.#firstLifeFailure(
+          handle,
           `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
         );
       }
@@ -18529,6 +20822,9 @@ var ClaudeEngineInvocation = class {
       if (!status.present) {
         absences += 1;
         if (absences >= MAX_CONSECUTIVE_ABSENCES) {
+          if (!sawLife && opening !== void 0) {
+            throw this.#firstLifeFailure(handle, "worker left the roster before writing an opening transcript");
+          }
           throw new ClaudePollTimeoutError("worker left the roster before completing");
         }
         await this.#pollDelay();
@@ -18536,17 +20832,14 @@ var ClaudeEngineInvocation = class {
       }
       absences = 0;
       if (status.state === "blocked") {
-        const canNudge = nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
+        const canNudge = this.#nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
         if (!canNudge) {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
-        nudges += 1;
-        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
-        const delivery = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
-        if (!delivery.delivered) {
-          throw new ClaudeValveError(`reply valve failed to inject the blocked-worker nudge: ${delivery.reason}`);
-        }
-        await this.#awaitReceipt(handle, mark);
+        this.#nudges += 1;
+        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
+        const message = this.#blockedNudge(status.waitingFor);
+        await this.#deliver(handle, { message, mark, what: "the blocked-worker nudge", carriesTurn: false }, observers);
         continue;
       }
       if (sawLife && !awaitingTask && (status.state === "done" || status.status === "idle")) {
@@ -18596,6 +20889,9 @@ var ClaudeEngineInvocation = class {
       throw new EngineShutdownError("claude");
     }
   }
+  #firstLifeFailure(handle, message) {
+    return handle.launchFailure === void 0 ? new ClaudeFirstLifeTimeoutError(message) : new ClaudeDeliveryError(`${message}; launch cleanup remains unconfirmed: ${handle.launchFailure.message}`);
+  }
   #buildResult(handle, transcript, fromIndex) {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
@@ -18606,8 +20902,8 @@ var ClaudeEngineInvocation = class {
     }
     const resolvedModel = resolvedModelSince(entries, fromIndex);
     const resolvedEffort = effortSince(entries, fromIndex);
-    const usage2 = usageSince(entries, fromIndex);
-    this.#reportUsage(handle, entries, fromIndex);
+    const usage2 = this.#unaccountedUsage(handle, entries);
+    this.#reportUsage(handle, entries);
     const usageEvent = this.#usageEvent(handle, usage2, usage2);
     return {
       text,
@@ -18619,6 +20915,7 @@ var ClaudeEngineInvocation = class {
       firstDeltaMs: null,
       items: {},
       tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      diagnostics: { ...handle.launchFailure?.diagnostics, worktrees: enteredWorktrees(entries) },
       transcripts: [
         {
           filename: "transcript.claude.jsonl",
@@ -18630,17 +20927,22 @@ var ClaudeEngineInvocation = class {
       ]
     };
   }
-  async #readTranscript(handle) {
-    const path15 = await this.#controlPlane.transcriptPath(handle);
-    if (path15 === null) {
+  async #readTranscript(handle, observers) {
+    const path16 = await this.#controlPlane.transcriptPath(handle);
+    if (path16 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscriptFile(path15);
+    const transcript = await readTranscriptFile(path16);
+    try {
+      observers?.onTranscriptPath?.(path16);
+    } catch {
+    }
+    return transcript;
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
-  async #tryReadTranscript(handle) {
+  async #tryReadTranscript(handle, observers) {
     try {
-      return await this.#readTranscript(handle);
+      return await this.#readTranscript(handle, observers);
     } catch (error) {
       if (error instanceof ClaudeTranscriptError) {
         return null;
@@ -18654,21 +20956,25 @@ var ClaudeEngineInvocation = class {
    * the failure, and the transcript itself. Best-effort — an unreadable or
    * absent transcript is `null`, and nothing here polls or retries.
    */
-  async #tryFailureEvidence(fromIndex) {
-    const handle = this.#handle;
-    if (handle === null) {
-      return null;
+  async #tryFailureEvidence(fromIndex, error) {
+    let handle = this.#handle;
+    let transcript;
+    if (this.#handle === null) {
+      const retained = failedTurnResultOf(error)?.transcripts?.find((item) => item.source === "claude-session-jsonl");
+      if (retained?.sessionId === void 0) return null;
+      handle = { sessionId: retained.sessionId };
+      transcript = { text: retained.content, entries: parseTranscriptText(retained.content) };
+    } else {
+      transcript = await this.#tryReadTranscript(this.#handle);
     }
-    const transcript = await this.#tryReadTranscript(handle);
-    if (transcript === null) {
-      return null;
-    }
+    if (handle === null || transcript === null) return null;
     return {
       handle,
       transcript,
+      completed: turnComplete(transcript.entries, fromIndex) && outstandingBackgroundTasks(transcript.entries, fromIndex).length === 0,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex),
+      usage: this.#unaccountedUsage(handle, transcript.entries),
       apiError: apiErrorSince(transcript.entries, fromIndex),
       backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
     };
@@ -18691,6 +20997,16 @@ var ClaudeEngineInvocation = class {
     }
   }
   /**
+   * A pending submission may be read again from an older entry mark after a
+   * failed attempt. Count only growth beyond the session total that earlier
+   * attempts already covered, while retaining new API calls in the same work.
+   */
+  #unaccountedUsage(handle, entries) {
+    const total = usageSince(entries);
+    this.#usageAtSettlement = { sessionId: handle.sessionId, total };
+    return subtractUsage(total, this.#settledUsage.get(handle.sessionId) ?? null);
+  }
+  /**
    * Feed transcript-derived usage through the same event shape Codex emits.
    * The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
@@ -18701,8 +21017,8 @@ var ClaudeEngineInvocation = class {
    * and the archived event's `total` is the same figure the agent record's
    * usage summarises — budget and archive read one arithmetic.
    */
-  #reportUsage(handle, entries, fromIndex) {
-    const total = usageSince(entries, fromIndex);
+  #reportUsage(handle, entries, observers) {
+    const total = this.#unaccountedUsage(handle, entries);
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
       return;
@@ -18711,6 +21027,10 @@ var ClaudeEngineInvocation = class {
     const event = this.#usageEvent(handle, last, total);
     if (event === null) {
       return;
+    }
+    try {
+      observers?.onUsage?.(event);
+    } catch {
     }
     this.#onEvent?.({
       method: "thread/tokenUsage/updated",
@@ -18739,6 +21059,10 @@ var ClaudeEngineInvocation = class {
   async #teardown() {
     const handle = this.#handle;
     this.#handle = null;
+    this.#pending = null;
+    this.#turn = "unsent";
+    this.#deliveryFailure = null;
+    this.#collectionMark = 0;
     if (handle === null) {
       return;
     }
@@ -18761,8 +21085,17 @@ var ClaudeEngineInvocation = class {
     if (previousFailure !== void 0) {
       lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
-    lines.push("", "Task:", this.#turnPrompt);
+    lines.push("", this.#framedTask());
     return lines.join("\n");
+  }
+  #framedTask() {
+    let tagIndex = 0;
+    while (this.#turnPrompt.includes(`ensemble_task_${tagIndex}`)) tagIndex += 1;
+    const taskTag = `ensemble_task_${tagIndex}`;
+    return [
+      `Carry out the task enclosed by <${taskTag}> and </${taskTag}>. The tags mark its boundaries.`,
+      `<${taskTag}>${this.#turnPrompt}</${taskTag}>`
+    ].join("\n");
   }
   /**
    * A follow-up turn's valve message: the session already holds the
@@ -18778,8 +21111,25 @@ var ClaudeEngineInvocation = class {
         ""
       );
     }
-    lines.push(this.#turnPrompt);
+    lines.push(this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask());
     return lines.join("\n");
+  }
+  /**
+   * The turn's prompt again, for a session that accepted a submission of it
+   * no receipt verified. It says what happened first, so a worker that
+   * acted on an altered copy knows which copy stands, and one that received
+   * nothing loses nothing. What it repeats is the copy the session first
+   * accepted, so a session whose opening prompt never arrived still receives
+   * everything its launch carried. The preface makes it a correction like
+   * every other retry message: a leading `/command` in the prompt is not
+   * expanded a second time.
+   */
+  #redeliveryMessage() {
+    return [
+      "An earlier copy of the message below was submitted to you but did not arrive as sent: it reached you altered, or not at all. This copy replaces it. Treat the earlier copy as void, keep any work you have already done that this message also asks for, and answer this message.",
+      "",
+      this.#acceptedTurnCopy
+    ].join("\n");
   }
   #correctionMessage(previousFailure) {
     switch (previousFailure.kind) {
@@ -18808,6 +21158,7 @@ function failedTurnResult(error, evidence, usageEvent) {
   const resolvedEffort = evidence?.resolvedEffort ?? null;
   const backgroundWaits = evidence?.backgroundWaits ?? [];
   return {
+    ...failedTurnResultOf(error),
     text,
     ...resolvedModel !== null ? { resolvedModel } : {},
     ...resolvedEffort !== null ? { resolvedEffort } : {},
@@ -18821,7 +21172,11 @@ function failedTurnResult(error, evidence, usageEvent) {
     // The refusal's structured account rides the attempt as diagnostics,
     // where the failure classifier reads it: a 429's status and code are
     // the engine's own word, which the diagnostic prose is not.
-    ...evidence !== null && evidence.apiError !== null ? { diagnostics: { apiError: evidence.apiError } } : {},
+    ...evidence !== null ? { diagnostics: {
+      ...failedTurnResultOf(error)?.diagnostics,
+      ...evidence.apiError !== null ? { apiError: evidence.apiError } : {},
+      worktrees: enteredWorktrees(evidence.transcript.entries)
+    } } : {},
     ...evidence === null ? {} : {
       transcripts: [
         {
@@ -18830,7 +21185,7 @@ function failedTurnResult(error, evidence, usageEvent) {
           source: "claude-session-jsonl",
           sessionId: evidence.handle.sessionId,
           content: evidence.transcript.text,
-          partial: true
+          partial: !evidence.completed
         }
       ]
     }
@@ -18849,6 +21204,9 @@ function claudeAttemptFailure(error) {
   if (error instanceof ClaudeValveError) {
     return { kind: "claude-valve-error", message: error.message };
   }
+  if (error instanceof ClaudeDeliveryError) {
+    return { kind: "claude-delivery-error", message: error.message };
+  }
   if (error instanceof ClaudePollTimeoutError) {
     return { kind: "claude-poll-timeout", message: error.message };
   }
@@ -18862,6 +21220,12 @@ function claudeAttemptFailure(error) {
     return { kind: "claude-worker-diagnostic", message: error.message };
   }
   return { kind: "claude-worker-error", message: error.message };
+}
+function textIdentity(text) {
+  return `${Buffer.byteLength(text, "utf8")} UTF-8 bytes, sha256 ${createHash3("sha256").update(text).digest("hex")}`;
+}
+function differenceAccount(sent, received) {
+  return `sent ${textIdentity(sent)}; received ${textIdentity(received)}`;
 }
 function hasAssistantEntrySince(entries, fromIndex) {
   for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
@@ -18887,1381 +21251,6 @@ function delay2(ms, signal, abortError) {
     }
     signal.addEventListener("abort", onAbort, { once: true });
   });
-}
-
-// src/progress.ts
-var MAX_AGENTS_IN_SNAPSHOT = 64;
-var RunProgress = class {
-  runId;
-  #budget;
-  #now;
-  #pid;
-  #workflow = null;
-  #currentPhase = null;
-  #state = "running";
-  #startedAt;
-  #updatedAt;
-  #finishedAt = null;
-  #nextAgentId = 0;
-  #live = /* @__PURE__ */ new Map();
-  #openHolds = /* @__PURE__ */ new Map();
-  #engines = /* @__PURE__ */ new Map();
-  #reportedSpend = /* @__PURE__ */ new Map();
-  #listeners = /* @__PURE__ */ new Set();
-  constructor(options) {
-    this.runId = options.runId;
-    this.#budget = options.budget;
-    this.#now = options.now ?? (() => Date.now());
-    this.#pid = options.pid ?? process.pid;
-    this.#startedAt = this.#now();
-    this.#updatedAt = this.#startedAt;
-  }
-  /** An open hold joins the snapshot the moment it is raised. */
-  noteHoldRaised(hold) {
-    this.#openHolds.set(hold.id, {
-      hold_id: hold.id,
-      content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}\u2026` : hold.content,
-      verdicts: [...hold.verdicts],
-      raisedAtMs: this.#now()
-    });
-    this.#touch();
-  }
-  /** Settled holds — answered, timed out, or abandoned — leave the snapshot. */
-  noteHoldSettled(id) {
-    if (this.#openHolds.delete(id)) {
-      this.#touch();
-    }
-  }
-  /** Records an engine's concurrency cap so the snapshot can show saturation. */
-  registerEngine(engine, cap) {
-    this.#counters(engine).cap = cap;
-    this.#touch();
-  }
-  setWorkflow(name) {
-    this.#workflow = name;
-    this.#touch();
-  }
-  setPhase(title) {
-    this.#currentPhase = title;
-    this.#touch();
-  }
-  /**
-   * Registers a worker as queued and returns its id. The phase is captured at
-   * queue time: an explicit `phase` wins, otherwise the run's current phase.
-   */
-  queueAgent(input) {
-    const id = this.#nextAgentId += 1;
-    this.#live.set(id, {
-      id,
-      engine: input.engine,
-      label: input.label,
-      phase: input.phase ?? this.#currentPhase,
-      state: "queued",
-      attempt: 1,
-      startedAt: null,
-      firstEvidenceAt: null,
-      waitingOn: null
-    });
-    this.#counters(input.engine).queued += 1;
-    this.#touch();
-    return id;
-  }
-  /**
-   * Returns a running worker to the queue on another engine: a fallback
-   * chain step across engines releases the refused engine's slot and
-   * waits for admission on the next, and the live view says so — the leg
-   * reads queued on its new engine, its evidence timestamps reset for the
-   * fresh dispatch, its earlier engine's counters restored.
-   */
-  requeueAgent(id, engine) {
-    const record = this.#live.get(id);
-    if (record === void 0) {
-      return;
-    }
-    const previous = this.#counters(record.engine);
-    if (record.state === "running") {
-      previous.active -= 1;
-    } else {
-      previous.queued -= 1;
-    }
-    record.engine = engine;
-    record.state = "queued";
-    record.startedAt = null;
-    record.firstEvidenceAt = null;
-    record.waitingOn = null;
-    this.#counters(engine).queued += 1;
-    this.#touch();
-  }
-  /** Moves a queued worker into the running state (a scheduler slot freed up). */
-  startAgent(id) {
-    const record = this.#live.get(id);
-    if (record === void 0 || record.state !== "queued") {
-      return;
-    }
-    record.state = "running";
-    record.startedAt = this.#now();
-    const counters = this.#counters(record.engine);
-    counters.queued -= 1;
-    counters.active += 1;
-    this.#touch();
-  }
-  /**
-   * Records the first observed sign of worker output for a live agent.
-   * Idempotent — the earliest observation wins — so engines may report on
-   * every attempt without the consumer losing the original timestamp.
-   */
-  noteAgentEvidence(id) {
-    const record = this.#live.get(id);
-    if (record === void 0 || record.firstEvidenceAt !== null) {
-      return;
-    }
-    record.firstEvidenceAt = this.#now();
-    this.#touch();
-  }
-  /**
-   * Records what a live worker is waiting on — a background task its
-   * session started — or that it no longer is (`null`). Last write wins:
-   * the engine reports each change as it observes it.
-   */
-  noteAgentWaiting(id, wait) {
-    const record = this.#live.get(id);
-    if (record === void 0 || record.waitingOn === null && wait === null) {
-      return;
-    }
-    record.waitingOn = wait;
-    this.#touch();
-  }
-  /** Updates a running worker's attempt number (retry / in-session correction); a fresh attempt waits on nothing yet. */
-  noteAttempt(id, attempt) {
-    const record = this.#live.get(id);
-    if (record === void 0 || record.attempt === attempt) {
-      return;
-    }
-    record.attempt = attempt;
-    record.waitingOn = null;
-    this.#touch();
-  }
-  /** Retires a worker, tallying it as done or failed and freeing its slot. */
-  settleAgent(id, outcome) {
-    const record = this.#live.get(id);
-    if (record === void 0) {
-      return;
-    }
-    this.#live.delete(id);
-    const counters = this.#counters(record.engine);
-    if (record.state === "running") {
-      counters.active -= 1;
-    } else {
-      counters.queued -= 1;
-    }
-    if (outcome === "done") {
-      counters.done += 1;
-    } else {
-      counters.failed += 1;
-    }
-    this.#touch();
-  }
-  /** Marks the run finished. The serialiser writes one final snapshot after. */
-  finish() {
-    if (this.#state === "finished") {
-      return;
-    }
-    this.#state = "finished";
-    this.#finishedAt = this.#now();
-    this.#touch();
-  }
-  /**
-   * Publishes a changed per-engine spend figure to live consumers. Repeated
-   * reports of the same value are deliberately inert: accounting producers
-   * may observe the same running turn more than once.
-   */
-  noteEngineSpend(engine) {
-    const spent = this.#budget.spent(engine);
-    if (this.#reportedSpend.get(engine) === spent) {
-      return;
-    }
-    this.#reportedSpend.set(engine, spent);
-    this.#touch();
-  }
-  /** Refreshes the live snapshot without changing its modelled state. */
-  markChanged() {
-    this.#touch();
-  }
-  onChange(listener) {
-    this.#listeners.add(listener);
-    return () => {
-      this.#listeners.delete(listener);
-    };
-  }
-  snapshot() {
-    const engines = {};
-    const totals = { active: 0, queued: 0, done: 0, failed: 0 };
-    for (const engine of this.#engines.keys()) {
-      const counters = this.#counters(engine);
-      const remaining = this.#budget.remaining(engine);
-      engines[engine] = {
-        cap: counters.cap,
-        active: counters.active,
-        queued: counters.queued,
-        done: counters.done,
-        failed: counters.failed,
-        spent: this.#budget.spent(engine),
-        ceiling: this.#budget.ceilings[engine] ?? null,
-        remaining: Number.isFinite(remaining) ? remaining : null
-      };
-      totals.active += counters.active;
-      totals.queued += counters.queued;
-      totals.done += counters.done;
-      totals.failed += counters.failed;
-    }
-    return {
-      schema: 3,
-      runId: this.runId,
-      pid: this.#pid,
-      workflow: this.#workflow,
-      state: this.#state,
-      startedAt: this.#startedAt,
-      updatedAt: this.#updatedAt,
-      finishedAt: this.#finishedAt,
-      currentPhase: this.#currentPhase,
-      totals,
-      engines,
-      agents: this.#liveAgents(),
-      holds: [...this.#openHolds.values()]
-    };
-  }
-  #liveAgents() {
-    const records = [...this.#live.values()];
-    records.sort((a, b) => rank(a.state) - rank(b.state) || a.id - b.id);
-    return records.slice(0, MAX_AGENTS_IN_SNAPSHOT).map((record) => ({
-      id: record.id,
-      engine: record.engine,
-      label: record.label,
-      phase: record.phase,
-      state: record.state,
-      attempt: record.attempt,
-      startedAtMs: record.startedAt,
-      firstEvidenceAtMs: record.firstEvidenceAt,
-      waitingOn: record.waitingOn
-    }));
-  }
-  #counters(engine) {
-    const counters = this.#engines.get(engine);
-    if (counters === void 0) {
-      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0 };
-      this.#engines.set(engine, fresh);
-      return fresh;
-    }
-    return counters;
-  }
-  #touch() {
-    this.#updatedAt = this.#now();
-    for (const listener of this.#listeners) {
-      listener();
-    }
-  }
-};
-function rank(state) {
-  return state === "running" ? 0 : 1;
-}
-
-// src/app-server.ts
-import { spawn as spawn2 } from "node:child_process";
-import { createInterface } from "node:readline";
-var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
-var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
-var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
-var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
-var STDIN_CLOSE_EXIT_GRACE_MS = 500;
-var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
-var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
-var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
-var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
-var SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1e3;
-var MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
-var SKILL_DISCOVERY_DEADLINE_MS = 3e4;
-var MAX_REMEMBERED_SETTLED_TURN_IDS = 256;
-var LazyCodexAppServerTransport = class {
-  cwd;
-  #options;
-  #transportPromise;
-  #closed = false;
-  constructor(options) {
-    this.cwd = options.cwd;
-    this.#options = options;
-  }
-  async openThread(options) {
-    const transport = await this.#transport();
-    return transport.openThread(options);
-  }
-  async listSkills(cwd) {
-    const transport = await this.#transport();
-    return transport.listSkills(cwd);
-  }
-  async runTurn(threadId, prompt, options) {
-    const transport = await this.#transport();
-    return transport.runTurn(threadId, prompt, options);
-  }
-  async close() {
-    this.#closed = true;
-    if (this.#transportPromise === void 0) {
-      return;
-    }
-    let transport;
-    try {
-      transport = await this.#transportPromise;
-    } catch {
-      return;
-    }
-    await transport.close();
-  }
-  #transport() {
-    if (this.#closed) {
-      return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
-    }
-    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
-    return this.#transportPromise;
-  }
-};
-var CodexAppServerTransport = class _CodexAppServerTransport {
-  cwd;
-  #process;
-  #requestTimeoutMs;
-  #retryPromiseSilenceTimeoutMs;
-  #firstOutputTimeoutMs;
-  #startupHandshakeTimeoutMs;
-  #skillDiscoveryStabilityIntervalMs;
-  #skillDiscoveryDeadlineMs;
-  #nextId = 0;
-  #pending = /* @__PURE__ */ new Map();
-  #turns = /* @__PURE__ */ new Map();
-  #transcripts = /* @__PURE__ */ new Map();
-  /**
-   * Each open thread's served identity as its `thread/start` answer reported
-   * it — the model and reasoning effort the thread runs at for its whole
-   * life. `#completeTurn` prunes a turn's transcript buffer, so a held
-   * session's later turns re-register from here rather than from nothing:
-   * the engine confirmed the identity once, and every turn on the thread is
-   * served under it.
-   */
-  #threadIdentity = /* @__PURE__ */ new Map();
-  /** Ids of turns this transport has settled, insertion-ordered so the bound evicts the oldest. */
-  #settledTurnIds = /* @__PURE__ */ new Set();
-  #stderrTail = [];
-  #exitStatus = null;
-  #hasExited = false;
-  #stdinFailureGrace;
-  #terminalError;
-  #writeFailureWaiters = /* @__PURE__ */ new Set();
-  #onEvent;
-  constructor(options) {
-    this.cwd = options.cwd;
-    this.#requestTimeoutMs = options.requestTimeoutMs;
-    this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
-    this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
-    this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
-    this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
-    this.#skillDiscoveryDeadlineMs = options.skillDiscoveryDeadlineMs ?? SKILL_DISCOVERY_DEADLINE_MS;
-    this.#onEvent = options.onEvent;
-    this.#process = spawn2(options.codexBin, ["app-server"], {
-      cwd: options.cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      // Declared variables sit above inherited ones; everything undeclared
-      // still inherits, so a configured parent keeps working unchanged.
-      env: { ...process.env, ...options.workerEnv }
-    });
-    this.#wireReader();
-    this.#wireStderr();
-    this.#process.stdin.on("error", () => {
-      this.#scheduleStdinFailure();
-    });
-    this.#process.once("exit", (code, signal) => {
-      this.#exitStatus = { exitCode: code, signal };
-      this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
-    });
-    this.#process.once("error", (error) => {
-      this.#failAll(new AppServerExitedError(`codex app-server process error: ${error.message}`));
-    });
-  }
-  static async start(options) {
-    const transport = new _CodexAppServerTransport(options);
-    try {
-      await transport.#handshake(options.clientName, options.clientVersion);
-    } catch (error) {
-      await transport.close();
-      throw error;
-    }
-    return transport;
-  }
-  async openThread(options) {
-    const config = threadStartConfig(options);
-    const requestParams = {
-      cwd: options.cwd ?? this.cwd,
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-      ephemeral: true,
-      ...options.model !== void 0 ? { model: options.model } : {},
-      ...config !== void 0 ? { config } : {}
-    };
-    const result = await this.#request("thread/start", requestParams);
-    const resultObject = asJsonObject(result);
-    const directThreadId = resultObject?.threadId;
-    const nestedThread = asJsonObject(resultObject?.thread);
-    const nestedThreadId = nestedThread?.id;
-    const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
-    if (threadId !== null) {
-      const resolvedModel = resultObject?.model;
-      const resolvedEffort = resultObject?.reasoningEffort;
-      const identity = {
-        resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
-        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null
-      };
-      this.#threadIdentity.set(threadId, identity);
-      this.#transcripts.set(threadId, {
-        ...identity,
-        events: [
-          {
-            direction: "client",
-            method: "thread/start",
-            params: requestParams,
-            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-          },
-          {
-            direction: "server",
-            method: "thread/start/result",
-            result,
-            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-          }
-        ]
-      });
-      return threadId;
-    }
-    throw new AppServerRequestError("thread/start", {
-      code: void 0,
-      message: "response did not contain result.thread.id or result.threadId",
-      data: result
-    });
-  }
-  async listSkills(cwd = this.cwd) {
-    const startedAt = Date.now();
-    let previousNames;
-    let observedExpansion = false;
-    let unchangedSinceFirstSample = true;
-    for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
-      const names = await this.#listSkillsOnce(cwd);
-      if (observedExpansion && previousNames !== void 0 && sameStrings(previousNames, names)) {
-        return names;
-      }
-      if (previousNames !== void 0) {
-        if (!sameStrings(previousNames, names)) {
-          unchangedSinceFirstSample = false;
-        }
-        if (strictlyContainsAll(names, previousNames)) {
-          observedExpansion = true;
-        } else if (!sameStrings(previousNames, names)) {
-          observedExpansion = false;
-        }
-      }
-      if (unchangedSinceFirstSample && attempt === MAX_SKILL_DISCOVERY_ATTEMPTS) {
-        return names;
-      }
-      previousNames = names;
-      if (Date.now() - startedAt >= this.#skillDiscoveryDeadlineMs) {
-        throw new AppServerRequestError("skills/list", {
-          code: "discovery_deadline",
-          message: `skill discovery exceeded its ${this.#skillDiscoveryDeadlineMs}ms aggregate bound before stabilising`
-        });
-      }
-      if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
-      }
-    }
-    throw new AppServerRequestError("skills/list", {
-      code: "unstable_discovery",
-      message: `skill discovery observed neither a growing set followed by stability nor one set unchanged across all ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
-    });
-  }
-  async #listSkillsOnce(cwd) {
-    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
-    const entries = result?.data;
-    if (!Array.isArray(entries)) {
-      throw new AppServerRequestError("skills/list", {
-        code: "invalid_response",
-        message: "response omitted the discovered skill entries"
-      });
-    }
-    const names = /* @__PURE__ */ new Set();
-    for (const entry of entries) {
-      const entryObject = asJsonObject(entry);
-      const errors = entryObject?.errors;
-      const skills = entryObject?.skills;
-      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
-        throw new AppServerRequestError("skills/list", {
-          code: "incomplete_discovery",
-          message: "could not establish the complete discovered skill set"
-        });
-      }
-      for (const skill of skills) {
-        const name = asJsonObject(skill)?.name;
-        if (typeof name !== "string" || name.length === 0) {
-          throw new AppServerRequestError("skills/list", {
-            code: "invalid_response",
-            message: "response included a skill without a name"
-          });
-        }
-        names.add(name);
-      }
-    }
-    return [...names].sort();
-  }
-  async runTurn(threadId, prompt, options) {
-    if (!this.#transcripts.has(threadId)) {
-      this.#transcripts.set(threadId, {
-        ...this.#threadIdentity.get(threadId) ?? { resolvedModel: null, resolvedEffort: null },
-        events: []
-      });
-    }
-    const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
-    this.#turns.set(threadId, state);
-    state.promise.catch(() => void 0);
-    try {
-      const params = {
-        threadId,
-        input: [{ type: "text", text: prompt }],
-        sandboxPolicy: { type: "dangerFullAccess" }
-      };
-      if (options.schema !== void 0) {
-        params.outputSchema = options.schema;
-      }
-      if (options.model !== void 0) {
-        params.model = options.model;
-      }
-      this.#appendTranscript(threadId, {
-        direction: "client",
-        method: "turn/start",
-        params,
-        recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
-      const result = asJsonObject(await this.#request("turn/start", params));
-      const startedTurn = asJsonObject(result?.turn);
-      if (typeof startedTurn?.id === "string") {
-        state.turnId = startedTurn.id;
-      }
-      return await state.promise;
-    } catch (error) {
-      if (this.#turns.get(threadId) === state) {
-        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
-        throw error;
-      }
-      return await state.promise;
-    }
-  }
-  /** Number of thread transcripts currently held in memory. Observability for tests. */
-  openTranscripts() {
-    return this.#transcripts.size;
-  }
-  async close() {
-    if (!this.#hasExited) {
-      this.#failAll(new AppServerExitedError("codex app-server closed"));
-    }
-    this.#threadIdentity.clear();
-    this.#transcripts.clear();
-    if (this.#exitStatus !== null || this.#process.pid === void 0) {
-      return;
-    }
-    this.#process.stdin.end();
-    this.#process.kill("SIGTERM");
-    await new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        this.#process.kill("SIGKILL");
-        resolve();
-      }, 5e3);
-      this.#process.once("exit", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-    });
-  }
-  async #handshake(clientName, clientVersion) {
-    try {
-      await this.#request(
-        "initialize",
-        {
-          clientInfo: {
-            name: clientName,
-            version: clientVersion
-          }
-        },
-        this.#startupHandshakeTimeoutMs
-      );
-    } catch (error) {
-      if (error instanceof TurnTimeoutError) {
-        throw new AppServerStartupTimeoutError(this.#startupHandshakeTimeoutMs);
-      }
-      throw error;
-    }
-    this.#sendNotification("initialized", {});
-  }
-  #request(method, params, timeoutMs = this.#requestTimeoutMs) {
-    const id = this.#nextId + 1;
-    this.#nextId = id;
-    const payload = JSON.stringify({ id, method, params });
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.#pending.delete(id);
-        reject(
-          new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`, {
-            kind: "request",
-            timeoutMs,
-            method
-          })
-        );
-      }, timeoutMs);
-      this.#pending.set(id, { method, resolve, reject, timeout });
-      this.#writeLine(payload).catch((error) => {
-        this.#pending.delete(id);
-        clearTimeout(timeout);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      });
-    });
-  }
-  #sendNotification(method, params) {
-    void this.#writeLine(JSON.stringify({ method, params })).catch(() => {
-    });
-  }
-  /** Sends a request through stdin without retaining or awaiting its response. */
-  async #sendUnacknowledgedRequest(method, params) {
-    const id = this.#nextId + 1;
-    this.#nextId = id;
-    await this.#writeLine(JSON.stringify({ id, method, params }));
-  }
-  async #writeLine(line) {
-    if (this.#hasExited) {
-      const failure = new AppServerExitedError(this.#terminalError?.message ?? "codex app-server is not running");
-      if (this.#exitStatus !== null) {
-        attachWorkerExitStatus(failure, this.#exitStatus);
-      }
-      throw failure;
-    }
-    const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
-    await new Promise((resolve, reject) => {
-      this.#process.stdin.write(`${framedLine}
-`, (error) => {
-        if (error !== null && error !== void 0) {
-          this.#scheduleStdinFailure();
-          if (this.#terminalError !== void 0) {
-            reject(this.#terminalError);
-          } else {
-            this.#writeFailureWaiters.add(reject);
-          }
-          return;
-        }
-        resolve();
-      });
-    });
-  }
-  #wireReader() {
-    let chunks = [];
-    let byteLength = 0;
-    let prefix = Buffer.alloc(0);
-    let discardingOversizedLine = false;
-    let oversizedLineByteLength = 0;
-    const resetLine = () => {
-      chunks = [];
-      byteLength = 0;
-      prefix = Buffer.alloc(0);
-      discardingOversizedLine = false;
-      oversizedLineByteLength = 0;
-    };
-    const retain = (chunk) => {
-      if (chunk.length === 0) {
-        return;
-      }
-      chunks.push(chunk);
-      byteLength += chunk.length;
-      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
-        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
-      }
-    };
-    const reportOversizedLine = () => {
-      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
-    };
-    const handleRetainedLine = () => {
-      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-      resetLine();
-      this.#handleLine(line);
-    };
-    this.#process.stdout.on("data", (chunk) => {
-      let offset2 = 0;
-      while (offset2 < chunk.length) {
-        const newline = chunk.indexOf(10, offset2);
-        const end = newline === -1 ? chunk.length : newline;
-        const segment = chunk.subarray(offset2, end);
-        if (discardingOversizedLine) {
-          oversizedLineByteLength += segment.length;
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
-          retain(segment);
-          if (newline !== -1) {
-            handleRetainedLine();
-          }
-        } else {
-          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
-          retain(segment.subarray(0, retainedBytes));
-          discardingOversizedLine = true;
-          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        }
-        offset2 = newline === -1 ? chunk.length : newline + 1;
-      }
-    });
-    this.#process.stdout.once("end", () => {
-      if (discardingOversizedLine) {
-        reportOversizedLine();
-        resetLine();
-      } else if (byteLength > 0) {
-        handleRetainedLine();
-      }
-      if (this.#hasExited) {
-        return;
-      }
-      const grace = setTimeout(() => {
-        this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
-      }, STDOUT_CLOSE_EXIT_GRACE_MS);
-      grace.unref();
-      this.#process.once("exit", () => {
-        clearTimeout(grace);
-      });
-    });
-  }
-  #wireStderr() {
-    const reader = createInterface({ input: this.#process.stderr });
-    reader.on("line", (line) => {
-      this.#stderrTail.push(line);
-      if (this.#stderrTail.length > 50) {
-        this.#stderrTail.shift();
-      }
-    });
-  }
-  #handleLine(line) {
-    if (line.trim().length === 0) {
-      return;
-    }
-    const parsed = parseRpcMessage(line);
-    if (parsed === null) {
-      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_CHARACTERS));
-      return;
-    }
-    const id = typeof parsed.id === "number" ? parsed.id : null;
-    const method = typeof parsed.method === "string" ? parsed.method : null;
-    if (id !== null && method !== null) {
-      this.#onEvent?.({
-        method: "server/request/denied",
-        params: { requestId: id, requestMethod: method },
-        receivedAt: Date.now()
-      });
-      const requestParams = asJsonObject(parsed.params);
-      if (requestParams !== null) {
-        const turn = this.#turnCorrelatedBy(requestParams);
-        if (turn !== void 0) {
-          this.#disarmRetryPromiseSilenceDeadline(turn);
-          this.#disarmFirstOutputDeadline(turn);
-          this.#noteTurnFirstOutput(turn);
-        }
-      }
-      this.#sendApprovalDenial(id);
-      return;
-    }
-    if (id !== null && ("result" in parsed || "error" in parsed)) {
-      this.#handleResponse(id, parsed);
-      return;
-    }
-    if (method !== null) {
-      this.#handleNotification(method, asJsonObject(parsed.params) ?? {});
-    }
-  }
-  #reportDecodeFailure(byteLength, linePrefix) {
-    this.#onEvent?.({
-      method: "transport/decodeFailed",
-      params: { byteLength, linePrefix },
-      receivedAt: Date.now()
-    });
-  }
-  #handleResponse(id, message) {
-    const pending = this.#pending.get(id);
-    if (pending === void 0) {
-      return;
-    }
-    this.#pending.delete(id);
-    clearTimeout(pending.timeout);
-    if (message.error !== void 0) {
-      pending.reject(appServerErrorFromPayload(pending.method, asRpcError(message.error)));
-      return;
-    }
-    pending.resolve(message.result);
-  }
-  #handleNotification(method, params) {
-    this.#onEvent?.({ method, params, receivedAt: Date.now() });
-    const threadId = params.threadId;
-    if (typeof threadId !== "string") {
-      return;
-    }
-    this.#appendTranscript(threadId, {
-      direction: "server",
-      method,
-      params,
-      recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-    const turn = this.#turns.get(threadId);
-    if (turn === void 0) {
-      return;
-    }
-    const speaksForTurn = this.#correlatesWithTurn(turn, params);
-    if (speaksForTurn) {
-      this.#disarmRetryPromiseSilenceDeadline(turn);
-      if (isOutputBearingTurnFrame(method)) {
-        this.#disarmFirstOutputDeadline(turn);
-        this.#noteTurnFirstOutput(turn);
-      }
-    }
-    const now = Date.now();
-    if (isTurnProgressNotification(method)) {
-      turn.consecutiveRetryPromises = 0;
-    }
-    if (method === "turn/started") {
-      return;
-    }
-    if (method === "model/rerouted") {
-      if (!speaksForTurn) {
-        return;
-      }
-      const toModel = params.toModel;
-      const transcript = this.#transcripts.get(threadId);
-      if (transcript !== void 0 && typeof toModel === "string" && toModel.length > 0) {
-        transcript.resolvedModel = toModel;
-      }
-      return;
-    }
-    if (method === "item/started") {
-      const item = asJsonObject(params.item);
-      const itemType = itemTypeFromItem(item);
-      turn.items.set(itemType, (turn.items.get(itemType) ?? 0) + 1);
-      return;
-    }
-    if (method === "item/agentMessage/delta") {
-      if (turn.firstDeltaAt === null) {
-        turn.firstDeltaAt = now;
-      }
-      if (typeof params.delta === "string") {
-        turn.deltaText += params.delta;
-      }
-      return;
-    }
-    if (method === "item/completed") {
-      const item = asJsonObject(params.item);
-      const itemType = itemTypeFromItem(item);
-      if (itemType === "agentMessage" && typeof item?.text === "string") {
-        turn.itemText = item.text;
-      }
-      return;
-    }
-    if (method === "thread/tokenUsage/updated") {
-      const event = tokenUsageEventFromParams(params);
-      if (event !== null) {
-        turn.tokenUsageEvents.push(event);
-      }
-      return;
-    }
-    if (method === "thread/status/changed") {
-      const status = asJsonObject(params.status);
-      if (status?.type === "systemError") {
-        this.#armSystemErrorDiagnosticGrace(threadId, turn, method, params);
-      }
-      return;
-    }
-    if (method === "turn/completed") {
-      if (!speaksForTurn) {
-        return;
-      }
-      turn.completedAt = now;
-      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
-        return;
-      }
-      this.#completeTurn(threadId, turn);
-      return;
-    }
-    if (method === "error") {
-      if (!speaksForTurn) {
-        return;
-      }
-      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-        void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
-        return;
-      }
-      if (params.willRetry === true) {
-        turn.consecutiveRetryPromises += 1;
-        if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
-          const diagnostic = errorPayloadFromNotification(params);
-          void this.#rejectTurn(
-            threadId,
-            turn,
-            attachAppServerDiagnostic(
-              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
-              appServerDiagnosticFromPayload(diagnostic)
-            )
-          );
-          return;
-        }
-        this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
-        return;
-      }
-      void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
-    }
-  }
-  /**
-   * Whether an inbound frame speaks for the live turn on its thread. Thread
-   * identity has already matched; a frame naming a different turn (a
-   * straggler from an abandoned turn on a recycled thread) must neither
-   * disarm the live turn's deadline, settle it, nor stamp its served model.
-   * Frames carrying no turn identity are thread-scoped and count: ephemeral
-   * threads run one turn, so the thread speaking is the turn's server
-   * speaking.
-   *
-   * A turn learns its id from the first correlated frame when the
-   * `turn/start` response has not yet named it — except that an id this
-   * transport has already settled is never learned: a straggler arriving in
-   * that window would otherwise teach the live turn the abandoned turn's
-   * identity, and every later straggler would correlate.
-   */
-  #correlatesWithTurn(turn, params) {
-    const turnId = turnIdFromParams(params);
-    if (turnId === void 0) {
-      return true;
-    }
-    if (turn.turnId === void 0) {
-      if (this.#settledTurnIds.has(turnId)) {
-        return false;
-      }
-      turn.turnId = turnId;
-      return true;
-    }
-    return turn.turnId === turnId;
-  }
-  /** Remember a settled turn's id so its stragglers can never be learned as a later turn's identity. */
-  #rememberSettledTurn(turn) {
-    if (turn.turnId === void 0) {
-      return;
-    }
-    this.#settledTurnIds.add(turn.turnId);
-    if (this.#settledTurnIds.size > MAX_REMEMBERED_SETTLED_TURN_IDS) {
-      const oldest = this.#settledTurnIds.values().next().value;
-      if (oldest !== void 0) {
-        this.#settledTurnIds.delete(oldest);
-      }
-    }
-  }
-  /** Resolves an inbound frame's params to the live turn they speak for, if any. */
-  #turnCorrelatedBy(params) {
-    const threadId = params.threadId;
-    if (typeof threadId !== "string") {
-      return void 0;
-    }
-    const turn = this.#turns.get(threadId);
-    if (turn === void 0 || !this.#correlatesWithTurn(turn, params)) {
-      return void 0;
-    }
-    return turn;
-  }
-  #disarmRetryPromiseSilenceDeadline(turn) {
-    if (turn.retryPromiseSilenceDeadline !== void 0) {
-      clearTimeout(turn.retryPromiseSilenceDeadline);
-      turn.retryPromiseSilenceDeadline = void 0;
-    }
-  }
-  #disarmSystemErrorDiagnosticGrace(turn) {
-    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-      clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
-      turn.systemErrorDiagnosticGraceDeadline = void 0;
-    }
-  }
-  #armSystemErrorDiagnosticGrace(threadId, turn, method, statusParams) {
-    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-      return;
-    }
-    const diagnostic = {
-      code: void 0,
-      message: "Codex app-server reported terminal systemError without a diagnostic",
-      data: statusParams
-    };
-    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
-      new AppServerSystemError(method, diagnostic),
-      appServerDiagnosticFromPayload(diagnostic)
-    );
-    turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
-    }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
-  }
-  #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
-    const diagnostic = errorPayloadFromNotification(promiseParams);
-    turn.retryPromiseSilenceDeadline = setTimeout(() => {
-      void this.#rejectTurn(
-        threadId,
-        turn,
-        attachAppServerDiagnostic(
-          new AppServerRetryPromiseBrokenError(
-            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
-            diagnostic
-          ),
-          appServerDiagnosticFromPayload(diagnostic)
-        )
-      );
-    }, this.#retryPromiseSilenceTimeoutMs);
-  }
-  #disarmFirstOutputDeadline(turn) {
-    if (turn.firstOutputDeadline !== void 0) {
-      clearTimeout(turn.firstOutputDeadline);
-      turn.firstOutputDeadline = void 0;
-    }
-  }
-  /**
-   * Fire the supervisor-facing first-output callback, once per turn. Called
-   * only from the frame-driven sites (an output-bearing notification, a
-   * turn-scoped server request) — never from the completion/rejection
-   * teardown, which also disarms the deadline but proves nothing about
-   * output. The callback is observability: a throw inside it must never
-   * affect the turn.
-   */
-  #noteTurnFirstOutput(turn) {
-    if (turn.firstOutputSeen) {
-      return;
-    }
-    turn.firstOutputSeen = true;
-    try {
-      turn.onFirstOutput?.();
-    } catch {
-    }
-  }
-  #armFirstOutputDeadline(threadId, turn) {
-    turn.firstOutputDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstOutputTimeoutMs));
-    }, this.#firstOutputTimeoutMs);
-  }
-  /**
-   * The single terminal path for a failing turn. Every way a turn can end
-   * short of completion — error notification, retry-promise bound,
-   * systemError, per-turn timeout, transport close, process death — comes
-   * through here, so the terminalisation invariant is enforced once: the
-   * worker's accumulated text rides the rejection instead of being deleted
-   * with the turn state.
-   */
-  #rejectTurn(threadId, turn, error) {
-    this.#turns.delete(threadId);
-    if (turn.firstDeltaAt !== null) {
-      attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
-    }
-    const transcript = this.#transcripts.get(threadId);
-    if (transcript?.events.some((event) => event.direction === "server")) {
-      attachPartialTranscript(error, {
-        filename: "transcript.codex.jsonl",
-        format: "jsonl",
-        source: "codex-app-server-events",
-        threadId,
-        content: this.#transcriptText(threadId),
-        partial: true
-      });
-    }
-    this.#transcripts.delete(threadId);
-    this.#rememberSettledTurn(turn);
-    clearTimeout(turn.timeout);
-    this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmSystemErrorDiagnosticGrace(turn);
-    this.#disarmFirstOutputDeadline(turn);
-    if (turn.turnId !== void 0) {
-      void this.#sendUnacknowledgedRequest("turn/interrupt", {
-        threadId,
-        turnId: turn.turnId
-      }).catch(() => {
-      });
-    }
-    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
-  }
-  #completeTurn(threadId, turn) {
-    this.#turns.delete(threadId);
-    this.#rememberSettledTurn(turn);
-    clearTimeout(turn.timeout);
-    this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmSystemErrorDiagnosticGrace(turn);
-    this.#disarmFirstOutputDeadline(turn);
-    const text = turn.itemText ?? turn.deltaText;
-    const transcript = this.#transcripts.get(threadId);
-    const result = {
-      text,
-      ...transcript?.resolvedModel !== null && transcript?.resolvedModel !== void 0 ? { resolvedModel: transcript.resolvedModel } : {},
-      ...transcript?.resolvedEffort !== null && transcript?.resolvedEffort !== void 0 ? { resolvedEffort: transcript.resolvedEffort } : {},
-      deltaText: turn.deltaText,
-      durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
-      firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
-      items: Object.fromEntries(turn.items),
-      tokenUsageEvents: turn.tokenUsageEvents,
-      transcriptCapture: transcript === void 0 ? "lost" : "retained",
-      transcripts: [
-        {
-          filename: "transcript.codex.jsonl",
-          format: "jsonl",
-          source: "codex-app-server-events",
-          threadId,
-          content: this.#transcriptText(threadId)
-        }
-      ]
-    };
-    if (turn.itemText !== void 0) {
-      result.itemText = turn.itemText;
-    }
-    this.#transcripts.delete(threadId);
-    turn.resolve(result);
-  }
-  #appendTranscript(threadId, event) {
-    const transcript = this.#transcripts.get(threadId);
-    if (transcript === void 0) {
-      return;
-    }
-    transcript.events.push(event);
-  }
-  #transcriptText(threadId) {
-    const transcript = this.#transcripts.get(threadId);
-    if (transcript === void 0) {
-      return "";
-    }
-    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}
-`;
-  }
-  #createTurnState(threadId, timeoutMs, onFirstOutput) {
-    let resolveTurn = () => void 0;
-    let rejectTurn = () => void 0;
-    const promise = new Promise((resolve, reject) => {
-      resolveTurn = resolve;
-      rejectTurn = reject;
-    });
-    const state = {
-      threadId,
-      turnId: void 0,
-      startedAt: Date.now(),
-      firstDeltaAt: null,
-      firstOutputSeen: false,
-      onFirstOutput,
-      completedAt: null,
-      deltaText: "",
-      items: /* @__PURE__ */ new Map(),
-      tokenUsageEvents: [],
-      consecutiveRetryPromises: 0,
-      retryPromiseSilenceDeadline: void 0,
-      systemErrorDiagnosticGraceDeadline: void 0,
-      systemErrorDiagnosticFallback: void 0,
-      firstOutputDeadline: void 0,
-      promise,
-      resolve: resolveTurn,
-      reject: rejectTurn,
-      // No timeoutMs → no per-turn deadline; the turn runs until it completes or
-      // the run is stopped. A backstop is the orchestrator's responsibility.
-      timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
-        void this.#rejectTurn(
-          threadId,
-          state,
-          new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`, {
-            kind: "turn",
-            timeoutMs,
-            threadId
-          })
-        );
-      }, timeoutMs)
-    };
-    this.#armFirstOutputDeadline(threadId, state);
-    return state;
-  }
-  #sendApprovalDenial(id) {
-    void this.#writeLine(
-      JSON.stringify({
-        id,
-        result: {
-          decision: "denied",
-          reason: "Ensemble workers run with approvalPolicy never"
-        }
-      })
-    ).catch(() => {
-    });
-  }
-  #scheduleStdinFailure() {
-    if (this.#hasExited || this.#stdinFailureGrace !== void 0) {
-      return;
-    }
-    this.#stdinFailureGrace = setTimeout(() => {
-      this.#failAll(new AppServerExitedError("codex app-server stdin closed unexpectedly"));
-    }, STDIN_CLOSE_EXIT_GRACE_MS);
-    this.#stdinFailureGrace.unref();
-  }
-  #failAll(error) {
-    if (this.#hasExited) {
-      return;
-    }
-    this.#hasExited = true;
-    if (this.#stdinFailureGrace !== void 0) {
-      clearTimeout(this.#stdinFailureGrace);
-      this.#stdinFailureGrace = void 0;
-    }
-    const stderr = this.#stderrTail.length > 0 ? `
-Recent stderr:
-${this.#stderrTail.join("\n")}` : "";
-    const wrapped = new AppServerExitedError(`${error.message}${stderr}`);
-    this.#terminalError = wrapped;
-    if (this.#exitStatus !== null) {
-      attachWorkerExitStatus(wrapped, this.#exitStatus);
-    }
-    for (const reject of this.#writeFailureWaiters) {
-      reject(wrapped);
-    }
-    this.#writeFailureWaiters.clear();
-    for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(wrapped);
-    }
-    this.#pending.clear();
-    for (const [threadId, turn] of [...this.#turns]) {
-      const perTurn = new AppServerExitedError(wrapped.message);
-      if (this.#exitStatus !== null) {
-        attachWorkerExitStatus(perTurn, this.#exitStatus);
-      }
-      void this.#rejectTurn(threadId, turn, perTurn);
-    }
-    this.#turns.clear();
-    this.#transcripts.clear();
-  }
-};
-function appServerErrorFromPayload(method, errorPayload) {
-  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
-  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
-  return attachAppServerDiagnostic(error, diagnostic);
-}
-function appServerErrorFromNotification(params) {
-  const errorPayload = errorPayloadFromNotification(params);
-  if (errorPayload.code === "serverOverloaded") {
-    return attachAppServerDiagnostic(
-      new AppServerOverloadedError("turn notification", errorPayload),
-      appServerDiagnosticFromPayload(errorPayload)
-    );
-  }
-  return appServerErrorFromPayload("turn notification", errorPayload);
-}
-function appServerDiagnosticFromPayload(payload) {
-  return {
-    code: payload.code ?? null,
-    message: payload.message ?? "unknown app-server error",
-    payload: renderPayloadSafely(payload.data)
-  };
-}
-function errorPayloadFromNotification(params) {
-  const turnError = asJsonObject(params.error);
-  const codexErrorInfo = turnError?.codexErrorInfo;
-  const code = typeof codexErrorInfo === "string" ? codexErrorInfo : void 0;
-  const errorInfo = code ?? (asJsonObject(codexErrorInfo) === null ? void 0 : renderPayloadSafely(codexErrorInfo));
-  const message = typeof turnError?.message === "string" ? turnError.message : void 0;
-  const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
-  const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
-  return {
-    code,
-    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
-    data: params
-  };
-}
-function renderPayloadSafely(payload) {
-  try {
-    return JSON.stringify(payload) ?? "undefined";
-  } catch (error) {
-    return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
-  }
-}
-function isTurnProgressNotification(method) {
-  return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || // MCP progress is a tool saying it is alive, not the response stream
-  // resuming — the reset set's rationale. Counting it would let a
-  // promise/heartbeat alternation defeat the consecutive-promise bound.
-  method.startsWith("item/") && method !== "item/mcpToolCall/progress";
-}
-function isOutputBearingTurnFrame(method) {
-  return method !== "turn/started";
-}
-function turnIdFromParams(params) {
-  if (typeof params.turnId === "string") {
-    return params.turnId;
-  }
-  const turn = asJsonObject(params.turn);
-  return typeof turn?.id === "string" ? turn.id : void 0;
-}
-var MAX_INBOUND_PAYLOAD_DEPTH = 64;
-function payloadContainsInvalidJsonSchema(value, depth = 0) {
-  if (depth >= MAX_INBOUND_PAYLOAD_DEPTH) {
-    return false;
-  }
-  if (typeof value === "string") {
-    return value.includes("invalid_json_schema");
-  }
-  if (Array.isArray(value)) {
-    return value.some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
-  }
-  const object = asJsonObject(value);
-  if (object === null) {
-    return false;
-  }
-  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
-}
-function parseRpcMessage(line) {
-  try {
-    const parsed = JSON.parse(line);
-    return asJsonObject(parsed);
-  } catch {
-    return null;
-  }
-}
-function threadStartConfig(options) {
-  if (options.threadConfig === void 0 && options.effort === void 0) {
-    return void 0;
-  }
-  return {
-    ...options.threadConfig,
-    ...options.effort !== void 0 ? { model_reasoning_effort: options.effort } : {}
-  };
-}
-function asJsonObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-}
-function sameStrings(left, right) {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-function strictlyContainsAll(candidate, baseline) {
-  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
-}
-function asRpcError(value) {
-  const object = asJsonObject(value);
-  if (object === null) {
-    return { code: void 0, message: String(value) };
-  }
-  return {
-    code: typeof object.code === "number" ? object.code : void 0,
-    message: typeof object.message === "string" ? object.message : void 0,
-    data: object.data
-  };
-}
-function itemTypeFromItem(item) {
-  if (item === null) {
-    return "?";
-  }
-  const itemType = item.itemType ?? item.type;
-  return typeof itemType === "string" ? itemType : "?";
 }
 
 // src/opencode-engine.ts
@@ -20364,9 +21353,9 @@ var OpenCodeEngineInvocation = class {
         streamEvents.push(...parsed.events);
         streamSessionId ??= parsed.sessionId;
       }
-      const usage3 = usageFromStream(streamEvents);
-      if (usage3.breakdown !== null) {
-        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage3.breakdown, usage3.cost);
+      const usage2 = usageFromStream(streamEvents);
+      if (usage2.breakdown !== null) {
+        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
       }
     };
     const run = await this.#runner.run({
@@ -20386,6 +21375,29 @@ var OpenCodeEngineInvocation = class {
         attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
         { exitCode: run.exitCode, signal: run.signal }
       );
+    }
+    if (run.deadlineExpired === true && this.#options.timeoutMs !== void 0) {
+      const workerExit = { exitCode: run.exitCode, signal: run.signal };
+      const timeout = new TurnTimeoutError(
+        `opencode turn timed out after ${this.#options.timeoutMs}ms: ${openCodeFailureMessage(run, parsedRun.events)}`,
+        {
+          kind: "turn",
+          timeoutMs: this.#options.timeoutMs,
+          threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
+        }
+      );
+      const evidence = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, null);
+      attachFailedTurnResult(timeout, {
+        text: fallback,
+        resolvedModel: this.#providerModel,
+        workerExit,
+        deltaText: fallback,
+        durationMs: run.durationMs,
+        firstDeltaMs: null,
+        items: {},
+        ...evidence
+      });
+      throw attachWorkerExitStatus(attachPartialWorkerText(timeout, fallback), workerExit);
     }
     let exportData = null;
     let exportDiagnostic;
@@ -20433,23 +21445,7 @@ var OpenCodeEngineInvocation = class {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
-      breakdown: usageFromExport(exportData),
-      cost: exportData.info?.cost ?? null
-    };
-    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
-    if (usage2.breakdown !== null) {
-      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
-    }
-    const transcripts = [
-      {
-        filename: "transcript.opencode.jsonl",
-        format: "jsonl",
-        source: "opencode run --format json",
-        content: transcriptContent(run.stdout, exportData),
-        ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
-      }
-    ];
+    const { tokenUsageEvents, transcripts } = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, exportData);
     if (run.exitCode !== 0) {
       return {
         text,
@@ -20463,7 +21459,7 @@ var OpenCodeEngineInvocation = class {
         durationMs: run.durationMs,
         firstDeltaMs: null,
         items: {},
-        tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+        tokenUsageEvents,
         transcripts,
         diagnostics: {
           opencode: {
@@ -20479,13 +21475,39 @@ var OpenCodeEngineInvocation = class {
       durationMs: run.durationMs,
       firstDeltaMs: null,
       items: {},
-      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      tokenUsageEvents,
       transcripts,
       diagnostics: {
         opencode: {
           session_export: exportDiagnostic
         }
       }
+    };
+  }
+  /**
+   * The spend and transcript one attempt produced: the export's account when
+   * it was read, else the stream's. Reports the spend as it does so.
+   */
+  #attemptEvidence(stdout, parsedRun, streamSessionId, exportData) {
+    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
+      breakdown: usageFromExport(exportData),
+      cost: exportData.info?.cost ?? null
+    };
+    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
+    if (usage2.breakdown !== null) {
+      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
+    }
+    return {
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts: [
+        {
+          filename: "transcript.opencode.jsonl",
+          format: "jsonl",
+          source: "opencode run --format json",
+          content: transcriptContent(stdout, exportData),
+          ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
+        }
+      ]
     };
   }
   async close() {
@@ -20574,9 +21596,11 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
     const stdout = [];
     const stderr = [];
     let settled = false;
+    let exited = false;
+    let deadlineExpired = false;
     let killEscalation;
     const terminate = () => {
-      if (settled || killEscalation !== void 0) {
+      if (settled || exited || killEscalation !== void 0) {
         return;
       }
       child.kill("SIGTERM");
@@ -20585,7 +21609,12 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
       }, killGraceMs);
       killEscalation.unref();
     };
-    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(terminate, timeoutMs);
+    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(() => {
+      if (!settled && !exited) {
+        deadlineExpired = true;
+        terminate();
+      }
+    }, timeoutMs);
     if (abortSignal?.aborted === true) {
       terminate();
     } else {
@@ -20619,6 +21648,11 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
       abortSignal?.removeEventListener("abort", terminate);
       reject(error);
     });
+    child.on("exit", () => {
+      exited = true;
+      clearTimeout(timeout);
+      clearTimeout(killEscalation);
+    });
     child.on("close", (exitCode, signal) => {
       if (settled) {
         return;
@@ -20632,7 +21666,8 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
         signal,
         stdout: stdout.join(""),
         stderr: stderr.join(""),
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        deadlineExpired
       });
     });
   });
@@ -21027,14 +22062,14 @@ function assertCompilableSchema(schema) {
 }
 function findLocalReferenceCycle(schema) {
   const seenObjects = /* @__PURE__ */ new Set();
-  const visit = (value, path15) => {
+  const visit = (value, path16) => {
     if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
     seenObjects.add(value);
     const object = value;
     if (typeof object.$ref === "string") {
-      const seenRefs = /* @__PURE__ */ new Set([path15]);
+      const seenRefs = /* @__PURE__ */ new Set([path16]);
       let current2 = object;
-      let currentPath = path15;
+      let currentPath = path16;
       while (typeof current2.$ref === "string") {
         const targetPath = current2.$ref;
         const target = localPointerTarget(schema, targetPath);
@@ -21046,7 +22081,7 @@ function findLocalReferenceCycle(schema) {
       }
     }
     for (const [key, child] of Object.entries(object)) {
-      const cycle = visit(child, `${path15}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      const cycle = visit(child, `${path16}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
       if (cycle !== null) return cycle;
     }
     return null;
@@ -21071,14 +22106,14 @@ function normaliseForCodexOutputSchema(schema) {
 function assertAcyclicSchemaObject(schema) {
   const active = /* @__PURE__ */ new Map();
   const visited = /* @__PURE__ */ new Set();
-  const walk = (value, path15) => {
+  const walk = (value, path16) => {
     if (typeof value !== "object" || value === null) return;
     const firstSeenAt = active.get(value);
-    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path15, firstSeenAt);
+    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path16, firstSeenAt);
     if (visited.has(value)) return;
-    active.set(value, path15);
+    active.set(value, path16);
     for (const [key, child] of Object.entries(value)) {
-      walk(child, `${path15}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      walk(child, `${path16}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
     }
     active.delete(value);
     visited.add(value);
@@ -21339,10 +22374,13 @@ function classifyDescendants(source, region) {
 // src/engines.ts
 var EngineRegistry = class {
   #engines = /* @__PURE__ */ new Map();
-  constructor(engines) {
+  /** Resources the engines share and the registry therefore owns, closed after every engine has. */
+  #shared;
+  constructor(engines, shared = []) {
     for (const engine of engines) {
       this.#engines.set(engine.name, engine);
     }
+    this.#shared = shared;
   }
   get(name) {
     return this.#engines.get(name);
@@ -21352,6 +22390,7 @@ var EngineRegistry = class {
   }
   async close() {
     const results = await Promise.allSettled([...this.#engines.values()].map(async (engine) => engine.close()));
+    await Promise.allSettled(this.#shared.map(async (resource) => resource.close()));
     const failures = results.filter((result) => result.status === "rejected");
     if (failures.length === 1) {
       throw failures[0].reason;
@@ -21493,7 +22532,9 @@ var CodexWorkerSession = class {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...schema !== void 0 ? { schema: normaliseForCodexOutputSchema(schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {}
+      ...codexProgressObservers(context),
+      ...context.onTranscriptEvent !== void 0 ? { onTranscriptEvent: context.onTranscriptEvent } : {},
+      ...context.onTranscriptPath !== void 0 ? { onTranscriptPath: context.onTranscriptPath } : {}
     });
   }
   /**
@@ -21532,18 +22573,28 @@ var CodexEngineInvocation = class {
   }
   async runAttempt(context) {
     const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
-    return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
+    return this.#runTurnInCwd(prompt, this.#options.cwd, context);
   }
-  async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
+  async #runTurnInCwd(prompt, cwd, context) {
     const threadId = await openCodexThread(this.#transport, this.#options, cwd);
     return this.#transport.runTurn(threadId, prompt, {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...onLiveEvidence !== void 0 ? { onFirstOutput: onLiveEvidence } : {}
+      ...codexProgressObservers(context),
+      ...context.onTranscriptEvent !== void 0 ? { onTranscriptEvent: context.onTranscriptEvent } : {},
+      ...context.onTranscriptPath !== void 0 ? { onTranscriptPath: context.onTranscriptPath } : {}
     });
   }
 };
+function codexProgressObservers(context) {
+  return {
+    ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {},
+    ...context.onOutput !== void 0 ? { onOutput: context.onOutput } : {},
+    ...context.onIdentity !== void 0 ? { onIdentity: context.onIdentity } : {},
+    ...context.onUsage !== void 0 ? { onUsage: context.onUsage } : {}
+  };
+}
 var ClaudeEngineAdapter = class {
   name = "claude";
   concurrency;
@@ -21715,9 +22766,14 @@ var OpenCodeEngineAdapter = class {
   }
 };
 async function createDefaultEngineRegistry(options) {
+  const grouping = parseWorkerScopeGrouping(options.workerScope ?? "worker", "workerScope");
+  const ownsScopes = options.workerScopes === void 0;
+  const workerScopes = options.workerScopes ?? await createWorkerScopes({ label: `${process.pid}-${randomUUID5()}` });
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
+    scopes: workerScopes,
+    scopeGroup: grouping === "run" ? RUN_SCOPE_GROUP : "codex",
     ...options.workerEnvironment?.codex !== void 0 ? { workerEnv: options.workerEnvironment.codex } : {},
     requestTimeoutMs: options.requestTimeoutMs,
     ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
@@ -21727,31 +22783,37 @@ async function createDefaultEngineRegistry(options) {
     clientVersion: options.clientVersion,
     onEvent: options.onEvent
   });
-  return new EngineRegistry([
-    new CodexEngineAdapter({
-      transport,
-      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
-    }),
-    new ClaudeEngineAdapter({
-      cwd: options.cwd,
-      controlPlane: new ClaudeCliControlPlane({
-        ...options.workerEnvironment?.claude !== void 0 ? { workerEnv: options.workerEnvironment.claude } : {},
-        ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {}
+  return new EngineRegistry(
+    [
+      new CodexEngineAdapter({
+        transport,
+        concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
       }),
-      ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
-      // Claude deliberately emits the same usage event shape as Codex. Keep the
-      // adapter sink labelled so accounting never has to infer engine from payload.
-      onEvent: options.onClaudeEvent
-    }),
-    new OpenCodeEngineAdapter({
-      cwd: options.cwd,
-      ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
-      ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
-      ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
-      ...options.openCodeModels !== void 0 ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {},
-      onEvent: options.onOpenCodeEvent
-    })
-  ]);
+      new ClaudeEngineAdapter({
+        cwd: options.cwd,
+        controlPlane: new ClaudeCliControlPlane({
+          ...options.workerEnvironment?.claude !== void 0 ? { workerEnv: options.workerEnvironment.claude } : {},
+          ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {},
+          scopes: workerScopes,
+          workerScope: grouping,
+          ...options.onClaudeEvent !== void 0 ? { onEvent: options.onClaudeEvent } : {}
+        }),
+        ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
+        // Claude deliberately emits the same usage event shape as Codex. Keep the
+        // adapter sink labelled so accounting never has to infer engine from payload.
+        onEvent: options.onClaudeEvent
+      }),
+      new OpenCodeEngineAdapter({
+        cwd: options.cwd,
+        ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
+        ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
+        ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
+        ...options.openCodeModels !== void 0 ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {},
+        onEvent: options.onOpenCodeEvent
+      })
+    ],
+    ownsScopes ? [workerScopes] : []
+  );
 }
 async function openCodexThread(transport, options, cwd) {
   try {
@@ -21835,6 +22897,20 @@ var BODY_RETURNED_LEG = {
   dispatching: "its dispatch record was still landing, so no outcome was observed"
 };
 var BODY_RETURNED = "the script returned without awaiting this worker";
+function identifiedResult(options, output, record) {
+  return {
+    label: options.label ?? null,
+    phase: record.phase,
+    output,
+    failure: record.status === "complete" ? null : { message: settledFailureMessage(record) }
+  };
+}
+function identifiedFailure(options, error, phase = options.phase ?? null) {
+  if (options.identity !== true) return error;
+  const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
+  attachAgentIdentity(carrier, { label: options.label ?? null, phase });
+  return carrier;
+}
 var WorkerSession = class {
   #state;
   #now;
@@ -21864,17 +22940,19 @@ var WorkerSession = class {
   }
   /**
    * The idle gap at which this session reads stale: the resolved runtime
-   * option, or — on Claude — the machine-declared cache TTL when one
-   * overrides the injected default, so the mark and the cache expire on
-   * one clock.
+   * option, or the engine's default advisory threshold.
    */
   get staleAfterMs() {
-    return this.#state.stalenessThresholdMs;
+    return this.#state.markStaleness ? this.#state.stalenessThresholdMs : null;
+  }
+  /** Whether this session reports staleness after its idle threshold. */
+  get stalenessMark() {
+    return this.#state.markStaleness;
   }
   /**
    * The advisory staleness mark: true once the idle gap since the
    * last settled turn has outlived the session's cache economics — the
-   * configured TTL cliff on Claude, the measured idle threshold on Codex.
+   * subscription cache TTL on Claude, the measured idle threshold on Codex.
    * Always false while marking is disabled, before the first turn, and
    * mid-turn. Advisory only: the runtime never blocks or reroutes a send
    * on it — a fresh session cannot inherit the old transcript, so only the
@@ -21964,7 +23042,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#strip = options.strip ?? [];
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
-      runId: options.runId ?? randomUUID5(),
+      runId: options.runId ?? randomUUID6(),
       budget: this.budget,
       ...options.now !== void 0 ? { now: options.now } : {}
     });
@@ -22019,6 +23097,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd,
       codexBin: options.codexBin ?? "codex",
       holdScope,
+      ...options.workerScope !== void 0 ? { workerScope: options.workerScope } : {},
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
       ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
       ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
@@ -22049,11 +23128,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {},
       ...options.holdPollIntervalMs !== void 0 ? { holdPollIntervalMs: options.holdPollIntervalMs } : {},
       ...options.strip !== void 0 ? { strip: options.strip } : {},
-      // The staleness cliff tracks the *effective* TTL: an explicit option
-      // wins, else a machine-declared TTL for the Claude workers (which
-      // outranks the injected 1h in the settings file) sets the cliff, else
-      // the injected default's hour — never two silently different clocks.
-      ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : declaredClaudeTtlMs(options.workerEnvironment) !== null ? { claudeSessionStaleAfterMs: declaredClaudeTtlMs(options.workerEnvironment) } : {},
+      ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : {},
       ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {}
     });
     return runtime;
@@ -22066,6 +23141,27 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   setRunRecorder(recorder) {
     this.#runRecorder = recorder;
+    this.progress.setArchiveDir(recorder?.archiveDir ?? null);
+  }
+  /**
+   * Holds a promise the script receives from a combinator — `parallel()`,
+   * `pipeline()` — open from creation to settlement, exactly as `agent()`
+   * holds its own, so a run ending that rejects it (the combinators rethrow
+   * the run's own ending) is marked handled at close when nothing awaits
+   * it, never raised against a run that ended cleanly. Before close, an
+   * unhandled rejection remains visible to the launcher.
+   */
+  trackCallPromise(promise) {
+    const call = { outward: null };
+    this.#openCalls.add(call);
+    const outward = promise.finally(() => {
+      this.#openCalls.delete(call);
+    });
+    call.outward = outward;
+    if (this.#closed) {
+      void outward.catch(() => void 0);
+    }
+    return outward;
   }
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
   notePhase(title) {
@@ -22127,7 +23223,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   async #agentCall(prompt, options) {
     if (this.#closed) {
-      throw new Error("EnsembleRuntime is closed");
+      throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
     options = snapshotAgentCwd(options);
@@ -22155,6 +23251,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       label: options.label ?? null,
       phase: options.phase ?? null
     });
+    const phase = this.progress.queuedAgentPhase(agentId);
     if (engine.name === "claude" && options.model === void 0) {
       this.#emitEvent({
         method: "claude/unpinnedModel",
@@ -22162,7 +23259,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
+    const agentRecord = this.#newAgentRecord(
+      agentId,
+      engine.name,
+      prompt,
+      { ...dispatchOptions, ...phase !== null ? { phase } : {} },
+      stripRoutes
+    );
     const unsettled = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     try {
@@ -22170,17 +23273,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       unsettled.stage = "admitting";
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        const failure = agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
-        return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
+        return identifiedResult(options, output, agentRecord);
       }
       return output;
     } catch (error) {
-      if (options.identity === true) {
-        const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
-        attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
-        throw carrier;
-      }
-      throw error;
+      throw identifiedFailure(options, error, phase);
     } finally {
       this.#noteAgentSettled(agentId);
     }
@@ -22236,13 +23333,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
   }
-  /**
-   * Open a multi-turn worker session: one worker, held across turns,
-   * with engine, model, and effort fixed for its life. Creation spawns
-   * nothing — validation and strip enforcement run here, pre-spawn, and the
-   * worker itself starts at the first `send()`. An engine that does not
-   * hold sessions (opencode) throws before any worker exists.
-   */
   createWorkerSession(options) {
     if (this.#closed) {
       throw new SessionClosedError();
@@ -22273,7 +23363,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       resolvedEffort: null,
       stripRoutes,
       // The mark's threshold is per engine shape: Claude's is the cliff at
-      // its configured (injected) cache TTL, Codex's the measured coin-flip
+      // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
       stalenessThresholdMs: engine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs,
       markStaleness: sessionOptions.stalenessMark ?? true,
@@ -22304,7 +23394,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return session;
   }
   async #runSessionTurn(state, prompt, turn) {
-    if (this.#closed || state.closed) {
+    if (this.#closed) {
+      throw markRunEnding(new SessionClosedError());
+    }
+    if (state.closed) {
       throw new SessionClosedError();
     }
     if (state.inFlight) {
@@ -22317,6 +23410,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
+    let phase = options.phase ?? null;
     state.inFlight = true;
     try {
       this.budget.assertCanStart(engine.name);
@@ -22326,6 +23420,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         label: options.label ?? null,
         phase: options.phase ?? null
       });
+      phase = this.progress.queuedAgentPhase(agentId);
       if (engine.name === "claude" && options.model === void 0 && state.turnCount === 0) {
         this.#emitEvent({
           method: "claude/unpinnedModel",
@@ -22346,7 +23441,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
         ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
         ...options.label !== void 0 ? { label: options.label } : {},
-        ...options.phase !== void 0 ? { phase: options.phase } : {},
+        ...phase !== null ? { phase } : {},
         ...turn.schema !== void 0 ? { schema: turn.schema } : {},
         ...options.strip !== void 0 ? { strip: options.strip } : {}
       };
@@ -22364,7 +23459,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           const output = await this.#runChained(
             engine,
             targets,
-            { label: options.label ?? null, phase: options.phase ?? null },
+            { label: options.label ?? null, phase },
             options.maxAttempts,
             agentId,
             agentRecord,
@@ -22373,6 +23468,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
           );
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
+          if (options.identity === true) {
+            return identifiedResult(options, output, agentRecord);
+          }
           return output;
         } catch (error) {
           state.resolvedModel ??= agentRecord.resolvedModel;
@@ -22384,6 +23482,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         state.turnCount = turnNumber;
         state.lastTurnEndedAt = this.#now();
       }
+    } catch (error) {
+      throw identifiedFailure(options, error, phase);
     } finally {
       state.inFlight = false;
     }
@@ -22402,9 +23502,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const placement = state.placement;
       state.placement = null;
       await this.#placement.close(placement).catch(() => void 0);
-      throw new SessionClosedError();
+      throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
     agentRecord.resolvedCwd = state.placement.cwd;
+    this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
     agentRecord.isolation = options.isolation ?? null;
     const createSession = state.engine.createSession;
     if (createSession === void 0) {
@@ -22429,8 +23530,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const invocation = {
       runAttempt: async (context) => {
         const result = await turnInvocation.runAttempt(context);
-        if (result.resolvedModel === void 0 && state.resolvedModel !== null && result.attemptFailure === void 0 && result.text.trim().length > 0) {
-          return { ...result, resolvedModel: state.resolvedModel };
+        if (result.resolvedModel === void 0 && agentRecord.resolvedModel !== null && (agentRecord.attempts.at(-1)?.target.engine === target.engine || result.attemptFailure === void 0 && result.text.trim().length > 0)) {
+          return { ...result, resolvedModel: agentRecord.resolvedModel };
         }
         return result;
       }
@@ -22515,7 +23616,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return this.#runChained(
       engine,
       chainTargets(engine.name, options),
-      { label: options.label ?? null, phase: options.phase ?? null },
+      { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,
       agentRecord,
@@ -22562,10 +23663,20 @@ var EnsembleRuntime = class _EnsembleRuntime {
               return new ChainAdvance(target.engine);
             }
             agentRecord.concurrencyGroup = admittedEngine.name;
+            if (position.next > 0) {
+              this.progress.requeueAgent(agentId, admittedEngine.name);
+              this.progress.startAgent(agentId);
+              agentRecord.resolvedModel = null;
+              agentRecord.resolvedEffort = null;
+              this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
+              this.progress.noteAgentWorktree(agentId, null);
+            }
             const settled = await runTarget(target, admittedEngine, ledger, position.next + 1 < targets.length);
             if (settled.status !== "refused") {
               return settled;
             }
+            agentRecord.resolvedModel = null;
+            agentRecord.resolvedEffort = null;
           }
           throw new Error("fallback chain ended without a settlement");
         })
@@ -22575,6 +23686,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
       admittedEngine = this.#engineFor(outcome.engine);
       readmitting = true;
+      const lastAttempt = agentRecord.attempts.at(-1)?.attempt;
+      if (lastAttempt !== void 0) {
+        await this.#recordArchiveWriteSafely(agentId, async () => {
+          await this.#runRecorder?.recordAttemptEnd(agentId, lastAttempt);
+        });
+      }
       this.progress.requeueAgent(agentId, admittedEngine.name);
       queuedAt = Date.now();
     }
@@ -22603,10 +23720,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       );
     } catch (error) {
       if (!started) {
-        this.progress.settleAgent(agentId, "failed");
         this.#settleTerminalStatus(agentRecord, error, "queued");
         agentRecord.queuedMs += Math.max(0, Date.now() - queuedAt);
         await this.#recordSettlementSafely(agentId, agentRecord);
+        if (error instanceof Error && this.#runSettlementCause(error, "queued") !== null) {
+          markRunEnding(error);
+        }
       }
       throw error;
     }
@@ -22628,11 +23747,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const executionEndedAt = Date.now();
       agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
-      this.progress.settleAgent(agentId, outcome);
       if (outcome === "done") {
         agentRecord.status = "complete";
       } else {
-        this.#settleTerminalStatus(agentRecord, execution.cause ?? null);
+        this.#settleWorkerFailure(agentRecord, execution.cause ?? null);
       }
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
@@ -22655,7 +23773,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const executionEndedAt = Date.now();
       agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
-      this.progress.settleAgent(agentId, "failed");
       this.#settleTerminalStatus(agentRecord, error);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
@@ -22663,6 +23780,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (this.#crossesSpawnBoundary(error) || agentRecord.attempts.length === 0) {
         if (agentRecord.attempts.at(-1)?.chainDecision === "exhausted") {
           this.#announceFailure(engineName, identity, agentId, agentRecord, error);
+        }
+        if (error instanceof Error && this.#runSettlementCause(error) !== null) {
+          markRunEnding(error);
         }
         throw error;
       }
@@ -22728,7 +23848,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         phase: identity.phase,
         status: agentRecord.status,
         attempts: agentRecord.attempts.length,
-        targetsTried: agentRecord.fallback === null ? null : 1 + advancesOf(agentRecord).length,
+        targetsTried: agentRecord.fallback === null ? null : targetsTriedOf(agentRecord),
         failure: { kind: failure.kind, message: failure.message },
         diagnosis
       },
@@ -22792,17 +23912,150 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * surface as an event the CLI logs to stderr.
    */
   async #recordAgentSafely(record) {
-    try {
+    this.progress.noteAgentIdentity(record.id, {
+      requestedModel: record.model,
+      requestedEffort: record.effort,
+      resolvedModel: record.resolvedModel,
+      resolvedEffort: record.resolvedEffort
+    });
+    if (record.status !== "in-progress") {
+      this.progress.settleAgent(
+        record.id,
+        record.status === "complete" ? "done" : "failed",
+        record.terminationCause ?? attemptedFailureAccount(record)
+      );
+    }
+    await this.#recordArchiveWriteSafely(record.id, async () => {
       await this.#runRecorder?.recordAgent(record);
+    });
+  }
+  /** Archive writes share one best-effort error-reporting contract. */
+  async #recordArchiveWriteSafely(agentId, write) {
+    try {
+      await write();
     } catch (error) {
       this.#emitEvent({
         method: "runRecord/writeFailed",
-        params: {
-          agentId: record.id,
-          message: error instanceof Error ? error.message : String(error)
-        },
+        params: { agentId, message: error instanceof Error ? error.message : String(error) },
         receivedAt: Date.now()
       });
+    }
+  }
+  /** Bind transcript callbacks to one attempt and drain them before its outcome is recorded. */
+  async #runRecordedAttempt(engine, invocation, context, agentId, startedAt) {
+    const recorder = this.#runRecorder;
+    const record = this.#unsettledAgentRecords.get(agentId)?.record;
+    const previousSpend = record?.attempts.flatMap((attempt) => attempt.tokenUsageEvents).reduce((sum, event) => sum + event.last.totalTokens, 0) ?? 0;
+    let attemptSpend = 0;
+    const observedUsage = [];
+    let observedModel = null;
+    let observedEffort = null;
+    let result;
+    let active = true;
+    let transcriptPath;
+    const pending = /* @__PURE__ */ new Set();
+    const enqueue = (write) => {
+      if (!active) return;
+      const operation = this.#recordArchiveWriteSafely(agentId, write);
+      pending.add(operation);
+      void operation.then(() => pending.delete(operation));
+    };
+    if (recorder !== null && engine !== "opencode") {
+      await this.#recordArchiveWriteSafely(agentId, () => recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
+    }
+    this.progress.noteAgentTranscript(agentId, null);
+    if (record?.session === null && engine !== "claude") {
+      this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
+    }
+    try {
+      result = await invocation.runAttempt({
+        ...context,
+        onLiveEvidence: () => {
+          if (active) context.onLiveEvidence?.();
+        },
+        onWaiting: (wait) => {
+          if (active) context.onWaiting?.(wait);
+        },
+        onOutput: () => {
+          if (active) this.progress.noteAgentEvidence(agentId);
+        },
+        onIdentity: (identity) => {
+          if (!active) return;
+          observedModel = identity.resolvedModel;
+          observedEffort = identity.resolvedEffort;
+          this.progress.noteAgentIdentity(agentId, identity);
+        },
+        onUsage: (event) => {
+          if (!active) return;
+          observedUsage.push(event);
+          attemptSpend += event.last.totalTokens;
+          this.progress.noteAgentSpend(agentId, previousSpend + attemptSpend);
+        },
+        ...engine === "codex" && recorder !== null ? {
+          onTranscriptEvent: (event) => enqueue(async () => {
+            const path16 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            if (path16 != null) this.progress.noteAgentTranscript(agentId, path16);
+          })
+        } : engine === "claude" ? {
+          onTranscriptPath: (path16) => {
+            if (path16 === transcriptPath || !active) return;
+            transcriptPath = path16;
+            if (recorder === null) {
+              this.progress.noteAgentTranscript(agentId, path16);
+              return;
+            }
+            enqueue(async () => {
+              try {
+                await recorder.recordClaudeTranscript(agentId, context.attempt, path16);
+                this.progress.noteAgentTranscript(agentId, path16);
+              } catch (error) {
+                transcriptPath = void 0;
+                throw error;
+              }
+            });
+          }
+        } : {}
+      });
+      return result;
+    } catch (error) {
+      result = failedTurnResultOf(error) ?? void 0;
+      if (result === void 0 && error instanceof Error && (observedUsage.length > 0 || observedModel !== null || observedEffort !== null)) {
+        const transcript = partialTranscriptOf(error);
+        const text = partialWorkerTextOf(error) ?? "";
+        result = {
+          text,
+          deltaText: text,
+          durationMs: null,
+          firstDeltaMs: firstDeltaMsOf(error),
+          items: {},
+          tokenUsageEvents: observedUsage,
+          ...observedModel === null ? {} : { resolvedModel: observedModel },
+          ...observedEffort === null ? {} : { resolvedEffort: observedEffort },
+          ...transcript === null ? {} : { transcripts: [transcript] }
+        };
+        attachFailedTurnResult(error, result);
+      }
+      throw error;
+    } finally {
+      active = false;
+      await Promise.all(pending);
+      try {
+        if (result !== void 0) {
+          if (result.tokenUsageEvents.length === 0 && observedUsage.length > 0) {
+            result.tokenUsageEvents = [...observedUsage];
+          }
+          if (record !== void 0) {
+            this.progress.noteAgentIdentity(agentId, {
+              resolvedModel: result.resolvedModel ?? (record.session === null ? null : record.resolvedModel),
+              resolvedEffort: result.resolvedEffort ?? (record.session === null ? null : record.resolvedEffort)
+            });
+          }
+          if (result.tokenUsageEvents.length > 0) {
+            this.progress.noteAgentSpend(agentId, previousSpend + result.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0));
+          }
+        }
+      } catch {
+      }
     }
   }
   async #recordSettlementSafely(agentId, record) {
@@ -22943,7 +24196,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   #runSettlementCause(error, dispatch = "in-flight") {
     const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
-    if (error instanceof EngineShutdownError || substrate instanceof AppServerExitedError && this.#closed) {
+    if (this.#closed && (isRunEnding(error) || error instanceof EngineShutdownError || error instanceof TurnTimeoutError || substrate instanceof AppServerExitedError)) {
       return this.#closeCause(dispatch);
     }
     return null;
@@ -22975,6 +24228,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       record.terminationCause = settlement;
       return;
     }
+    this.#settleWorkerFailure(record, error);
+  }
+  /** Settle the worker's own failure without consulting a later run ending. */
+  #settleWorkerFailure(record, error) {
     if (error instanceof TurnTimeoutError) {
       record.status = "timed-out";
       record.terminationCause = {
@@ -22990,7 +24247,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
+    record.terminationCause = record.attempts.at(-1)?.status === "complete" || attemptedFailureAccount(record) === null ? failedWithoutAttemptCause(error, record.attempts.length > 0) : null;
   }
   /**
    * One target's placement, invocation, and bounded attempts. Resolves to
@@ -23001,6 +24258,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   async #runAgent(engine, prompt, options, agentId, agentRecord, target, ledger, chainRemains) {
     const placement = await this.#placement.open(options);
     agentRecord.resolvedCwd = placement.cwd;
+    this.progress.noteAgentWorktree(agentId, placement.worktree?.path ?? null);
     agentRecord.isolation = options.isolation ?? null;
     this.#recordStripRoutesFor(agentRecord, engine, options.strip);
     let invocation;
@@ -23121,12 +24379,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await invocation.runAttempt({
+        const result = await this.#runRecordedAttempt(engine, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
-        });
+        }, agentId, startedAt);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -23185,12 +24443,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await invocation.runAttempt({
+        const result = await this.#runRecordedAttempt(engine, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
-        });
+        }, agentId, startedAt);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -23511,10 +24769,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
 async function createRuntime(options = {}) {
   return EnsembleRuntime.create(options);
 }
-function declaredClaudeTtlMs(workerEnvironment) {
-  const declared = workerEnvironment?.claude?.[CLAUDE_CACHE_TTL_VARIABLE];
-  return declared === void 0 ? null : claudeCacheTtlToMs(declared);
-}
 function requireTransport(transport) {
   if (transport === void 0) {
     throw new Error("EnsembleRuntime requires either engines or a Codex transport");
@@ -23574,11 +24828,11 @@ function rejectBlankHoldScope(holdScope) {
   }
 }
 function recordTurnMetadata(record, result) {
-  if (result.resolvedModel !== void 0) {
-    record.resolvedModel = result.resolvedModel;
+  if (result.resolvedModel !== void 0 || record.session === null) {
+    record.resolvedModel = result.resolvedModel ?? null;
   }
-  if (result.resolvedEffort !== void 0) {
-    record.resolvedEffort = result.resolvedEffort;
+  if (result.resolvedEffort !== void 0 || record.session === null) {
+    record.resolvedEffort = result.resolvedEffort ?? null;
   }
   if (result.transcriptCapture !== void 0) {
     record.transcriptCapture = result.transcriptCapture;
@@ -23596,21 +24850,24 @@ function attemptedFailureAccount(record) {
   }
   return null;
 }
-function failedWithoutAttemptCause(error) {
+function failedWithoutAttemptCause(error, hasAttempt) {
   if (error === null || error === void 0) {
-    return unavailableCause("no error was reported to the runtime");
+    return unavailableCause("no error was reported to the runtime", hasAttempt);
   }
   const described = describedRejection(error);
   if (described === null) {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`, hasAttempt);
   }
   if (described.message.trim() === "") {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`, hasAttempt);
   }
   return described;
 }
-function unavailableCause(reason) {
-  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+function unavailableCause(reason, hasAttempt) {
+  return {
+    kind: "unavailable",
+    message: `the agent failed ${hasAttempt ? "after an attempt without its own failure account" : "with no attempt recorded"} and ${reason}`
+  };
 }
 function describedRejection(error) {
   try {
@@ -23633,12 +24890,20 @@ function rejectionShape(error) {
 function advancesOf(record) {
   return record.attempts.filter((attempt) => attempt.chainDecision === "advanced");
 }
-function settledFailureAccount(record) {
-  const attempted = attemptedFailureAccount(record);
-  if (attempted !== null) {
-    return attempted;
+function targetsTriedOf(record) {
+  if (record.attempts.length === 0) {
+    return 0;
   }
-  return record.terminationCause ?? { kind: "unavailable", message: "the agent failed without a recorded cause" };
+  return advancesOf(record).length + (record.attempts.at(-1)?.chainDecision === "advanced" ? 0 : 1);
+}
+function settledFailureAccount(record) {
+  if (record.attempts.at(-1)?.status === "complete" && record.terminationCause !== null) {
+    return record.terminationCause;
+  }
+  return attemptedFailureAccount(record) ?? record.terminationCause ?? {
+    kind: "unavailable",
+    message: "the agent failed without a recorded cause"
+  };
 }
 function settledFailureMessage(record) {
   const account = settledFailureAccount(record);
@@ -23663,18 +24928,19 @@ function createWorkflowHooks(options) {
     options.log(message);
   };
   const defaults = options.defaults ?? {};
+  const track = (promise) => options.runtime.trackCallPromise !== void 0 ? options.runtime.trackCallPromise(promise) : promise;
   function agentWithDefaults(prompt, agentOptions) {
     return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions));
   }
   return {
     agent: agentWithDefaults,
-    session: (sessionOptions) => {
+    session: ((sessionOptions) => {
       const createWorkerSession = options.runtime.createWorkerSession;
       if (createWorkerSession === void 0) {
         throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
       }
       return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions));
-    },
+    }),
     hold: (holdOptions) => {
       const raiseHold = options.runtime.raiseHold;
       if (raiseHold === void 0) {
@@ -23683,8 +24949,8 @@ function createWorkflowHooks(options) {
       return raiseHold.call(options.runtime, holdOptions);
     },
     workflow: options.workflow,
-    parallel: (thunks) => parallel(thunks, writeLog, options.presentError),
-    pipeline: (items, ...stages) => pipeline(items, stages, writeLog, options.presentError),
+    parallel: (thunks) => track(parallel(thunks, writeLog, options.presentError)),
+    pipeline: (items, ...stages) => track(pipeline(items, stages, writeLog, options.presentError)),
     phase: (title) => {
       options.runtime.notePhase(title);
       writeLog(`[phase] ${title}`);
@@ -23715,7 +24981,7 @@ async function parallel(thunks, log, presentError) {
       try {
         return await thunk();
       } catch (error) {
-        if (error instanceof PreSpawnAuthorError) {
+        if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
           throw error;
         }
         presentError?.(error);
@@ -23746,7 +25012,7 @@ async function pipeline(items, stages, log, presentError) {
         try {
           previous = await stage(previous, item, index);
         } catch (error) {
-          if (error instanceof PreSpawnAuthorError) {
+          if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
             throw error;
           }
           presentError?.(error);
@@ -23808,10 +25074,10 @@ function describeWorkerFailure(error) {
 
 // src/script-runner.ts
 import vm from "node:vm";
-import { createHash as createHash3 } from "node:crypto";
-import { readFile as readFile8 } from "node:fs/promises";
+import { createHash as createHash4 } from "node:crypto";
+import { readFile as readFile9 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
-import path12 from "node:path";
+import path13 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -29500,15 +30766,18 @@ Parser.acorn = {
 function parse3(input, options) {
   return Parser.parse(input, options);
 }
+function parseExpressionAt2(input, pos, options) {
+  return Parser.parseExpressionAt(input, pos, options);
+}
 
 // src/script-runner.ts
 var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 
 // src/workflow-registry.ts
 import { constants } from "node:fs";
-import { access as access2, readdir as readdir5, readFile as readFile7 } from "node:fs/promises";
+import { access as access2, readdir as readdir6, readFile as readFile8 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
-import path11 from "node:path";
+import path12 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
 };
 var NestedWorkflowError = class extends WorkflowResolutionError {
@@ -29517,10 +30786,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path11.join(homedir4(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path12.join(homedir4(), ".local", "share");
   return {
-    project: path11.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path11.join(dataHome2, "ensemble", "workflows")
+    project: path12.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path12.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -29530,7 +30799,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path11.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path12.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access2(scriptPath, constants.R_OK);
   } catch (error) {
@@ -29587,7 +30856,7 @@ async function resolveWorkflowName(name, options) {
 async function listRegistryDir(dir, scope, readMeta) {
   let directoryEntries;
   try {
-    directoryEntries = await readdir5(dir, { withFileTypes: true });
+    directoryEntries = await readdir6(dir, { withFileTypes: true });
   } catch (error) {
     if (isMissingDirectory(error)) {
       return { entries: [], notes: [] };
@@ -29603,9 +30872,9 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path11.join(dir, entry.name);
+    const scriptPath = path12.join(dir, entry.name);
     try {
-      const source = await readFile7(scriptPath, "utf8");
+      const source = await readFile8(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -29668,14 +30937,14 @@ function assertJsonSerialisable(value, label, pathRoot) {
     throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
   }
 }
-function findUnserialisable(value, path15, ancestors, honourToJson) {
+function findUnserialisable(value, path16, ancestors, honourToJson) {
   switch (typeof value) {
     case "function":
-      return `${path15} is a function`;
+      return `${path16} is a function`;
     case "symbol":
-      return `${path15} is a symbol`;
+      return `${path16} is a symbol`;
     case "bigint":
-      return `${path15} is a BigInt`;
+      return `${path16} is a BigInt`;
     case "object":
       break;
     default:
@@ -29686,16 +30955,16 @@ function findUnserialisable(value, path15, ancestors, honourToJson) {
   }
   const toJson = value.toJSON;
   if (honourToJson && typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path15, ancestors, false);
+    return findUnserialisable(toJson.call(value), path16, ancestors, false);
   }
   if (ancestors.has(value)) {
-    return `${path15} closes a cycle`;
+    return `${path16} closes a cycle`;
   }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path15}[${index}]`, ancestors, true);
+        const offence = findUnserialisable(value[index], `${path16}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -29703,7 +30972,7 @@ function findUnserialisable(value, path15, ancestors, honourToJson) {
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path15}.${key}`, ancestors, true);
+      const offence = findUnserialisable(entry, `${path16}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -29746,8 +31015,8 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
-  const resolvedFilename = path12.resolve(options.filename);
-  const cwd = options.cwd ?? path12.dirname(resolvedFilename);
+  const resolvedFilename = path13.resolve(options.filename);
+  const cwd = options.cwd ?? path13.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -29782,6 +31051,9 @@ async function runWorkflowScript(options) {
   });
   const declaredMeta = readWorkflowMeta(options.source, options.filename);
   assertKnownFreeIdentifiers(buildWrappedSource(extracted), options.filename);
+  if (workflowDepth === 0) {
+    await assertKnownWorkflowReferences(extracted, options.filename, cwd, options.env);
+  }
   const run = await importWorkflowBody(extracted, resolvedFilename);
   const bindings = {
     agent: hooks.agent,
@@ -29996,13 +31268,25 @@ ${workflow.bodySource}${WORKFLOW_WRAPPER_SUFFIX}`;
 }
 var registeredWorkflowModules = /* @__PURE__ */ new Map();
 var workflowModuleLoaderRegistered = false;
+function workflowModuleOrigin(workflow, filename) {
+  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
+  return {
+    authorPath: filename,
+    source: workflow.source,
+    bodyLine: bodyPosition.line,
+    bodyColumn: bodyPosition.column
+  };
+}
 var workflowModuleOrigins = /* @__PURE__ */ new Map();
 function positionAt(source, offset2) {
   let line = 1;
   let lineStart = 0;
   const end = Math.min(offset2, source.length);
   for (let index = 0; index < end; index += 1) {
-    if (source[index] === "\n") {
+    if (/[\r\n\u2028\u2029]/.test(source[index])) {
+      if (source[index] === "\r" && source[index + 1] === "\n" && index + 1 < end) {
+        index += 1;
+      }
       line += 1;
       lineStart = index + 1;
     }
@@ -30046,16 +31330,10 @@ function ensureWorkflowModuleLoader() {
 }
 async function importWrappedModule(wrappedSource, filename, workflow) {
   ensureWorkflowModuleLoader();
-  const digest = createHash3("sha256").update(wrappedSource).digest("hex");
+  const digest = createHash4("sha256").update(wrappedSource).digest("hex");
   const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
   registeredWorkflowModules.set(url, wrappedSource);
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  workflowModuleOrigins.set(url, {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
-  });
+  workflowModuleOrigins.set(url, workflowModuleOrigin(workflow, filename));
   return await import(url);
 }
 async function importWorkflowBody(workflow, filename) {
@@ -30098,23 +31376,17 @@ async function importWorkflowBody(workflow, filename) {
 }
 function workflowSyntaxError(error, workflow, filename) {
   const wrappedSource = buildWrappedSource(workflow);
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  const origin = {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
-  };
+  const origin = workflowModuleOrigin(workflow, filename);
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
   const bodyEndOffset = wrappedSource.length - WORKFLOW_WRAPPER_SUFFIX.length;
   const bodyEnd = positionAt(wrappedSource, bodyEndOffset);
-  const pointsPastBody = wrappedPosition !== null && (wrappedPosition.line > bodyEnd.line || wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column);
-  const earlyClose = pointsPastBody ? prematureWrapperClose(wrappedSource, bodyEndOffset, origin) : null;
+  const pointsPastBody = wrappedPosition !== null && (wrappedPosition.line > bodyEnd.line || wrappedPosition.line === bodyEnd.line && wrappedPosition.column >= bodyEnd.column);
+  const earlyClose = prematureWrapperClose(wrappedSource, bodyEndOffset, origin);
   const authorPosition = earlyClose ?? (pointsPastBody ? positionAt(workflow.source, workflow.source.trimEnd().length) : wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column));
   if (authorPosition === null) {
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
-  const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
+  const sourceLine = workflow.source.split(/\r\n|[\r\n\u2028\u2029]/)[authorPosition.line - 1] ?? "";
   const start = Math.max(0, authorPosition.column - 1 - 72);
   const end = Math.min(sourceLine.length, start + 96);
   const prefix = start > 0 ? "\u2026" : "";
@@ -30131,16 +31403,18 @@ function workflowSyntaxError(error, workflow, filename) {
 }
 function prematureWrapperClose(wrappedSource, bodyEndOffset, origin) {
   try {
-    const program = parse3(wrappedSource.slice(0, bodyEndOffset), { ecmaVersion: "latest", sourceType: "module" });
-    const declaration = program.body[0];
-    if (declaration?.type !== "ExportDefaultDeclaration" || declaration.declaration.type !== "ArrowFunctionExpression" || declaration.declaration.body.type !== "BlockStatement") {
+    const expression = parseExpressionAt2(wrappedSource, "export default ".length, {
+      ecmaVersion: "latest",
+      sourceType: "module"
+    });
+    if (expression.type !== "ArrowFunctionExpression" || expression.body.type !== "BlockStatement" || expression.body.end > bodyEndOffset) {
       return null;
     }
-    const closingBrace = positionAt(wrappedSource, declaration.declaration.body.end - 1);
+    const closingBrace = positionAt(wrappedSource, expression.body.end - 1);
     return authorPositionOf(origin, closingBrace.line, closingBrace.column);
   } catch {
-    return null;
   }
+  return null;
 }
 function v8SyntaxErrorPosition(error) {
   const stack = typeof error.stack === "string" ? error.stack : "";
@@ -30170,7 +31444,7 @@ function acornSyntaxErrorPosition(wrappedSource) {
 }
 async function readWorkflowScript(scriptPath) {
   try {
-    return await readFile8(scriptPath, "utf8");
+    return await readFile9(scriptPath, "utf8");
   } catch (error) {
     const code = error.code;
     const reason = code === "ENOENT" ? "no file exists at this path" : code === "EISDIR" ? "the path is a directory, not a script file" : code === "EACCES" ? "the file is not readable" : error instanceof Error ? error.message : String(error);
@@ -30317,6 +31591,128 @@ function assertKnownFreeIdentifiers(wrappedSource, filename) {
     throw new WorkflowScriptError(
       `Workflow ${filename} references identifiers that are not defined: ${unknown.join(", ")}. A free identifier must be a Node global, a bound hook, or a module-scope binding (require, dynamic import(), import.meta) \u2014 a mistyped name fails here, at load, before any worker spawns.`
     );
+  }
+}
+async function assertKnownWorkflowReferences(workflow, filename, cwd, env) {
+  const wrappedSource = buildWrappedSource(workflow);
+  let program;
+  try {
+    program = parse3(wrappedSource, { ecmaVersion: "latest", sourceType: "module" });
+  } catch {
+    return;
+  }
+  const declaration = program.body[0];
+  if (declaration?.type !== "ExportDefaultDeclaration" || declaration.declaration.type !== "ArrowFunctionExpression") {
+    return;
+  }
+  const body = declaration.declaration.body;
+  if (body.type !== "BlockStatement") {
+    return;
+  }
+  const literalCalls = [];
+  const asNode = (value) => typeof value === "object" && value !== null && "type" in value && typeof value.type === "string" ? value : null;
+  const bindsWorkflow = (pattern) => {
+    const node = asNode(pattern);
+    if (node === null) return false;
+    switch (node.type) {
+      case "Identifier":
+        return node.name === "workflow";
+      case "RestElement":
+        return bindsWorkflow(node.argument);
+      case "AssignmentPattern":
+        return bindsWorkflow(node.left);
+      case "ArrayPattern":
+        return Array.isArray(node.elements) && node.elements.some(bindsWorkflow);
+      case "ObjectPattern":
+        return Array.isArray(node.properties) && node.properties.some((property) => {
+          const entry = asNode(property);
+          return entry?.type === "RestElement" ? bindsWorkflow(entry.argument) : bindsWorkflow(entry?.value);
+        });
+      default:
+        return false;
+    }
+  };
+  const declarationBindsWorkflow = (statement, includeVar) => {
+    if (statement.type === "VariableDeclaration") {
+      return (includeVar || statement.kind !== "var") && Array.isArray(statement.declarations) && statement.declarations.some((entry) => bindsWorkflow(asNode(entry)?.id));
+    }
+    return (statement.type === "FunctionDeclaration" || statement.type === "ClassDeclaration") && bindsWorkflow(statement.id);
+  };
+  const bodyBindsWorkflow = (statements, includeVar) => Array.isArray(statements) && statements.some((statement) => {
+    const node = asNode(statement);
+    return node !== null && declarationBindsWorkflow(node, includeVar);
+  });
+  const hasHoistedVar = (candidate) => {
+    const node = asNode(candidate);
+    if (node === null || ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression", "ClassDeclaration", "ClassExpression"].includes(node.type)) {
+      return false;
+    }
+    if (node.type === "VariableDeclaration" && node.kind === "var" && declarationBindsWorkflow(node, true)) {
+      return true;
+    }
+    return Object.entries(node).some(([key, value]) => key !== "start" && key !== "end" && hasHoistedVarIn(value));
+  };
+  const hasHoistedVarIn = (value) => Array.isArray(value) ? value.some(hasHoistedVar) : hasHoistedVar(value);
+  const inspectNode = (node, shadowed) => {
+    if (typeof node !== "object" || node === null) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((child) => inspectNode(child, shadowed));
+      return;
+    }
+    const expression = asNode(node);
+    if (expression === null) return;
+    let localShadow = shadowed;
+    if (expression.type === "BlockStatement" || expression.type === "StaticBlock") {
+      localShadow ||= bodyBindsWorkflow(expression.body, false) || expression.type === "StaticBlock" && hasHoistedVar(expression);
+    } else if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(expression.type)) {
+      localShadow ||= bindsWorkflow(expression.id) || Array.isArray(expression.params) && expression.params.some(bindsWorkflow);
+      inspectNode(expression.params, localShadow);
+      inspectNode(expression.body, localShadow || hasHoistedVar(expression.body));
+      return;
+    } else if (expression.type === "CatchClause") {
+      localShadow ||= bindsWorkflow(expression.param);
+    } else if (["ForStatement", "ForInStatement", "ForOfStatement"].includes(expression.type)) {
+      const binding = asNode(expression.init ?? expression.left);
+      localShadow ||= binding !== null && declarationBindsWorkflow(binding, false);
+    } else if (expression.type === "SwitchStatement") {
+      inspectNode(expression.discriminant, shadowed);
+      localShadow ||= Array.isArray(expression.cases) && expression.cases.some((entry) => bodyBindsWorkflow(asNode(entry)?.consequent, false));
+      inspectNode(expression.cases, localShadow);
+      return;
+    } else if (expression.type === "ClassExpression") {
+      localShadow ||= bindsWorkflow(expression.id);
+    }
+    if (expression.type === "CallExpression") {
+      const callee = asNode(expression.callee);
+      const first = Array.isArray(expression.arguments) ? asNode(expression.arguments[0]) : null;
+      if (!localShadow && callee?.type === "Identifier" && callee.name === "workflow" && first?.type === "Literal" && typeof first.value === "string") {
+        literalCalls.push({ name: first.value, offset: expression.start ?? 0 });
+      }
+    }
+    for (const [key, value] of Object.entries(expression)) {
+      if (key !== "start" && key !== "end") inspectNode(value, localShadow);
+    }
+  };
+  for (const statement of body.body.slice(1)) inspectNode(statement, false);
+  const origin = workflowModuleOrigin(workflow, filename);
+  for (const call of literalCalls) {
+    try {
+      await resolveWorkflowReference(call.name, {
+        cwd,
+        ...env !== void 0 ? { env } : {},
+        readMeta: readWorkflowMeta
+      });
+    } catch (error) {
+      if (!(error instanceof WorkflowResolutionError)) {
+        throw error;
+      }
+      const wrappedPosition = positionAt(wrappedSource, call.offset);
+      const authorPosition = authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+      const location = authorPosition === null ? filename : `${filename}:${authorPosition.line}:${authorPosition.column}`;
+      throw new WorkflowResolutionError(`${location}: ${error.message}`, { cause: error });
+    }
   }
 }
 function asWorkflowReference(value) {
@@ -30505,7 +31901,8 @@ var AGENT_INVOCATION_OPTIONS = {
   concurrency: { type: "string", multiple: true },
   timeout: { type: "string" },
   "caller-identity": { type: "string" },
-  "hold-scope": { type: "string" }
+  "hold-scope": { type: "string" },
+  "worker-scope": { type: "string" }
 };
 async function runEnsembleCli(argv, options = {}) {
   const stdin = options.stdin ?? process.stdin;
@@ -30626,7 +32023,7 @@ async function runEnsembleCli(argv, options = {}) {
       return 0;
     }
     for (const record of enumeration.retired) {
-      stdout.write(`retired ${record.hold_id} at ${record.retired_at} \u2014 ${record.retirement_reason}
+      stdout.write(`retired ${record.hold_id} \u2014 raiser provably gone; nothing could await its answer
 `);
     }
     if (enumeration.holds.length === 0) {
@@ -30655,13 +32052,13 @@ async function runEnsembleCli(argv, options = {}) {
       stdout.write(`  verdicts: ${record.verdicts.join(" | ")}
 `);
       const [firstVerdict, ...otherVerdicts] = record.verdicts;
-      stdout.write(`  answer:   ${program} holds answer ${record.hold_id} --verdict ${JSON.stringify(firstVerdict)}${otherVerdicts.length > 0 ? ` (or ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}
-`);
+      stdout.write(
+        `  answer:   write {"nonce":"${record.nonce}","verdict":${JSON.stringify(firstVerdict)}} to ${record.decision_path}${otherVerdicts.length > 0 ? ` (or use ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}
+`
+      );
       if (record.answer_rejection !== void 0) {
         const attempted = record.answer_rejection.attempted_verdict === null ? record.answer_rejection.attempted_verdict_state : JSON.stringify(record.answer_rejection.attempted_verdict);
-        const submitter = record.answer_rejection.answered_by;
-        const note = record.answer_rejection.note;
-        stdout.write(`  rejected: ${record.answer_rejection.reason} (${attempted})${submitter ? ` by ${boundedEvidence(submitter)}` : ""}${note ? ` \u2014 ${boundedEvidence(note)}` : ""}
+        stdout.write(`  rejected: ${record.answer_rejection.reason} (${attempted})
 `);
       }
       for (const line of record.content.split("\n")) {
@@ -30679,6 +32076,7 @@ async function runEnsembleCli(argv, options = {}) {
       env,
       cwd,
       flags: {
+        ...invocation.workerScope !== void 0 ? { workerScope: invocation.workerScope } : {},
         ...invocation.agentCeiling !== void 0 ? { agentCeiling: invocation.agentCeiling } : {},
         ...invocation.concurrencyCaps !== void 0 ? { concurrencyCaps: invocation.concurrencyCaps } : {}
       }
@@ -30719,6 +32117,7 @@ async function runEnsembleCli(argv, options = {}) {
     const holdScope = resolveHoldScope(invocation.holdScope, env);
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
+      workerScope: ambientSettings.workerScope.value,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
       ...holdScope !== null ? { holdScope } : {},
       ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
@@ -30754,6 +32153,7 @@ async function runEnsembleCli(argv, options = {}) {
         cliFlags: cliFlags(invocation),
         ...callerIdentity !== void 0 ? { callerIdentity } : {},
         concurrency: recordConcurrency(ambientSettings, progress),
+        workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
       });
       runtime.setRunRecorder?.(runRecordWriter);
@@ -30764,27 +32164,66 @@ async function runEnsembleCli(argv, options = {}) {
       statusWriter = new StatusFileWriter({
         progress,
         dir: statusDir,
+        createDirectory: options.statusDir === void 0 && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
 `);
         }
       });
+      if (await statusWriter.ready()) {
+        try {
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: runtimeRunId, status_path: statusWriter.path })}
+`);
+        } catch {
+        }
+      }
     }
     runtime.onEvent((event) => {
       if (event.method === "hold/raised") {
-        const id = typeof event.params.holdId === "string" ? boundedEvidence(event.params.holdId) : "?";
-        const scope = typeof event.params.scope === "string" ? boundedEvidence(event.params.scope) : "(shared)";
-        const verdicts = Array.isArray(event.params.verdicts) ? event.params.verdicts.filter((v) => typeof v === "string") : [];
-        const forms = verdicts.map((verdict) => `${program} holds answer ${id} --verdict ${JSON.stringify(boundedEvidence(verdict))}`);
-        stderr.write(`[hold] ${id} raised in scope ${scope}; ${forms.join(" or ")}
+        const holdId = String(event.params.holdId);
+        const verdicts = event.params.verdicts;
+        const answerCommands = verdicts.map(
+          (verdict) => `${program} holds answer '${holdId.replaceAll("'", `'"'"'`)}' --verdict='${verdict.replaceAll("'", `'"'"'`)}'`
+        );
+        stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, event: "raised", verdicts, answer_commands: answerCommands })}
 `);
         return;
       }
-      if (event.method === "hold/answered" || event.method === "hold/timedOut") {
-        const id = typeof event.params.holdId === "string" ? boundedEvidence(event.params.holdId) : "?";
-        const outcome = event.method === "hold/timedOut" ? "timed out" : `answered with ${JSON.stringify(event.params.verdict)}`;
-        stderr.write(`[hold] ${id} ${outcome}
+      if (event.method === "hold/answerRejected") {
+        stderr.write(`[hold] ${JSON.stringify({
+          hold_id: event.params.holdId,
+          event: "answer-rejected",
+          reason: event.params.reason,
+          attempted_verdict: event.params.attemptedVerdict,
+          attempted_verdict_state: event.params.attemptedVerdictState,
+          answered_by: event.params.answeredBy ?? null
+        })}
 `);
+        return;
+      }
+      if (event.method === "claude/workerScopeWatchError") {
+        stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
+`);
+        return;
+      }
+      if (event.method === "codex/workerScopePlacement") {
+        if (event.params.kind === "refused") {
+          const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
+          stderr.write(`[codex] app-server (pid ${pid}) scope placement refused: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
+`);
+        }
+        return;
+      }
+      if (event.method === "claude/workerScopePlacement") {
+        const name = boundedEvidence(String(event.params.name ?? "unknown"));
+        const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
+        if (event.params.kind === "refused") {
+          stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement refused; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
+`);
+        } else if (event.params.kind === "placed") {
+          stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement recovered in ${boundedEvidence(String(event.params.unit ?? "unknown scope"))}
+`);
+        }
         return;
       }
       if (event.method === "claude/unpinnedModel") {
@@ -30966,9 +32405,6 @@ async function runEnsembleCli(argv, options = {}) {
     try {
       try {
         progress?.finish();
-        if (statusWriter !== null) {
-          await statusWriter.close();
-        }
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
           await runtime.close(
@@ -30983,6 +32419,9 @@ async function runEnsembleCli(argv, options = {}) {
         teardownError = describeError(error);
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError2(error)}
 `);
+      }
+      if (statusWriter !== null) {
+        await statusWriter.close();
       }
       teardownError ??= judgeLateEnding();
       try {
@@ -31053,10 +32492,10 @@ function workflowName(meta) {
 async function prepareRun(invocation, cwd) {
   if (invocation.kind === "agent") {
     if (invocation.agentOptions.cwd !== void 0) {
-      const requestedCwd = path13.resolve(cwd, invocation.agentOptions.cwd);
+      const requestedCwd = path14.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
-        isDirectory2 = (await stat3(requestedCwd)).isDirectory();
+        isDirectory2 = (await stat4(requestedCwd)).isDirectory();
       } catch {
         isDirectory2 = false;
       }
@@ -31065,7 +32504,7 @@ async function prepareRun(invocation, cwd) {
       }
     }
     return {
-      workflowPath: path13.join(cwd, "<ensemble-agent>"),
+      workflowPath: path14.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
       runnerArgs: [],
       recordArgs: {
@@ -31077,7 +32516,7 @@ async function prepareRun(invocation, cwd) {
   if (invocation.scriptArg === void 0) {
     throw new Error("workflow invocation has no script path");
   }
-  const workflowPath = path13.resolve(cwd, invocation.scriptArg);
+  const workflowPath = path14.resolve(cwd, invocation.scriptArg);
   return {
     workflowPath,
     source: await readWorkflowScript(workflowPath),
@@ -31101,6 +32540,7 @@ function cliFlags(invocation) {
   return {
     ...invocation.budgetCeilings !== void 0 ? { budget: invocation.budgetCeilings } : {},
     ...invocation.agentCeiling !== void 0 ? { agentCeiling: invocation.agentCeiling } : {},
+    ...invocation.workerScope !== void 0 ? { workerScope: invocation.workerScope } : {},
     ...invocation.concurrencyCaps !== void 0 ? { concurrency: invocation.concurrencyCaps } : {},
     ...invocation.timeoutMs !== void 0 ? { timeoutMs: invocation.timeoutMs } : {},
     ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
@@ -31311,7 +32751,8 @@ async function parseWorkflowInvocation(argv, cwd, program) {
         timeout: { type: "string" },
         strip: { type: "string", multiple: true },
         "caller-identity": { type: "string" },
-        "hold-scope": { type: "string" }
+        "hold-scope": { type: "string" },
+        "worker-scope": { type: "string" }
       },
       strict: true,
       allowPositionals: false
@@ -31330,6 +32771,7 @@ async function parseWorkflowInvocation(argv, cwd, program) {
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const workerScope = parsed.values["worker-scope"] === void 0 ? void 0 : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
   return {
     kind: "workflow",
     scriptArg: split.scriptArg,
@@ -31341,6 +32783,7 @@ async function parseWorkflowInvocation(argv, cwd, program) {
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
     ...strip !== void 0 ? { strip } : {},
     ...callerIdentity !== void 0 ? { callerIdentity } : {},
+    ...workerScope !== void 0 ? { workerScope } : {},
     ...holdScope !== void 0 ? { holdScope } : {}
   };
 }
@@ -31391,6 +32834,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const workerScope = parsed.values["worker-scope"] === void 0 ? void 0 : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
   const agentOptions = {
     engine,
     ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
@@ -31414,6 +32858,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
     ...callerIdentity !== void 0 ? { callerIdentity } : {},
+    ...workerScope !== void 0 ? { workerScope } : {},
     ...holdScope !== void 0 ? { holdScope } : {}
   };
 }
@@ -31563,10 +33008,10 @@ function isBooleanAgentFlag(value) {
   return AGENT_INVOCATION_OPTIONS[name].type === "boolean";
 }
 function isKnownOption(value) {
-  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity" || value === "--hold-scope";
+  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity" || value === "--worker-scope" || value === "--hold-scope";
 }
 function isKnownInlineOption(value) {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=") || value.startsWith("--hold-scope=");
+  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=") || value.startsWith("--worker-scope=") || value.startsWith("--hold-scope=");
 }
 async function parseJsonArgs(value, cwd) {
   return parseJsonValue(value, cwd, "--json-args");
@@ -31579,10 +33024,10 @@ async function parseJsonValue(value, cwd, flagName) {
     if (filename.length === 0) {
       throw new CliUsageError(`${flagName} @file requires a file path`);
     }
-    const filePath = path13.resolve(cwd, filename);
+    const filePath = path14.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
-      source = await readFile9(filePath, "utf8");
+      source = await readFile10(filePath, "utf8");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new CliUsageError(`${flagName} could not read ${filePath}: ${message}`);
@@ -31732,7 +33177,7 @@ function announceRunRecord(writer, stderr) {
   }
 }
 function holdsAnswerUsage(program) {
-  return subcommandSynopsis(program, ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]) + "Answers an open hold: writes the decision file the hold names (nonce copied\nfrom the hold), then reports what the raiser did with it, as one JSON object\non stdout. The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set,\notherwise host:pid.\nExit codes: 0 consumed (the raiser accepted this answer); 3 bounced (rejected;\nthe hold keeps waiting and the reason is reported); 4 not yet consumed (the\nraiser has not read it within its poll cadence; the answer file stays in\nplace); 5 no open hold with that id; 7 outcome not attributable to this\nanswer; 2 usage; 1 I/O failure.\n";
+  return subcommandSynopsis(program, ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]) + "Answers an open hold: writes the decision file the hold names (nonce copied\nfrom the hold), then reports what the raiser did with it, as one JSON object\non stdout. The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set,\notherwise host:pid.\nExit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected;\nthe hold keeps waiting and the reason is reported); 4 not yet consumed (the\nraiser has not read it within its poll cadence; the answer file stays in\nplace); 5 no open hold with that id; 6 retired (the hold settled without\njudging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n";
 }
 async function answerHoldCommand(args, env, stdout, stderr, program) {
   const answerUsage = holdsAnswerUsage(program);
@@ -31790,10 +33235,10 @@ async function answerHoldCommand(args, env, stdout, stderr, program) {
       stderr.write(`hold ${holdId}: answer consumed \u2014 the run resumed with verdict ${JSON.stringify(verdict)}
 `);
       return 0;
-    case "not-attributable":
-      stderr.write(`hold ${holdId}: this answer's outcome is not attributable
+    case "retired":
+      stderr.write(`hold ${holdId}: hold settled without judging this answer \u2014 the stale decision file was removed
 `);
-      return 7;
+      return 6;
     case "bounced":
       stderr.write(
         `hold ${holdId}: answer bounced (${result.rejection.reason}) \u2014 the hold is still waiting for a valid answer
@@ -31817,8 +33262,9 @@ function programNameFor(scriptPath) {
   if (scriptPath === void 0 || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
-  const file = path13.basename(scriptPath);
-  return /\.(?:mjs|cjs|js)$/.test(file) ? `node ${file}` : file;
+  const absolutePath = path14.resolve(scriptPath);
+  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : `'${absolutePath.replaceAll("'", `'"'"'`)}'`;
+  return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
 }
 var USAGE_WIDTH = 80;
 var USAGE_LEAD = "Usage: ";
@@ -31830,7 +33276,8 @@ var RUN_OPTION_SYNOPSES = [
   "--timeout ms",
   "--strip capability",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--worker-scope worker|run"
 ];
 var AGENT_OPTION_SYNOPSES = [
   "--model <model>",
@@ -31849,7 +33296,8 @@ var AGENT_OPTION_SYNOPSES = [
   "--concurrency engine=N",
   "--timeout ms",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--worker-scope worker|run"
 ];
 function usage(program) {
   const forms = [
@@ -31859,7 +33307,7 @@ function usage(program) {
     ["holds", "[--json]", "[--scope <scope> | --all]"],
     ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]
   ];
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  const continuation = " ".repeat(Math.min(USAGE_LEAD.length + program.length + 1, 24));
   const lines = [];
   forms.forEach((tokens, index) => {
     const lead = `${index === 0 ? USAGE_LEAD : " ".repeat(USAGE_LEAD.length)}${program}`;
@@ -31872,13 +33320,13 @@ function usage(program) {
     "Agent options (after agent, before the prompt):",
     ...wrapTokens("  ", AGENT_OPTION_SYNOPSES, "  ", "  "),
     "The prompt is the one positional argument, or stdin when omitted.",
-    `Run \`${program} --help\` for orientation; each subcommand answers --help.`,
+    ...wrapTokens("Run", [`\`${program} --help\``, "for orientation;", "each subcommand answers --help."], "  ", " "),
     ""
   );
   return lines.join("\n");
 }
 function subcommandSynopsis(program, tokens) {
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  const continuation = " ".repeat(Math.min(USAGE_LEAD.length + program.length + 1, 24));
   return `${wrapTokens(`${USAGE_LEAD}${program}`, tokens, continuation, " ").join("\n")}
 `;
 }
@@ -31887,7 +33335,7 @@ function wrapTokens(lead, tokens, indent, separator) {
   let line = lead;
   tokens.forEach((token, index) => {
     const joined = index === 0 ? `${lead}${lead.endsWith(" ") ? "" : " "}${token}` : `${line}${separator}${token}`;
-    if (index > 0 && joined.length > USAGE_WIDTH) {
+    if (joined.length > USAGE_WIDTH && line.trim().length > 0) {
       lines.push(line);
       line = `${indent}${token}`;
     } else {
@@ -31923,13 +33371,16 @@ function isError(error) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path14.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path15.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
 function flushed(stream) {
   return new Promise((resolve) => {
     stream.write("", () => resolve());
   });
 }
 if (isMain) {
+  process.stdout.on("error", (error) => {
+    if (error.code !== "EPIPE") throw error;
+  });
   const versionError = nodeVersionError();
   if (versionError !== null) {
     process.stderr.write(`${versionError}

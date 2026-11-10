@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import type { LiveAgentSnapshot } from "../../src/progress.js";
+import type { TurnProgressObserver } from "../../src/app-server.js";
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { CodexEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { parallel } from "../../src/hooks.js";
+import { createWorkflowHooks, parallel, pipeline } from "../../src/hooks.js";
+import { isRunEnding } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import {
   AgentCwdRejectedError,
+  attachFailedTurnResult,
+  attachPartialWorkerText,
   AgentOptionRejectedError,
   AgentPromptRejectedError,
   AppServerExitedError,
@@ -32,10 +37,17 @@ import {
   WorktreePlacementRejectedError
 } from "../../src/errors.js";
 
-import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
-import { Scheduler } from "../../src/scheduler.js";
+import { RunRecordWriter, type RuntimeAgentRecord } from "../../src/run-record.js";
+import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
-import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
+import type {
+  EngineAdapter,
+  EngineAttemptContext,
+  EngineAttemptResult,
+  EngineInvocation,
+  EngineTurnOptions,
+  EngineWorkerSession
+} from "../../src/engines.js";
 
 import type {
   AgentOptions,
@@ -52,10 +64,13 @@ import type {
   WorktreeIsolationManager
 } from "../../src/worktree-isolation.js";
 
+const ignoreAttemptStart: RunRecordWriter["recordAttemptStart"] = async () => undefined;
+const ignoreAttemptEnd: RunRecordWriter["recordAttemptEnd"] = async () => undefined;
+
 class FakeTransport implements RuntimeTransport {
   readonly cwd = "/fake/repo";
   openedThreads: ThreadStartOptions[] = [];
-  turns: Array<{ threadId: string; prompt: string; options: TurnStartOptions }> = [];
+  turns: Array<{ threadId: string; prompt: string; options: TurnStartOptions & TurnProgressObserver }> = [];
   discoveredSkillCwds: Array<string | undefined> = [];
   #responses: TurnResult[];
   #skills: readonly string[];
@@ -191,6 +206,9 @@ class DispatchBlockedRecorder {
       this.#releaseDispatch = resolve;
     });
   }
+
+  async recordAttemptStart(): Promise<void> {}
+  async recordAttemptEnd(): Promise<void> {}
 
   releaseDispatch(): void {
     this.#releaseDispatch?.();
@@ -335,6 +353,8 @@ test("a text call's exhausted attempts resolve null with the account on the reco
     const events: Array<{ method: string; params: Record<string, unknown> }> = [];
     const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 2 });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -401,6 +421,8 @@ test("a transport error mid-attempt resolves null with the thrown failure's clas
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -476,6 +498,8 @@ test("the spawn boundary: an engine refusing the dispatch itself still throws, w
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -498,6 +522,8 @@ test("the spawn boundary: the run's own ending still throws through a dispatched
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -510,6 +536,69 @@ test("the spawn boundary: the run's own ending still throws through a dispatched
   await assert.rejects(leg, EngineShutdownError);
   assert.equal(records.at(-1)?.status, "interrupted");
   assert.equal(records.at(-1)?.terminationCause?.kind, "run-interrupted");
+});
+
+test("the run's own ending throws through parallel() and pipeline(), never collapsing to a slot the body resumes on", async () => {
+  // End to end from the raise site: the run closes under a leg inside a
+  // fan-out, and the combinator rejects with the run's ending rather than
+  // resolving `[null]` — identity envelope or not.
+  for (const identity of [false, true]) {
+    const transport = new ClosingTransport(new EngineShutdownError("codex"));
+    const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+    const logs: string[] = [];
+    const fanOut = parallel([() => runtime.agent("outlive the run", { engine: "codex", ...(identity ? { identity: true, label: "builder" } : {}) })], (message) => logs.push(message));
+    await transport.started;
+    await runtime.close("interrupted");
+    await assert.rejects(fanOut, (error: unknown) => error instanceof EngineShutdownError && isRunEnding(error));
+    assert.deepEqual(logs, [], `identity ${identity}: the ending is not logged as a collapsed thunk`);
+    const record = runtime.lastAgentRecord();
+    assert.equal(record?.status, "interrupted");
+    assert.equal(record?.terminationCause?.kind, "run-interrupted");
+  }
+  const transport = new ClosingTransport(new EngineShutdownError("codex"));
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const chain = pipeline(["item"], [() => runtime.agent("outlive the run", { engine: "codex" })], () => {});
+  await transport.started;
+  await runtime.close("interrupted");
+  await assert.rejects(chain, (error: unknown) => error instanceof EngineShutdownError && isRunEnding(error));
+});
+
+test("a queued leg the shutdown cancels, and a call made after the run began ending, leave marked as the run's ending too", async () => {
+  // The queued path settles before #executeAgent and so never reaches its
+  // marking site; a call after close never reaches a worker at all. Both
+  // are the run's ending reaching the body, and both must rethrow through
+  // a combinator rather than collapse to a slot the body resumes on.
+  const transport = new ClosingTransport(new EngineShutdownError("codex"));
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const inFlight = runtime.agent("holds the one slot", { engine: "codex" });
+  await transport.started;
+  const queued = parallel([() => runtime.agent("waits for the slot", { engine: "codex" })], () => {});
+  await runtime.close("interrupted");
+  await assert.rejects(inFlight, (error: unknown) => error instanceof EngineShutdownError && isRunEnding(error));
+  await assert.rejects(queued, (error: unknown) => error instanceof EngineShutdownError && isRunEnding(error));
+  await assert.rejects(parallel([() => runtime.agent("after the ending", { engine: "codex" })], () => {}), (error: unknown) => isRunEnding(error));
+});
+
+test("a combinator the script never awaited is marked handled at close, so the run's ending raises no unhandled rejection", async () => {
+  const transport = new ClosingTransport(new EngineShutdownError("codex"));
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const unhandled: unknown[] = [];
+  const listener = (reason: unknown): void => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", listener);
+  try {
+    const hooks = createWorkflowHooks({ runtime, args: [], log: () => {}, workflow: async () => null });
+    // Started and dropped, as a body that returns without awaiting would.
+    void hooks.parallel([() => runtime.agent("dropped", { engine: "codex" })]);
+    await transport.started;
+    await runtime.close("interrupted");
+    // Unhandled rejections are reported on a later macrotask.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", listener);
+  }
 });
 
 test("an identified schema collapse still carries the worker's identity", async () => {
@@ -590,6 +679,8 @@ test("schema-valid null settles as complete while retry exhaustion remains faile
     defaultMaxAttempts: 1
   });
   completedRuntime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       completedRecords.push(structuredClone(record));
     }
@@ -623,6 +714,8 @@ test("schema-valid null settles as complete while retry exhaustion remains faile
     defaultMaxAttempts: 1
   });
   failedRuntime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       failedRecords.push(structuredClone(record));
     }
@@ -649,6 +742,8 @@ test("schema agents return the validated object when a retry succeeds", async ()
   });
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -683,6 +778,8 @@ test("schema agents return the last validating candidate from prose and fences",
   });
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -794,6 +891,8 @@ test("a schema-valid scalar answered inside a fence or beneath prose completes t
     });
     const records: RuntimeAgentRecord[] = [];
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -834,6 +933,8 @@ test("Codex invalid_json_schema becomes a distinguishing schema-subset error", a
 
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -930,6 +1031,8 @@ test("an active Codex record retains a decode diagnostic without failing its wor
   transport.bind(() => runtime);
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
   } as unknown as RunRecordWriter);
 
@@ -991,6 +1094,8 @@ test("the budget is judged at dispatch, not per attempt: exhaustion mid-retry ca
   transport.bind(() => runtime);
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -1095,7 +1200,8 @@ test("Codex agents pass only turn options that remain configurable", async () =>
   assert.deepEqual(transport.openedThreads, [{ cwd: "/fake/repo" }]);
   // The liveness callback is runtime plumbing on every turn; the remaining
   // options are the configurable surface this test pins.
-  const { onFirstOutput, ...turnOptions } = transport.turns[0]?.options ?? {};
+  const { onFirstOutput, onOutput, onIdentity, onUsage, ...turnOptions } = transport.turns[0]?.options ?? {};
+  assert.ok(onOutput && onIdentity && onUsage);
   assert.equal(typeof onFirstOutput, "function");
   assert.deepEqual(turnOptions, { timeoutMs: 1_000 });
 });
@@ -1131,6 +1237,8 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
   const events: string[] = [];
   let recordedWorktree: unknown;
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       recordedWorktree = record.worktree;
     }
@@ -1147,8 +1255,10 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
       cwd: "/fake/worktree-1"
     }
   ]);
-  const { onFirstOutput, ...turnOptions } = transport.turns[0]?.options ?? {};
+  const { onFirstOutput, onTranscriptEvent, onOutput, onIdentity, onUsage, ...turnOptions } = transport.turns[0]?.options ?? {};
+  assert.ok(onOutput && onIdentity && onUsage);
   assert.equal(typeof onFirstOutput, "function");
+  assert.equal(typeof onTranscriptEvent, "function");
   assert.deepEqual(turnOptions, { timeoutMs: 1_000 });
   assert.deepEqual(runtime.worktrees, [
     {
@@ -1213,6 +1323,8 @@ test("a failed worker still finishes and records its changed worktree", async ()
     worktreeManager
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(record);
     }
@@ -1249,6 +1361,8 @@ test("a missing worktree path remains discoverable and reports its finalisation 
     worktreeManager
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -1309,6 +1423,8 @@ test("a worker error remains primary when worktree finalisation also fails", asy
     worktreeManager
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -1594,6 +1710,8 @@ test("a cwd is read once, so it cannot answer differently after the call is admi
   });
   const records: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -1975,6 +2093,8 @@ test("an agent's record exists from dispatch, in-progress with prompt and resolv
     defaultMaxAttempts: 3
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2028,6 +2148,8 @@ test("each held turn's attempt retains the worker's observed model", async () =>
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2047,6 +2169,58 @@ test("each held turn's attempt retains the worker's observed model", async () =>
   await runtime.close();
 });
 
+test("a held correction keeps the served model reported by its rejected first answer", async () => {
+  const transport = new FakeTransport([
+    { ...turn('{"answer":"no"}'), resolvedModel: "gpt-served" },
+    turn('{"answer":"yes"}')
+  ]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 2 });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  const session = runtime.createWorkerSession({ engine: "codex" });
+  assert.deepEqual(await session.send("answer", { schema }), { answer: "yes" });
+  const settled = records.at(-1)!;
+  assert.deepEqual(settled.attempts.map((attempt) => attempt.resolvedModel), ["gpt-served", "gpt-served"]);
+  assert.deepEqual(settled.answeredBy, { entry: -1, engine: "codex", model: "gpt-served" });
+  await session.close();
+  await runtime.close();
+});
+
+test("failed and empty held corrections retain the first attempt's served model", async () => {
+  for (const correction of ['{"answer":"no"}', ""]) {
+    const transport = new FakeTransport([
+      { ...turn('{"answer":"no"}'), resolvedModel: "gpt-served" },
+      turn(correction)
+    ]);
+    const records: RuntimeAgentRecord[] = [];
+    const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 2 });
+    runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+    const session = runtime.createWorkerSession({ engine: "codex" });
+    assert.equal(await session.send("answer", { schema }), null);
+    const settled = records.at(-1)!;
+    assert.equal(settled.status, "failed");
+    assert.deepEqual(settled.attempts.map((attempt) => attempt.status), ["failed", "failed"]);
+    assert.deepEqual(settled.attempts.map((attempt) => attempt.resolvedModel), ["gpt-served", "gpt-served"]);
+    await session.close();
+    await runtime.close();
+  }
+});
+
+test("a worker inherits the current phase unless its call declares another", async () => {
+  const { runtime, records } = chainRuntime([new ChainEngine("codex", [answers("before"), answers("one"), answers("two"), answers("override")])], 1);
+  await runtime.agent("before", { engine: "codex" });
+  runtime.notePhase("First response");
+  assert.deepEqual(await runtime.agent("one", { engine: "codex", identity: true }), {
+    label: null, phase: "First response", output: "one", failure: null
+  });
+  await runtime.agent("two", { engine: "codex" });
+  await runtime.agent("override", { engine: "codex", phase: "Review" });
+  const phases = records.filter((record) => record.status === "complete").map((record) => record.phase);
+  assert.deepEqual(phases, [null, "First response", "First response", "Review"]);
+  assert.deepEqual(records.filter((record) => record.status === "in-progress").map((record) => record.phase), phases);
+  await runtime.close();
+});
+
 test("a held turn that answered empty acquires no served-model claim", async () => {
   // The carry-forward is for answers from the observed worker; an empty
   // answer produced nothing to attribute to it, and the carry resumes on the
@@ -2060,6 +2234,8 @@ test("a held turn that answered empty acquires no served-model claim", async () 
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2085,6 +2261,8 @@ test("a worker that dies uncleanly leaves its dispatch-time record", async () =>
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2113,6 +2291,8 @@ test("a recorded Codex failure serialises its observed app-server diagnostic", a
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2122,6 +2302,7 @@ test("a recorded Codex failure serialises its observed app-server diagnostic", a
 
   assert.deepEqual(records.at(-1)?.attempts.at(-1)?.appServerDiagnostic, {
     code: -32001,
+    httpStatusCode: null,
     message: "backpressure from fixture",
     payload: '{"queue":"saturated"}'
   });
@@ -2129,18 +2310,21 @@ test("a recorded Codex failure serialises its observed app-server diagnostic", a
 
 test("terminal timeout and shutdown errors retain their agent statuses with two transition writes", async () => {
   // A turn deadline is the worker's own failure and resolves as a value; a
-  // shutdown is the run ending and still throws, at the spawn boundary.
+  // shutdown during runtime.close is the run ending and still throws.
   for (const [error, expected, resolution] of [
     [new TurnTimeoutError("turn timed out", { kind: "turn", timeoutMs: 1_000, threadId: "thread-1" }), "timed-out", "value"],
     [new EngineShutdownError("codex"), "interrupted", "throw"]
   ] as const) {
     const records: RuntimeAgentRecord[] = [];
+    const transport = resolution === "throw" ? new ClosingTransport(error) : new ErrorTransport(error);
     const runtime = new EnsembleRuntime({
-      transport: new ErrorTransport(error),
+      transport,
       concurrencyCaps: { codex: 1 },
       defaultMaxAttempts: 1
     });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+      recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -2149,12 +2333,17 @@ test("terminal timeout and shutdown errors retain their agent statuses with two 
     if (resolution === "value") {
       assert.equal(await runtime.agent("stop", { engine: "codex" }), null);
     } else {
-      await assert.rejects(() => runtime.agent("stop", { engine: "codex" }), error.constructor);
+      assert.ok(transport instanceof ClosingTransport);
+      const worker = runtime.agent("stop", { engine: "codex" });
+      await transport.started;
+      await runtime.close("interrupted");
+      await assert.rejects(worker, error.constructor);
     }
 
     assert.equal(records.length, 2);
     assert.equal(records[0]?.status, "in-progress");
     assert.equal(records[1]?.status, expected);
+    await runtime.close();
   }
 });
 
@@ -2166,6 +2355,8 @@ test("a spontaneous app-server exit records a failed agent without runtime shutd
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2192,6 +2383,8 @@ test("thrown non-shutdown failures retain failed status while the runtime closes
       defaultMaxAttempts: 1
     });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -2219,6 +2412,8 @@ test("a returned retry-exhaustion failure retains failed status while the runtim
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2331,6 +2526,8 @@ test("a close names its occasion on every record it settles: the run ending, or 
     const transport = new ClosingTransport(new AppServerExitedError("codex app-server closed"));
     const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -2409,6 +2606,8 @@ test("a queued leg the run's end cancels is recorded as queued, and still counts
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2485,6 +2684,8 @@ test("genuine shutdown errors inherit the runtime shutdown status", async () => 
         defaultMaxAttempts: 1
       });
       runtime.setRunRecorder({
+        recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
         recordAgent: async (record) => {
           records.push(structuredClone(record));
         }
@@ -2510,6 +2711,8 @@ test("a run-record write failure surfaces as an event and never fails the agent"
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async () => {
       throw new Error("disk full");
     }
@@ -2614,6 +2817,8 @@ test("an unenforceable capability strip fails loud before any worker spawns", as
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2650,6 +2855,8 @@ test("a config-enforced strip reaches the engine and the durable record", async 
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2719,6 +2926,8 @@ test("an absent capability is satisfied by construction and recorded as absent",
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2750,6 +2959,8 @@ test("a codex skills strip denies the stabilised discovery set; an unstripped ca
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -2856,6 +3067,8 @@ test("a Codex agents-only strip keeps skills untouched", async () => {
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3016,6 +3229,8 @@ test("an engine-reported attempt duration is recorded as the engine measured it"
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3042,6 +3257,8 @@ test("a run that ends under an in-flight turn names itself as the cause, agent a
       defaultMaxAttempts: 1
     });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -3084,6 +3301,8 @@ test("an engine's own failure stays the attempt's cause, with nothing beside it"
     defaultMaxAttempts: 1
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3123,6 +3342,8 @@ test("a dispatch the engine refuses before any attempt records the engine's own 
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3186,6 +3407,8 @@ test("a refusal the runtime cannot read an account from records the absence and 
     const records: RuntimeAgentRecord[] = [];
     const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -3222,6 +3445,8 @@ test("a thrown string reaches the record as the words the engine actually threw"
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3244,46 +3469,16 @@ test("a thrown string reaches the record as the words the engine actually threw"
 // records the chain wrote.
 // ---------------------------------------------------------------------------
 
-/**
- * One scripted engine: each createInvocation consumes the next step for its
- * model. The cap is the adapter's own — the runtime reads an injected
- * adapter's `concurrency`, never the `concurrencyCaps` option, which only
- * shapes the default registry — so a test that wants a cap of one says so
- * here.
- */
-class ChainEngine implements EngineAdapter {
-  readonly concurrency: number;
-  readonly dispatches: Array<{ model: string | undefined; effort: string | undefined; prompt: string }> = [];
-  readonly scheduler: Scheduler;
-  #steps: Array<() => Promise<EngineAttemptResult>>;
-
-  constructor(
-    readonly name: EngineName,
-    steps: Array<() => Promise<EngineAttemptResult>>,
-    concurrency = 4
-  ) {
-    this.#steps = [...steps];
-    this.concurrency = concurrency;
-    this.scheduler = new Scheduler(concurrency);
-  }
-
-  schedule<T>(task: () => Promise<T>): Promise<T> {
-    return this.scheduler.schedule(task);
-  }
-
-  createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
-    this.dispatches.push({ model: options.model, effort: options.effort, prompt });
+/** A ChainEngine whose held sessions draw their turns from the same scripted steps. */
+class SessionChainEngine extends ChainEngine {
+  createSession(options: EngineTurnOptions): EngineWorkerSession {
     return {
-      runAttempt: async () => {
-        const step = this.#steps.shift();
-        assert.ok(step, `${this.name} engine ran out of scripted steps`);
-        return step();
-      }
+      beginTurn: (prompt) => this.createInvocation(prompt, options),
+      close: async () => {}
     };
   }
-
-  async close(): Promise<void> {}
 }
+
 
 /** A Codex refusal as the transport raises it: the app-server's own code riding the error. */
 function codexRefusal(code: string): () => Promise<EngineAttemptResult> {
@@ -3292,13 +3487,15 @@ function codexRefusal(code: string): () => Promise<EngineAttemptResult> {
   };
 }
 
-/** A Claude refusal as the engine returns it: a failed result carrying the API's status and code. */
-function claudeRefusal(status: number, code: string): () => Promise<EngineAttemptResult> {
-  return async () => ({
-    ...turn(""),
-    attemptFailure: { kind: "claude-worker-diagnostic", message: `API Error: Request rejected (${status})` },
-    diagnostics: { apiError: { status, code } }
-  });
+/** A Codex turn that spent Codex's own retries, as the transport raises it: the forwarded provider status riding the error. */
+function codexRetriesExhausted(httpStatusCode: number): () => Promise<EngineAttemptResult> {
+  return async () => {
+    throw appServerErrorFromPayload("turn notification", {
+      code: "responseTooManyFailedAttempts",
+      httpStatusCode,
+      message: `exceeded retry limit, last status: ${httpStatusCode}`
+    });
+  };
 }
 
 function answers(text: string, resolvedModel?: string): () => Promise<EngineAttemptResult> {
@@ -3316,6 +3513,8 @@ function chainRuntime(engines: EngineAdapter[], defaultMaxAttempts = 3): {
     defaultMaxAttempts
   });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3399,6 +3598,34 @@ test("an availability refusal advances the chain to the next target on the same 
     ]
   );
   assert.deepEqual(settled.fallback, [{ engine: "codex", model: "gpt-5.6-terra" }]);
+  assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-served-fallback" });
+  await runtime.close();
+});
+
+test("a Codex turn that exhausted its own retries on a 429 advances the chain instead of retrying the rate-limited target", async () => {
+  const codex = new ChainEngine("codex", [codexRetriesExhausted(429), answers("from the fallback", "gpt-served-fallback")]);
+  const { runtime, records } = chainRuntime([codex], 3);
+
+  const output = await runtime.agent("work", {
+    engine: "codex",
+    model: "gpt-5.6-sol",
+    fallback: [{ engine: "codex", model: "gpt-5.6-terra" }]
+  });
+
+  assert.equal(output, "from the fallback");
+  assert.deepEqual(
+    codex.dispatches.map((dispatch) => dispatch.model),
+    ["gpt-5.6-sol", "gpt-5.6-terra"]
+  );
+  const settled = records.at(-1)!;
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.status, attempt.target, attempt.classification, attempt.chainDecision]),
+    [
+      ["failed", { engine: "codex", model: "gpt-5.6-sol" }, { class: "availability", rule: "codex.rate-limit" }, "advanced"],
+      ["complete", { engine: "codex", model: "gpt-5.6-terra" }, null, null]
+    ]
+  );
+  assert.equal(settled.attempts[0]?.appServerDiagnostic?.httpStatusCode, 429);
   assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-served-fallback" });
   await runtime.close();
 });
@@ -3615,23 +3842,30 @@ test("a cross-engine advance re-resolves the capability strip against the answer
   await runtime.close();
 });
 
-test("a chained leg's queued and execution times accumulate across the re-admission, never overwriting each other", async () => {
-  const codex = new ChainEngine("codex", [codexRefusal("serverOverloaded")]);
-  const claude = new ChainEngine("claude", [
-    async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      return turn("from claude");
-    }
-  ]);
+test("a chained leg's queued and execution times accumulate across the re-admission, never overwriting each other", async (context) => {
+  let now = 1_000;
+  context.mock.method(Date, "now", () => now);
+  const codex = new ChainEngine("codex", [async () => {
+    now += 11;
+    return codexRefusal("serverOverloaded")();
+  }]);
+  const claude = new ChainEngine("claude", [async () => {
+    now += 30;
+    return turn("from claude");
+  }]);
+  codex.schedule = async (task) => { now += 7; return task(); };
+  claude.schedule = async (task) => { now += 5; return task(); };
   const { runtime, records } = chainRuntime([codex, claude], 1);
-
-  await runtime.agent("timed", { engine: "codex", model: "gpt-5.6-sol", fallback: [{ engine: "claude", model: "opus" }] });
-  const settled = records.at(-1)!;
-  // Execution spans both engines' work (at least the Claude step's 30ms);
-  // queued time is only the waits, never a re-count of earlier execution.
-  assert.ok(settled.executionMs >= 30, `executionMs ${settled.executionMs}`);
-  assert.ok(settled.queuedMs < settled.executionMs, `queuedMs ${settled.queuedMs} should not absorb execution`);
-  await runtime.close();
+  try {
+    await runtime.agent("timed", { engine: "codex", model: "gpt-5.6-sol", fallback: [{ engine: "claude", model: "opus" }] });
+    const settled = records.at(-1)!;
+    // The controlled clock advances while queued (7 + 5) and while each
+    // engine executes (11 + 30). The runtime derives both totals itself.
+    assert.equal(settled.executionMs, 41);
+    assert.equal(settled.queuedMs, 12);
+  } finally {
+    await runtime.close();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -3681,6 +3915,8 @@ test("a thrown Codex failure spends an attempt and retries within the bound, car
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 3 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3730,6 +3966,8 @@ test("each named Codex post-spawn failure exhausts the bound and settles with th
     const events: Array<{ method: string; params: Record<string, unknown> }> = [];
     const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 3 });
     runtime.setRunRecorder({
+      recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
       recordAgent: async (record) => {
         records.push(structuredClone(record));
       }
@@ -3784,6 +4022,8 @@ test("the spawn boundary holds under the one rule: a pre-spawn rejection raised 
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 3 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -3860,6 +4100,36 @@ test("a refused Claude dispatch advances the chain where an entry remains, costi
   await runtime.close();
 });
 
+test("a held session's fallback answer never inherits the refused worker's served model", async () => {
+  // The refused target reported its served model before refusing. The
+  // fallback is a fresh worker that reports none, on the same engine and on
+  // another, so neither its answer nor the session's later turns may name
+  // the refused worker's model.
+  const refusedServing = async (): Promise<EngineAttemptResult> => ({
+    ...(await claudeRefusal(429, "rate_limit")()),
+    resolvedModel: "claude-refused-served"
+  });
+  for (const fallback of [{ engine: "claude" as const, model: "sonnet" }, { engine: "codex" as const, model: "gpt-6-sol" }]) {
+    const claude = new SessionChainEngine("claude", [refusedServing, answers("fallback answer"), answers("turn two")]);
+    const codex = new SessionChainEngine("codex", [answers("fallback answer"), answers("turn two")]);
+    const { runtime, records } = chainRuntime([claude, codex], 1);
+    const session = runtime.createWorkerSession({ engine: "claude", model: "opus", fallback: [fallback] });
+
+    assert.equal(await session.send("turn one"), "fallback answer");
+    const turnOne = records.at(-1)!;
+    assert.deepEqual(turnOne.attempts.map((attempt) => attempt.resolvedModel), ["claude-refused-served", null]);
+    assert.deepEqual(turnOne.answeredBy, { entry: 0, engine: fallback.engine, model: null });
+    assert.equal(turnOne.resolvedModel, null);
+
+    assert.equal(await session.send("turn two"), "turn two");
+    const turnTwo = records.at(-1)!;
+    assert.equal(turnTwo.resolvedModel, null);
+    assert.deepEqual(turnTwo.answeredBy, { entry: -1, engine: fallback.engine, model: null });
+    await session.close();
+    await runtime.close();
+  }
+});
+
 test("a cross-engine answer keeps the requested header visibly distinct from the answering target", async () => {
   const claude = new ChainEngine("claude", [claudeDispatchRefused()]);
   const codex = new ChainEngine("codex", [answers("from codex", "gpt-6-luna-served")]);
@@ -3878,6 +4148,32 @@ test("a cross-engine answer keeps the requested header visibly distinct from the
   // answered_by names the entry and the model the engine reported serving.
   assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-6-luna-served" });
   assert.deepEqual(settled.attempts.map((attempt) => attempt.target.engine), ["claude", "codex"]);
+  await runtime.close();
+});
+
+test("a budget rejection before cross-engine re-admission keeps the last admitted concurrency group", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")]);
+  const claude = new ChainEngine("claude", [answers("must not dispatch")]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    budgetCeilings: { claude: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  runtime.budget.record("claude", {
+    threadId: "earlier-thread", turnId: "earlier-turn", last: usage(1), total: usage(1), raw: {}
+  });
+
+  await assert.rejects(() => runtime.agent("work", {
+    engine: "codex", fallback: [{ engine: "claude", model: "opus" }]
+  }), BudgetExceededError);
+  const settled = records.at(-1)!;
+  assert.equal(settled.status, "failed");
+  assert.equal(settled.concurrencyGroup, "codex");
+  assert.deepEqual(settled.attempts.map((attempt) => attempt.target.engine), ["codex"]);
+  assert.equal(claude.dispatches.length, 0);
   await runtime.close();
 });
 
@@ -3945,6 +4241,8 @@ test("a Codex substrate that cannot start refuses the dispatch pre-spawn: one re
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({ transport, cwd: "/fake/repo", concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 3 });
   runtime.setRunRecorder({
+    recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record) => {
       records.push(structuredClone(record));
     }
@@ -4089,6 +4387,74 @@ test("an output failure under a chain records retried-in-place then exhausted, a
   await runtime.close();
 });
 
+test("a fallback placement failure counts only the target actually dispatched", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")]);
+  const claude = new ChainEngine("claude", []);
+  claude.createInvocation = () => { throw new Error("fallback placement failed"); };
+  const { runtime, records } = chainRuntime([codex, claude], 1);
+  const notices = chainNotices(runtime);
+  await runtime.agent("work", {
+    engine: "codex", model: "gpt-6-sol", fallback: [{ engine: "claude", model: "sonnet" }]
+  }).catch(() => undefined);
+  assert.equal(codex.dispatches.length, 1);
+  assert.equal(claude.dispatches.length, 0);
+  assert.deepEqual(records.at(-1)?.attempts.map((attempt) => attempt.target.engine), ["codex"]);
+  assert.equal(notices.find((notice) => notice.method.endsWith("/agentFailed"))?.params.targetsTried, 1);
+  await runtime.close();
+});
+
+test("an invocation close failure after a completed correction names the close error", async () => {
+  let attempts = 0;
+  const engine: EngineAdapter = {
+    name: "codex", concurrency: 1, schedule: async (task) => task(),
+    createInvocation: () => ({
+      runAttempt: async () => ++attempts === 1 ? turn("") : turn("answered"),
+      close: async () => { throw new Error("invocation close failed"); }
+    }),
+    close: async () => undefined
+  };
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 2 });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  const notices = chainNotices(runtime);
+  assert.deepEqual(await runtime.agent("correct", { engine: "codex", identity: true }), {
+    label: null, phase: null, output: null,
+    failure: { message: "Error: invocation close failed" }
+  });
+  const settled = records.at(-1)!;
+  assert.deepEqual(settled.attempts.map((attempt) => attempt.status), ["failed", "complete"]);
+  assert.equal(settled.terminationCause?.message, "invocation close failed");
+  assert.deepEqual(notices.find((notice) => notice.method.endsWith("/agentFailed"))?.params.failure,
+    { kind: "Error", message: "invocation close failed" });
+  await runtime.close();
+});
+
+test("an undescribed close rejection after a completed attempt never claims no attempt was recorded", async () => {
+  for (const rejection of [new Error(""), {}]) {
+    for (const retry of [false, true]) {
+      let attempts = 0;
+      const engine: EngineAdapter = {
+        name: "codex", concurrency: 1, schedule: async (task) => task(),
+        createInvocation: () => ({
+          runAttempt: async () => retry && ++attempts === 1 ? turn("") : turn("answered"),
+          close: async () => { throw rejection; }
+        }),
+        close: async () => undefined
+      };
+      const records: RuntimeAgentRecord[] = [];
+      const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 2 });
+      runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+      assert.equal(await runtime.agent("work", { engine: "codex" }), null);
+      const settled = records.at(-1)!;
+      assert.deepEqual(settled.attempts.map((attempt) => attempt.status), retry ? ["failed", "complete"] : ["complete"]);
+      assert.equal(settled.terminationCause?.kind, "unavailable");
+      assert.match(settled.terminationCause?.message ?? "", /after an attempt/);
+      assert.doesNotMatch(settled.terminationCause?.message ?? "", /no attempt recorded/);
+      await runtime.close();
+    }
+  }
+});
+
 test("an unrecognised failure with a chain entry remaining records chain-not-consulted and announces it once", async () => {
   const threadFailed = (): (() => Promise<EngineAttemptResult>) => async () => {
     throw new AppServerSystemError("turn notification", { code: "threadFailed", message: "the thread failed" });
@@ -4207,6 +4573,30 @@ test("run settlement leaves an in-flight chained attempt without a chain decisio
   assert.equal(claude.dispatches.length, 0);
 });
 
+test("a deadline observed during shutdown records the run cause and retains the deadline observation", async () => {
+  let markStarted: (() => void) | undefined;
+  let rejectAttempt: ((error: Error) => void) | undefined;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const engine = new ChainEngine("codex", [() => new Promise<EngineAttemptResult>((_, reject) => {
+    rejectAttempt = reject;
+    markStarted?.();
+  })]);
+  engine.close = async () => {
+    rejectAttempt?.(new TurnTimeoutError("turn reached its deadline", { kind: "turn", timeoutMs: 50, threadId: "thread-1" }));
+  };
+  const { runtime, records } = chainRuntime([engine], 1);
+  const worker = runtime.agent("wait", { engine: "codex" });
+  worker.catch(() => undefined);
+  await started;
+  await runtime.close("interrupted");
+  await assert.rejects(worker, TurnTimeoutError);
+  const settled = records.at(-1)!;
+  assert.equal(settled.status, "interrupted");
+  assert.equal(settled.terminationCause?.kind, "run-interrupted");
+  assert.equal(settled.attempts[0]?.failure?.kind, "run-interrupted");
+  assert.equal(settled.attempts[0]?.observedFailure?.kind, "TurnTimeoutError");
+});
+
 test("with no chain declared, no attempt carries a chain decision and no chain notice is announced", async () => {
   const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded"), answers("")]);
   const { runtime, records } = chainRuntime([codex], 2);
@@ -4223,4 +4613,639 @@ test("with no chain declared, no attempt carries a chain decision and no chain n
     [["codex/agentFailed", null]]
   );
   await runtime.close();
+});
+
+
+for (const structured of [false, true]) {
+  test(`live transcript writes drain before ${structured ? "schema" : "text"} retries and settlement`, async () => {
+    const starts: Array<{ id: number; attempt: number; at: string }> = [];
+    const writes: Array<{ id: number; attempt: number; event: unknown }> = [];
+    const snapshots: RuntimeAgentRecord[] = [];
+    const callbacks: TurnStartOptions[] = [];
+    const transport = new FakeTransport([turn(structured ? "invalid JSON" : ""), turn(structured ? '{"answer":"yes"}' : "yes")]);
+    const runTurn = transport.runTurn.bind(transport);
+    transport.runTurn = async (thread, prompt, options) => {
+      assert.equal(starts.at(-1)?.attempt, callbacks.length + 1, "publish attempt start before invoking the engine");
+      if (callbacks.length > 0) assert.equal(writes.length, callbacks.length, "retry outran transcript persistence");
+      callbacks.push(options);
+      options.onTranscriptEvent?.({ thread });
+      return runTurn(thread, prompt, options);
+    };
+    const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 2 });
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => { snapshots.push(structuredClone(record)); },
+      recordAttemptEnd: ignoreAttemptEnd,
+      recordAttemptStart: async (id: number, attempt: number, at: string) => { starts.push({ id, attempt, at }); },
+      appendCodexTranscript: async (id: number, attempt: number, event: unknown) => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        writes.push({ id, attempt, event });
+      }
+    } as unknown as RunRecordWriter);
+    try {
+      const result = await runtime.agent("answer", { engine: "codex", ...(structured ? { schema } : {}) });
+      assert.deepEqual(result, structured ? { answer: "yes" } : "yes");
+      assert.deepEqual(writes.map(({ id, attempt }) => [id, attempt]), [[1, 1], [1, 2]]);
+      const settled = snapshots.at(-1)!;
+      assert.equal(settled.status, "complete");
+      assert.deepEqual(starts.map(({ at }) => at), settled.attempts.map(({ startedAt }) => startedAt));
+      for (const callback of callbacks) callback.onTranscriptEvent?.({ late: true });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(writes.length, 2, "late callback modified a completed attempt");
+    } finally {
+      await runtime.close();
+    }
+  });
+}
+
+test("live archive write failures report the agent and preserve its answer", async () => {
+  const transport = new FakeTransport([turn("yes")]);
+  const runTurn = transport.runTurn.bind(transport);
+  transport.runTurn = async (thread, prompt, options) => {
+    options.onTranscriptEvent?.({ thread });
+    return runTurn(thread, prompt, options);
+  };
+  const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 1 });
+  const failures: Array<{ agentId: unknown; message: unknown }> = [];
+  runtime.onEvent((event) => {
+    if (event.method === "runRecord/writeFailed") failures.push({ agentId: event.params.agentId, message: event.params.message });
+  });
+  runtime.setRunRecorder({
+    recordAgent: async () => undefined,
+    recordAttemptEnd: ignoreAttemptEnd,
+    recordAttemptStart: async () => { throw new Error("start unavailable"); },
+    appendCodexTranscript: async () => { throw new Error("append unavailable"); }
+  } as unknown as RunRecordWriter);
+  try {
+    assert.equal(await runtime.agent("answer", { engine: "codex" }), "yes");
+    assert.deepEqual(failures, [
+      { agentId: 1, message: "start unavailable" },
+      { agentId: 1, message: "append unavailable" }
+    ], "both live write failures must identify the agent without losing its answer");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("runtime drains pending transcript writes before shutdown settlement", async () => {
+  const transport = new ClosingTransport();
+  // Install a turn callback at the adapter boundary, before its close rejects.
+  const adapter = new CodexEngineAdapter({ transport, concurrency: 1 });
+  const createInvocation = adapter.createInvocation.bind(adapter);
+  adapter.createInvocation = (prompt, options) => {
+    const invocation = createInvocation(prompt, options);
+    return { ...invocation, runAttempt: (context) => {
+      context.onTranscriptEvent?.({ beforeShutdown: true });
+      return invocation.runAttempt(context);
+    } };
+  };
+  let releaseWrite!: () => void;
+  const pendingWrite = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  let settled = false;
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([adapter]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => { if (record.status !== "in-progress") settled = true; },
+    recordAttemptEnd: ignoreAttemptEnd,
+    recordAttemptStart: async () => undefined,
+    appendCodexTranscript: async () => pendingWrite
+  } as unknown as RunRecordWriter);
+  const call = runtime.agent("work", { engine: "codex" });
+  void call.catch(() => undefined);
+  await transport.started;
+  const close = runtime.close();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, "shutdown settled before the last transcript write");
+  releaseWrite();
+  await close;
+  await assert.rejects(call, AppServerExitedError);
+  assert.equal(settled, true);
+});
+
+
+test("fallback targets publish their own transcript and reject callbacks from the refused target", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")]);
+  const claude = new ChainEngine("claude", [answers("yes")]);
+  let refusedContext: EngineAttemptContext | undefined;
+  const starts: Array<[number, number]> = [];
+  const writes: Array<[number, number, unknown]> = [];
+  const codexInvocation = codex.createInvocation.bind(codex);
+  codex.createInvocation = (prompt, options) => {
+    const invocation = codexInvocation(prompt, options);
+    return { runAttempt: (context) => {
+      refusedContext = context;
+      context.onTranscriptEvent?.({ refused: true });
+      return invocation.runAttempt(context);
+    } };
+  };
+  const claudeInvocation = claude.createInvocation.bind(claude);
+  claude.createInvocation = (prompt, options) => {
+    const invocation = claudeInvocation(prompt, options);
+    return { runAttempt: (context) => {
+      assert.deepEqual(starts, [[1, 1], [1, 2]], "fallback must publish the admitted target as a distinct attempt");
+      refusedContext?.onTranscriptEvent?.({ late: true });
+      context.onTranscriptPath?.("/fake/claude/session.jsonl");
+      context.onTranscriptPath?.("/fake/claude/session.jsonl");
+      return invocation.runAttempt(context);
+    } };
+  };
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([codex, claude]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({
+    recordAgent: async () => undefined,
+    recordAttemptEnd: ignoreAttemptEnd,
+    recordAttemptStart: async (id: number, attempt: number) => { starts.push([id, attempt]); },
+    appendCodexTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); },
+    recordClaudeTranscript: async (id: number, attempt: number, file: string) => { writes.push([id, attempt, file]); }
+  } as unknown as RunRecordWriter);
+  try {
+    assert.equal(await runtime.agent("answer", { engine: "codex", fallback: [{ engine: "claude", model: "test-claude" }] }), "yes");
+    assert.deepEqual(writes, [[1, 1, { refused: true }], [1, 2, "/fake/claude/session.jsonl"]]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+
+test("fallback admission clears the refused attempt from a queued archive record", async () => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-fallback-live-record-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store, cwd: process.cwd(), runUuid: "fallback-live-record",
+    workflowPath: path.join(store, "workflow.js"), workflowSource: "return true;",
+    args: [], cliFlags: { jsonArgs: false }
+  });
+  let release!: () => void;
+  let entered!: () => void;
+  const occupied = new Promise<void>((resolve) => { entered = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const claude = new ChainEngine("claude", [async () => { entered(); await blocked; return turn("blocker done"); }, answers("fallback done")], 1);
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")], 1);
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([codex, claude]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder(writer);
+  const blocker = runtime.agent("blocker", { engine: "claude" });
+  await occupied;
+  const fallback = runtime.agent("fallback", { engine: "codex", label: "fallback", fallback: [{ engine: "claude", model: "test-claude" }] });
+  try {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const state = runtime.progress.snapshot().agents.find((agent) => agent.label === "fallback");
+      if (state?.engine === "claude" && state.state === "queued") break;
+      assert.ok(Date.now() < deadline, "fallback never reached the occupied target's queue");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000002/agent.json"), "utf8"));
+    assert.equal(record.status, "in-progress");
+    assert.equal(record.current_attempt, undefined, "queued fallback still claims an executing attempt");
+    release();
+    assert.equal(await fallback, "fallback done");
+    const settled = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000002/agent.json"), "utf8"));
+    assert.deepEqual(settled.attempts.map((attempt: { target: { engine: string } }) => attempt.target.engine), ["codex", "claude"]);
+    assert.equal(settled.current_attempt, undefined);
+  } finally {
+    release();
+    await Promise.allSettled([blocker, fallback]);
+    await runtime.close();
+    await writer.finish({ status: "complete", exitCode: 0, result: null });
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
+for (const boundary of ["retry", "settlement"] as const) {
+  test(`archive execution stays visible across ${boundary} publication`, async () => {
+    const store = await mkdtemp(path.join(tmpdir(), `ensemble-attempt-${boundary}-`));
+    const writer = await RunRecordWriter.start({
+      storeDir: store, cwd: process.cwd(), runUuid: `attempt-${boundary}`,
+      workflowPath: path.join(store, "workflow.js"), workflowSource: "return true;",
+      args: [], cliFlags: { jsonArgs: false }
+    });
+    let entered!: () => void;
+    let release!: () => void;
+    const reachedBoundary = new Promise<void>((resolve) => { entered = resolve; });
+    const publication = new Promise<void>((resolve) => { release = resolve; });
+    const recordStart = writer.recordAttemptStart.bind(writer);
+    writer.recordAttemptStart = async (id, attempt, at) => {
+      if (boundary === "retry" && attempt === 2) {
+        entered();
+        await publication;
+      }
+      await recordStart(id, attempt, at);
+    };
+    const recordAgent = writer.recordAgent.bind(writer);
+    writer.recordAgent = async (record) => {
+      if (boundary === "settlement" && record.status !== "in-progress") {
+        entered();
+        await publication;
+      }
+      await recordAgent(record);
+    };
+    const transport = new FakeTransport([turn("invalid JSON"), turn('{"answer":"yes"}')]);
+    const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 2 });
+    runtime.setRunRecorder(writer);
+    const call = runtime.agent("answer", { engine: "codex", schema });
+    void call.catch(() => undefined);
+    try {
+      await reachedBoundary;
+      const file = path.join(writer.archiveDir, "agents/000001/agent.json");
+      const running = JSON.parse(await readFile(file, "utf8"));
+      assert.equal(running.status, "in-progress");
+      assert.equal(running.current_attempt?.attempt, boundary === "retry" ? 1 : 2,
+        `archive classified an admitted worker as queued during ${boundary}`);
+      release();
+      assert.deepEqual(await call, { answer: "yes" });
+      const settled = JSON.parse(await readFile(file, "utf8"));
+      assert.equal(settled.status, "complete");
+      assert.equal(settled.current_attempt, undefined);
+    } finally {
+      release();
+      await Promise.allSettled([call]);
+      await runtime.close();
+      await writer.finish({ status: "complete", exitCode: 0, result: null });
+      await rm(store, { recursive: true, force: true });
+    }
+  });
+}
+
+
+test("runtime supervision follows live evidence, retry spend and settlement without an archive", async () => {
+  let clock = 100;
+  const observations: Array<{ agent: LiveAgentSnapshot; clock: number; calls: number }> = [];
+  class ObservedTransport extends FakeTransport {
+    calls = 0;
+    override async runTurn(threadId: string, _prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
+      this.calls += 1;
+      const event = { threadId, turnId: String(this.calls), last: usage(7), total: usage(7), raw: {} };
+      options.onIdentity?.({ resolvedModel: "served", resolvedEffort: "medium" });
+      options.onOutput?.();
+      clock += 10;
+      options.onOutput?.();
+      options.onUsage?.(event);
+      observations.push({ agent: structuredClone(runtime.progress.snapshot().agents[0]!), clock, calls: this.calls });
+      return { ...turn(this.calls === 1 ? "" : "answer"), tokenUsageEvents: [event], resolvedModel: "served", resolvedEffort: "medium" };
+    }
+  }
+  const transport = new ObservedTransport([]);
+  const runtime = new EnsembleRuntime({
+    transport, now: () => clock, defaultMaxAttempts: 2, worktreeManager: new FakeWorktreeManager(true)
+  });
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex", model: "wanted", effort: "high", isolation: "worktree" }), "answer");
+    assert.equal(observations.length, 2);
+    for (const { agent, clock: observedClock, calls } of observations) {
+      assert.equal(agent.state, "running");
+      assert.equal(agent.requestedModel, "wanted");
+      assert.equal(agent.requestedEffort, "high");
+      assert.equal(agent.resolvedModel, "served");
+      assert.equal(agent.resolvedEffort, "medium");
+      assert.equal(agent.lastEvidenceAtMs, observedClock);
+      assert.equal(agent.spent, calls * 7);
+      assert.equal(agent.worktree, "/fake/worktree-1");
+    }
+    const snapshot = runtime.progress.snapshot();
+    assert.equal(snapshot.archiveDir, null);
+    const finished = snapshot.agents[0]!;
+    assert.equal(finished.state, "done");
+    assert.equal(finished.spent, 14, "final usage replaces, rather than duplicates, streamed usage");
+    assert.equal(finished.firstEvidenceAtMs, 100);
+    assert.equal(finished.lastEvidenceAtMs, 120);
+    assert.equal(finished.failure, null);
+    assert.equal(finished.transcript, null, "no archive means no fabricated Codex transcript path");
+  } finally { await runtime.close(); }
+});
+
+test("retained runtime failures carry the archive's own kind and message", async () => {
+  const { runtime, records } = chainRuntime([new ChainEngine("codex", [answers("")])], 1);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex" }), null);
+    const finished = runtime.progress.snapshot().agents[0]!;
+    assert.equal(finished.state, "failed");
+    assert.deepEqual(finished.failure, records.at(-1)?.attempts.at(-1)?.failure);
+    assert.equal(finished.failure?.kind, "empty-output");
+  } finally { await runtime.close(); }
+});
+
+
+test("held turns retain independent spend and reject stale observer callbacks", async () => {
+  const observers: Array<TurnStartOptions & TurnProgressObserver> = [];
+  class HeldTransport extends FakeTransport {
+    override async runTurn(threadId: string, _prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
+      observers.push(options);
+      const tokens = observers.length * 3;
+      const event = { threadId, turnId: String(observers.length), last: usage(tokens), total: usage(tokens + 100), raw: {} };
+      options.onIdentity?.({ resolvedModel: "held-model", resolvedEffort: "high" });
+      options.onOutput?.();
+      options.onUsage?.(event);
+      return { ...turn("answer"), resolvedModel: "held-model", resolvedEffort: "high", tokenUsageEvents: [event] };
+    }
+  }
+  const transport = new HeldTransport([]);
+  const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 1, worktreeManager: new FakeWorktreeManager(true) });
+  const held = runtime.createWorkerSession({ engine: "codex", isolation: "worktree" });
+  try {
+    await held.send("first");
+    await held.send("second");
+    const snapshot = runtime.progress.snapshot();
+    assert.equal(transport.openedThreads.length, 1);
+    assert.deepEqual(snapshot.agents.map((agent) => [agent.id, agent.spent, agent.worktree]), [
+      [2, 6, "/fake/worktree-1"], [1, 3, "/fake/worktree-1"]
+    ]);
+    observers[0]?.onOutput?.();
+    observers[0]?.onIdentity?.({ resolvedModel: "stale", resolvedEffort: "low" });
+    observers[0]?.onUsage?.({ threadId: "old", turnId: "old", last: usage(999), total: usage(999), raw: {} });
+    assert.deepEqual(runtime.progress.snapshot().agents, snapshot.agents);
+  } finally { await held.close(); await runtime.close(); }
+});
+
+
+for (const engine of ["claude", "codex"] as const) {
+  test(`${engine} live status names the archive's published readable transcript`, async () => {
+    const store = await mkdtemp(path.join(tmpdir(), "ensemble-status-transcript-"));
+    let release!: () => void;
+    let observed!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    const publication = new Promise<void>((resolve) => { observed = resolve; });
+    const external = path.join(store, "session.jsonl");
+    await writeFile(external, "{}\n");
+    class TranscriptEngine extends ChainEngine {
+      override createInvocation(): EngineInvocation {
+        return { runAttempt: async (context) => {
+          if (engine === "codex") context.onTranscriptEvent?.({ direction: "server", method: "output" });
+          else context.onTranscriptPath?.(external);
+          await waiting;
+          return turn("answer");
+        } };
+      }
+    }
+    const runtime = new EnsembleRuntime({ engines: new EngineRegistry([new TranscriptEngine(engine, [])]), defaultMaxAttempts: 1 });
+    const writer = await RunRecordWriter.start({
+      storeDir: store, cwd: process.cwd(), runUuid: `status-${engine}`,
+      workflowPath: path.join(store, "workflow.js"), workflowSource: "return true;", args: [], cliFlags: { jsonArgs: false }
+    });
+    runtime.setRunRecorder(writer);
+    const unsubscribe = runtime.progress.onChange(() => {
+      if (runtime.progress.snapshot().agents.some((agent) => agent.transcript !== null)) observed();
+    });
+    const call = runtime.agent("work", { engine });
+    try {
+      await Promise.race([publication, call.then(() => { throw new Error("worker settled before transcript publication"); })]);
+      const snapshot = runtime.progress.snapshot();
+      assert.equal(snapshot.archiveDir, writer.archiveDir);
+      const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+      const transcript = snapshot.agents[0]!.transcript!;
+      assert.equal(transcript, record.current_attempt.transcript);
+      assert.ok((await readFile(path.isAbsolute(transcript) ? transcript : path.join(snapshot.archiveDir!, transcript))).length > 0);
+      release();
+      assert.equal(await call, "answer");
+      assert.equal(runtime.progress.snapshot().agents[0]?.transcript, transcript);
+    } finally {
+      unsubscribe(); release(); await call; await runtime.close();
+      await writer.finish({ status: "complete", exitCode: 0, result: null });
+      await rm(store, { recursive: true, force: true });
+    }
+  });
+}
+
+
+test("a fresh retry cannot inherit an unreported served identity", async () => {
+  const engine = new ChainEngine("codex", [
+    async () => ({ ...turn(""), resolvedModel: "previous-worker", resolvedEffort: "high" }),
+    answers("answer")
+  ]);
+  const { runtime, records } = chainRuntime([engine], 2);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex" }), "answer");
+    const finished = runtime.progress.snapshot().agents[0]!;
+    assert.equal(finished.resolvedModel, null);
+    assert.equal(finished.resolvedEffort, null);
+    assert.equal(records.at(-1)?.resolvedModel, null);
+    assert.equal(records.at(-1)?.attempts[0]?.resolvedModel, "previous-worker");
+  } finally { await runtime.close(); }
+});
+
+
+test("same-engine fallback starts fresh output evidence while retaining the request", async () => {
+  let clock = 100;
+  class ObservedChain extends ChainEngine {
+    override createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
+      const invocation = super.createInvocation(prompt, options);
+      return { runAttempt: async (context) => {
+        context.onOutput?.();
+        clock += 10;
+        return invocation.runAttempt(context);
+      } };
+    }
+  }
+  const engine = new ObservedChain("codex", [codexRefusal("serverOverloaded"), answers("answer", "served-fallback")]);
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 3, now: () => clock });
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex", model: "original", fallback: [{ engine: "codex", model: "next" }] }), "answer");
+    const finished = runtime.progress.snapshot().agents[0]!;
+    assert.equal(finished.firstEvidenceAtMs, 110);
+    assert.equal(finished.lastEvidenceAtMs, 110);
+    assert.equal(finished.requestedModel, "original");
+    assert.equal(finished.resolvedModel, "served-fallback");
+    assert.equal(runtime.progress.snapshot().totals.active, 0);
+    assert.equal(runtime.progress.snapshot().totals.done, 1);
+  } finally { await runtime.close(); }
+});
+
+
+test("streamed usage survives a thrown attempt and accumulates on its retry", async () => {
+  const observations: Array<number | null> = [];
+  let calls = 0;
+  class UsageEngine extends ChainEngine {
+    override createInvocation(): EngineInvocation {
+      return { runAttempt: async (context) => {
+        calls += 1;
+        const amount = calls === 1 ? 50_000 : 10_000;
+        const event = { threadId: "usage", turnId: String(calls), last: usage(amount), total: usage(amount), raw: {} };
+        context.onUsage?.(event);
+        observations.push(runtime.progress.snapshot().agents[0]!.spent);
+        if (calls === 1) throw new Error("transport closed after usage");
+        return { ...turn("answer"), tokenUsageEvents: [event] };
+      } };
+    }
+  }
+  const { runtime, records } = chainRuntime([new UsageEngine("codex", [])], 2);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex" }), "answer");
+    assert.deepEqual(observations, [50_000, 60_000]);
+    assert.equal(runtime.progress.snapshot().agents[0]!.spent, 60_000);
+    assert.deepEqual(records.at(-1)?.attempts.map((attempt) => attempt.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0)), [50_000, 10_000]);
+  } finally { await runtime.close(); }
+});
+
+test("an attached failure with empty usage retains streamed tokens across a retry", async () => {
+  const observations: Array<number | null> = [];
+  let calls = 0;
+  class UsageEngine extends ChainEngine {
+    override createInvocation(): EngineInvocation {
+      return { runAttempt: async (context) => {
+        calls += 1;
+        const amount = calls === 1 ? 50_000 : 10_000;
+        const event = { threadId: "usage", turnId: String(calls), last: usage(amount), total: usage(amount), raw: {} };
+        context.onUsage?.(event);
+        observations.push(runtime.progress.snapshot().agents[0]!.spent);
+        if (calls === 1) {
+          throw attachPartialWorkerText(attachFailedTurnResult(new Error("final transcript unreadable"), turn("partial answer")), "partial answer");
+        }
+        return { ...turn("answer"), tokenUsageEvents: [event] };
+      } };
+    }
+  }
+  const { runtime, records } = chainRuntime([new UsageEngine("claude", [])], 2);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "claude" }), "answer");
+    assert.deepEqual(observations, [50_000, 60_000]);
+    assert.equal(runtime.progress.snapshot().agents[0]!.spent, 60_000);
+    assert.deepEqual(records.at(-1)?.attempts.map((attempt) => attempt.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0)), [50_000, 10_000]);
+    assert.equal(records.at(-1)?.attempts[0]?.rawOutput, "partial answer");
+  } finally { await runtime.close(); }
+});
+
+test("invalid observed usage cannot replace a successful attempt outcome", async () => {
+  const event = { threadId: "invalid", turnId: "1", last: usage(-1), total: usage(-1), raw: {} };
+  const { runtime } = chainRuntime([new ChainEngine("codex", [async () => ({ ...turn("answer"), tokenUsageEvents: [event] })])], 1);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "codex" }), "answer");
+    assert.equal(runtime.progress.snapshot().agents[0]!.state, "done");
+    assert.equal(runtime.progress.snapshot().agents[0]!.spent, null);
+  } finally { await runtime.close(); }
+});
+
+
+test("thrown Codex turns retain observed identity with and without streamed usage", async () => {
+  for (const withUsage of [true, false]) {
+    class FailingTransport extends FakeTransport {
+      override async runTurn(_threadId: string, _prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
+        options.onIdentity?.({ resolvedModel: "initial", resolvedEffort: "medium" });
+        options.onIdentity?.({ resolvedModel: "rerouted", resolvedEffort: "high" });
+        if (withUsage) options.onUsage?.({ threadId: "failed", turnId: "1", last: usage(7), total: usage(7), raw: {} });
+        throw new Error("transport closed after identity");
+      }
+    }
+    const transport = new FailingTransport([]);
+    const { runtime, records } = chainRuntime([new CodexEngineAdapter({ transport, concurrency: 1 })], 1);
+    try {
+      assert.equal(await runtime.agent("work", { engine: "codex" }), null);
+      const agent = runtime.progress.snapshot().agents[0]!;
+      assert.equal(agent.state, "failed");
+      assert.equal(agent.resolvedModel, "rerouted");
+      assert.equal(agent.resolvedEffort, "high");
+      assert.equal(agent.spent, withUsage ? 7 : null);
+      assert.equal(records.at(-1)?.resolvedModel, "rerouted");
+      assert.equal(records.at(-1)?.resolvedEffort, "high");
+      assert.equal(records.at(-1)?.attempts[0]?.resolvedModel, "rerouted");
+    } finally { await runtime.close(); }
+  }
+});
+
+
+test("a worker failure settled before shutdown keeps its account through invocation cleanup", async () => {
+  for (const error of [
+    new TurnTimeoutError("attempt reached its deadline", { kind: "turn", timeoutMs: 50, threadId: "thread-1" }),
+    new EngineShutdownError("codex")
+  ]) {
+    for (const closeDuringCleanup of [false, true]) {
+      let markClosing: (() => void) | undefined;
+      let releaseClose: (() => void) | undefined;
+      const closing = new Promise<void>((resolve) => { markClosing = resolve; });
+      const closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
+      const engine: EngineAdapter = {
+        name: "codex", concurrency: 1, schedule: async (task) => task(),
+        createInvocation: () => ({
+          runAttempt: async () => { throw error; },
+          close: async () => { markClosing?.(); await closeGate; }
+        }),
+        close: async () => { releaseClose?.(); }
+      };
+      const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+      const notices = chainNotices(runtime);
+      const worker = runtime.agent("work", { engine: "codex", identity: true });
+      try {
+        await closing;
+        if (closeDuringCleanup) {
+          await runtime.close("interrupted");
+        } else {
+          releaseClose?.();
+        }
+        const output = await worker;
+        assert.deepEqual(output, {
+          label: null, phase: null, output: null,
+          failure: { message: `${error.name}: ${error.message}` }
+        });
+        const record = runtime.lastAgentRecord()!;
+        assert.equal(record.status, error instanceof TurnTimeoutError ? "timed-out" : "failed");
+        assert.equal(record.attempts[0]?.failure?.kind, error.name);
+        assert.deepEqual(notices.find((notice) => notice.method.endsWith("/agentFailed"))?.params.failure,
+          { kind: error.name, message: error.message });
+        if (error instanceof TurnTimeoutError) {
+          assert.deepEqual(record.terminationCause, { kind: "turn-timeout", message: error.message });
+        } else {
+          assert.equal(record.terminationCause, null);
+        }
+        if (closeDuringCleanup) {
+          assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 1, cutShort: 0, unsettled: 0 });
+        }
+      } finally {
+        releaseClose?.();
+        await runtime.close();
+        await worker.catch(() => undefined);
+      }
+    }
+  }
+});
+
+
+test("a held turn interrupted while placement opens has the run-ending record and tally", async () => {
+  let markOpening: (() => void) | undefined;
+  let releasePlacement: (() => void) | undefined;
+  const opening = new Promise<void>((resolve) => { markOpening = resolve; });
+  const placementGate = new Promise<void>((resolve) => { releasePlacement = resolve; });
+  const worktreeManager = new FakeWorktreeManager(false);
+  const create = worktreeManager.create.bind(worktreeManager);
+  worktreeManager.create = async (cwd) => {
+    markOpening?.();
+    await placementGate;
+    return create(cwd);
+  };
+  const transport = new FakeTransport([]);
+  const runtime = new EnsembleRuntime({ transport, worktreeManager, defaultMaxAttempts: 1 });
+  const session = runtime.createWorkerSession({ engine: "codex", isolation: "worktree", label: "held" });
+  const sent = session.send("work");
+  sent.catch(() => undefined);
+  try {
+    await opening;
+    const closing = runtime.close("interrupted");
+    releasePlacement?.();
+    await closing;
+    await assert.rejects(sent, isRunEnding);
+    const record = runtime.lastAgentRecord()!;
+    assert.equal(record.status, "interrupted");
+    assert.equal(record.terminationCause?.kind, "run-interrupted");
+    assert.deepEqual(record.attempts, []);
+    assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 1, unsettled: 0 });
+    assert.deepEqual(runtime.unfinishedLegs(), [{ id: record.id, label: "held", disposition: "cut-short" }]);
+    assert.equal(transport.openedThreads.length, 0);
+    assert.equal(worktreeManager.finished.length, 1);
+  } finally {
+    releasePlacement?.();
+    await runtime.close();
+    await sent.catch(() => undefined);
+  }
+});
+
+test("unawaited combinators registered after runtime close have handled run-ending rejections", async () => {
+  const runtime = new EnsembleRuntime({ transport: new FakeTransport([]), defaultMaxAttempts: 1 });
+  const hooks = createWorkflowHooks({ runtime, args: [], log: () => {}, workflow: async () => null });
+  const unhandled: unknown[] = [];
+  const listener = (error: unknown): void => { unhandled.push(error); };
+  process.on("unhandledRejection", listener);
+  try {
+    await runtime.close("interrupted");
+    void hooks.parallel([() => runtime.agent("work", { engine: "codex" })]);
+    void hooks.pipeline(["item"], () => runtime.agent("work", { engine: "codex" }));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+    await assert.rejects(hooks.parallel([() => runtime.agent("work", { engine: "codex" })]), isRunEnding);
+  } finally {
+    process.off("unhandledRejection", listener);
+    await runtime.close();
+  }
 });

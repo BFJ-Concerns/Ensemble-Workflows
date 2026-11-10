@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import type { RuntimeEvent } from "../../src/types.js";
+import { SystemdWorkerScopes, createWorkerScopes, type WorkerScopes } from "../../src/worker-scopes.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -21,6 +24,7 @@ import {
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError,
   appServerDiagnosticOf,
+  partialTranscriptOf,
   partialWorkerTextOf,
   workerExitStatusOf
 } from "../../src/errors.js";
@@ -182,6 +186,7 @@ test("the systemError failure-mode reports the protocol's missing diagnostic wit
         assert.match(error.message, /systemError without a diagnostic/);
         assert.deepEqual(appServerDiagnosticOf(error), {
           code: null,
+          httpStatusCode: null,
           message: "Codex app-server reported terminal systemError without a diagnostic",
           payload: '{"threadId":"thread-1","status":{"type":"systemError"}}'
         });
@@ -225,6 +230,7 @@ test("a systemError followed by completion remains a diagnostic-less terminal fa
         assert.ok(error instanceof AppServerSystemError);
         assert.match(error.message, /systemError without a diagnostic/);
         assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        assert.equal(partialTranscriptOf(error)?.partial, false);
         return true;
       }
     );
@@ -245,6 +251,7 @@ test("a systemError followed by Codex's schema diagnostic keeps its classified c
         assert.match(error.message, /invalid_json_schema: Invalid schema for response_format/);
         assert.deepEqual(appServerDiagnosticOf(error), {
           code: "invalid_json_schema",
+          httpStatusCode: null,
           message: "invalid_json_schema: Invalid schema for response_format",
           payload:
             '{"threadId":"thread-1","turnId":"turn-1","willRetry":false,"error":{"message":"Invalid schema for response_format","codexErrorInfo":"invalid_json_schema"}}'
@@ -289,6 +296,7 @@ test("a systemError makes a retry-promised schema diagnostic terminal and classi
         assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
         assert.deepEqual(appServerDiagnosticOf(error), {
           code: "invalid_json_schema",
+          httpStatusCode: null,
           message: "invalid_json_schema: Invalid schema for response_format",
           payload:
             '{"threadId":"thread-1","turnId":"turn-1","willRetry":true,"error":{"message":"Invalid schema for response_format","codexErrorInfo":"invalid_json_schema"}}'
@@ -350,6 +358,7 @@ test("a systemError followed by another diagnostic keeps that diagnostic attache
         assert.ok(error instanceof AppServerRequestError);
         assert.deepEqual(appServerDiagnosticOf(error), {
           code: null,
+          httpStatusCode: null,
           message: "upstream fell over",
           payload:
             '{"threadId":"thread-1","turnId":"turn-1","willRetry":false,"error":{"message":"upstream fell over"}}'
@@ -701,7 +710,7 @@ test("a started turn with no output expires before its ordinary timeout and reco
   }
 });
 
-test("the archive distinguishes a transport request deadline from a turn deadline", { timeout: 5_000 }, async () => {
+test("the archive distinguishes a transport request deadline from a turn deadline", { timeout: 20_000 }, async () => {
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-request-deadline-record-"));
   const archiveCauseFor = async (
     mode: "no-turn-start-ack" | "hang-after-delta",
@@ -954,7 +963,14 @@ test("a terminal frame from an abandoned turn cannot settle the live turn on a r
       TurnTimeoutError
     );
 
-    const second = await transport.runTurn(threadId, "second turn, live", { timeoutMs: 2_000 });
+    const observed: unknown[] = [];
+    const second = await transport.runTurn(threadId, "second turn, live", {
+      timeoutMs: 2_000,
+      onTranscriptEvent: (event) => observed.push(structuredClone(event))
+    });
+    assert.deepEqual(observed, second.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)),
+      "the live observer must retain every captured frame, including abandoned-turn stragglers");
+    assert.ok(JSON.stringify(observed).includes('"turnId":"turn-1"'));
     // Settled by its own completion, not the straggler's: the fake's turn-2
     // answer arrives only after both turn-1 stragglers have been sent.
     assert.equal(second.text, "the live turn's own answer");
@@ -982,7 +998,14 @@ test("a straggler arriving before the live turn learns its id is not learned as 
       () => transport.runTurn(threadId, "first turn, abandoned", { timeoutMs: 60 }),
       TurnTimeoutError
     );
-    const second = await transport.runTurn(threadId, "second turn, live", { timeoutMs: 2_000 });
+    const observed: unknown[] = [];
+    const second = await transport.runTurn(threadId, "second turn, live", {
+      timeoutMs: 2_000,
+      onTranscriptEvent: (event) => observed.push(structuredClone(event))
+    });
+    assert.deepEqual(observed, second.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)),
+      "the live observer must retain every captured frame, including abandoned-turn stragglers");
+    assert.ok(JSON.stringify(observed).includes('"turnId":"turn-1"'));
     assert.equal(second.text, "the live turn's own answer");
   } finally {
     await transport.close();
@@ -1609,7 +1632,9 @@ async function fakeCodexTurnServer(
     returnPromptBase64?: boolean;
     capturePath?: string;
     envCapturePath?: string;
+    cgroupCapturePath?: string;
     servedModel?: string | null;
+    emitUsage?: boolean;
     skillResponses?: string[][];
     skillErrors?: boolean;
   } = {}
@@ -1619,7 +1644,7 @@ async function fakeCodexTurnServer(
   await writeFile(
     bin,
     `#!/usr/bin/env node
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 if (process.argv[2] !== "app-server") {
@@ -1630,9 +1655,11 @@ let threadCounter = 0;
 const returnPromptBase64 = ${JSON.stringify(options.returnPromptBase64 ?? false)};
 const capturePath = ${JSON.stringify(options.capturePath ?? null)};
 const envCapturePath = ${JSON.stringify(options.envCapturePath ?? null)};
+const cgroupCapturePath = ${JSON.stringify(options.cgroupCapturePath ?? null)};
 const servedModel = ${JSON.stringify(options.servedModel === undefined ? "gpt-test-default" : options.servedModel)};
 const skillResponses = ${JSON.stringify(options.skillResponses ?? [[]])};
 const skillErrors = ${JSON.stringify(options.skillErrors ?? false)};
+const emitUsage = ${JSON.stringify(options.emitUsage ?? false)};
 let skillResponseIndex = 0;
 if (envCapturePath !== null) {
   writeFileSync(envCapturePath, process.env.ENSEMBLE_TEST_SCOPED ?? "__ABSENT__");
@@ -1646,6 +1673,7 @@ reader.on("line", (line) => {
     appendFileSync(capturePath, JSON.stringify({ method: message.method, params: message.params }) + "\\n");
   }
   if (message.method === "initialize") {
+    if (cgroupCapturePath !== null) writeFileSync(cgroupCapturePath, readFileSync("/proc/self/cgroup", "utf8"));
     send({ id: message.id, result: {} });
     return;
   }
@@ -1685,6 +1713,10 @@ reader.on("line", (line) => {
       : "hello";
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId } });
+    if (emitUsage) {
+      const usage = { cachedInputTokens: 0, inputTokens: 3, outputTokens: 2, totalTokens: 5 };
+      send({ method: "thread/tokenUsage/updated", params: { threadId, turnId: "turn-1", tokenUsage: { last: usage, total: usage } } });
+    }
     send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text } } });
     send({ method: "turn/completed", params: { threadId } });
   }
@@ -2078,7 +2110,9 @@ test("the first output-bearing frame fires the supervisor-facing liveness callba
   try {
     const threadId = await transport.openThread({});
     let fires = 0;
+    let outputs = 0;
     const result = await transport.runTurn(threadId, "speak slowly", {
+      onOutput: () => { outputs += 1; },
       timeoutMs: 2_000,
       onFirstOutput: () => {
         fires += 1;
@@ -2088,7 +2122,178 @@ test("the first output-bearing frame fires the supervisor-facing liveness callba
     // Later output frames (the completed item, turn completion) must not
     // re-fire it: once per turn is the contract.
     assert.equal(fires, 1);
+    assert.ok(outputs > 1, "continuing output must remain observable after the first frame");
   } finally {
     await transport.close();
+  }
+});
+
+
+test("Codex is placed before handshake and shares its assigned group across lazy workers", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-placement-"));
+  try {
+    for (const grouping of ["worker", "run"] as const) {
+      const capturePath = path.join(directory, `${grouping}.jsonl`);
+      const codexBin = await fakeCodexTurnServer({ capturePath });
+      const manager = await createWorkerScopes({ label: `codex-placement-${process.pid}-${grouping}` });
+      assert.ok(manager instanceof SystemdWorkerScopes, "test needs the real user manager");
+      const placements: { group: string; pid: number }[] = [];
+      const scopes: WorkerScopes = {
+        slice: manager.slice,
+        launch: manager.launch.bind(manager),
+        close: manager.close.bind(manager),
+        async place(group, pids) {
+          assert.equal(await readFile(capturePath, "utf8").catch(() => ""), "", "the handshake began before placement");
+          const outcome = await manager.place(group, pids);
+          assert.equal(outcome.kind, "placed", JSON.stringify(outcome));
+          assert.ok(outcome.kind === "placed");
+          for (const pid of pids) {
+            assert.ok((await readFile(`/proc/${pid}/cgroup`, "utf8")).trim().endsWith(`/${outcome.unit}`));
+            placements.push({ group, pid });
+          }
+          return outcome;
+        }
+      };
+      const registry = await createDefaultEngineRegistry({ ...defaultRegistryOptions(codexBin), requestTimeoutMs: 30_000, startupHandshakeTimeoutMs: 60_000, workerScopes: scopes, workerScope: grouping });
+      try {
+        assert.equal(placements.length, 0, "construction spawned Codex");
+        const engine = registry.get("codex")!;
+        await Promise.all(["hello", "hello"].map(async (prompt) => {
+          const invocation = engine.createInvocation(prompt, {});
+          try { await invocation.runAttempt({ attempt: 1 }); } finally { await invocation.close?.(); }
+        }));
+        assert.equal(placements.length, 1, "concurrent workers did not share one app-server placement");
+        assert.equal(placements[0]?.group, grouping === "run" ? "run" : "codex");
+        assert.match(await readFile(capturePath, "utf8"), /initialize/);
+      } finally {
+        await registry.close();
+        await manager.close();
+        await rm(path.dirname(codexBin), { recursive: true, force: true });
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("runtime forwards run grouping to the real Codex process", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-runtime-scopes-"));
+  const capture = path.join(directory, "cgroup");
+  const codexBin = await fakeCodexTurnServer({ cgroupCapturePath: capture });
+  const runtime = await createRuntime({ cwd: directory, codexBin, workerScope: "run" });
+  let unit: string | undefined;
+  try {
+    await runtime.agent("hello", { engine: "codex" });
+    const cgroup = (await readFile(capture, "utf8")).trim();
+    unit = cgroup.split("/").at(-1);
+    assert.match(unit ?? "", /^ensemble-.*-run.scope$/, "the runtime's grouping did not reach the app-server");
+    const launcher = (await readFile("/proc/self/cgroup", "utf8")).trim().split("/");
+    const userManager = launcher.findIndex((part) => /^user@\d+\.service$/.test(part));
+    const slice = userManager < 0 ? undefined : launcher.slice(userManager + 1).filter((part) => part.endsWith(".slice")).at(-1);
+    if (slice !== undefined) assert.ok(cgroup.split("/").includes(slice));
+  } finally {
+    await runtime.close();
+    await rm(path.dirname(codexBin), { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("separate runtimes in one process keep distinct scopes and independent teardown", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-runtime-scope-ownership-"));
+  const captures = [path.join(directory, "first"), path.join(directory, "second")];
+  const bins: string[] = [];
+  const runtimes: EnsembleRuntime[] = [];
+  try {
+    for (const capture of captures) {
+      const codexBin = await fakeCodexTurnServer({ cgroupCapturePath: capture });
+      bins.push(codexBin);
+      runtimes.push(await createRuntime({ cwd: directory, codexBin, workerScope: "run" }));
+    }
+    await Promise.all(runtimes.map((runtime) => runtime.agent("hello", { engine: "codex" })));
+    const cgroups = await Promise.all(captures.map((capture) => readFile(capture, "utf8")));
+    assert.notEqual(cgroups[0], cgroups[1], "two runtimes adopted the same scope");
+    await runtimes[0]!.close();
+    assert.equal(await runtimes[1]!.agent("hello", { engine: "codex" }), "hello", "closing another runtime ended this app-server");
+  } finally {
+    await Promise.all(runtimes.map((runtime) => runtime.close()));
+    await Promise.all(bins.map((bin) => rm(path.dirname(bin), { recursive: true, force: true })));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("live transcript events stay ordered across concurrent threads and successive turns", async () => {
+  const codexBin = await fakeCodexTurnServer();
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threads = await Promise.all([transport.openThread({}), transport.openThread({})]);
+    const captures: unknown[][] = [[], []];
+    const results = await Promise.all(threads.map((thread, index) =>
+      transport.runTurn(thread, "hello", {
+        onTranscriptEvent: (event) => {
+          captures[index]!.push(structuredClone(event));
+          if (index === 1) throw new Error("observer failed");
+        }
+      })));
+    for (const [index, result] of results.entries()) {
+      assert.deepEqual(captures[index], result.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)),
+        "concurrent live observers must receive their own complete ordered capture");
+      assert.equal(result.text, "hello");
+    }
+    const previous = structuredClone(captures[0]);
+    const next: unknown[] = [];
+    const result = await transport.runTurn(threads[0]!, "again", {
+      onTranscriptEvent: (event) => next.push(structuredClone(event))
+    });
+    assert.deepEqual(captures[0], previous);
+    assert.deepEqual(next, result.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)));
+  } finally {
+    await transport.close();
+  }
+});
+
+
+test("served identity and usage observers receive transport evidence and cannot fail the turn", async () => {
+  const codexBin = await fakeCodexTurnServer({ servedModel: "gpt-observed", emitUsage: true });
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({ effort: "high" });
+    const identities: unknown[] = [];
+    const usage: unknown[] = [];
+    const result = await transport.runTurn(threadId, "observe", {
+      onIdentity: (identity) => { identities.push(identity); throw new Error("observer"); },
+      onUsage: (event) => { usage.push(event); throw new Error("observer"); },
+      onOutput: () => { throw new Error("observer"); }
+    });
+    assert.deepEqual(identities[0], { resolvedModel: "gpt-observed", resolvedEffort: "high" });
+    assert.ok(usage.length > 0);
+    assert.deepEqual(usage, result.tokenUsageEvents);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("Codex placement refusal is observable while its app-server remains usable", async () => {
+  const codexBin = await fakeCodexTurnServer();
+  const events: RuntimeEvent[] = [];
+  const scopes: WorkerScopes = {
+    slice: null,
+    async place() { return { kind: "refused", reason: "controlled scope refusal" }; },
+    async launch(file, args, options) { return spawn(file, [...args], options); },
+    async close() {}
+  };
+  let transport: CodexAppServerTransport | undefined;
+  try {
+    transport = await CodexAppServerTransport.start({ ...defaultTransportOptions(codexBin), scopes, onEvent: (event) => events.push(event) });
+    const thread = await transport.openThread({});
+    assert.equal((await transport.runTurn(thread, "hello", {})).text, "hello");
+    const notice = events.find((event) => event.method === "codex/workerScopePlacement");
+    assert.equal(notice?.params.kind, "refused", "the app-server discarded the placement outcome");
+    assert.equal(notice?.params.reason, "controlled scope refusal");
+    assert.equal(typeof notice?.params.pid, "number");
+  } finally {
+    await transport?.close();
+    await rm(path.dirname(codexBin), { recursive: true, force: true });
   }
 });

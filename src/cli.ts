@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "./ambient-settings.js";
+import { CALLER_IDENTITY_ENV, parseWorkerScopeGrouping, resolveAmbientSettings } from "./ambient-settings.js";
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
@@ -20,6 +20,7 @@ import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-recor
 import { defaultWorkflowRegistryDirs, listSavedWorkflows } from "./workflow-registry.js";
 import { harnessVersion } from "./harness-version.js";
 
+import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { AmbientSettings } from "./ambient-settings.js";
 import type { RunProgress } from "./progress.js";
 import type { CompletedAgentOutput, EnsembleRuntime, ShutdownTally, UnfinishedLeg } from "./runtime.js";
@@ -49,7 +50,8 @@ const AGENT_INVOCATION_OPTIONS = {
   concurrency: { type: "string", multiple: true },
   timeout: { type: "string" },
   "caller-identity": { type: "string" },
-  "hold-scope": { type: "string" }
+  "hold-scope": { type: "string" },
+  "worker-scope": { type: "string" }
 } as const;
 
 export interface EnsembleCliOptions {
@@ -227,7 +229,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       return 0;
     }
     for (const record of enumeration.retired) {
-      stdout.write(`retired ${record.hold_id} at ${record.retired_at} — ${record.retirement_reason}\n`);
+      stdout.write(`retired ${record.hold_id} — raiser provably gone; nothing could await its answer\n`);
     }
     if (enumeration.holds.length === 0) {
       const view = scope !== null ? `scope ${scope}` : "any scope";
@@ -257,18 +259,16 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // verdict so the decider copies a valid answer rather than the
       // placeholder.
       const [firstVerdict, ...otherVerdicts] = record.verdicts;
-      stdout.write(`  answer:   ${program} holds answer ${record.hold_id} --verdict ${JSON.stringify(firstVerdict)}` +
-        `${otherVerdicts.length > 0 ? ` (or ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}\n`);
+      stdout.write(
+        `  answer:   write {"nonce":"${record.nonce}","verdict":${JSON.stringify(firstVerdict)}} to ${record.decision_path}` +
+          `${otherVerdicts.length > 0 ? ` (or use ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}\n`
+      );
       if (record.answer_rejection !== undefined) {
         const attempted =
           record.answer_rejection.attempted_verdict === null
             ? record.answer_rejection.attempted_verdict_state
             : JSON.stringify(record.answer_rejection.attempted_verdict);
-        const submitter = record.answer_rejection.answered_by;
-        const note = record.answer_rejection.note;
-        stdout.write(`  rejected: ${record.answer_rejection.reason} (${attempted})` +
-          `${submitter ? ` by ${boundedEvidence(submitter)}` : ""}` +
-          `${note ? ` — ${boundedEvidence(note)}` : ""}\n`);
+        stdout.write(`  rejected: ${record.answer_rejection.reason} (${attempted})\n`);
       }
       for (const line of record.content.split("\n")) {
         stdout.write(`  | ${line}\n`);
@@ -285,6 +285,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       env,
       cwd,
       flags: {
+        ...(invocation.workerScope !== undefined ? { workerScope: invocation.workerScope } : {}),
         ...(invocation.agentCeiling !== undefined ? { agentCeiling: invocation.agentCeiling } : {}),
         ...(invocation.concurrencyCaps !== undefined ? { concurrencyCaps: invocation.concurrencyCaps } : {})
       }
@@ -359,6 +360,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     const holdScope = resolveHoldScope(invocation.holdScope, env);
     runtime = await (options.createRuntime ?? createRuntime)({
       cwd,
+      workerScope: ambientSettings.workerScope.value,
       ...(invocation.budgetCeilings !== undefined ? { budgetCeilings: invocation.budgetCeilings } : {}),
       ...(holdScope !== null ? { holdScope } : {}),
       ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
@@ -412,6 +414,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         cliFlags: cliFlags(invocation),
         ...(callerIdentity !== undefined ? { callerIdentity } : {}),
         concurrency: recordConcurrency(ambientSettings, progress),
+        workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
@@ -423,25 +426,62 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       statusWriter = new StatusFileWriter({
         progress,
         dir: statusDir,
+        createDirectory: options.statusDir === undefined && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError(error)}\n`);
         }
       });
+      if (await statusWriter.ready()) {
+        try {
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: runtimeRunId, status_path: statusWriter.path })}\n`);
+        } catch {
+          // A broken supervision stream cannot fail a run that published status.
+        }
+      }
     }
 
     runtime.onEvent((event) => {
       if (event.method === "hold/raised") {
-        const id = typeof event.params.holdId === "string" ? boundedEvidence(event.params.holdId) : "?";
-        const scope = typeof event.params.scope === "string" ? boundedEvidence(event.params.scope) : "(shared)";
-        const verdicts = Array.isArray(event.params.verdicts) ? event.params.verdicts.filter((v): v is string => typeof v === "string") : [];
-        const forms = verdicts.map((verdict) => `${program} holds answer ${id} --verdict ${JSON.stringify(boundedEvidence(verdict))}`);
-        stderr.write(`[hold] ${id} raised in scope ${scope}; ${forms.join(" or ")}\n`);
+        const holdId = String(event.params.holdId);
+        const verdicts = event.params.verdicts as string[];
+        // JSON keeps opaque verdicts on one terminal line; single-quoted
+        // shell arguments preserve their exact spelling in answer commands.
+        const answerCommands = verdicts.map((verdict) =>
+          `${program} holds answer '${holdId.replaceAll("'", "'\"'\"'")}' --verdict='${verdict.replaceAll("'", "'\"'\"'")}'`
+        );
+        stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, event: "raised", verdicts, answer_commands: answerCommands })}\n`);
         return;
       }
-      if (event.method === "hold/answered" || event.method === "hold/timedOut") {
-        const id = typeof event.params.holdId === "string" ? boundedEvidence(event.params.holdId) : "?";
-        const outcome = event.method === "hold/timedOut" ? "timed out" : `answered with ${JSON.stringify(event.params.verdict)}`;
-        stderr.write(`[hold] ${id} ${outcome}\n`);
+      if (event.method === "hold/answerRejected") {
+        stderr.write(`[hold] ${JSON.stringify({
+          hold_id: event.params.holdId,
+          event: "answer-rejected",
+          reason: event.params.reason,
+          attempted_verdict: event.params.attemptedVerdict,
+          attempted_verdict_state: event.params.attemptedVerdictState,
+          answered_by: event.params.answeredBy ?? null
+        })}\n`);
+        return;
+      }
+      if (event.method === "claude/workerScopeWatchError") {
+        stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
+        return;
+      }
+      if (event.method === "codex/workerScopePlacement") {
+        if (event.params.kind === "refused") {
+          const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
+          stderr.write(`[codex] app-server (pid ${pid}) scope placement refused: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
+        }
+        return;
+      }
+      if (event.method === "claude/workerScopePlacement") {
+        const name = boundedEvidence(String(event.params.name ?? "unknown"));
+        const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
+        if (event.params.kind === "refused") {
+          stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement refused; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
+        } else if (event.params.kind === "placed") {
+          stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement recovered in ${boundedEvidence(String(event.params.unit ?? "unknown scope"))}\n`);
+        }
         return;
       }
       if (event.method === "claude/unpinnedModel") {
@@ -672,9 +712,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // Tear workers down while the archive is still open so their terminal
         // status can replace the dispatch-time snapshot before the run is sealed.
         progress?.finish();
-        if (statusWriter !== null) {
-          await statusWriter.close();
-        }
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
           // A run whose body returned cleanly did not fail, so the workers it
@@ -697,6 +734,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // app-server death must not be attributed to the author's own
         // calls with a stack into the bundle.
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError(error)}\n`);
+      }
+      if (statusWriter !== null) {
+        await statusWriter.close();
       }
       teardownError ??= judgeLateEnding();
       // The seal runs even when worker teardown failed: close() rejects by
@@ -833,6 +873,7 @@ function workflowName(meta: unknown): string | null {
 }
 
 interface InvocationTuning {
+  workerScope?: WorkerScopeGrouping;
   budgetCeilings?: EngineBudgetCeilings;
   agentCeiling?: number | null;
   concurrencyCaps?: EngineConcurrencyCaps;
@@ -924,6 +965,7 @@ function singleAgentWorkflowSource(invocation: ParsedAgentInvocation): string {
 }
 
 function cliFlags(invocation: ParsedInvocation): {
+  workerScope?: WorkerScopeGrouping;
   budget?: Record<string, number | null>;
   agentCeiling?: number | null;
   concurrency?: Record<string, number>;
@@ -934,6 +976,7 @@ function cliFlags(invocation: ParsedInvocation): {
   return {
     ...(invocation.budgetCeilings !== undefined ? { budget: invocation.budgetCeilings } : {}),
     ...(invocation.agentCeiling !== undefined ? { agentCeiling: invocation.agentCeiling } : {}),
+    ...(invocation.workerScope !== undefined ? { workerScope: invocation.workerScope } : {}),
     ...(invocation.concurrencyCaps !== undefined ? { concurrency: invocation.concurrencyCaps } : {}),
     ...(invocation.timeoutMs !== undefined ? { timeoutMs: invocation.timeoutMs } : {}),
     ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
@@ -1270,7 +1313,8 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
         timeout: { type: "string" },
         strip: { type: "string", multiple: true },
         "caller-identity": { type: "string" },
-        "hold-scope": { type: "string" }
+        "hold-scope": { type: "string" },
+        "worker-scope": { type: "string" }
       },
       strict: true,
       allowPositionals: false
@@ -1292,6 +1336,7 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const workerScope = parsed.values["worker-scope"] === undefined ? undefined : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
 
   return {
     kind: "workflow",
@@ -1304,6 +1349,7 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(strip !== undefined ? { strip } : {}),
     ...(callerIdentity !== undefined ? { callerIdentity } : {}),
+    ...(workerScope !== undefined ? { workerScope } : {}),
     ...(holdScope !== undefined ? { holdScope } : {})
   };
 }
@@ -1365,6 +1411,7 @@ async function parseAgentInvocation(
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const workerScope = parsed.values["worker-scope"] === undefined ? undefined : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
   const agentOptions: AgentOptions = {
     engine,
     ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {}),
@@ -1389,6 +1436,7 @@ async function parseAgentInvocation(
     ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(callerIdentity !== undefined ? { callerIdentity } : {}),
+    ...(workerScope !== undefined ? { workerScope } : {}),
     ...(holdScope !== undefined ? { holdScope } : {})
   };
 }
@@ -1582,6 +1630,7 @@ function isKnownOption(value: string): boolean {
     value === "--timeout" ||
     value === "--strip" ||
     value === "--caller-identity" ||
+    value === "--worker-scope" ||
     value === "--hold-scope"
   );
 }
@@ -1595,6 +1644,7 @@ function isKnownInlineOption(value: string): boolean {
     value.startsWith("--timeout=") ||
     value.startsWith("--strip=") ||
     value.startsWith("--caller-identity=") ||
+    value.startsWith("--worker-scope=") ||
     value.startsWith("--hold-scope=")
   );
 }
@@ -1807,11 +1857,11 @@ function holdsAnswerUsage(program: string): string {
     "from the hold), then reports what the raiser did with it, as one JSON object\n" +
     "on stdout. The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set,\n" +
     "otherwise host:pid.\n" +
-    "Exit codes: 0 consumed (the raiser accepted this answer); 3 bounced (rejected;\n" +
+    "Exit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected;\n" +
     "the hold keeps waiting and the reason is reported); 4 not yet consumed (the\n" +
     "raiser has not read it within its poll cadence; the answer file stays in\n" +
-    "place); 5 no open hold with that id; 7 outcome not attributable to this\n" +
-    "answer; 2 usage; 1 I/O failure.\n"
+    "place); 5 no open hold with that id; 6 retired (the hold settled without\n" +
+    "judging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n"
   );
 }
 
@@ -1879,9 +1929,9 @@ async function answerHoldCommand(
     case "consumed":
       stderr.write(`hold ${holdId}: answer consumed — the run resumed with verdict ${JSON.stringify(verdict)}\n`);
       return 0;
-    case "not-attributable":
-      stderr.write(`hold ${holdId}: this answer's outcome is not attributable\n`);
-      return 7;
+    case "retired":
+      stderr.write(`hold ${holdId}: hold settled without judging this answer — the stale decision file was removed\n`);
+      return 6;
     case "bounced":
       stderr.write(
         `hold ${holdId}: answer bounced (${result.rejection.reason}) — the hold is still waiting for a valid answer\n`
@@ -1902,22 +1952,22 @@ async function answerHoldCommand(
 const DEFAULT_PROGRAM_NAME = "ensemble";
 
 /**
- * How the caller addresses the CLI, derived from the script path Node was
- * given (`process.argv[1]`): a bundle or compiled entry run through Node
- * reads `node <file>`, so the usage text tells the reader to type what they
- * typed — there is no `ensemble` on PATH unless a bin shim or symlink puts
- * one there, and such a shim (a file without a script extension) is named
- * as itself. No path: the default word.
+ * The absolute invocation path, preserving a symlink's name rather than
+ * resolving its target. Script files run through Node; executable shims
+ * name themselves. Shell quoting keeps each path a single argument.
  */
 export function programNameFor(scriptPath: string | undefined): string {
   if (scriptPath === undefined || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
-  const file = path.basename(scriptPath);
-  return /\.(?:mjs|cjs|js)$/.test(file) ? `node ${file}` : file;
+  const absolutePath = path.resolve(scriptPath);
+  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath)
+    ? absolutePath
+    : `'${absolutePath.replaceAll("'", "'\"'\"'")}'`;
+  return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
 }
 
-/** Every usage line fits a conventional terminal; longer lines wrap at a token. */
+/** Usage wraps at tokens; the absolute launcher path may exceed the width. */
 const USAGE_WIDTH = 80;
 const USAGE_LEAD = "Usage: ";
 
@@ -1930,7 +1980,8 @@ const RUN_OPTION_SYNOPSES: readonly string[] = [
   "--timeout ms",
   "--strip capability",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--worker-scope worker|run"
 ];
 
 /** The flags `agent` accepts between the subcommand and the prompt (`--engine` is in the synopsis). */
@@ -1951,7 +2002,8 @@ const AGENT_OPTION_SYNOPSES: readonly string[] = [
   "--concurrency engine=N",
   "--timeout ms",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--worker-scope worker|run"
 ];
 
 /**
@@ -1969,7 +2021,7 @@ function usage(program: string): string {
     ["holds", "[--json]", "[--scope <scope> | --all]"],
     ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]
   ];
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  const continuation = " ".repeat(Math.min(USAGE_LEAD.length + program.length + 1, 24));
   const lines: string[] = [];
   forms.forEach((tokens, index) => {
     const lead = `${index === 0 ? USAGE_LEAD : " ".repeat(USAGE_LEAD.length)}${program}`;
@@ -1982,7 +2034,7 @@ function usage(program: string): string {
     "Agent options (after agent, before the prompt):",
     ...wrapTokens("  ", AGENT_OPTION_SYNOPSES, "  ", "  "),
     "The prompt is the one positional argument, or stdin when omitted.",
-    `Run \`${program} --help\` for orientation; each subcommand answers --help.`,
+    ...wrapTokens("Run", [`\`${program} --help\``, "for orientation;", "each subcommand answers --help."], "  ", " "),
     ""
   );
   return lines.join("\n");
@@ -1991,26 +2043,25 @@ function usage(program: string): string {
 /**
  * One subcommand's own synopsis, laid out like the top-level usage: the
  * program as invoked, the form's tokens, wrapped at `USAGE_WIDTH` with the
- * continuation under the first token. Every standalone `Usage:` line a
+ * continuation indented by at most 24 columns. Every standalone `Usage:` line a
  * subcommand prints comes through here.
  */
 function subcommandSynopsis(program: string, tokens: readonly string[]): string {
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  const continuation = " ".repeat(Math.min(USAGE_LEAD.length + program.length + 1, 24));
   return `${wrapTokens(`${USAGE_LEAD}${program}`, tokens, continuation, " ").join("\n")}\n`;
 }
 
 /**
  * Greedy wrap of `tokens` after `lead`, never splitting a token: a line that
  * would pass `USAGE_WIDTH` ends before the token, which opens the next line
- * at `indent`. The first token always follows the lead, so a lead longer
- * than the width still produces a line rather than an empty one.
+ * at `indent`. An overlong launcher lead stays whole on its own line.
  */
 function wrapTokens(lead: string, tokens: readonly string[], indent: string, separator: string): string[] {
   const lines: string[] = [];
   let line = lead;
   tokens.forEach((token, index) => {
     const joined = index === 0 ? `${lead}${lead.endsWith(" ") ? "" : " "}${token}` : `${line}${separator}${token}`;
-    if (index > 0 && joined.length > USAGE_WIDTH) {
+    if (joined.length > USAGE_WIDTH && line.trim().length > 0) {
       lines.push(line);
       line = `${indent}${token}`;
     } else {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import path from "node:path";
 
@@ -7,7 +7,6 @@ import { HoldRejectedError, HoldTimeoutError } from "./errors.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { readProcessStartTicks } from "./process-owner-evidence.js";
 import { snapshotOwnerGone } from "./status-file.js";
-import { recordRetiredHold } from "./run-record.js";
 
 import type { SnapshotOwnerEvidence } from "./status-file.js";
 import type { RuntimeEvent } from "./types.js";
@@ -118,7 +117,7 @@ export interface HoldFileRecord {
   owner: SnapshotOwnerEvidence;
   /** The latest rejected answer, republished for the decider who made it. */
   answer_rejection?: HoldAnswerRejection;
-  /** Where the decider writes the answer: `{ "nonce", "verdict", "note"?, "answered_by"?, "submission_id"? }`. */
+  /** Where the decider writes the answer: `{ "nonce", "verdict", "note"?, "answered_by"? }`. */
   decision_path: string;
 }
 
@@ -129,17 +128,8 @@ export interface HoldAnswerRejection {
   /** Explains a null attempted verdict instead of silently discarding what was knowable. */
   attempted_verdict_state: "submitted" | "missing-or-non-string" | "unparseable";
   rejected_at: string;
+  /** The answerer named by the decision file, or null when unavailable. */
   answered_by?: string | null;
-  note?: string | null;
-  submission_id?: string | null;
-}
-
-export interface RetiredHoldRecord extends HoldFileRecord {
-  state: "retired";
-  retired_at: string;
-  retirement_reason: "dead-raiser" | "timed-out";
-  /** Why the raising run's archive could not record this retirement. */
-  archive_error?: string;
 }
 
 /** One enumerated open hold. */
@@ -155,11 +145,10 @@ export interface EnumeratedHold {
  */
 export interface HoldEnumeration {
   holds: EnumeratedHold[];
-  retired: RetiredHoldRecord[];
+  retired: HoldFileRecord[];
 }
 
 const DECISION_SUFFIX = ".decision.json";
-const RETIRED_SUFFIX = ".retired.json";
 
 /** The shared cross-run holds root: `<XDG_DATA_HOME>/ensemble/holds`. */
 export function defaultHoldsDirectory(env: NodeJS.ProcessEnv = process.env): string {
@@ -308,10 +297,10 @@ export class HoldManager {
     }
     this.#sweepDone = true;
     try {
-      await enumerateScopeDirectory(this.#dir, {
-        procDir: this.#procDir,
-        onRetired: (record) => this.#emit("hold/retired", { holdId: record.hold_id, scope: record.scope, reason: record.retirement_reason })
-      });
+      const { retired } = await enumerateScopeDirectory(this.#dir, { procDir: this.#procDir });
+      for (const record of retired) {
+        this.#emit("hold/retired", { holdId: record.hold_id, scope: record.scope });
+      }
     } catch {
       // The sweep is hygiene: its failure must never fail a raise.
     }
@@ -342,8 +331,6 @@ export class HoldManager {
       }
       if (deadline !== null && this.#now() >= deadline) {
         this.#emit("hold/timedOut", { holdId: record.hold_id });
-        await retireHold(record, holdPath, "timed-out");
-        await rm(decisionPath, { force: true });
         throw new HoldTimeoutError(record.hold_id, record.timeout_at ?? "");
       }
       await this.#delay();
@@ -373,11 +360,8 @@ export class HoldManager {
     let rejection: HoldAnswerRejection | null = null;
     let decision: ReadDecision | null = null;
     try {
-      const parsed = JSON.parse(raw) as { nonce?: unknown; verdict?: unknown; note?: unknown; answered_by?: unknown; submission_id?: unknown };
+      const parsed = JSON.parse(raw) as { nonce?: unknown; verdict?: unknown; note?: unknown; answered_by?: unknown };
       grace.lastUnparseable = null;
-      const submissionId = typeof parsed.submission_id === "string" &&
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parsed.submission_id)
-        ? parsed.submission_id : null;
       if (parsed.nonce !== record.nonce) {
         rejection = rejectedAnswer("stale-nonce", parsed.verdict, this.#now());
       } else if (typeof parsed.verdict !== "string" || !record.verdicts.includes(parsed.verdict)) {
@@ -388,14 +372,11 @@ export class HoldManager {
           note: typeof parsed.note === "string" ? parsed.note : null,
           // Read from the decision file as written: a hand-authored answer
           // that names no answerer records none — never a guess.
-          answeredBy: typeof parsed.answered_by === "string" ? parsed.answered_by : null,
-          submissionId
+          answeredBy: typeof parsed.answered_by === "string" ? parsed.answered_by : null
         };
       }
       if (rejection !== null) {
         rejection.answered_by = typeof parsed.answered_by === "string" ? parsed.answered_by : null;
-        rejection.note = typeof parsed.note === "string" ? parsed.note : null;
-        rejection.submission_id = submissionId;
       }
     } catch {
       if (grace.lastUnparseable !== raw) {
@@ -414,10 +395,6 @@ export class HoldManager {
       };
     }
     if (decision !== null || rejection !== null) {
-      const submissionId = decision?.submissionId ?? rejection?.submission_id;
-      if (submissionId) {
-        await publishDecisionReceipt(decisionPath, submissionId, decision, rejection);
-      }
       // Consumed on any judgement: a rejected file left in place would be
       // re-read for ever, and removing it lets a corrected answer land at
       // the same path.
@@ -431,9 +408,7 @@ export class HoldManager {
         reason: rejection.reason,
         attemptedVerdict: rejection.attempted_verdict,
         attemptedVerdictState: rejection.attempted_verdict_state,
-        answeredBy: rejection.answered_by ?? null,
-        note: rejection.note ?? null,
-        submissionId: rejection.submission_id ?? null
+        answeredBy: rejection.answered_by ?? null
       });
       return null;
     }
@@ -467,7 +442,6 @@ export class HoldManager {
 /** An accepted decision as read from the file, before the script sees its verdict and note. */
 interface ReadDecision extends HoldDecision {
   answeredBy: string | null;
-  submissionId: string | null;
 }
 
 /**
@@ -492,48 +466,26 @@ export interface AnswerHoldOptions {
   /** Gap between hold-file re-reads while waiting. */
   checkIntervalMs?: number;
   procDir?: string;
-  /** Test seam for an in-flight hold read after a receipt check. */
-  readHoldFile?: (holdPath: string) => Promise<string>;
 }
 
 /** What an answer write produced, judged by the hold and decision files. */
 export type AnswerHoldOutcome =
   | { outcome: "consumed"; hold_id: string; verdict: string }
+  | { outcome: "retired"; hold_id: string; verdict: string }
   | { outcome: "bounced"; hold_id: string; verdict: string; rejection: HoldAnswerRejection }
   | { outcome: "not-consumed"; hold_id: string; verdict: string; decision_path: string; waited_ms: number }
-  | { outcome: "not-attributable"; hold_id: string; verdict: string }
   | { outcome: "not-found"; hold_id: string };
-
-type DecisionReceipt =
-  | { submission_id: string; outcome: "consumed" }
-  | { submission_id: string; outcome: "bounced"; rejection: HoldAnswerRejection };
-
-function decisionReceiptPath(decisionPath: string, submissionId: string): string {
-  return `${decisionPath}.${submissionId}.receipt.json`;
-}
-
-async function publishDecisionReceipt(
-  decisionPath: string,
-  submissionId: string,
-  decision: ReadDecision | null,
-  rejection: HoldAnswerRejection | null
-): Promise<void> {
-  const receipt: DecisionReceipt = decision !== null
-    ? { submission_id: submissionId, outcome: "consumed" }
-    : { submission_id: submissionId, outcome: "bounced", rejection: rejection as HoldAnswerRejection };
-  const dest = decisionReceiptPath(decisionPath, submissionId);
-  const temp = `${dest}.${process.pid}.tmp`;
-  await writeFile(temp, `${JSON.stringify(receipt)}\n`);
-  await rename(temp, dest);
-}
 
 /**
  * Answer a hold the way a hand-writing decider would — the same plain-JSON
  * decision file at the record's `decision_path`, nonce copied from the hold
  * file, written then renamed into place — and then report what the write
- * produced. A per-submission receipt attributes a judgement to this write;
- * file disappearance alone does not. The raise nonce remains the acceptance
- * boundary, and hand-written decisions need no submission id.
+ * produced. Both files gone means the raiser consumed an accepted answer;
+ * a vanished hold with the decision still present settled without judging
+ * this answer; a freshly written `answer_rejection` means it bounced;
+ * neither within the raiser's poll cadence means not yet consumed (never
+ * claimed as accepted). This is a convenience writer only: the raiser's
+ * nonce and verdict checks remain the correctness boundary.
  */
 export async function answerHold(options: AnswerHoldOptions): Promise<AnswerHoldOutcome> {
   const enumeration = await enumerateHolds(options.dir, options.procDir !== undefined ? { procDir: options.procDir } : {});
@@ -542,13 +494,13 @@ export async function answerHold(options: AnswerHoldOptions): Promise<AnswerHold
     return { outcome: "not-found", hold_id: options.holdId };
   }
   const { record, path: holdPath } = found;
-  const submissionId = randomUUID();
-  const answer: Record<string, string> = { nonce: record.nonce, verdict: options.verdict, submission_id: submissionId };
+  const priorRejection = JSON.stringify(record.answer_rejection ?? null);
+  const answer: Record<string, string> = { nonce: record.nonce, verdict: options.verdict };
   if (options.note !== undefined) {
     answer.note = options.note;
   }
   answer.answered_by = options.answeredBy;
-  const tmp = `${record.decision_path}.${submissionId}.tmp`;
+  const tmp = `${record.decision_path}.${process.pid}.tmp`;
   await writeFile(tmp, `${JSON.stringify(answer)}\n`, { encoding: "utf8" });
   await rename(tmp, record.decision_path);
 
@@ -556,27 +508,10 @@ export async function answerHold(options: AnswerHoldOptions): Promise<AnswerHold
   const waitMs = options.waitMs ?? cadence * 4 + 1000;
   const checkIntervalMs = options.checkIntervalMs ?? Math.min(100, cadence);
   const started = Date.now();
-  async function readReceipt(): Promise<AnswerHoldOutcome | null> {
-    const receiptPath = decisionReceiptPath(record.decision_path, submissionId);
-    let receipt: DecisionReceipt;
-    try {
-      receipt = JSON.parse(await readFile(receiptPath, "utf8")) as DecisionReceipt;
-    } catch (error) {
-      if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    }
-    await rm(receiptPath, { force: true });
-    if (receipt.submission_id !== submissionId) return null;
-    return receipt.outcome === "consumed"
-      ? { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict }
-      : { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: receipt.rejection };
-  }
   for (;;) {
-    const receipt = await readReceipt();
-    if (receipt !== null) return receipt;
     let current: HoldFileRecord | null;
     try {
-      current = JSON.parse(await (options.readHoldFile?.(holdPath) ?? readFile(holdPath, "utf8"))) as HoldFileRecord;
+      current = JSON.parse(await readFile(holdPath, "utf8")) as HoldFileRecord;
     } catch (error) {
       if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
         current = null;
@@ -585,20 +520,22 @@ export async function answerHold(options: AnswerHoldOptions): Promise<AnswerHold
       }
     }
     if (current === null) {
-      // Settlement can publish its receipt between the two reads above.
-      const settled = await readReceipt();
-      if (settled !== null) return settled;
-      return { outcome: "not-attributable", hold_id: record.hold_id, verdict: options.verdict };
+      try {
+        await stat(record.decision_path);
+      } catch (error) {
+        if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+          return { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict };
+        }
+        throw error;
+      }
+      await rm(record.decision_path, { force: true });
+      return { outcome: "retired", hold_id: record.hold_id, verdict: options.verdict };
+    }
+    if (current.answer_rejection !== undefined && JSON.stringify(current.answer_rejection) !== priorRejection) {
+      return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: current.answer_rejection };
     }
     const waited = Date.now() - started;
     if (waited >= waitMs) {
-      let pending: { submission_id?: unknown } | null = null;
-      try {
-        pending = JSON.parse(await readFile(record.decision_path, "utf8")) as { submission_id?: unknown };
-      } catch { /* The decision may already have been consumed or replaced. */ }
-      if (pending?.submission_id !== submissionId) {
-        return { outcome: "not-attributable", hold_id: record.hold_id, verdict: options.verdict };
-      }
       return {
         outcome: "not-consumed",
         hold_id: record.hold_id,
@@ -660,10 +597,7 @@ export async function enumerateHolds(dir: string, options: EnumerateHoldsOptions
   return result;
 }
 
-async function enumerateScopeDirectory(
-  scopeDir: string,
-  options: { procDir: string; onRetired?: (record: RetiredHoldRecord) => void }
-): Promise<HoldEnumeration> {
+async function enumerateScopeDirectory(scopeDir: string, options: { procDir: string }): Promise<HoldEnumeration> {
   let entries: string[];
   try {
     entries = await readdir(scopeDir);
@@ -680,16 +614,6 @@ async function enumerateScopeDirectory(
     }
     const holdPath = path.join(scopeDir, entry);
     try {
-      if (entry.endsWith(RETIRED_SUFFIX)) {
-        const retired = JSON.parse(await readFile(holdPath, "utf8")) as RetiredHoldRecord;
-        if (retired.kind === "ensemble_hold" && retired.state === "retired") {
-          if (retired.retirement_reason === "dead-raiser" && retired.run_identity?.archive_path) {
-            await recordRetirementEvidence(retired, holdPath);
-          }
-          result.retired.push(retired);
-        }
-        continue;
-      }
       const record = JSON.parse(await readFile(holdPath, "utf8")) as HoldFileRecord;
       if (record.kind !== "ensemble_hold" || typeof record.hold_id !== "string") {
         continue;
@@ -698,12 +622,11 @@ async function enumerateScopeDirectory(
         // The raiser is provably dead: nothing can await this hold's
         // decision, so the machinery that observed the death retires it —
         // the hold file and any stale answer beside it.
-        const retired = await retireHold(record, holdPath, "dead-raiser");
+        await rm(holdPath, { force: true }).catch(() => undefined);
         if (typeof record.decision_path === "string") {
           await rm(record.decision_path, { force: true }).catch(() => undefined);
         }
-        result.retired.push(retired);
-        options.onRetired?.(retired);
+        result.retired.push(record);
         continue;
       }
       result.holds.push({ record, path: holdPath });
@@ -714,40 +637,8 @@ async function enumerateScopeDirectory(
   return result;
 }
 
-async function retireHold(
-  record: HoldFileRecord,
-  holdPath: string,
-  reason: RetiredHoldRecord["retirement_reason"]
-): Promise<RetiredHoldRecord> {
-  const retired: RetiredHoldRecord = {
-    ...record,
-    state: "retired",
-    retired_at: new Date().toISOString(),
-    retirement_reason: reason
-  };
-  await publishHoldRecord(holdPath.replace(/\.json$/, RETIRED_SUFFIX), retired);
-  await rm(holdPath, { force: true });
-  if (reason === "dead-raiser" && record.run_identity?.archive_path) {
-    await recordRetirementEvidence(retired, holdPath.replace(/\.json$/, RETIRED_SUFFIX));
-  }
-  return retired;
-}
-
-async function recordRetirementEvidence(retired: RetiredHoldRecord, tombstonePath: string): Promise<void> {
-  try {
-    await recordRetiredHold(retired.run_identity!.archive_path!, retired);
-    if (retired.archive_error === undefined) return;
-    delete retired.archive_error;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (retired.archive_error === message) return;
-    retired.archive_error = message;
-  }
-  await publishHoldRecord(tombstonePath, retired);
-}
-
 async function publishHoldRecord(holdPath: string, record: HoldFileRecord): Promise<void> {
-  const tmp = `${holdPath}.${randomUUID()}.tmp`;
+  const tmp = `${holdPath}.${process.pid}.tmp`;
   await writeFile(tmp, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8" });
   await rename(tmp, holdPath);
 }

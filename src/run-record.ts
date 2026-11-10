@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash, type Hash } from "node:crypto";
+import { appendFile, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -21,9 +21,11 @@ import { harnessVersion } from "./harness-version.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 
-import type { Resolved } from "./ambient-settings.js";
+import { withoutRunScopedVariables, type Resolved } from "./ambient-settings.js";
+import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { OwnerGoneReason, ProcessOwnerRecord } from "./process-owner-evidence.js";
 import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
+import type { AppServerDiagnostic } from "./errors.js";
 import type { FailureClassification } from "./failure-classification.js";
 import type { UsageSummary } from "./usage-summary.js";
 
@@ -60,6 +62,7 @@ type AgentStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interr
 type ParseRoute = "direct" | "object-fallback" | "array-fallback" | "scalar-line";
 
 export interface CliFlagsRecord {
+  workerScope?: WorkerScopeGrouping;
   budget?: Record<string, number | null>;
   agentCeiling?: number | null;
   concurrency?: Record<string, number>;
@@ -77,6 +80,7 @@ export interface RunRecordStartOptions {
   args: unknown;
   cliFlags: CliFlagsRecord;
   concurrency?: EffectiveConcurrencyRecord;
+  workerScope?: Resolved<WorkerScopeGrouping>;
   effectiveSettings?: EffectiveRunSettingsRecord;
   /** Opaque identity supplied by the process that invoked this run, if any. */
   callerIdentity?: string;
@@ -165,7 +169,7 @@ export interface RuntimeAgentAttemptRecord {
    * The Codex app-server diagnostic observed for this failed attempt. Null
    * when the engine supplied no diagnostic, rather than an inferred cause.
    */
-  appServerDiagnostic: { code: number | string | null; message: string; payload: string } | null;
+  appServerDiagnostic: AppServerDiagnostic | null;
   rawOutput: string | null;
   validatedOutput: unknown;
   /** The served model this attempt's engine reported, when it reported one. */
@@ -439,6 +443,7 @@ interface Manifest {
     raw: unknown;
   };
   cli_flags: CliFlagsRecord;
+  worker_scope: Resolved<WorkerScopeGrouping>;
   concurrency: {
     agent_ceiling: Resolved<number | null>;
     engines: Partial<Record<EngineName, Resolved<number>>>;
@@ -484,7 +489,7 @@ interface Manifest {
   workflow_invocations: WorkflowInvocationEntry[];
   /**
    * The run's hold lifecycle, append-only in event order: each raise,
-   * accepted answer, rejected answer, timeout and retirement, so a consumer holding
+   * accepted answer, rejected answer, and timeout, so a consumer holding
    * only the archive can reconstruct what the run waited on and how each
    * wait ended. The hold files themselves are transient coordination state;
    * this list is their durable trace.
@@ -508,45 +513,17 @@ interface HoldEventEntry {
   event: "raised" | "answered" | "answer-rejected" | "timed-out" | "retired";
   /** The accepted verdict on `answered`; null elsewhere. */
   verdict: string | null;
-  /** The rejection or retirement reason; null elsewhere. */
+  /** The rejection reason on `answer-rejected`; null elsewhere. */
   reason: string | null;
   /** The rejected file's submitted verdict; null only when the state explains why. */
   attempted_verdict: string | null;
   /** The evidence quality for `attempted_verdict`; null outside rejected answers. */
   attempted_verdict_state: "submitted" | "missing-or-non-string" | "unparseable" | null;
-  /** On `answered` or `answer-rejected`: who wrote the answer, as the decision file named it. */
+  /** On `answered`: who wrote the answer, as the decision file named it; null when it named no one, and elsewhere. */
   answered_by: string | null;
-  /** On `answered` or `answer-rejected`: the decider's note; null when none. */
+  /** On `answered`: the decider's note; null when none, and elsewhere. */
   note: string | null;
   at: string;
-}
-
-/** Append a retirement observed after the raising writer has died. */
-export async function recordRetiredHold(
-  archiveDir: string,
-  retired: { run_id: string; hold_id: string; retired_at: string; retirement_reason: "dead-raiser" | "timed-out" }
-): Promise<void> {
-  const manifestPath = path.join(archiveDir, MANIFEST_PATH);
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Manifest;
-  if (manifest.kind !== "run_manifest" || manifest.run_uuid !== retired.run_id ||
-      !manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "raised")) {
-    throw new Error("retired hold does not belong to the named run archive");
-  }
-  if (manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "retired")) {
-    return;
-  }
-  manifest.hold_events.push({
-    hold_id: retired.hold_id,
-    event: "retired",
-    verdict: null,
-    reason: retired.retirement_reason,
-    attempted_verdict: null,
-    attempted_verdict_state: null,
-    answered_by: null,
-    note: null,
-    at: retired.retired_at
-  });
-  await writeAttestedManifest(manifestPath, manifest);
 }
 
 interface WorkflowInvocationEntry {
@@ -622,6 +599,9 @@ export class RunRecordWriter {
   #tmpSeq = 0;
   #writeChain: Promise<unknown> = Promise.resolve();
   #sealed = false;
+  #currentAttempts = new Map<number, { attempt: number; started_at: string; transcript: string | null }>();
+  #liveCodex = new Map<string, string>();
+  #liveCodexHashes = new Map<string, { hash: Hash; size: number }>();
 
   private constructor(archiveDir: string, cwd: string, manifest: Manifest) {
     this.archiveDir = archiveDir;
@@ -689,6 +669,7 @@ export class RunRecordWriter {
         raw: null
       },
       cli_flags: options.cliFlags,
+      worker_scope: options.workerScope ?? { value: "worker", layer: "default" },
       concurrency: {
         agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
         engines: options.concurrency?.engines ?? {}
@@ -854,7 +835,7 @@ export class RunRecordWriter {
       hold_id: event.params.holdId,
       event: kind,
       verdict: kind === "answered" && typeof event.params.verdict === "string" ? event.params.verdict : null,
-      reason: (kind === "answer-rejected" || kind === "retired") && typeof event.params.reason === "string" ? event.params.reason : null,
+      reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
       attempted_verdict:
         kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string"
           ? event.params.attemptedVerdict
@@ -864,7 +845,7 @@ export class RunRecordWriter {
           ? event.params.attemptedVerdictState
           : null,
       answered_by: (kind === "answered" || kind === "answer-rejected") && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
-      note: (kind === "answered" || kind === "answer-rejected") && typeof event.params.note === "string" ? event.params.note : null,
+      note: kind === "answered" && typeof event.params.note === "string" ? event.params.note : null,
       at: new Date(event.receivedAt).toISOString()
     };
     await this.#serialise(async () => {
@@ -896,6 +877,80 @@ export class RunRecordWriter {
     });
   }
 
+  /** Publish execution start separately from dispatch and settlement. */
+  async recordAttemptStart(id: number, attempt: number, startedAt: string): Promise<void> {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const record = this.#agents.get(id);
+      if (record === undefined || record.status !== "in-progress") return;
+      this.#currentAttempts.set(id, { attempt, started_at: startedAt, transcript: null });
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+
+  /** Clear execution metadata before another target waits for admission. */
+  async recordAttemptEnd(id: number, attempt: number): Promise<void> {
+    await this.#serialise(async () => {
+      if (this.#sealed || this.#currentAttempts.get(id)?.attempt !== attempt) return;
+      this.#currentAttempts.delete(id);
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+
+  /** Reference Claude's own readable transcript without copying a growing file. */
+  async recordClaudeTranscript(id: number, attempt: number, transcriptPath: string): Promise<void> {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const current = this.#currentAttempts.get(id);
+      if (current?.attempt !== attempt) return;
+      await stat(transcriptPath);
+      current.transcript = transcriptPath;
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+
+  /** Append an event before publishing its archive reference. */
+  async appendCodexTranscript(id: number, attempt: number, event: unknown): Promise<string | null> {
+    const content = `${JSON.stringify(event)}\n`;
+    return await this.#serialise(async () => {
+      if (this.#sealed) return null;
+      const current = this.#currentAttempts.get(id);
+      if (current?.attempt !== attempt) return null;
+      const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-transcript.codex.jsonl`;
+      await mkdir(path.dirname(path.join(this.archiveDir, relativePath)), { recursive: true });
+      await appendFile(path.join(this.archiveDir, relativePath), content);
+      const digest = this.#liveCodexHashes.get(relativePath) ?? { hash: createHash("sha256"), size: 0 };
+      digest.hash.update(content);
+      digest.size += Buffer.byteLength(content);
+      this.#liveCodexHashes.set(relativePath, digest);
+      this.#files.set(relativePath, {
+        path: relativePath, size: digest.size, sha256: digest.hash.copy().digest("hex")
+      });
+      this.#liveCodex.set(`${id}:${attempt}`, relativePath);
+      if (current.transcript !== relativePath) {
+        current.transcript = relativePath;
+        await this.#publishCurrentAttempt(id);
+      } else {
+        await this.#writeManifest();
+      }
+      return relativePath;
+    });
+  }
+
+  /** Update live metadata without replaying settled attempt artefact writes. */
+  async #publishCurrentAttempt(id: number): Promise<void> {
+    const relativePath = `agents/${padId(id)}/agent.json`;
+    const record = JSON.parse(await readFile(path.join(this.archiveDir, relativePath), "utf8"));
+    const current = this.#currentAttempts.get(id);
+    if (current === undefined) {
+      delete record.current_attempt;
+    } else {
+      record.current_attempt = { ...current };
+    }
+    await this.#writeJson(relativePath, record);
+    await this.#writeManifest();
+  }
+
   async recordAgent(record: RuntimeAgentRecord): Promise<void> {
     // Snapshot at the boundary: the runtime keeps mutating its live record
     // between the dispatch-time write and settlement, and the manifest
@@ -913,6 +968,7 @@ export class RunRecordWriter {
 
   async #recordAgent(record: RuntimeAgentRecord): Promise<void> {
     this.#agents.set(record.id, record);
+    if (record.status !== "in-progress") this.#currentAttempts.delete(record.id);
     const agentDir = `agents/${padId(record.id)}`;
     const transcriptRefs = [];
 
@@ -929,7 +985,15 @@ export class RunRecordWriter {
         index += 1;
         const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
         const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
-        await this.#writeText(relativePath, transcript.content);
+        const liveFile = this.#files.get(relativePath);
+        const liveMatches = this.#liveCodex.get(`${record.id}:${attempt.attempt}`) === relativePath &&
+          liveFile?.sha256 === sha256(transcript.content) &&
+          (await stat(path.join(this.archiveDir, relativePath)).catch(() => null))?.size === liveFile.size;
+        if (liveMatches) {
+          await this.#trackFile(relativePath);
+        } else {
+          await this.#writeText(relativePath, transcript.content);
+        }
         transcriptRefs.push({
           attempt: attempt.attempt,
           path: relativePath,
@@ -943,7 +1007,9 @@ export class RunRecordWriter {
     }
 
     const agentJsonPath = `${agentDir}/agent.json`;
+    const unsettledTiming = record.status === "in-progress" || record.status === "abandoned";
     await this.#writeJson(agentJsonPath, {
+      ...(this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id)! } } : {}),
       schema_version: SCHEMA_VERSION,
       kind: "agent_record",
       id: record.id,
@@ -975,7 +1041,9 @@ export class RunRecordWriter {
       label: record.label,
       phase: record.phase,
       status: record.status,
-      termination_cause: record.terminationCause,
+      termination_cause: record.status === "in-progress" && record.terminationCause === null
+        ? { kind: "record-unsettled", message: "the writer has not observed this worker's outcome" }
+        : record.terminationCause,
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
@@ -996,8 +1064,8 @@ export class RunRecordWriter {
       // none — an agent with no usage data must be legible as "unknown for
       // this reason", never indistinguishable from zero spend.
       usage: agentUsage(record),
-      queued_ms: record.queuedMs,
-      execution_ms: record.executionMs,
+      queued_ms: unsettledTiming && record.queuedMs === 0 ? null : record.queuedMs,
+      execution_ms: unsettledTiming && record.executionMs === 0 ? null : record.executionMs,
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,
@@ -1015,6 +1083,7 @@ export class RunRecordWriter {
             ? null
             : {
                 code: attempt.appServerDiagnostic.code,
+                http_status_code: attempt.appServerDiagnostic.httpStatusCode,
                 message: attempt.appServerDiagnostic.message,
                 payload: attempt.appServerDiagnostic.payload
               },
@@ -1113,9 +1182,11 @@ export class RunRecordWriter {
     // Self-attestation last, over everything above it: null the field, hash
     // the canonical form, then write. Computed on every manifest write, not
     // only at seal, so a manifest read mid-run is verifiable too.
+    this.manifest.integrity.manifest_sha256 = null;
+    this.manifest.integrity.manifest_sha256 = sha256(canonicalJson(this.manifest));
     const destination = path.join(this.archiveDir, MANIFEST_PATH);
-    await writeAttestedManifest(destination, this.manifest, true,
-      path.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`));
+    const temporary = path.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
+    await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}\n`);
   }
 
   // pid + sequence keeps names unique within the process; Date.now() alone
@@ -1466,7 +1537,11 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       // canonical form, then let the standalone helper atomically replace it.
       // Pre-attestation manifests have no self-digest to renew, but remain
       // eligible for the established reap route.
-      await writeAttestedManifest(manifestPath, fresh);
+      if (fresh.integrity !== undefined && fresh.integrity !== null && typeof fresh.integrity.manifest_sha256 === "string") {
+        fresh.integrity.manifest_sha256 = null;
+        fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
+      }
+      await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}\n`);
       reaped.push(entry.name);
     } catch {
       // One unreadable or unwritable sibling must not end the sweep.
@@ -1482,8 +1557,8 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
  * snapshot as an outcome. The same ordering argument as the manifest's
  * applies — the owner was observed dead before these reads, so every write
  * the dead process made is visible, and a settled record shows its
- * terminal status and is skipped. Status resolution only: nothing else in
- * the record changes, and a record that cannot be read or written is left
+ * terminal status and is skipped. Execution metadata is removed from
+ * abandoned records; the captured content stays intact. An unreadable record is left
  * as it stands rather than ending the sweep. Returns the rewritten files'
  * refreshed table entries, keyed by archive-relative path, for the
  * caller's single manifest write.
@@ -1507,12 +1582,14 @@ async function resolveAbandonedAgentRecords(
       const agentRecord = JSON.parse(await readFile(agentJsonPath, "utf8")) as {
         status?: unknown;
         abandonment?: AbandonmentRecord;
+        current_attempt?: unknown;
       };
       if (agentRecord.status !== "in-progress") {
         continue;
       }
       agentRecord.status = "abandoned";
       agentRecord.abandonment = abandonment;
+      delete agentRecord.current_attempt;
       const content = `${canonicalJson(agentRecord)}\n`;
       await writeStandaloneText(agentJsonPath, content);
       rewritten.set(`agents/${agentEntry.name}/agent.json`, {
@@ -1604,15 +1681,15 @@ async function toolVersions(): Promise<Record<string, string | null>> {
   const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
-    commandVersion("claude", ["--version"]),
+    commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
     commandVersion("opencode", ["--version"])
   ]);
   return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
 }
 
-async function commandVersion(command: string, args: string[]): Promise<string | null> {
+async function commandVersion(command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string | null> {
   try {
-    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5_000 });
+    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5_000, env });
     return (stdout || stderr).trim() || null;
   } catch {
     return null;
@@ -1639,6 +1716,8 @@ function holdEventKind(method: string): HoldEventEntry["event"] | null {
     case "hold/timedOut":
       return "timed-out";
     case "hold/retired":
+      // A dead-raiser hold this run's own sweep retired: the observation is
+      // this run's, even though the hold was another (dead) run's.
       return "retired";
     default:
       return null;
@@ -1661,24 +1740,10 @@ async function hashFile(filePath: string): Promise<string> {
   return createHash("sha256").update(text).digest("hex");
 }
 
-async function writeAttestedManifest(
-  destination: string,
-  manifest: { integrity?: { manifest_sha256?: string | null } | null },
-  initialise = false,
-  temporary?: string
-): Promise<void> {
-  if (manifest.integrity !== undefined && manifest.integrity !== null &&
-      (initialise || typeof manifest.integrity.manifest_sha256 === "string")) {
-    manifest.integrity.manifest_sha256 = null;
-    manifest.integrity.manifest_sha256 = sha256(canonicalJson(manifest));
-  }
-  await writeStandaloneText(destination, `${canonicalJson(manifest)}\n`, temporary);
-}
-
-async function writeStandaloneText(destination: string, content: string, temporary?: string): Promise<void> {
+async function writeStandaloneText(destination: string, content: string): Promise<void> {
   await mkdir(path.dirname(destination), { recursive: true });
-  const staging = temporary ?? path.join(path.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
-  await writeAndRename(staging, destination, content);
+  const temporary = path.join(path.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
+  await writeAndRename(temporary, destination, content);
 }
 
 /** Atomic temp-then-rename write; a failed write never leaves its temp file behind. */

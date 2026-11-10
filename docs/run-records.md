@@ -8,26 +8,35 @@ A run can leave three kinds of file behind or alongside it:
 | Completion sentinel (`completion-sentinel.json`) | Permanent | Learn that a run has ended, and how |
 | Durable run record (the archive) | Permanent; on by default | Audit or evaluate a run after the fact |
 
-The live status file is written only where a status directory exists (by
-default, `.claude/` in the run's working directory).
+The live status file defaults to an automatically created status directory
+in the Ensemble data home. The CLI announces the exact file path on stderr
+before workflow execution.
 
 Where these files live, and how to turn them off, is covered in
 [Configuration](configuration.md).
 
 ## Live status
 
-While a run is active it publishes a small JSON snapshot of what it is doing —
+While a run is active it publishes a JSON snapshot of what it is doing —
 current phase, per-engine active/queued/done/failed counts, per-engine token
-spend, and the live worker list — to its own file in the status directory:
-`.claude/ensemble.<run-uuid>.local.json` under the run's working directory by
-default. Ensemble writes there only when `.claude/` already exists and never
-creates it. Writes are atomic, so a reader never sees a half-written file.
+spend, and every queued, running and finished worker — to its own
+file in the status directory. By default it creates
+`$XDG_DATA_HOME/ensemble/status` (`~/.local/share/ensemble/status` by default)
+and writes there, independently of the working directory and any `.claude`
+entry. Explicit status directories must already exist. Writes
+are atomic, so a reader never sees a half-written file.
 
-Each run has its own file, so concurrent runs in one directory are each
+After the first successful write and before workflow execution, the CLI prints
+`[status-file] {"run_id":…, "status_path":…}` on stderr. A supervisor can
+follow that path without knowing the working directory's layout or searching
+the archive. Disable publication with `ENSEMBLE_STATUS=off`; directory
+overrides and machine settings are described in [Configuration](configuration.md).
+
+Each run has its own file, so concurrent runs sharing a status directory are each
 visible for their whole lifetime: a later run never overwrites an earlier
 run's view, and a run that ends removes only its own file. A file left by a
-killed run stays until the next run starts in that directory, whose startup
-sweep removes any file whose writer is provably dead (below).
+killed run stays until the next run publishing to the same status directory
+starts; its startup sweep removes any file whose writer is provably dead (below).
 
 Consumers list the directory for `ensemble.*.local.json` and parse each file
 directly; Ensemble provides no rendering command. A reader decides liveness by
@@ -49,11 +58,14 @@ rules, and a token on one engine does not cost the same as on another.
 
 ### `ensemble.<run-uuid>.local.json` schema
 
+Schema 3 retains finished workers in `agents` and permits `done` and `failed` states. Schema 2 contains only live workers. Consumers must check the schema before interpreting the worker list.
+
 Each status file contains one JSON object with these fields:
 
-- `schema`: `3`. Version 3 names open holds by `hold_id`; version 2 used `id`.
+- `schema`: `3`.
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
+- `archiveDir`: string or `null`, the run archive directory when published.
 - `workflow`: string or `null`, from `meta.name` when present.
 - `state`: `"running"` or `"finished"`. A finished snapshot may exist briefly
   while the writer closes; `close()` then removes the file. Readers should treat
@@ -68,25 +80,38 @@ Each status file contains one JSON object with these fields:
   `opencode`). Each entry has numeric `active`, `queued`, `done`, `failed`, and
   `spent`; `cap`, `ceiling`, and `remaining` are numbers or `null`. Spend and
   ceilings are per-engine and are never summed.
-- `agents`: array of live worker objects, capped for file size. Each object has
-  numeric `id` and `attempt`, `engine` (`"codex"`, `"claude"`, or
-  `"opencode"`), `state` (`"queued"` or `"running"`), nullable string
-  `label` and `phase`, and two liveness stamps (numbers or `null`, Unix epoch
-  milliseconds): `startedAtMs`, when the worker left the queue and began
-  executing, and `firstEvidenceAtMs`, when the engine first saw the worker
-  produce output. The evidence stamp is set once per target and never
-  updated; a fallback to another engine starts both stamps afresh. A worker
-  running long with no evidence stamp has not produced output on its current
-  target and is suspect, while one with a stamp has produced output at least
-  once; the stamps cannot tell a worker streaming now from one that stalled
-  after its first output. `waitingOn` is `null`, or an object while Ensemble is holding
-  a Claude worker for a background task it started (a long command or a
-  Monitor): its kind is background-task, and it carries the task's id, Claude
-  Code's description of the task, and the epoch-millisecond time the wait was
-  first observed. That distinguishes a stuck background task from a worker
-  that is still generating.
+- `agents`: array of every worker: running first, then queued (oldest
+  first within each), then finished (newest registered first). Each object has
+  `id`, `attempt`, `engine` (codex, claude or opencode), `state` (queued,
+  running, done or failed), nullable strings `label`, `phase`, `requestedModel`,
+  `requestedEffort`, `resolvedModel`, `resolvedEffort`, `transcript`, and
+  `worktree`; nullable numeric `spent`, `startedAtMs`, `firstEvidenceAtMs`,
+  `lastEvidenceAtMs`, and `finishedAtMs`; and nullable `failure` and `waitingOn`.
+
+Worker spend is cumulative across attempts and fallback targets; null means
+unobserved, not zero. Identity and paths are producer-supplied evidence, never
+inferred. Requested identity describes the original call; resolved identity
+names what was served. Transcript paths match the running agent record's
+current attempt: archive-relative for Codex, absolute native paths for
+Claude. Resolve relative paths against archiveDir. A settled Claude record
+archives a copy of the native transcript; the status entry retains its
+live path.
+Failure is an object with kind and message, or null when unavailable or successful.
+Finished time is the settlement observation time. All timestamps are epoch
+milliseconds. First evidence stays fixed across same-target retries, while last
+evidence advances on each output observation. A fallback clears both evidence
+stamps, start time, served identity and transcript; spend and original requested
+identity persist. Same-target retries preserve the evidence stamps and spend
+and clear waitingOn. Each attempt clears its transcript reference until
+publication, and a fresh worker's served identity is unknown until observed.
+Queued and settled workers ignore output observations. waitingOn is null or the
+background-task object described by the engine (taskId, description, sinceMs).
+Every worker remains listed until the run ends; neither live nor finished
+entries are evicted or omitted from the snapshot. Finished entries have
+state done or failed and no outstanding wait. Repeated settlement is inert.
+
 - `holds`: array of open decision holds, empty when the run is not waiting.
-  Each object has string `hold_id`, string `content` (cut to 500 characters plus
+  Each object has string `id`, string `content` (cut to 500 characters plus
   an ellipsis when longer; the hold file carries the full text), string-array
   `verdicts`, and numeric `raisedAtMs` (Unix epoch milliseconds).
 
@@ -101,6 +126,7 @@ Example:
   "schema": 3,
   "runId": "run-01HZY7V4Q8P2",
   "pid": 43122,
+  "archiveDir": null,
   "workflow": "verify-findings",
   "state": "running",
   "startedAt": 1766491200000,
@@ -150,6 +176,16 @@ Example:
       "attempt": 1,
       "startedAtMs": 1766491209000,
       "firstEvidenceAtMs": 1766491211200,
+      "lastEvidenceAtMs": 1766491211200,
+      "finishedAtMs": null,
+      "requestedModel": null,
+      "requestedEffort": null,
+      "resolvedModel": null,
+      "resolvedEffort": null,
+      "transcript": null,
+      "worktree": null,
+      "spent": null,
+      "failure": null,
       "waitingOn": null
     }
   ],
@@ -312,8 +348,8 @@ The next run that starts in the same namespace applies the same rule and
 rewrites a provably dead run's manifest to `status: "abandoned"`, with an
 `abandonment` block saying what was observed, when, and by which run. It also
 flips that run's agent records that are still `in-progress` to `"abandoned"`
-with the same block. An abandoned agent record keeps exactly what was recorded
-before the death: `attempts` lists settled attempts only, and `usage` and
+with the same block and removes `current_attempt`. An abandoned agent record
+keeps the captured content recorded before the death: `attempts` lists settled attempts only, and `usage` and
 `transcripts` cover only those attempts. Where none had recorded usage or a
 transcript, `usage` and `transcripts_unavailable` read `record-unsettled` —
 the attempt in flight and its spend are unobserved, never zero. An agent record that the run's own close
@@ -332,7 +368,7 @@ carries:
   `agent_record`.
 
 The completion sentinel and the live status file are separate artefact
-families with their own schema versions (`3` and `2`), described above.
+families with their own schema versions (`3` and `3`), described above.
 
 ### Manifest
 
@@ -361,6 +397,11 @@ families with their own schema versions (`3` and `2`), described above.
 - `meta`: `{ raw, task }` — the workflow's `meta` export and its `task`,
   copied verbatim; each is `null` when absent.
 - `cli_flags`: parsed run-tuning flags.
+- `worker_scope`: effective systemd grouping as `{ value, layer }`, where value is
+  `worker` or `run` and layer is `flag`, `env`, `config-file` or `default`.
+  `cli_flags.workerScope` records an explicitly supplied grouping flag. Earlier
+  version-4 manifests may omit `worker_scope`; its absence carries no grouping
+  provenance.
 - `concurrency`: the effective agent ceiling and per-engine caps —
   `agent_ceiling` as `Resolved<number | null>`, `engines` as a partial map of
   engine name to `Resolved<number>` — each recording the value and the layer
@@ -377,14 +418,12 @@ families with their own schema versions (`3` and `2`), described above.
   archived args with their canonical path and SHA-256. Each entry is recorded
   before the child runs, so a partial archive still knows what was invoked.
 - `hold_events`: the run's hold lifecycle — raise, accepted answer, rejected
-  answer, timeout, and retirement, including after its raiser dies — in
-  event order. A run that sweeps another run's dead hold also records that
-  `hold/retired` event in its own `hold_events`. Each entry carries `hold_id`, `event`, `verdict` or `reason`
-  where applicable, and a timestamp. An `answered` entry also carries
-  `answered_by` (the answerer the decision file named, or `null`) and the
-  decider's `note` (or `null`). Rejected answers carry those fields too when
-  supplied by the decision file; a retirement's `reason` says whether the
-  raiser died or the hold timed out.
+  answer, timeout, and retirements of dead raisers this run observed — in
+  event order. Each entry carries `hold_id`, `event`, `verdict` or `reason`
+  where applicable, and a timestamp. Both `answered` and `answer-rejected`
+  entries carry `answered_by` (the answerer the decision file named, or
+  `null` when absent or unreadable). An `answered` entry also carries the
+  decider's `note` (or `null`).
 - `tallies`: `name -> number`, the counts the script recorded with `tally()`,
   stored verbatim (last write per name wins) and written as each is recorded,
   so a count recorded before the run ended is in the archive whether or not
@@ -422,13 +461,47 @@ families with their own schema versions (`3` and `2`), described above.
 
 Each agent's record is at `agents/<zero-padded-id>/agent.json`:
 
+While a Claude or Codex attempt executes, the record also has
+`current_attempt`: an object with `attempt` (its number), `started_at` (the
+ISO start time), and `transcript` (a path or `null`). Ensemble writes the
+start time before invoking the engine. The transcript path appears once a
+readable file exists. A worker waiting for admission has no
+`current_attempt`, including while a fallback target waits for a slot.
+The field remains present between retries and while the outcome is being
+archived, until the next attempt replaces it or the settled record removes
+it. It is cleared when a fallback target re-enters the admission queue.
+Settled records retain their existing schema and fields; attempts in the
+`attempts` array are settled attempts only.
+
+Claude's live path is absolute and points to the session's own JSONL file
+under `~/.claude/projects/`. A held session uses that same file across its
+turns, so the live file includes the conversation. Codex's live path is
+relative to the run's archive directory and belongs to that agent and
+attempt. Each captured app-server event is appended as it arrives. The
+same path appears in `transcripts` at settlement, with its final size and
+digest in the manifest's files table. A failed live write is reported as
+`runRecord/writeFailed`; settlement repairs an incomplete Codex file from
+the engine's captured transcript when that capture is available.
+
+Readers should reopen the atomically replaced `agent.json` as they poll.
+Live transcripts grow independently of the record and can end with a
+partially written JSONL line during a read. File sizes and hashes in a
+live manifest describe the writer's last published snapshot, so read the
+settled manifest to verify final transcript integrity.
+
+The fields present throughout a record's lifetime are:
+
 - `schema_version`: `4`.
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, and `concurrency_group` (the engine group of the
   last target admitted: initially the requested engine, and the answering
   engine's group when a fallback answers).
 - `header_identity`: `"original_request"`, stating that the top-level
-  `engine`, `model`, and `effort` fields describe the request.
+  `engine`, `model`, and `effort` fields describe the request. The field
+  joined the record within schema version 4, so a version-4 agent record
+  from an older Ensemble checkout can lack it; read a missing
+  `header_identity` as `"original_request"`, because those fields describe
+  the request in such records too.
 - `engine`, `model`, `effort`: what was asked for (`effort` as the canonical
   level).
 - `resolved_model` / `resolved_effort`: what was actually served, as the
@@ -449,7 +522,10 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
 - `resolved_cwd`, `isolation` (`null` when unused).
 - `worktree`: the isolated worktree's `branch`, `base_commit`, `tip_commit`,
   `changed`, and `removed` — or `null`.
-- `label`, `phase`, and `status`. Status is `"in-progress"`, `"complete"`,
+- `phase`: the explicit agent/session option, or the current run phase set by
+  `phase(title)` when the agent or session turn queues; `null` if neither is
+  set. Later phase changes do not alter an existing agent record.
+- `label` and `status`. Status is `"in-progress"`, `"complete"`,
   `"failed"`, `"timed-out"`, `"interrupted"`, or `"abandoned"`. `"abandoned"`
   means no outcome was observed: either the run's own close ended while the
   dispatch record was still being written, or another run's sweep found the
@@ -457,7 +533,7 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
 - `termination_cause`: the `{ kind, message }` that settled the agent at that
   status when the runtime decided it — a run that ended under the worker, or a
   deadline the runtime enforced — and `null` when the attempts already name the
-  cause. Two deadline kinds are distinguished: `"turn-timeout"` (the per-agent
+  cause. An unsettled dispatch record carries `"record-unsettled"`: the writer has not yet observed an outcome, and a reaped record retains that account. A close failure after a completed attempt carries the close error here. Two deadline kinds are distinguished: `"turn-timeout"` (the per-agent
   turn deadline expired while the worker was still going) and
   `"request-timeout"` (a transport request deadline expired because the engine
   never answered a request). The first means a slow worker; the second, an
@@ -483,7 +559,9 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   in flight and its spend are unobserved), `"no-attempt-ran"`, or
   `"engine-reported-no-usage"`.
 - `queued_ms`, `execution_ms`: time spent waiting for admission and time
-  spent executing.
+  spent executing. `null` on an unsettled record means the interval has not
+  been measured; it does not claim zero time. Runtime abandonment and a reap
+  preserve those unknown intervals.
 - `attempts`: the attempts that have settled. An attempt still running when
   the record was written is not listed, so an empty array on an `in-progress`
   or `abandoned` record means unobserved, not "none ran". Each entry has:
@@ -503,8 +581,30 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
     names that ending (`run-interrupted`, `run-timed-out`) and
     `observed_failure` keeps the symptom the turn saw (a closed app-server, an
     aborted poll); `null` when the engine's own failure is the cause.
-  - `diagnostics`, `app_server_diagnostic`, and `token_usage_events` (the
-    engine-native usage events).
+  - `diagnostics` and `token_usage_events` (the engine-native usage events).
+    Claude's `diagnostics.worktrees` lists `{ path, branch }` for each native
+    worktree its transcript proves the session entered, including trees it
+    later left; `branch` is `null` when unreported (for example, a hook-created
+    tree). An empty list means no native worktree entry was observed in the
+    available transcript. These are separate from the top-level `worktree`,
+    which describes Ensemble's `isolation: "worktree"` placement.
+    When pending Claude work spans attempts, each attempt accounts only for
+    growth since the previous attempt's session total, even if its transcript
+    reference repeats earlier API calls. Summing attempts never charges that
+    earlier work twice.
+    A failed Claude launch supplies `diagnostics.claudeLaunch`: `failure`
+    keeps the launch's account, and `cleanupConfirmed` says whether it was
+    safe to reject after teardown. `command` contains the dispatch command's `ok`, `exitCode`, `signal`, `stdout` and
+    `stderr`; `roster` is the last observed native row; `logs` contains the
+    same command-result fields for `claude logs`. Unavailable observations
+    are `null`. Any transcript is retained in the attempt's transcript
+    references. The dispatch command's exit is separate from `worker_exit`,
+    which describes the worker process itself.
+  - `app_server_diagnostic`: Codex's own account of the failure,
+    `{ code, http_status_code, message, payload }`. `code` is the condition
+    Codex named; `http_status_code` is the provider status Codex forwarded
+    with it (such as the last status after its own retries ran out), or
+    `null`. The whole field is `null` when Codex supplied no diagnostic.
   - `worker_exit`: `{ exit_code, signal }` when the worker process died
     rather than returned; `null` otherwise.
   - `background_waits`: the background tasks the worker started and Ensemble
@@ -519,10 +619,12 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   unparseable, off-schema — retried in place), or `"unclassified"` (including
   a Codex rejection of the authored schema before generation). `rule` names
   the classifier rule that matched (`codex.usage-limit`, `claude.rate-limit`,
-  `codex.substrate-dead`, `run-settlement`, …) and is `null` only when no rule
-  recognised the diagnostic — a sign that an engine's error wording is not
+  `codex.substrate-dead`, `engine-shutdown`, `run-settlement`, …) and is `null`
+  only when no rule recognised the diagnostic — a sign that an engine's error wording is not
   recognised. The raw diagnostic stays in `failure`, `app_server_diagnostic`,
-  and `diagnostics`. `null` on a complete attempt.
+  and `diagnostics`. `engine-shutdown` describes a local engine or session
+  close; `run-settlement` describes the run ending under the worker.
+  `null` on a complete attempt.
 - `chain_decision` on a failed attempt of a call that declared a `fallback`
   chain: what Ensemble did next — `"advanced"` (an availability failure with
   a later entry remaining: the call moved to that entry, spending none of its

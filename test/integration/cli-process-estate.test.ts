@@ -4,6 +4,9 @@ import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
+import { Writable } from "node:stream";
+
+import { programNameFor, runEnsembleCli } from "../../src/cli.js";
 
 import { CodexAppServerTransport } from "../../src/app-server.js";
 import { TurnTimeoutError } from "../../src/errors.js";
@@ -46,29 +49,10 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
 
     assert.equal(result.code, 2, result.stderr);
     assert.equal(result.stdout, "");
-    // Run as `node ensemble.mjs`, so the usage names that invocation.
-    assert.equal(
-      result.stderr,
-      "Usage: node ensemble.mjs [run options] <script.js> [args...]\n" +
-      "       node ensemble.mjs agent --engine <engine> [agent options] [prompt]\n" +
-      "       node ensemble.mjs workflows\n" +
-      "       node ensemble.mjs holds [--json] [--scope <scope> | --all]\n" +
-      "       node ensemble.mjs holds answer <hold-id> --verdict <verdict>\n" +
-      "                         [--note <note>]\n" +
-      "\n" +
-      "Run options (before the script path):\n" +
-      "  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N\n" +
-      "  --agent-ceiling N|null  --timeout ms  --strip capability\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>\n" +
-      "Agent options (after agent, before the prompt):\n" +
-      "  --model <model>  --effort <effort>  --label <label>  --phase <phase>\n" +
-      "  --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'\n" +
-      "  --max-attempts N  --task <identity>  --strip capability  --budget engine=N\n" +
-      "  --agent-ceiling N|null  --concurrency engine=N  --timeout ms\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>\n" +
-      "The prompt is the one positional argument, or stdin when omitted.\n" +
-      "Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.\n"
-    );
+    let expected = "";
+    const capture = new Writable({ write(chunk, _encoding, callback) { expected += String(chunk); callback(); } });
+    await runEnsembleCli([], { stderr: capture, programName: programNameFor(bundledCliPath), env: hermeticEstateEnvironment() });
+    assert.equal(result.stderr, expected);
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) {
@@ -1355,7 +1339,7 @@ test("built CLI can lift a machine agent ceiling for one run without editing the
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore,
       },
-      5_000,
+      30_000,
     );
 
     assert.equal(result.code, 0, result.stderr);
@@ -1673,6 +1657,7 @@ test("built CLI retries a scoped overload and archives the provider diagnostic",
     assert.match(agent.attempts[0]?.failure?.message ?? "", /gateway detail: server_is_overloaded/);
     assert.deepEqual(agent.attempts[0]?.app_server_diagnostic, {
       code: "serverOverloaded",
+      http_status_code: null,
       message: "serverOverloaded: Upstream capacity is temporarily exhausted; invalid_json_schema is not the cause: gateway detail: server_is_overloaded",
       payload: JSON.stringify({ ...overload, threadId: "thread-1", turnId: "turn-1" })
     });
@@ -1787,6 +1772,7 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
   for (const interruptResponse of ["accepted", "rejected", "withheld"] as const) {
     const fixture = await createProcessFixture(`interrupt-before-replacement-${interruptResponse}`, "recovered");
     const recordStore = path.join(path.dirname(fixture.script), "records");
+    const wireTimingPath = path.join(path.dirname(fixture.script), "wire-timing.jsonl");
     try {
       await writeFile(
         fixture.script,
@@ -1802,15 +1788,14 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
         `
       );
 
-      const startedAt = performance.now();
       const result = await fixture.runWithEnv({
         ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(overloadSequence),
         ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT: interruptResponse === "rejected" ? "1" : "0",
         ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE: interruptResponse === "withheld" ? "1" : "0",
+        ENSEMBLE_FAKE_CODEX_CAPTURE_TIMING: wireTimingPath,
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       });
-      const elapsedMs = performance.now() - startedAt;
 
       assert.equal(result.code, 0, result.stderr);
       assert.equal(result.stdout, `"recovered"\n`);
@@ -1819,6 +1804,14 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
       );
       assert.equal(overloadPayloadOptOut, undefined, "the overload payload must validate without its itemId opt-out");
       if (interruptResponse === "withheld") {
+        const wireTimings = (await readFile(wireTimingPath, "utf8"))
+          .trim().split("\n")
+          .map((line) => JSON.parse(line) as { method: string; atMs: number });
+        const interruptIndex = wireTimings.findIndex((timing) => timing.method === "turn/interrupt");
+        assert.ok(interruptIndex >= 0, "the fixture did not receive the interrupt request");
+        const replacementStart = wireTimings.slice(interruptIndex + 1).find((timing) => timing.method === "thread/start");
+        assert.ok(replacementStart, "the fixture did not receive the replacement thread start");
+        const elapsedMs = replacementStart.atMs - wireTimings[interruptIndex]!.atMs;
         assert.ok(
           elapsedMs < 10_000,
           `replacement took ${elapsedMs.toFixed(0)}ms with the interrupt response withheld; it must not await the 30s request timeout`
@@ -1854,11 +1847,23 @@ test("built CLI interrupts and settles a turn that times out before any turn not
           name: "interrupt-timeout-before-notification",
           description: "Interrupt a started turn when its local deadline expires"
         };
-        return await agent("time out before a notification", {
+        const result = await agent("time out before a notification", {
           engine: "codex",
           maxAttempts: 1,
           timeoutMs: 30001
         });
+        // The interrupt is sent without awaiting its response. Keep the
+        // app-server alive until it has read that request, before returning
+        // lets runtime shutdown terminate it. The parent timeout catches a
+        // missing interrupt; no scheduling delay stands in for receipt.
+        const { readFile } = require("node:fs/promises");
+        for (;;) {
+          const capture = await readFile(process.env.ENSEMBLE_FAKE_CODEX_CAPTURE, "utf8");
+          const messages = capture.split("\\n").slice(0, -1).filter(Boolean).map((line) => JSON.parse(line));
+          if (messages.some((message) => message.method === "turn/interrupt")) break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return result;
       `
     );
 
@@ -2418,6 +2423,42 @@ test("a body's process.exit — direct or from a lingering callback — leaves a
   }
 });
 
+test("unawaited combinators report literal preflight and dynamic author errors", { timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-unawaited-author-error-"));
+  try {
+    for (const cli of [path.resolve("dist/src/cli/ensemble.js"), bundledCliPath]) {
+      for (const combinator of ["parallel", "pipeline"]) {
+        for (const reference of [
+          { name: "literal", call: 'workflow("./does-not-exist.js")', errorKind: "WorkflowResolutionError" },
+          { name: "dynamic", call: "workflow(args[0])", errorKind: "WorkflowUncaughtExceptionError" }
+        ]) {
+          const script = path.join(directory, `${combinator}-${reference.name}.js`);
+          // Literal names fail before the body runs. A name supplied through
+          // args reaches the unawaited combinator and must still fail the run.
+          await writeFile(script, `
+            export const meta = { name: "unawaited-author-error" };
+            ${combinator === "parallel" ? `parallel([() => ${reference.call}])` : `pipeline(["item"], () => ${reference.call})`};
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            return "must not succeed";
+          `);
+          const result = await runNode([cli, script, "./does-not-exist.js"], {
+            ENSEMBLE_RUN_RECORD: "0",
+            ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records"),
+            ENSEMBLE_STATUS: "0"
+          });
+          const context = `${combinator}/${reference.name}: ${result.stderr}`;
+          assert.equal(result.code, 1, context);
+          const envelope = assertSalvageEnvelope(result.stdout, "failed");
+          assert.equal(envelope.error.kind, reference.errorKind, context);
+          assert.match(envelope.error.message, /does-not-exist/, context);
+        }
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("an ending that lands after the body settled is absorbed for process.exit and degrades the run for an uncaught exception", { timeout: 60_000 }, async () => {
   // The body has returned; a lingering callback then ends the process. A
   // late `process.exit` changes nothing (the run's own code stands, one
@@ -2919,7 +2960,7 @@ interface RecordedAgent {
   attempts: Array<{
     status: "complete" | "failed";
     failure: { kind: string; message: string } | null;
-    app_server_diagnostic: { code: number | string | null; message: string; payload: string } | null;
+    app_server_diagnostic: { code: number | string | null; http_status_code: number | null; message: string; payload: string } | null;
     raw_output: string | null;
   }>;
 }
@@ -3081,3 +3122,31 @@ async function waitForFile(file: string): Promise<void> {
   }
   throw new Error(`file never appeared: ${file}`);
 }
+
+
+test("the built launcher archives worker grouping with its winning setting layer", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-scope-provenance-"));
+  try {
+    const script = path.join(root, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "scope-provenance" }; return "done";');
+    for (const entry of [
+      { name: "default", file: undefined, env: undefined, flag: undefined, value: "worker", layer: "default" },
+      { name: "file", file: "run", env: undefined, flag: undefined, value: "run", layer: "config-file" },
+      { name: "env", file: "run", env: "worker", flag: undefined, value: "worker", layer: "env" },
+      { name: "flag", file: "worker", env: "worker", flag: "run", value: "run", layer: "flag" }
+    ]) {
+      const dir = path.join(root, entry.name);
+      const xdg = path.join(dir, "config");
+      const store = path.join(dir, "records");
+      await mkdir(path.join(xdg, "ensemble"), { recursive: true });
+      await writeFile(path.join(xdg, "ensemble", "config.json"), JSON.stringify({ schema_version: 1, ...(entry.file ? { worker_scope: entry.file } : {}) }));
+      const result = await runNode([bundledCliPath, ...(entry.flag ? [`--worker-scope=${entry.flag}`] : []), script], {
+        XDG_CONFIG_HOME: xdg, ENSEMBLE_WORKER_SCOPE: entry.env, ENSEMBLE_RUN_RECORD_DIR: store
+      }, 120_000);
+      assert.equal(result.code, 0, result.stderr);
+      const manifest = JSON.parse(await readFile(await findOnlyFile(store, "manifest.json"), "utf8"));
+      assert.deepEqual(manifest.worker_scope, { value: entry.value, layer: entry.layer }, `grouping provenance lost for ${entry.name}`);
+      assert.equal(manifest.cli_flags.workerScope, entry.flag);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

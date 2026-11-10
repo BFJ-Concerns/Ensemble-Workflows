@@ -1,3 +1,4 @@
+import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 
@@ -102,6 +103,8 @@ export interface WorkerSessionOptions {
   maxAttempts?: number;
   label?: string;
   phase?: string;
+  /** Resolve every turn with its label, output and failure account. */
+  identity?: boolean;
   /**
    * Named tool-surface capabilities to strip from the session's worker,
    * enforced once at creation for the session's whole life.
@@ -187,9 +190,9 @@ export interface RuntimeOptions {
   startupHandshakeTimeoutMs?: number;
   /**
    * Idle gap after which a Claude multi-turn worker reads stale — the
-   * deterministic cliff at the worker's configured prompt-cache TTL (the
-   * 1-hour TTL its dispatch injects), past which resuming pays a full
-   * uncached re-read. A library-level option like `requestTimeoutMs` —
+   * subscription's fixed one-hour prompt-cache TTL, past which resuming
+   * pays a full uncached re-read. A library-level option like
+   * `requestTimeoutMs` —
    * deliberately not a CLI flag or ambient setting — so library callers
    * and tests can reach expiry. Defaults to 1 hour.
    */
@@ -239,6 +242,8 @@ export interface RuntimeOptions {
    * set, holds land in the default shared scope.
    */
   holdScope?: string;
+  /** Systemd scope grouping; defaults to worker (Codex threads share one app-server scope). */
+  workerScope?: WorkerScopeGrouping;
   /** Gap between hold decision-file polls; a library/test knob like the timeouts above. */
   holdPollIntervalMs?: number;
 }
@@ -346,7 +351,14 @@ export interface TurnResult {
   diagnostics?: JsonObject;
 }
 
-export interface TurnStartOptions {
+export interface LiveTranscriptObserver {
+  /** Receives each Codex app-server event in arrival order. */
+  onTranscriptEvent?: (event: unknown) => void;
+  /** Receives the readable absolute path of an engine-owned transcript. */
+  onTranscriptPath?: (path: string) => void;
+}
+
+export interface TurnStartOptions extends LiveTranscriptObserver {
   schema?: JsonSchema;
   model?: string;
   // Omitted → no per-turn deadline (unbounded). There is no default; a backstop

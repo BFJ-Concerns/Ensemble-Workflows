@@ -219,6 +219,8 @@ export function failedTurnResultOf(error: unknown): EngineAttemptResult | null {
  */
 export interface AppServerDiagnostic {
   code: number | string | null;
+  /** The provider's HTTP status Codex forwarded with a turn's error, or null when it forwarded none. */
+  httpStatusCode: number | null;
   message: string;
   payload: string;
 }
@@ -361,6 +363,29 @@ export function agentIdentityOf(error: unknown): AgentCallIdentity | null {
   return null;
 }
 
+/**
+ * The mark the runtime puts on the run's own ending as it leaves `agent()`
+ * or a session's `send()`: an interrupt, the whole-run timeout, the
+ * launcher closing the run under a leg still in flight. A worker's failure
+ * is a value the combinators collapse; the run ending is not the worker
+ * failing, and a body awaiting `parallel()` or `pipeline()` must not resume
+ * to run further code after the ending has begun — so the combinators
+ * rethrow a marked error, identity envelope or not. A sibling carrier to
+ * the identity, and like it not a metadata channel: it says one thing.
+ */
+interface RunEndingCarrier {
+  ensembleRunEnding?: true;
+}
+
+export function markRunEnding<T extends Error>(error: T): T {
+  (error as T & RunEndingCarrier).ensembleRunEnding = true;
+  return error;
+}
+
+export function isRunEnding(error: unknown): boolean {
+  return error instanceof Error && (error as RunEndingCarrier).ensembleRunEnding === true;
+}
+
 export class AppServerExitedError extends EnsembleError {}
 
 export class AppServerRequestError extends EnsembleError {
@@ -486,13 +511,9 @@ export class EngineShutdownError extends EnsembleError {
 export class ClaudeWorkerError extends EnsembleError {}
 
 /**
- * `claude --bg` exited non-zero and no session was registered under the
- * dispatch's name: Claude Code declined before a session existed. The
- * message names the placed directory and the declaration, and carries Claude
- * Code's own text bounded to one line, because the remedy lives in the
- * launch environment — the operator reads it off the run's failure, never
- * off a `null`. A dispatch the daemon accepted but never registered is not
- * a refusal: see `ClaudeRegistrationTimeoutError`.
+ * The background dispatch command failed. A seeded roster entry is not proof
+ * that launch succeeded; the error retains command exit status, output and
+ * any native session evidence before the owned launch is removed.
  */
 export class ClaudeDispatchError extends SubstrateRefusedError {}
 
@@ -521,21 +542,43 @@ export class CodexSubstrateRefusedError extends SubstrateRefusedError {
 
 export class ClaudePollTimeoutError extends ClaudeWorkerError {}
 
-/** The background session registered but never produced a transcript at all. */
+/**
+ * The background session registered but never produced a transcript at all.
+ * With no transcript there is no receipt to read and no turn the session
+ * can have run, so this is a worker that never held its opening prompt, not
+ * a delivery failure (`ClaudeDeliveryError`).
+ */
 export class ClaudeFirstLifeTimeoutError extends ClaudeWorkerError {}
 
 /**
- * The daemon accepted the dispatch (`claude --bg` returned) but no session
- * appeared in the roster within the dispatch bound. Not a refusal: Claude
- * Code did not decline, and a session the roster has not yet surfaced may
- * exist — so this is an operational failure, spent and retried within the
- * attempt bound like a poll deadline, and the dispatch bound is the lever.
+ * The dispatch command returned successfully, but the native session never
+ * acquired a PID or the opening could not be submitted before cleanup. Availability-classed:
+ * a declared fallback may run rather than retrying an unstarted target.
  */
 export class ClaudeRegistrationTimeoutError extends ClaudeWorkerError {}
 
 export class ClaudeBlockedError extends ClaudeWorkerError {}
 
+/**
+ * The reply valve did not submit a message: a step before the submit
+ * keystroke failed, or the valve is unavailable. Nothing reached the
+ * session, so the retry may send the same message again.
+ */
 export class ClaudeValveError extends ClaudeWorkerError {}
+
+/**
+ * A message was submitted to the session — by the valve, or by the launch
+ * that carried its opening prompt — and its receipt did not verify: the
+ * transcript shows the session received different text, or shows no
+ * submission at all within the receipt deadline. Distinct from
+ * `ClaudeValveError` because the session may hold, and may be running, a
+ * turn nobody sent — the retry must account for that turn before it sends
+ * anything, and must never send the message again as though it were new.
+ * Distinct from a failed launch for the same reason: a session exists and
+ * took something, so the failure is never grounds for launching the prompt
+ * on another target.
+ */
+export class ClaudeDeliveryError extends ClaudeWorkerError {}
 
 export class ClaudeTranscriptError extends ClaudeWorkerError {}
 

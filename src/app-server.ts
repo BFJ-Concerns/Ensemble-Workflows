@@ -1,3 +1,4 @@
+import type { WorkerScopes } from "./worker-scopes.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 
@@ -18,7 +19,7 @@ import {
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError
 } from "./errors.js";
-import type { WorkerExitStatus } from "./errors.js";
+import type { AppServerDiagnostic, WorkerExitStatus } from "./errors.js";
 
 import type {
   JsonObject,
@@ -42,6 +43,8 @@ export interface RpcErrorPayload {
   code: number | string | undefined;
   message: string | undefined;
   data?: unknown;
+  /** The provider's HTTP status a turn-error notification forwarded in its `codexErrorInfo`. */
+  httpStatusCode?: number;
 }
 
 interface RpcMessage {
@@ -52,7 +55,15 @@ interface RpcMessage {
   error?: unknown;
 }
 
+/** Observed turn evidence; callbacks are best-effort and never control execution. */
+export interface TurnProgressObserver {
+  onOutput?: () => void;
+  onIdentity?: (identity: { resolvedModel: string | null; resolvedEffort: string | null }) => void;
+  onUsage?: (event: TokenUsageEvent) => void;
+}
+
 interface TurnState {
+  progress: TurnProgressObserver;
   threadId: string;
   /** Learned from turn/start or the first turn-correlated inbound frame; ephemeral threads run one turn. */
   turnId: string | undefined;
@@ -61,6 +72,7 @@ interface TurnState {
   /** Whether the supervisor-facing first-output callback has fired for this turn. */
   firstOutputSeen: boolean;
   onFirstOutput: (() => void) | undefined;
+  onTranscriptEvent: TurnStartOptions["onTranscriptEvent"];
   completedAt: number | null;
   deltaText: string;
   itemText?: string;
@@ -146,6 +158,9 @@ interface ThreadTranscript {
 export interface CodexAppServerTransportOptions {
   cwd: string;
   codexBin: string;
+  /** Shared run-owned manager; placement completes before the protocol handshake. */
+  scopes?: WorkerScopes;
+  scopeGroup?: string;
   /** Machine-declared variables injected over the inherited environment. */
   workerEnv?: Record<string, string>;
   requestTimeoutMs: number;
@@ -191,7 +206,7 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
     return transport.listSkills(cwd);
   }
 
-  async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
+  async runTurn(threadId: string, prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
     const transport = await this.#transport();
     return transport.runTurn(threadId, prompt, options);
   }
@@ -301,6 +316,17 @@ export class CodexAppServerTransport implements RuntimeTransport {
   static async start(options: CodexAppServerTransportOptions): Promise<CodexAppServerTransport> {
     const transport = new CodexAppServerTransport(options);
     try {
+      if (transport.#process.pid !== undefined && options.scopes !== undefined) {
+        const pid = transport.#process.pid;
+        const outcome = await options.scopes.place(options.scopeGroup ?? "codex", [pid]);
+        if (outcome.kind !== "placed") {
+          options.onEvent?.({
+            method: "codex/workerScopePlacement",
+            params: { pid, kind: outcome.kind, ...(outcome.kind === "refused" ? { reason: outcome.reason } : {}) },
+            receivedAt: Date.now()
+          });
+        }
+      }
       await transport.#handshake(options.clientName, options.clientVersion);
     } catch (error) {
       await transport.close();
@@ -454,7 +480,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     return [...names].sort();
   }
 
-  async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
+  async runTurn(threadId: string, prompt: string, options: TurnStartOptions & TurnProgressObserver): Promise<TurnResult> {
     // A held Codex session reuses its thread, but each runtime turn writes a
     // separate agent record. #completeTurn prunes the previous turn's buffer,
     // so register a fresh capture before a follow-up turn begins rather than
@@ -467,7 +493,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
       });
     }
     const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
+    state.onTranscriptEvent = options.onTranscriptEvent;
+    state.progress = options;
+    this.#reportTurnIdentity(threadId, state);
     this.#turns.set(threadId, state);
+    for (const event of this.#transcripts.get(threadId)!.events) {
+      this.#observeTranscriptEvent(state, event);
+    }
     // The turn can terminalise while turn/start is still awaiting its
     // response (timeout, close, process death, an early error frame). This
     // pre-attached handler keeps that rejection from going unhandled while
@@ -775,6 +807,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
           this.#disarmRetryPromiseSilenceDeadline(turn);
           this.#disarmFirstOutputDeadline(turn);
           this.#noteTurnFirstOutput(turn);
+          try { turn.progress.onOutput?.(); } catch { /* Observability cannot fail a turn. */ }
         }
       }
       this.#sendApprovalDenial(id);
@@ -852,6 +885,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       if (isOutputBearingTurnFrame(method)) {
         this.#disarmFirstOutputDeadline(turn);
         this.#noteTurnFirstOutput(turn);
+        try { turn.progress.onOutput?.(); } catch { /* Observability cannot fail a turn. */ }
       }
     }
 
@@ -875,6 +909,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       const transcript = this.#transcripts.get(threadId);
       if (transcript !== undefined && typeof toModel === "string" && toModel.length > 0) {
         transcript.resolvedModel = toModel;
+        this.#reportTurnIdentity(threadId, turn);
       }
       return;
     }
@@ -909,6 +944,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       const event = tokenUsageEventFromParams(params);
       if (event !== null) {
         turn.tokenUsageEvents.push(event);
+        try { turn.progress.onUsage?.(event); } catch { /* Observability cannot fail a turn. */ }
       }
       return;
     }
@@ -1096,6 +1132,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
   }
 
+  #reportTurnIdentity(threadId: string, turn: TurnState): void {
+    const identity = this.#transcripts.get(threadId);
+    if (identity === undefined) return;
+    try {
+      turn.progress.onIdentity?.({ resolvedModel: identity.resolvedModel, resolvedEffort: identity.resolvedEffort });
+    } catch { /* Observability cannot fail a turn. */ }
+  }
+
   /**
    * Fire the supervisor-facing first-output callback, once per turn. Called
    * only from the frame-driven sites (an output-bearing notification, a
@@ -1145,7 +1189,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         source: "codex-app-server-events",
         threadId,
         content: this.#transcriptText(threadId),
-        partial: true
+        partial: turn.completedAt === null
       });
     }
     this.#transcripts.delete(threadId);
@@ -1217,6 +1261,21 @@ export class CodexAppServerTransport implements RuntimeTransport {
       return;
     }
     transcript.events.push(event);
+    const turn = this.#turns.get(threadId);
+    // The current capture retains every frame on its thread, including
+    // abandoned-turn stragglers. Its observer receives the same evidence;
+    // turn correlation governs settlement and identity elsewhere.
+    if (turn !== undefined) {
+      this.#observeTranscriptEvent(turn, event);
+    }
+  }
+
+  #observeTranscriptEvent(turn: TurnState, event: JsonObject): void {
+    try {
+      turn.onTranscriptEvent?.(event);
+    } catch {
+      // Observability must never change the turn's outcome.
+    }
   }
 
   #transcriptText(threadId: string): string {
@@ -1245,7 +1304,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
       startedAt: Date.now(),
       firstDeltaAt: null,
       firstOutputSeen: false,
+      progress: {},
       onFirstOutput,
+      onTranscriptEvent: undefined,
       completedAt: null,
       deltaText: "",
       items: new Map<string, number>(),
@@ -1370,24 +1431,45 @@ function appServerErrorFromNotification(params: JsonObject): Error {
   return appServerErrorFromPayload("turn notification", errorPayload);
 }
 
-function appServerDiagnosticFromPayload(payload: RpcErrorPayload): {
-  code: number | string | null;
-  message: string;
-  payload: string;
-} {
+function appServerDiagnosticFromPayload(payload: RpcErrorPayload): AppServerDiagnostic {
   return {
     code: payload.code ?? null,
+    httpStatusCode: payload.httpStatusCode ?? null,
     message: payload.message ?? "unknown app-server error",
     payload: renderPayloadSafely(payload.data)
   };
 }
 
+/**
+ * Codex names a turn's terminal condition in `codexErrorInfo`: a bare string
+ * for most conditions, or a one-key object whose key is the condition and
+ * whose value may forward the provider's HTTP status
+ * (`{"responseTooManyFailedAttempts": {"httpStatusCode": 429}}`).
+ */
+function codexErrorInfoOf(value: unknown): { code: string; httpStatusCode: number | undefined } | null {
+  if (typeof value === "string") {
+    return { code: value, httpStatusCode: undefined };
+  }
+  const variants = Object.entries(asJsonObject(value) ?? {});
+  const variant = variants.length === 1 ? variants[0] : undefined;
+  if (variant === undefined) {
+    return null;
+  }
+  const [code, detail] = variant;
+  const status = asJsonObject(detail)?.httpStatusCode;
+  return { code, httpStatusCode: Number.isInteger(status) ? (status as number) : undefined };
+}
+
 function errorPayloadFromNotification(params: JsonObject): RpcErrorPayload {
   const turnError = asJsonObject(params.error);
   const codexErrorInfo = turnError?.codexErrorInfo;
-  const code = typeof codexErrorInfo === "string" ? codexErrorInfo : undefined;
+  const errorInfoParts = codexErrorInfoOf(codexErrorInfo);
   const errorInfo =
-    code ?? (asJsonObject(codexErrorInfo) === null ? undefined : renderPayloadSafely(codexErrorInfo));
+    typeof codexErrorInfo === "string"
+      ? codexErrorInfo
+      : asJsonObject(codexErrorInfo) === null
+        ? undefined
+        : renderPayloadSafely(codexErrorInfo);
   const message = typeof turnError?.message === "string" ? turnError.message : undefined;
   const additionalDetails =
     typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : undefined;
@@ -1397,9 +1479,10 @@ function errorPayloadFromNotification(params: JsonObject): RpcErrorPayload {
     .join(": ");
 
   return {
-    code,
+    code: errorInfoParts?.code,
     message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
-    data: params
+    data: params,
+    ...(errorInfoParts?.httpStatusCode === undefined ? {} : { httpStatusCode: errorInfoParts.httpStatusCode })
   };
 }
 

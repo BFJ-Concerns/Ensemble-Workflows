@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -295,4 +295,118 @@ test("a throwing error reporter cannot take the writer down", async () => {
   });
   await writer.close();
   assert.ok(reports >= 1);
+});
+
+test("automatic status directories publish independent files and clean up", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-status-auto-"));
+  const dir = path.join(root, "nested", "status");
+  const first = new StatusFileWriter({ progress: newProgress("first"), dir, createDirectory: true });
+  const second = new StatusFileWriter({ progress: newProgress("second"), dir, createDirectory: true });
+  try {
+    assert.equal(await first.ready(), true);
+    assert.equal(await second.ready(), true);
+    await first.close();
+    await assert.rejects(access(first.path));
+    assert.equal(JSON.parse(await readFile(second.path, "utf8")).runId, "second");
+    await second.close();
+    assert.deepEqual(await readdir(dir), []);
+  } finally {
+    await Promise.all([first.close(), second.close()]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("automatic status directory creation failures are reported without rejecting", async () => {
+  const errors: unknown[] = [];
+  const writer = new StatusFileWriter({
+    progress: newProgress(), dir: "unused", createDirectory: true,
+    fileOperations: { mkdir: async () => { throw new Error("creation refused"); } },
+    onError: (error) => errors.push(error)
+  });
+  assert.equal(await writer.ready(), false);
+  assert.match(String(errors[0]), /creation refused/);
+  await writer.close();
+});
+
+test("a removed published status directory stays quiet and can resume publication", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-status-removed-"));
+  const dir = path.join(root, ".claude");
+  await mkdir(dir);
+  const errors: unknown[] = [];
+  const progress = newProgress();
+  const writer = new StatusFileWriter({ progress, dir, onError: (error) => errors.push(error) });
+  try {
+    assert.equal(await writer.ready(), true);
+    await rm(dir, { recursive: true });
+    for (const phase of ["first", "second", "third"]) {
+      progress.setPhase(phase);
+      await writer.ready();
+    }
+    assert.deepEqual(errors, [], "a removed published directory must not flood stderr");
+    assert.equal(await exists(dir), false, "publication must not recreate a removed namespace");
+    await mkdir(dir);
+    progress.setPhase("resumed");
+    await writer.ready();
+    assert.equal(JSON.parse(await readFile(writer.path, "utf8")).currentPhase, "resumed");
+    await rm(dir, { recursive: true });
+    await writer.close();
+    assert.deepEqual(errors, [], "close must also tolerate a removed published directory");
+  } finally {
+    await writer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test("a failed automatic directory creation reports once through updates and close", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-status-creation-refused-"));
+  const blocker = path.join(root, "blocker");
+  await writeFile(blocker, "not a directory");
+  const errors: unknown[] = [];
+  const progress = newProgress();
+  const writer = new StatusFileWriter({ progress, dir: path.join(blocker, "status"), createDirectory: true,
+    onError: (error) => errors.push(error) });
+  try {
+    assert.equal(await writer.ready(), false);
+    assert.equal(errors.length, 1);
+    for (const phase of ["first", "second", "third"]) {
+      progress.setPhase(phase);
+      await writer.ready();
+    }
+    await writer.close();
+    assert.equal(errors.length, 1, "startup failure must not flood progress or shutdown diagnostics");
+  } finally {
+    await writer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a failed initial write never publishes on subsequent progress changes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-initial-write-"));
+  const progress = newProgress();
+  let writes = 0;
+  const errors: unknown[] = [];
+  const writer = new StatusFileWriter({ progress, dir, fileOperations: {
+    writeFile: async (file, contents, encoding) => {
+      writes += 1;
+      if (writes === 1) {
+        progress.setPhase("changed during initial publication");
+        throw Object.assign(new Error("temporary disk failure"), { code: "ENOSPC" });
+      }
+      await writeFile(file, contents, encoding);
+    }
+  }, onError: (error) => errors.push(error) });
+  try {
+    assert.equal(await writer.ready(), false);
+    for (const phase of ["first", "second", "third"]) {
+      progress.setPhase(phase);
+      await writer.ready();
+    }
+    assert.equal(await exists(writer.path), false, "an unannounced status file must not appear");
+    assert.equal(writes, 1);
+    assert.equal(errors.length, 1);
+  } finally {
+    await writer.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

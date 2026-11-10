@@ -12,28 +12,33 @@ alias ensemble='node /path/to/Ensemble-Workflows/skills/ensemble-workflow/Base/s
 ## Synopsis
 
 Running the launcher with no arguments prints this usage text on stderr. It
-names the program as you invoked it:
+names the launcher by the absolute path it was invoked through, preserving a
+symlink path. Script paths include `node`; executable shims name themselves.
+Paths containing shell metacharacters are quoted for a POSIX shell. The
+launcher path stays whole even when it exceeds 80 columns; the remaining
+usage wraps to that width. For a launcher at `/opt/ensemble.mjs`:
 
 ```text
-Usage: node ensemble.mjs [run options] <script.js> [args...]
-       node ensemble.mjs agent --engine <engine> [agent options] [prompt]
-       node ensemble.mjs workflows
-       node ensemble.mjs holds [--json] [--scope <scope> | --all]
-       node ensemble.mjs holds answer <hold-id> --verdict <verdict>
-                         [--note <note>]
+Usage: node /opt/ensemble.mjs [run options] <script.js> [args...]
+       node /opt/ensemble.mjs agent --engine <engine> [agent options] [prompt]
+       node /opt/ensemble.mjs workflows
+       node /opt/ensemble.mjs holds [--json] [--scope <scope> | --all]
+       node /opt/ensemble.mjs holds answer <hold-id> --verdict <verdict>
+                        [--note <note>]
 
 Run options (before the script path):
   --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N
   --agent-ceiling N|null  --timeout ms  --strip capability
-  --caller-identity <identity>  --hold-scope <scope>
+  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run
 Agent options (after agent, before the prompt):
   --model <model>  --effort <effort>  --label <label>  --phase <phase>
   --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'
   --max-attempts N  --task <identity>  --strip capability  --budget engine=N
   --agent-ceiling N|null  --concurrency engine=N  --timeout ms
-  --caller-identity <identity>  --hold-scope <scope>
+  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run
 The prompt is the one positional argument, or stdin when omitted.
-Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.
+Run `node /opt/ensemble.mjs --help` for orientation;
+  each subcommand answers --help.
 ```
 
 `--help` and `--version` print text on stdout, and each subcommand answers its
@@ -61,10 +66,11 @@ a script argument spelled like a run option, put `--` before the script path:
 | `--timeout ms` | Whole-run deadline, at most 2147483647. Distinct from an `agent()` call's own `timeoutMs` |
 | `--strip capability` | Remove a tool-surface capability (`skills` or `agents`) from every worker in the run; an opencode worker refuses any strip (see [Permissions](workflow-scripts.md#permissions-and-strip)). Repeatable |
 | `--caller-identity <identity>` | Opaque identity of the invoking session, recorded in the run record. Overrides `ENSEMBLE_CALLER_IDENTITY` |
+| `--worker-scope worker\|run` | Systemd scope grouping for Claude and Codex; overrides environment and configuration (see [Configuration](configuration.md)) |
 | `--hold-scope <scope>` | Scope for decision holds raised during the run. Overrides `ENSEMBLE_HOLD_SCOPE` |
 
 Only `--budget`, `--concurrency`, and `--strip` may be repeated; every other
-option may appear once. `--concurrency` and `--agent-ceiling` sit on top of the
+option may appear once. `--worker-scope`, `--concurrency` and `--agent-ceiling` sit on top of the
 environment and configuration-file layers described in
 [Configuration](configuration.md).
 
@@ -92,7 +98,7 @@ the prompt.
 | `--task <identity>` | Grouping identity copied into the run record |
 
 The run options `--budget`, `--concurrency`, `--agent-ceiling`, `--timeout`,
-`--strip`, `--caller-identity`, and `--hold-scope` apply here too.
+`--strip`, `--caller-identity`, `--hold-scope`, and `--worker-scope` apply here too.
 
 The option semantics match `agent()` in a script; see
 [`agent()` options](workflow-scripts.md#agent-options). There is no fallback
@@ -140,11 +146,11 @@ the raiser's poll intervals. It prints one JSON object on stdout and exits:
 
 | Exit code | Meaning |
 |---|---|
-| 0 | The raiser accepted this answer, confirmed by its submission receipt |
+| 0 | The answer was consumed: the answer file and the hold both disappeared, which normally means the run accepted the answer and resumed |
 | 3 | The answer bounced; the output includes the rejection reason, and the hold keeps waiting |
 | 4 | The raiser has not read the answer yet; the answer file stays in place |
 | 5 | No open hold has that id |
-| 7 | The files cannot attribute an outcome to this submission |
+| 6 | The hold settled without judging this answer; the stale decision file is removed |
 
 See [Holds](workflow-scripts.md#holds) for how holds are raised, scoped, and
 answered by hand.
@@ -174,6 +180,12 @@ Logs and diagnostics go to stderr. These lines are written there:
 
 - `[sentinel] will write <path> when the run ends` — where the completion
   sentinel will appear (see [Run records](run-records.md#completion-sentinel)).
+- `[status-file] {"run_id":…,"status_path":…}` — the exact live status path,
+  announced after initial publication and before workflow execution. Creates
+  `$XDG_DATA_HOME/ensemble/status/` (normally
+  `~/.local/share/ensemble/status/`), independently of `<cwd>/.claude`;
+  see [status settings](configuration.md#run-record-and-status-locations) for
+  overrides and disablement. The file is removed at shutdown.
 - `[run-record-archive] {"run_id":…,"archive_path":…}` — the run's archive,
   when recording is enabled.
 - `[<engine>] agent <id> (<label>) failed after N attempts — <cause>` — a
@@ -181,12 +193,21 @@ Logs and diagnostics go to stderr. These lines are written there:
   reports its failure in its own final diagnostic instead. When a fallback chain was used, the line
   reads `failed after N attempts across M chain targets — the last target's
   failure: <cause>`.
-- `[hold] <id> raised in scope <scope>; ensemble holds answer <id> --verdict <choice>` — the raising run announces each hold and its accepted choices.
-- `[hold] <id> answered with <verdict>` or `[hold] <id> timed out` — the raising run announces settlement.
 - `[<engine>] agent <id> (<label>) answered by fallback entry <n> …` — a
   fallback entry answered for a refused target.
 - `[<engine>] agent <id> (<label>) fallback chain not consulted — …` — a
   failure the classifier did not recognise, so the declared chain was not used.
+- `[codex] app-server (pid <pid>) scope placement refused: <reason>` — the
+  app-server could not be moved; its threads still dispatch, with the refusal
+  also available through `codex/workerScopePlacement` runtime events.
+- `[claude] worker <name> (pid <pid>) scope placement refused; retrying: <reason>`
+  — the worker could not be moved into its scope. Ensemble retries within the
+  registration window and on later roster polls; repeated identical refusals
+  are quiet. `scope placement recovered in <unit>` reports a successful retry.
+  Dispatch remains best-effort; see [worker scope placement](configuration.md#worker_environment).
+- `[claude] worker scope watch failed; retrying: <reason>` — an unexpected
+  background roster-watch error. The watch continues across idle turns and
+  retries while Ensemble owns a Claude session.
 - `[teardown] …` — the script returned while a worker it started was still
   running, or tried to end the process after returning.
 
@@ -227,7 +248,10 @@ the sentinel and the process's exit code.
 The launcher exits once its own work is done — the result or envelope printed,
 the record sealed, the sentinel written, the workers stopped — even if the
 script left timers or handles pending. A forgotten `setTimeout` does not hold
-your shell open.
+your shell open. If a downstream reader closes stdout early (for example,
+`ensemble --help | head -3`), the launcher suppresses the broken-pipe error.
+A workflow still finishes its teardown and records, and retains its normal exit
+code. Other stdout errors remain failures.
 
 - **Signals.** The first SIGINT or SIGTERM while the script is running (or
   about to start) marks the run interrupted, and the launcher then ends it

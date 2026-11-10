@@ -7,6 +7,7 @@ import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { createWorkerScopes, RUN_SCOPE_GROUP, type WorkerScopeGrouping, type WorkerScopes } from "./worker-scopes.js";
 import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
 import { requireRegisteredOpenCodeModel } from "./engine-option-validation.js";
+import { engineResourceRequirements } from "./engine-resources.js";
 import {
   AppServerExitedError,
   AppServerStartupTimeoutError,
@@ -35,6 +36,7 @@ import type { WorkerExitStatus } from "./errors.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
 import type { OpenCodeRunner } from "./opencode-engine.js";
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
+import type { ResourceRequirement } from "./resource-preflight.js";
 import type {
   AgentWaitSnapshot,
   EngineName,
@@ -188,15 +190,34 @@ export class EngineRegistry {
   /** Resources the engines share and the registry therefore owns, closed after every engine has. */
   #shared: readonly { close(): Promise<void> }[];
 
-  constructor(engines: EngineAdapter[], shared: readonly { close(): Promise<void> }[] = []) {
+  /** What each engine needs from the filesystem, judged before its first attempt (`EngineResourceGate`). */
+  #resources: (name: EngineName) => readonly ResourceRequirement[];
+
+  /**
+   * `resources` resolves an engine's filesystem requirements, asked at
+   * that engine's first attempt, so a run resolves only the engines it
+   * uses. Omitted, no engine declares any, which is what a registry of
+   * test doubles wants; the default registry declares every engine's
+   * (`createDefaultEngineRegistry`).
+   */
+  constructor(
+    engines: EngineAdapter[],
+    shared: readonly { close(): Promise<void> }[] = [],
+    resources: (name: EngineName) => readonly ResourceRequirement[] = () => []
+  ) {
     for (const engine of engines) {
       this.#engines.set(engine.name, engine);
     }
     this.#shared = shared;
+    this.#resources = resources;
   }
 
   get(name: EngineName): EngineAdapter | undefined {
     return this.#engines.get(name);
+  }
+
+  resourceRequirements(name: EngineName): readonly ResourceRequirement[] {
+    return this.#resources(name);
   }
 
   names(): EngineName[] {
@@ -821,7 +842,8 @@ export async function createDefaultEngineRegistry(
         onEvent: options.onOpenCodeEvent
       })
     ],
-    ownsScopes ? [workerScopes] : []
+    ownsScopes ? [workerScopes] : [],
+    (engine) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], options.cwd)
   );
 }
 

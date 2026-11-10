@@ -419,48 +419,40 @@ test("the sentinel carries each terminal outcome the launcher can handle", async
   }
 });
 
-test("a store the launcher cannot create announces no sentinel path and names the cause in one line", async () => {
+test("a store the launcher cannot create refuses the invocation before any run artefact, in one line", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-unwritable-"));
-  // A file where the store directory should be makes every mkdir under it
-  // fail. A supervisor arms on the announced path, so no path may be
-  // announced that cannot be written: the launcher says instead, in one
-  // line, that this run has no sentinel and why.
+  // A file where the store directory should be: the store can hold neither
+  // the archive nor the sentinel, so the launcher refuses the invocation at
+  // its acceptance boundary rather than starting a run it cannot account
+  // for — no sentinel announced, nothing on stdout, exit 2.
   const runRecordDir = path.join(directory, "store-blocker");
   await writeFile(runRecordDir, "not a directory");
   const script = path.join(directory, "workflow.js");
-  await writeFile(
-    script,
-    `
-      export const meta = { name: "sentinel-unwritable" };
-      return "ok";
-    `
-  );
+  await writeFile(script, `export const meta = { name: "sentinel-unwritable" }; return "ok";`);
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
+  let runtimeCreated = false;
   try {
     const exitCode = await runEnsembleCli([script], {
       cwd: directory,
       stdout,
       stderr,
       runRecordDir,
-      createRuntime: async () => fakeRuntime()
+      createRuntime: async () => {
+        runtimeCreated = true;
+        return fakeRuntime();
+      }
     });
 
-    // The unwritable store fails the run through the record writer: exit 1,
-    // the failure envelope, and a one-line cause.
-    assert.equal(exitCode, 1);
-    const lines = stderr.text().split("\n");
-    const sentinelLines = lines.filter((line) => line.startsWith("[sentinel]"));
-    assert.equal(sentinelLines.length, 1, `expected exactly one sentinel line, got:\n${stderr.text()}`);
-    assert.match(sentinelLines[0]!, /^\[sentinel\] no sentinel will be written for this run — cannot create \S.*: ENOTDIR/);
-    assert.doesNotMatch(stderr.text(), /\[sentinel\] will write /, "no path may be announced under a store that cannot be created");
-    assert.ok(lines.some((line) => line.startsWith("the durable run record could not start under ")), stderr.text());
-    assert.equal(lines.filter((line) => /^\s+at /.test(line)).length, 0, `stack frames on stderr:\n${stderr.text()}`);
-    const envelope = JSON.parse(stdout.text()) as { partial: boolean; reason: string; error: { kind: string } };
-    assert.equal(envelope.partial, true);
-    assert.equal(envelope.reason, "failed");
-    assert.equal(envelope.error.kind, "RunRecordStartError");
+    assert.equal(exitCode, 2);
+    assert.equal(stdout.text(), "");
+    assert.equal(runtimeCreated, false);
+    assert.doesNotMatch(stderr.text(), /\[sentinel\]/);
+    const lines = stderr.text().split("\n").filter((line) => line.length > 0);
+    assert.equal(lines.length, 1, stderr.text());
+    assert.ok(lines[0]!.includes(`cannot create entries in ${runRecordDir}`), stderr.text());
+    assert.match(lines[0]!, /run record store \(from the runRecordDir option\): ENOTDIR/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -3242,8 +3242,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path16) {
-      let input = path16;
+    function removeDotSegments(path18) {
+      let input = path18;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3495,8 +3495,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path16, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path16 && path16 !== "/" ? path16 : void 0;
+        const [path18, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path18 && path18 !== "/" ? path18 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -13834,13 +13834,13 @@ var require_acorn_globals = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path15 from "node:path";
+import path17 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile10, stat as stat4 } from "node:fs/promises";
+import { readFile as readFile10, stat as stat5 } from "node:fs/promises";
 import { hostname as hostname4 } from "node:os";
-import path14 from "node:path";
+import path16 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/ambient-settings.ts
@@ -17384,6 +17384,9 @@ function classifyAttemptFailure(evidence) {
   if (kind === "EngineShutdownError") {
     return { class: "unclassified", rule: "run-settlement" };
   }
+  if (kind === "ResourcePreflightRefusedError") {
+    return { class: "availability", rule: "preflight.resource-denied" };
+  }
   switch (evidence.engine) {
     case "codex":
       return classifyCodexFailure(kind, evidence.appServerDiagnostic);
@@ -17480,8 +17483,8 @@ var RunProgress = class {
     this.#counters(engine).cap = cap;
     this.#touch();
   }
-  setArchiveDir(path16) {
-    this.#archiveDir = path16;
+  setArchiveDir(path18) {
+    this.#archiveDir = path18;
     this.#touch();
   }
   /** Publishes only observed identity; served values must not echo the request. */
@@ -17491,16 +17494,16 @@ var RunProgress = class {
     Object.assign(record, identity);
     this.#touch();
   }
-  noteAgentTranscript(id, path16) {
+  noteAgentTranscript(id, path18) {
     const record = this.#live.get(id);
     if (record === void 0) return;
-    record.transcript = path16;
+    record.transcript = path18;
     this.#touch();
   }
-  noteAgentWorktree(id, path16) {
+  noteAgentWorktree(id, path18) {
     const record = this.#live.get(id);
     if (record === void 0) return;
-    record.worktree = path16;
+    record.worktree = path18;
     this.#touch();
   }
   /** Cumulative worker tokens across attempts and targets; null means unobserved. */
@@ -17772,6 +17775,147 @@ var RunProgress = class {
 function rank(state) {
   return state === "running" ? 0 : state === "queued" ? 1 : 2;
 }
+
+// src/resource-preflight.ts
+import { randomBytes } from "node:crypto";
+import { mkdtemp, rm as rm4, stat as stat4 } from "node:fs/promises";
+import { createServer } from "node:net";
+import path10 from "node:path";
+var CALLER_SANDBOX_RULES = [];
+function diagnoseCallerSandbox(env, denials, rules = CALLER_SANDBOX_RULES) {
+  for (const rule of rules) {
+    const evidence = rule.detect(env, denials);
+    if (evidence !== null) {
+      return { name: rule.name, evidence, lift: rule.lift };
+    }
+  }
+  return null;
+}
+var ResourcePreflightRefusedError = class extends SubstrateRefusedError {
+  constructor(denials, sandbox) {
+    super(refusalMessage(denials, sandbox));
+    this.denials = denials;
+    this.sandbox = sandbox;
+  }
+  denials;
+  sandbox;
+};
+function refusalMessage(denials, sandbox) {
+  const denied = denials.map((denial) => {
+    const { requirement } = denial;
+    const verb = requirement.access === "bind-socket" ? "bind a socket under" : "create entries in";
+    const where = denial.probedPath === requirement.path ? "" : ` (probed at ${denial.probedPath})`;
+    const who = requirement.owner === "launcher" ? "the launcher" : `the ${requirement.owner} engine`;
+    return `cannot ${verb} ${requirement.path}${where}, ${who}'s ${requirement.role} (from ${requirement.resolvedFrom}): ${denial.code}`;
+  });
+  const cause = sandbox === null ? "no sandbox around the launching process was identified; grant it this access, or move the path by the setting named" : `the launching process runs inside the ${sandbox.name} sandbox (${sandbox.evidence}), which denies it; ${sandbox.lift}`;
+  return `${denied.join("; ")} \u2014 ${cause}`;
+}
+async function probeResources(requirements) {
+  const outcomes = await Promise.all(requirements.map((requirement) => probeResource(requirement)));
+  return outcomes.filter((denial) => denial !== null);
+}
+async function judgeResources(requirements, env = process.env) {
+  const denials = await probeResources(requirements);
+  if (denials.length > 0) {
+    throw new ResourcePreflightRefusedError(denials, diagnoseCallerSandbox(env, denials));
+  }
+}
+async function probeResource(requirement) {
+  const located = await nearestExistingDirectory(requirement.path);
+  if ("code" in located) {
+    return { requirement, probedPath: located.path, code: located.code, message: located.message };
+  }
+  return requirement.access === "bind-socket" ? probeSocketBinding(requirement, located.path) : probeEntryCreation(requirement, located.path);
+}
+async function probeEntryCreation(requirement, dir) {
+  let scratch;
+  try {
+    scratch = await mkdtemp(path10.join(dir, ".ensemble-probe-"));
+  } catch (error) {
+    return denialOf(requirement, dir, error);
+  }
+  await rm4(scratch, { recursive: true, force: true });
+  return null;
+}
+async function probeSocketBinding(requirement, dir) {
+  const socketPath = path10.join(dir, `.ep-${randomBytes(4).toString("hex")}`);
+  if (Buffer.byteLength(socketPath) > MAX_SOCKET_PATH_BYTES) {
+    return {
+      requirement,
+      probedPath: dir,
+      code: "ENAMETOOLONG",
+      message: `a socket path under ${dir} exceeds the ${MAX_SOCKET_PATH_BYTES}-byte limit for a Unix socket`
+    };
+  }
+  try {
+    await listenOnce(socketPath);
+    return null;
+  } catch (error) {
+    return denialOf(requirement, dir, error);
+  } finally {
+    await rm4(socketPath, { force: true });
+  }
+}
+var MAX_SOCKET_PATH_BYTES = 107;
+async function nearestExistingDirectory(target) {
+  let current2 = path10.resolve(target);
+  for (; ; ) {
+    try {
+      const entry = await stat4(current2);
+      if (entry.isDirectory()) {
+        return { path: current2 };
+      }
+      return { path: current2, code: "ENOTDIR", message: `${current2} exists and is not a directory` };
+    } catch (error) {
+      const code = errnoOf(error);
+      const parent = path10.dirname(current2);
+      if (code !== "ENOENT" || parent === current2) {
+        return { path: current2, code, message: messageOf(error) };
+      }
+      current2 = parent;
+    }
+  }
+}
+function listenOnce(socketPath) {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      server.close((error) => error === void 0 ? resolve() : reject(error));
+    });
+  });
+}
+function denialOf(requirement, probedPath, error) {
+  return { requirement, probedPath, code: errnoOf(error), message: messageOf(error) };
+}
+function errnoOf(error) {
+  const code = error?.code;
+  return typeof code === "string" ? code : "unknown";
+}
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+var EngineResourceGate = class {
+  #requirementsOf;
+  #env;
+  #judged = /* @__PURE__ */ new Map();
+  constructor(requirementsOf, env = process.env) {
+    this.#requirementsOf = requirementsOf;
+    this.#env = env;
+  }
+  async require(engine) {
+    let judged = this.#judged.get(engine);
+    if (judged === void 0) {
+      judged = probeResources(this.#requirementsOf(engine));
+      this.#judged.set(engine, judged);
+    }
+    const denials = await judged;
+    if (denials.length > 0) {
+      throw new ResourcePreflightRefusedError(denials, diagnoseCallerSandbox(this.#env, denials));
+    }
+  }
+};
 
 // src/engines.ts
 import { randomUUID as randomUUID5 } from "node:crypto";
@@ -18950,14 +19094,14 @@ function itemTypeFromItem(item) {
 }
 
 // src/claude-control-plane.ts
-import { access, mkdtemp, readFile as readFile6, readdir as readdir5, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
+import { access, mkdtemp as mkdtemp2, readFile as readFile6, readdir as readdir5, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
 import { homedir as homedir3, hostname as hostname3, tmpdir } from "node:os";
-import path11 from "node:path";
+import path12 from "node:path";
 
 // src/worker-scopes.ts
 import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
 import { readFile as readFile5, readdir as readdir4 } from "node:fs/promises";
-import path10 from "node:path";
+import path11 from "node:path";
 var RUN_SCOPE_GROUP = "run";
 var SystemdWorkerScopes = class {
   slice;
@@ -19060,7 +19204,7 @@ var SystemdWorkerScopes = class {
     const deadline = Date.now() + this.#moveTimeoutMs;
     for (; ; ) {
       const lines = await Promise.all(
-        pids.map((pid) => readFile5(path10.join(this.#procDir, String(pid), "cgroup"), "utf8").catch(() => null))
+        pids.map((pid) => readFile5(path11.join(this.#procDir, String(pid), "cgroup"), "utf8").catch(() => null))
       );
       if (lines.every((line) => line === null || line.trimEnd().endsWith(`/${unit}`))) {
         return true;
@@ -19157,7 +19301,7 @@ async function createWorkerScopes(options = {}) {
   if (!await userManagerAnswers(systemd.busctlBin ?? "busctl", env)) {
     return new NoWorkerScopes();
   }
-  const cgroup = await readFile5(path10.join(procDir, "self", "cgroup"), "utf8").catch(() => "");
+  const cgroup = await readFile5(path11.join(procDir, "self", "cgroup"), "utf8").catch(() => "");
   return new SystemdWorkerScopes({ ...systemd, slice: containingSlice(cgroup) });
 }
 function containingSlice(cgroupFile) {
@@ -19189,10 +19333,10 @@ async function processTree(pid, procDir = "/proc") {
   const queue = [pid];
   while (queue.length > 0) {
     const parent = queue.shift();
-    const taskDir = path10.join(procDir, String(parent), "task");
+    const taskDir = path11.join(procDir, String(parent), "task");
     const tasks = await readdir4(taskDir).catch(() => []);
     for (const task of tasks) {
-      const children = await readFile5(path10.join(taskDir, task, "children"), "utf8").catch(() => "");
+      const children = await readFile5(path11.join(taskDir, task, "children"), "utf8").catch(() => "");
       for (const child of children.split(/\s+/).filter((entry) => /^\d+$/.test(entry)).map(Number)) {
         if (!seen.has(child)) {
           seen.add(child);
@@ -19274,8 +19418,8 @@ var ClaudeCliControlPlane = class {
     this.#workerEnv = options.workerEnv ?? {};
     this.#holdScope = options.holdScope === void 0 ? resolveHoldScope(void 0, process.env) : options.holdScope;
     this.#env = launchEnvironment("claude", this.#workerEnv);
-    const configDir = this.#env.CLAUDE_CONFIG_DIR || path11.join(homedir3(), ".claude");
-    this.#projectsDir = options.projectsDir ?? path11.join(configDir, "projects");
+    const configDir = this.#env.CLAUDE_CONFIG_DIR || path12.join(homedir3(), ".claude");
+    this.#projectsDir = options.projectsDir ?? path12.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";
@@ -19307,7 +19451,7 @@ var ClaudeCliControlPlane = class {
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
     const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
-    args.push("--settings", path11.join(settingsDir, "settings.json"));
+    args.push("--settings", path12.join(settingsDir, "settings.json"));
     let registered = null;
     try {
       const dispatch = { result: null };
@@ -19385,10 +19529,10 @@ var ClaudeCliControlPlane = class {
     const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
     const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
 `;
-    const dir = await mkdtemp(path11.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
+    const dir = await mkdtemp2(path12.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
-      await writeFile5(path11.join(dir, OWNER_FILENAME), owner, { mode: 384 });
-      await writeFile5(path11.join(dir, "settings.json"), `${JSON.stringify(settings)}
+      await writeFile5(path12.join(dir, OWNER_FILENAME), owner, { mode: 384 });
+      await writeFile5(path12.join(dir, "settings.json"), `${JSON.stringify(settings)}
 `, {
         mode: 384
       });
@@ -19399,7 +19543,7 @@ var ClaudeCliControlPlane = class {
     return dir;
   }
   async #removeSettingsDir(dir) {
-    await rm4(dir, { recursive: true, force: true }).catch(() => void 0);
+    await rm5(dir, { recursive: true, force: true }).catch(() => void 0);
   }
   /**
    * Remove every per-dispatch settings directory whose recorded owner is
@@ -19427,9 +19571,9 @@ var ClaudeCliControlPlane = class {
       if (!entry.isDirectory() || !entry.name.startsWith(SETTINGS_DIR_PREFIX)) {
         continue;
       }
-      const dir = path11.join(root, entry.name);
+      const dir = path12.join(root, entry.name);
       try {
-        const owner = JSON.parse(await readFile6(path11.join(dir, OWNER_FILENAME), "utf8"));
+        const owner = JSON.parse(await readFile6(path12.join(dir, OWNER_FILENAME), "utf8"));
         if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
           await this.#removeSettingsDir(dir);
         }
@@ -19468,7 +19612,7 @@ var ClaudeCliControlPlane = class {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path11.join(this.#projectsDir, dir, filename);
+      const candidate = path12.join(this.#projectsDir, dir, filename);
       try {
         await access(candidate);
         return candidate;
@@ -19485,12 +19629,12 @@ var ClaudeCliControlPlane = class {
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
     let socketDir;
     try {
-      socketDir = await mkdtemp(path11.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+      socketDir = await mkdtemp2(path12.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
       return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
     }
-    const server = ["-S", path11.join(socketDir, "tmux.sock")];
+    const server = ["-S", path12.join(socketDir, "tmux.sock")];
     try {
       const created = await this.#run(this.#tmuxBin, [
         ...server,
@@ -19522,7 +19666,7 @@ var ClaudeCliControlPlane = class {
       return { delivered: true };
     } finally {
       await this.#run(this.#tmuxBin, [...server, "kill-server"]);
-      await rm4(socketDir, { recursive: true, force: true }).catch(() => void 0);
+      await rm5(socketDir, { recursive: true, force: true }).catch(() => void 0);
     }
   }
   /**
@@ -19655,7 +19799,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile6(path11.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile6(path12.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -19812,14 +19956,14 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscriptFile(path16) {
+async function readTranscriptFile(path18) {
   let text;
   try {
-    text = await readFile7(path16, "utf8");
+    text = await readFile7(path18, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path16}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path18}`, { cause: error });
   }
-  return { path: path16, text, entries: parseTranscriptText(text) };
+  return { path: path18, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -20589,13 +20733,13 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle, observers) {
-    const path16 = await this.#controlPlane.transcriptPath(handle);
-    if (path16 === null) {
+    const path18 = await this.#controlPlane.transcriptPath(handle);
+    if (path18 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    const transcript = await readTranscriptFile(path16);
+    const transcript = await readTranscriptFile(path18);
     try {
-      observers?.onTranscriptPath?.(path16);
+      observers?.onTranscriptPath?.(path18);
     } catch {
     }
     return transcript;
@@ -20854,6 +20998,32 @@ function delay2(ms, signal, abortError) {
     }
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+// src/engine-resources.ts
+import { homedir as homedir4 } from "node:os";
+import path13 from "node:path";
+function codexResources(env) {
+  const declared = env.worker.CODEX_HOME;
+  const home = declared !== void 0 && declared.length > 0 ? { path: path13.resolve(env.cwd, declared), from: "CODEX_HOME" } : { path: path13.join(homeOf(env.worker), ".codex"), from: "default: $HOME/.codex" };
+  return [{ owner: "codex", role: "Codex home", path: home.path, access: "create-entries", resolvedFrom: home.from }];
+}
+function claudeResources() {
+  throw new Error("the claude engine's resource requirements are not yet resolved (src/engine-resources.ts)");
+}
+function openCodeResources() {
+  throw new Error("the opencode engine's resource requirements are not yet resolved (src/engine-resources.ts)");
+}
+var ENGINE_RESOURCE_RESOLVERS = {
+  codex: codexResources,
+  claude: claudeResources,
+  opencode: openCodeResources
+};
+function engineResourceRequirements(engine, declared, cwd, launcher = process.env) {
+  return ENGINE_RESOURCE_RESOLVERS[engine]({ worker: launchEnvironment(engine, declared, launcher), launcher, cwd });
+}
+function homeOf(env) {
+  return env.HOME !== void 0 && env.HOME.length > 0 ? env.HOME : homedir4();
 }
 
 // src/opencode-engine.ts
@@ -21619,14 +21789,14 @@ function assertCompilableSchema(schema) {
 }
 function findLocalReferenceCycle(schema) {
   const seenObjects = /* @__PURE__ */ new Set();
-  const visit = (value, path16) => {
+  const visit = (value, path18) => {
     if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
     seenObjects.add(value);
     const object = value;
     if (typeof object.$ref === "string") {
-      const seenRefs = /* @__PURE__ */ new Set([path16]);
+      const seenRefs = /* @__PURE__ */ new Set([path18]);
       let current2 = object;
-      let currentPath = path16;
+      let currentPath = path18;
       while (typeof current2.$ref === "string") {
         const targetPath = current2.$ref;
         const target = localPointerTarget(schema, targetPath);
@@ -21638,7 +21808,7 @@ function findLocalReferenceCycle(schema) {
       }
     }
     for (const [key, child] of Object.entries(object)) {
-      const cycle = visit(child, `${path16}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      const cycle = visit(child, `${path18}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
       if (cycle !== null) return cycle;
     }
     return null;
@@ -21663,14 +21833,14 @@ function normaliseForCodexOutputSchema(schema) {
 function assertAcyclicSchemaObject(schema) {
   const active = /* @__PURE__ */ new Map();
   const visited = /* @__PURE__ */ new Set();
-  const walk = (value, path16) => {
+  const walk = (value, path18) => {
     if (typeof value !== "object" || value === null) return;
     const firstSeenAt = active.get(value);
-    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path16, firstSeenAt);
+    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path18, firstSeenAt);
     if (visited.has(value)) return;
-    active.set(value, path16);
+    active.set(value, path18);
     for (const [key, child] of Object.entries(value)) {
-      walk(child, `${path16}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      walk(child, `${path18}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
     }
     active.delete(value);
     visited.add(value);
@@ -21933,14 +22103,27 @@ var EngineRegistry = class {
   #engines = /* @__PURE__ */ new Map();
   /** Resources the engines share and the registry therefore owns, closed after every engine has. */
   #shared;
-  constructor(engines, shared = []) {
+  /** What each engine needs from the filesystem, judged before its first attempt (`EngineResourceGate`). */
+  #resources;
+  /**
+   * `resources` resolves an engine's filesystem requirements, asked at
+   * that engine's first attempt, so a run resolves only the engines it
+   * uses. Omitted, no engine declares any, which is what a registry of
+   * test doubles wants; the default registry declares every engine's
+   * (`createDefaultEngineRegistry`).
+   */
+  constructor(engines, shared = [], resources = () => []) {
     for (const engine of engines) {
       this.#engines.set(engine.name, engine);
     }
     this.#shared = shared;
+    this.#resources = resources;
   }
   get(name) {
     return this.#engines.get(name);
+  }
+  resourceRequirements(name) {
+    return this.#resources(name);
   }
   names() {
     return [...this.#engines.keys()];
@@ -22369,7 +22552,8 @@ async function createDefaultEngineRegistry(options) {
         onEvent: options.onOpenCodeEvent
       })
     ],
-    ownsScopes ? [workerScopes] : []
+    ownsScopes ? [workerScopes] : [],
+    (engine) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], options.cwd)
   );
 }
 async function openCodexThread(transport, options, cwd) {
@@ -22518,6 +22702,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /** Live, in-memory view of what the run is doing. Always maintained; persisting it is opt-in at the CLI. */
   progress;
   #engines;
+  /** Judges each engine's filesystem requirements before its first attempt. */
+  #resourceGate;
   #admission;
   #placement;
   #defaultTurnTimeoutMs;
@@ -22611,6 +22797,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {}
       })
     ]);
+    const engines = this.#engines;
+    this.#resourceGate = new EngineResourceGate((engine) => engines.resourceRequirements(engine));
     this.#admission = new AdmissionController({
       ceiling: options.agentCeiling ?? null,
       caps: this.#engineCaps()
@@ -23475,6 +23663,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
     }
     try {
+      await this.#resourceGate.require(engine);
       result = await invocation.runAttempt({
         ...context,
         onLiveEvidence: () => {
@@ -23500,21 +23689,21 @@ var EnsembleRuntime = class _EnsembleRuntime {
         },
         ...engine === "codex" && recorder !== null ? {
           onTranscriptEvent: (event) => enqueue(async () => {
-            const path16 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
-            if (path16 != null) this.progress.noteAgentTranscript(agentId, path16);
+            const path18 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            if (path18 != null) this.progress.noteAgentTranscript(agentId, path18);
           })
         } : engine === "claude" ? {
-          onTranscriptPath: (path16) => {
-            if (path16 === transcriptPath || !active) return;
-            transcriptPath = path16;
+          onTranscriptPath: (path18) => {
+            if (path18 === transcriptPath || !active) return;
+            transcriptPath = path18;
             if (recorder === null) {
-              this.progress.noteAgentTranscript(agentId, path16);
+              this.progress.noteAgentTranscript(agentId, path18);
               return;
             }
             enqueue(async () => {
               try {
-                await recorder.recordClaudeTranscript(agentId, context.attempt, path16);
-                this.progress.noteAgentTranscript(agentId, path16);
+                await recorder.recordClaudeTranscript(agentId, context.attempt, path18);
+                this.progress.noteAgentTranscript(agentId, path18);
               } catch (error) {
                 transcriptPath = void 0;
                 throw error;
@@ -24568,7 +24757,7 @@ import vm from "node:vm";
 import { createHash as createHash3 } from "node:crypto";
 import { readFile as readFile9 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
-import path13 from "node:path";
+import path15 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -30264,8 +30453,8 @@ var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 // src/workflow-registry.ts
 import { constants } from "node:fs";
 import { access as access2, readdir as readdir6, readFile as readFile8 } from "node:fs/promises";
-import { homedir as homedir4 } from "node:os";
-import path12 from "node:path";
+import { homedir as homedir5 } from "node:os";
+import path14 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
 };
 var NestedWorkflowError = class extends WorkflowResolutionError {
@@ -30274,10 +30463,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path12.join(homedir4(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path14.join(homedir5(), ".local", "share");
   return {
-    project: path12.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path12.join(dataHome2, "ensemble", "workflows")
+    project: path14.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path14.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -30287,7 +30476,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path12.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path14.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access2(scriptPath, constants.R_OK);
   } catch (error) {
@@ -30360,7 +30549,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path12.join(dir, entry.name);
+    const scriptPath = path14.join(dir, entry.name);
     try {
       const source = await readFile8(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
@@ -30425,14 +30614,14 @@ function assertJsonSerialisable(value, label, pathRoot) {
     throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
   }
 }
-function findUnserialisable(value, path16, ancestors, honourToJson) {
+function findUnserialisable(value, path18, ancestors, honourToJson) {
   switch (typeof value) {
     case "function":
-      return `${path16} is a function`;
+      return `${path18} is a function`;
     case "symbol":
-      return `${path16} is a symbol`;
+      return `${path18} is a symbol`;
     case "bigint":
-      return `${path16} is a BigInt`;
+      return `${path18} is a BigInt`;
     case "object":
       break;
     default:
@@ -30443,16 +30632,16 @@ function findUnserialisable(value, path16, ancestors, honourToJson) {
   }
   const toJson = value.toJSON;
   if (honourToJson && typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path16, ancestors, false);
+    return findUnserialisable(toJson.call(value), path18, ancestors, false);
   }
   if (ancestors.has(value)) {
-    return `${path16} closes a cycle`;
+    return `${path18} closes a cycle`;
   }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path16}[${index}]`, ancestors, true);
+        const offence = findUnserialisable(value[index], `${path18}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -30460,7 +30649,7 @@ function findUnserialisable(value, path16, ancestors, honourToJson) {
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path16}.${key}`, ancestors, true);
+      const offence = findUnserialisable(entry, `${path18}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -30503,8 +30692,8 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
-  const resolvedFilename = path13.resolve(options.filename);
-  const cwd = options.cwd ?? path13.dirname(resolvedFilename);
+  const resolvedFilename = path15.resolve(options.filename);
+  const cwd = options.cwd ?? path15.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -31454,6 +31643,7 @@ async function runEnsembleCli(argv, options = {}) {
   let prepared;
   try {
     prepared = await prepareRun(invocation, cwd);
+    await judgeResources(launcherResourceRequirements(options.runRecordDir, ambientSettings, cwd), env);
   } catch (error) {
     stderr.write(`${presentOperationalError(error) ?? formatError2(error)}
 `);
@@ -31831,10 +32021,10 @@ function workflowName(meta) {
 async function prepareRun(invocation, cwd) {
   if (invocation.kind === "agent") {
     if (invocation.agentOptions.cwd !== void 0) {
-      const requestedCwd = path14.resolve(cwd, invocation.agentOptions.cwd);
+      const requestedCwd = path16.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
-        isDirectory2 = (await stat4(requestedCwd)).isDirectory();
+        isDirectory2 = (await stat5(requestedCwd)).isDirectory();
       } catch {
         isDirectory2 = false;
       }
@@ -31843,7 +32033,7 @@ async function prepareRun(invocation, cwd) {
       }
     }
     return {
-      workflowPath: path14.join(cwd, "<ensemble-agent>"),
+      workflowPath: path16.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
       runnerArgs: [],
       recordArgs: {
@@ -31855,13 +32045,34 @@ async function prepareRun(invocation, cwd) {
   if (invocation.scriptArg === void 0) {
     throw new Error("workflow invocation has no script path");
   }
-  const workflowPath = path14.resolve(cwd, invocation.scriptArg);
+  const workflowPath = path16.resolve(cwd, invocation.scriptArg);
   return {
     workflowPath,
     source: await readWorkflowScript(workflowPath),
     runnerArgs: invocation.args,
     recordArgs: invocation.args
   };
+}
+function launcherResourceRequirements(injectedRecordDir, settings, cwd) {
+  const store = injectedRecordDir !== void 0 ? { value: injectedRecordDir, from: "the runRecordDir option" } : { value: settings.runRecordDir.value, from: settingSource(settings.runRecordDir.layer, RUN_RECORD_DIR_ENV, "run_record.dir", settings.configFile) };
+  if (store.value === null || store.value.length === 0) {
+    return [];
+  }
+  return [
+    { owner: "launcher", role: "run record store", path: path16.resolve(cwd, store.value), access: "create-entries", resolvedFrom: store.from }
+  ];
+}
+function settingSource(layer, envKey, fileKey, configFile) {
+  switch (layer) {
+    case "flag":
+      return "the command line";
+    case "env":
+      return envKey;
+    case "config-file":
+      return `${fileKey} in ${configFile}`;
+    case "default":
+      return `the default; ${envKey}, or ${fileKey} in ${configFile}, moves it`;
+  }
 }
 function singleAgentWorkflowSource(invocation) {
   const meta = {
@@ -32363,7 +32574,7 @@ async function parseJsonValue(value, cwd, flagName) {
     if (filename.length === 0) {
       throw new CliUsageError(`${flagName} @file requires a file path`);
     }
-    const filePath = path14.resolve(cwd, filename);
+    const filePath = path16.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
       source = await readFile10(filePath, "utf8");
@@ -32601,7 +32812,7 @@ function programNameFor(scriptPath) {
   if (scriptPath === void 0 || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
-  const file = path14.basename(scriptPath);
+  const file = path16.basename(scriptPath);
   return /\.(?:mjs|cjs|js)$/.test(file) ? `node ${file}` : file;
 }
 var USAGE_WIDTH = 80;
@@ -32709,7 +32920,7 @@ function isError(error) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path15.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path17.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
 function flushed(stream) {
   return new Promise((resolve) => {
     stream.write("", () => resolve());

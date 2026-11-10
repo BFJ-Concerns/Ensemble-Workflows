@@ -43,6 +43,7 @@ import {
 import { HoldManager, defaultHoldsDirectory, resolveHoldScope } from "./holds.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 import { RunProgress } from "./progress.js";
+import { EngineResourceGate } from "./resource-preflight.js";
 
 import type { HoldDecision } from "./holds.js";
 import {
@@ -435,6 +436,8 @@ export class EnsembleRuntime {
   readonly progress: RunProgress;
 
   #engines: EngineRegistry;
+  /** Judges each engine's filesystem requirements before its first attempt. */
+  #resourceGate: EngineResourceGate;
   #admission: AdmissionController;
   #placement: AgentPlacementManager;
   #defaultTurnTimeoutMs: number | undefined;
@@ -556,6 +559,8 @@ export class EnsembleRuntime {
           ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {})
         })
       ]);
+    const engines = this.#engines;
+    this.#resourceGate = new EngineResourceGate((engine) => engines.resourceRequirements(engine));
     this.#admission = new AdmissionController({
       ceiling: options.agentCeiling ?? null,
       caps: this.#engineCaps()
@@ -1694,6 +1699,10 @@ export class EnsembleRuntime {
       this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
     }
     try {
+      // The engine's filesystem requirements are judged here, before its
+      // substrate first starts: a denial is a substrate refusal, recorded
+      // and chained like any other refusal raised from inside the attempt.
+      await this.#resourceGate.require(engine);
       result = await invocation.runAttempt({
         ...context,
         onLiveEvidence: () => { if (active) context.onLiveEvidence?.(); },

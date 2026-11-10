@@ -150,6 +150,12 @@ export function classifyAttemptFailure(evidence: AttemptFailureEvidence): Failur
   if (kind === "EngineShutdownError") {
     return { class: "unclassified", rule: "run-settlement" };
   }
+  // The launch environment denied a resource the engine needs, judged
+  // before its substrate started: the same on every engine, and the engine
+  // never saw the prompt.
+  if (kind === "ResourcePreflightRefusedError") {
+    return { class: "availability", rule: "preflight.resource-denied" };
+  }
   switch (evidence.engine) {
     case "codex":
       return classifyCodexFailure(kind, evidence.appServerDiagnostic);

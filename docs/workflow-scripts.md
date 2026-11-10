@@ -328,7 +328,12 @@ cannot pass silently:
 - Errors raised before a worker exists: an invalid option, a placement that
   could not be opened, an engine refusing the dispatch itself
   (`ClaudeDispatchError`, `CodexSubstrateRefusedError`), a strip that cannot
-  be enforced, or a budget refusal.
+  be enforced, or a budget refusal. Before an engine's first attempt in a
+  run, the launcher also checks that it can use the directories that engine
+  needs (the Codex home: `CODEX_HOME`, else `~/.codex`, as the engine is
+  launched); a denied one refuses every dispatch on that engine with
+  `ResourcePreflightRefusedError`, naming the directory, the setting it came
+  from and the error.
 - The run's own ending — an interrupt or a whole-run timeout — which throws
   through any call it cut short.
 
@@ -366,7 +371,9 @@ engine's own diagnostic:
   retries (`responseTooManyFailedAttempts`) on a 429 or 5xx, or an app-server
   that died or never started; a Claude API refusal carrying a 429, 503, or 529, a dispatch
   Claude Code refused, a dispatch the daemon never registered, or a session
-  that never showed life. Only this class advances a fallback chain.
+  that never showed life; on any engine, a directory the engine needs that
+  the launching process cannot use (`preflight.resource-denied`). Only this
+  class advances a fallback chain.
 - **output** — the worker answered badly: empty, unparseable, or off-schema.
 - **unclassified** — anything else, including a deadline, a Codex schema
   rejection, and a client error about a bad model name. A diagnostic that no

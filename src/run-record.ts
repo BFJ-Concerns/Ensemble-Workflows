@@ -21,7 +21,7 @@ import { harnessVersion } from "./harness-version.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 
-import type { Resolved } from "./ambient-settings.js";
+import { withoutRunScopedVariables, type Resolved } from "./ambient-settings.js";
 import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { OwnerGoneReason, ProcessOwnerRecord } from "./process-owner-evidence.js";
 import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
@@ -1007,6 +1007,7 @@ export class RunRecordWriter {
     }
 
     const agentJsonPath = `${agentDir}/agent.json`;
+    const unsettledTiming = record.status === "in-progress" || record.status === "abandoned";
     await this.#writeJson(agentJsonPath, {
       ...(this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id)! } } : {}),
       schema_version: SCHEMA_VERSION,
@@ -1040,7 +1041,9 @@ export class RunRecordWriter {
       label: record.label,
       phase: record.phase,
       status: record.status,
-      termination_cause: record.terminationCause,
+      termination_cause: record.status === "in-progress" && record.terminationCause === null
+        ? { kind: "record-unsettled", message: "the writer has not observed this worker's outcome" }
+        : record.terminationCause,
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
@@ -1061,8 +1064,8 @@ export class RunRecordWriter {
       // none — an agent with no usage data must be legible as "unknown for
       // this reason", never indistinguishable from zero spend.
       usage: agentUsage(record),
-      queued_ms: record.queuedMs,
-      execution_ms: record.executionMs,
+      queued_ms: unsettledTiming && record.queuedMs === 0 ? null : record.queuedMs,
+      execution_ms: unsettledTiming && record.executionMs === 0 ? null : record.executionMs,
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,
@@ -1678,15 +1681,15 @@ async function toolVersions(): Promise<Record<string, string | null>> {
   const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
-    commandVersion("claude", ["--version"]),
+    commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
     commandVersion("opencode", ["--version"])
   ]);
   return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
 }
 
-async function commandVersion(command: string, args: string[]): Promise<string | null> {
+async function commandVersion(command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string | null> {
   try {
-    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5_000 });
+    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5_000, env });
     return (stdout || stderr).trim() || null;
   } catch {
     return null;

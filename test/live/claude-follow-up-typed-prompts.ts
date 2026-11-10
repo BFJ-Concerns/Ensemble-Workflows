@@ -8,7 +8,7 @@ import type { TranscriptEntry } from "../../src/claude-transcript.js";
  * Claude worker's follow-up turn arrives as typed input.
  *
  * Claude Code (measured on 2.1.319) promotes any single parsed key event
- * longer than `PASTE_PROMOTION_UTF16_UNITS` to a paste. A pasted turn reaches
+ * longer than 800 UTF-16 units to a paste. A pasted turn reaches
  * the model wrapped in `<pasted_content>` tags, and a `/skill` line at its
  * head is no longer expanded. The classification has no setting, and it is
  * decided by event length, not by bytes or pacing: separate sends coalesce
@@ -34,9 +34,6 @@ import type { TranscriptEntry } from "../../src/claude-transcript.js";
  * first — so its row is the plain shape, judged by `followUpArrival` with
  * the whole delivered message.
  */
-
-/** Parsed key text longer than this many UTF-16 code units is promoted to a paste. */
-export const PASTE_PROMOTION_UTF16_UNITS = 800;
 
 /**
  * The skill the follow-up turn invokes. Installed under the worker's own
@@ -92,7 +89,7 @@ export const TYPED_FOLLOW_UP_UNICODE_LINE = "Unicode: café £ Ω 中文 😀 �
  * line opening with a hyphen, the Unicode line, and `marker` so a test
  * matches the row to its own turn. This base fixture uses printable text
  * and LF, with no trailing whitespace: Claude Code trims a message's final
- * space. followUpWhitespace supplies transport variants of the same text.
+ * space.
  */
 export function typedFollowUpArguments(marker: string): string {
   const filler = Array.from({ length: 18 }, () => "abcdefghij").join(" ");
@@ -108,23 +105,6 @@ export function typedFollowUpArguments(marker: string): string {
 /** The follow-up turn as sent: the slash line first, its arguments after one space. */
 export function typedFollowUpPrompt(marker: string): string {
   return `/${TYPED_FOLLOW_UP_SKILL.name} ${typedFollowUpArguments(marker)}`;
-}
-
-/**
- * Vary only the transport whitespace of existing fixture data, leaving the
- * slash line and instruction wording intact. Data lines gain indentation;
- * separators cycle through LF, CR and CRLF. Expected text is constructed
- * independently with spaces and LF, without calling the delivery encoder.
- */
-export function followUpWhitespace(message: string): { input: string; expected: string } {
-  const lines = message.split("\n");
-  return {
-    input: lines.map((line, index) =>
-      (index === 0 ? "" : ["\n", "\r", "\r\n"][(index - 1) % 3]) +
-      (index >= 3 && line.length > 0 ? "\t" : "") + line).join(""),
-    expected: lines.map((line, index) =>
-      (index >= 3 && line.length > 0 ? "    " : "") + line).join("\n")
-  };
 }
 
 /** How a delivered follow-up turn shows in the transcript, read from its user rows. */
@@ -157,11 +137,11 @@ export function followUpArrival(entries: TranscriptEntry[], fromIndex: number, m
   if (first.includes("<pasted_content")) {
     return { kind: "pasted", content: first };
   }
-  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>\/([^<\n]+)<\/command-name>\n<command-args>([^]*)<\/command-args>$/.exec(first);
+  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>\/([^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(first);
   if (command !== null) {
     const name = command[1] ?? "";
     const delivered = command[2] ?? "";
-    const sent = message.startsWith(`/${name} `) ? message.slice(name.length + 2) : null;
+    const sent = message === `/${name}` ? "" : message.startsWith(`/${name} `) ? message.slice(name.length + 2) : null;
     return {
       kind: "command",
       name,

@@ -2423,6 +2423,42 @@ test("a body's process.exit — direct or from a lingering callback — leaves a
   }
 });
 
+test("unawaited combinators report literal preflight and dynamic author errors", { timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-unawaited-author-error-"));
+  try {
+    for (const cli of [path.resolve("dist/src/cli/ensemble.js"), bundledCliPath]) {
+      for (const combinator of ["parallel", "pipeline"]) {
+        for (const reference of [
+          { name: "literal", call: 'workflow("./does-not-exist.js")', errorKind: "WorkflowResolutionError" },
+          { name: "dynamic", call: "workflow(args[0])", errorKind: "WorkflowUncaughtExceptionError" }
+        ]) {
+          const script = path.join(directory, `${combinator}-${reference.name}.js`);
+          // Literal names fail before the body runs. A name supplied through
+          // args reaches the unawaited combinator and must still fail the run.
+          await writeFile(script, `
+            export const meta = { name: "unawaited-author-error" };
+            ${combinator === "parallel" ? `parallel([() => ${reference.call}])` : `pipeline(["item"], () => ${reference.call})`};
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            return "must not succeed";
+          `);
+          const result = await runNode([cli, script, "./does-not-exist.js"], {
+            ENSEMBLE_RUN_RECORD: "0",
+            ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records"),
+            ENSEMBLE_STATUS: "0"
+          });
+          const context = `${combinator}/${reference.name}: ${result.stderr}`;
+          assert.equal(result.code, 1, context);
+          const envelope = assertSalvageEnvelope(result.stdout, "failed");
+          assert.equal(envelope.error.kind, reference.errorKind, context);
+          assert.match(envelope.error.message, /does-not-exist/, context);
+        }
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("an ending that lands after the body settled is absorbed for process.exit and degrades the run for an uncaught exception", { timeout: 60_000 }, async () => {
   // The body has returned; a lingering callback then ends the process. A
   // late `process.exit` changes nothing (the run's own code stands, one

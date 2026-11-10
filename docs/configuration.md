@@ -127,10 +127,12 @@ directory. A declared worker value overrides the launcher's inherited value,
 matching the directory used by the Claude processes; otherwise discovery uses
 `~/.claude/projects/`.
 
-Follow-up turns to a held Claude session are typed in through tmux. The tmux
-client receives the declared variables from a tmux server started for that one
-injection, so declared values never appear on a command line, where other
-local users could read them.
+Follow-up turns to a held Claude session use its external prompt editor through
+a private tmux attachment. The attach client receives the declared variables
+from a tmux server started for that one injection, so declared values never
+appear on a command line, where other local users could read them. Its
+`VISUAL` and `EDITOR` point at a private copy helper for that delivery; the
+worker and your editor settings keep their configured values.
 
 Any `claude` process Ensemble launches can start the per-user daemon when it
 is not already running, and that daemon then serves every later Claude session

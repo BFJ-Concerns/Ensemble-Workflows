@@ -248,7 +248,10 @@ the sentinel and the process's exit code.
 The launcher exits once its own work is done — the result or envelope printed,
 the record sealed, the sentinel written, the workers stopped — even if the
 script left timers or handles pending. A forgotten `setTimeout` does not hold
-your shell open.
+your shell open. If a downstream reader closes stdout early (for example,
+`ensemble --help | head -3`), the launcher suppresses the broken-pipe error.
+A workflow still finishes its teardown and records, and retains its normal exit
+code. Other stdout errors remain failures.
 
 - **Signals.** The first SIGINT or SIGTERM while the script is running (or
   about to start) marks the run interrupted, and the launcher then ends it

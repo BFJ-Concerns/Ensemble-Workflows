@@ -1,7 +1,13 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-import { EngineShutdownError, attachPartialWorkerText, attachWorkerExitStatus } from "./errors.js";
+import {
+  EngineShutdownError,
+  TurnTimeoutError,
+  attachFailedTurnResult,
+  attachPartialWorkerText,
+  attachWorkerExitStatus
+} from "./errors.js";
 import { subtractUsage } from "./usage-summary.js";
 
 import type {
@@ -11,7 +17,7 @@ import type {
   EngineInvocation,
   EngineTurnOptions
 } from "./engines.js";
-import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent } from "./types.js";
+import type { EngineTranscriptArtifact, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent } from "./types.js";
 
 export interface OpenCodeRunner {
   run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult>;
@@ -48,6 +54,8 @@ export interface OpenCodeRunResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+  /** The runner's per-turn timer expired while the subprocess was still running. */
+  deadlineExpired?: boolean;
 }
 
 export interface OpenCodeEngineInvocationOptions {
@@ -235,6 +243,30 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         { exitCode: run.exitCode, signal: run.signal }
       );
     }
+    if (run.deadlineExpired === true && this.#options.timeoutMs !== undefined) {
+      // The deadline ends the turn without an export, but what the stream
+      // already showed — its spend and its transcript — is the attempt's
+      // evidence all the same, and rides the timeout to the recorder.
+      const workerExit = { exitCode: run.exitCode, signal: run.signal };
+      const timeout = new TurnTimeoutError(
+        `opencode turn timed out after ${this.#options.timeoutMs}ms: ${openCodeFailureMessage(run, parsedRun.events)}`, {
+        kind: "turn",
+        timeoutMs: this.#options.timeoutMs,
+        threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
+      });
+      const evidence = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, null);
+      attachFailedTurnResult(timeout, {
+        text: fallback,
+        resolvedModel: this.#providerModel,
+        workerExit,
+        deltaText: fallback,
+        durationMs: run.durationMs,
+        firstDeltaMs: null,
+        items: {},
+        ...evidence
+      });
+      throw attachWorkerExitStatus(attachPartialWorkerText(timeout, fallback), workerExit);
+    }
     let exportData: OpenCodeExport | null = null;
     let exportDiagnostic: OpenCodeExportDiagnostic;
     if (parsedRun.sessionId === null) {
@@ -285,34 +317,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const usage =
-      exportData === null
-        ? usageFromStream(parsedRun.events)
-        : {
-            breakdown: usageFromExport(exportData),
-            cost: exportData.info?.cost ?? null
-          };
-    // A token-bearing stream that carries no session id is still measured
-    // spend — suppressing it reintroduces a fixed defect (spend that
-    // never reaches the ledger), behind a narrower gate. The identifiers
-    // exist only to attribute the event, so a missing id gets a synthetic,
-    // clearly-labelled one rather than costing the accounting.
-    const usageEvent =
-      usage.breakdown === null
-        ? null
-        : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.breakdown, usage.cost);
-    if (usage.breakdown !== null) {
-      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.cost);
-    }
-    const transcripts = [
-      {
-        filename: "transcript.opencode.jsonl",
-        format: "jsonl" as const,
-        source: "opencode run --format json",
-        content: transcriptContent(run.stdout, exportData),
-        ...(parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {})
-      }
-    ];
+    const { tokenUsageEvents, transcripts } = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, exportData);
 
     if (run.exitCode !== 0) {
       // An operational failure consumes a bounded retry attempt, the
@@ -337,7 +342,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         durationMs: run.durationMs,
         firstDeltaMs: null,
         items: {},
-        tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+        tokenUsageEvents,
         transcripts,
         diagnostics: {
           opencode: {
@@ -354,13 +359,56 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       durationMs: run.durationMs,
       firstDeltaMs: null,
       items: {},
-      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      tokenUsageEvents,
       transcripts,
       diagnostics: {
         opencode: {
           session_export: exportDiagnostic
         }
       }
+    };
+  }
+
+  /**
+   * The spend and transcript one attempt produced: the export's account when
+   * it was read, else the stream's. Reports the spend as it does so.
+   */
+  #attemptEvidence(
+    stdout: string,
+    parsedRun: ReturnType<typeof parseRunEvents>,
+    streamSessionId: string | null,
+    exportData: OpenCodeExport | null
+  ): { tokenUsageEvents: TokenUsageEvent[]; transcripts: EngineTranscriptArtifact[] } {
+    const usage =
+      exportData === null
+        ? usageFromStream(parsedRun.events)
+        : {
+            breakdown: usageFromExport(exportData),
+            cost: exportData.info?.cost ?? null
+          };
+    // A token-bearing stream that carries no session id is still measured
+    // spend — suppressing it reintroduces a fixed defect (spend that
+    // never reaches the ledger), behind a narrower gate. The identifiers
+    // exist only to attribute the event, so a missing id gets a synthetic,
+    // clearly-labelled one rather than costing the accounting.
+    const usageEvent =
+      usage.breakdown === null
+        ? null
+        : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.breakdown, usage.cost);
+    if (usage.breakdown !== null) {
+      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.cost);
+    }
+    return {
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts: [
+        {
+          filename: "transcript.opencode.jsonl",
+          format: "jsonl" as const,
+          source: "opencode run --format json",
+          content: transcriptContent(stdout, exportData),
+          ...(parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {})
+        }
+      ]
     };
   }
 
@@ -470,11 +518,13 @@ function runProcess(
     const stdout: string[] = [];
     const stderr: string[] = [];
     let settled = false;
+    let exited = false;
+    let deadlineExpired = false;
     let killEscalation: NodeJS.Timeout | undefined;
     // Shared by the deadline and the abort signal: SIGTERM first, and a
     // worker that ignores it is SIGKILLed after the grace period.
     const terminate = (): void => {
-      if (settled || killEscalation !== undefined) {
+      if (settled || exited || killEscalation !== undefined) {
         return;
       }
       child.kill("SIGTERM");
@@ -484,7 +534,12 @@ function runProcess(
       killEscalation.unref();
     };
     // No timeoutMs → the subprocess is not killed on a deadline; it runs to completion.
-    const timeout = timeoutMs === undefined ? undefined : setTimeout(terminate, timeoutMs);
+    const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
+      if (!settled && !exited) {
+        deadlineExpired = true;
+        terminate();
+      }
+    }, timeoutMs);
 
     if (abortSignal?.aborted === true) {
       terminate();
@@ -523,6 +578,13 @@ function runProcess(
       abortSignal?.removeEventListener("abort", terminate);
       reject(error);
     });
+    // Exit ends the execution deadline. Close can arrive later while pipes
+    // drain, and must not turn an already completed process into a timeout.
+    child.on("exit", () => {
+      exited = true;
+      clearTimeout(timeout);
+      clearTimeout(killEscalation);
+    });
     child.on("close", (exitCode, signal) => {
       if (settled) {
         return;
@@ -536,7 +598,8 @@ function runProcess(
         signal,
         stdout: stdout.join(""),
         stderr: stderr.join(""),
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        deadlineExpired
       });
     });
   });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -11,8 +12,11 @@ const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mj
 async function withClosedStdout(args: string[], cwd?: string): Promise<{ code: number | null; stderr: string }> {
   const child = spawn(process.execPath, [launcher, ...args], {
     cwd,
-    env: hermeticEstateEnvironment({ ENSEMBLE_RUN_RECORD: "off", ENSEMBLE_STATUS: "off",
-      ...(cwd === undefined ? {} : { ENSEMBLE_RUN_RECORD_DIR: path.join(cwd, "records") }) }),
+    env: hermeticEstateEnvironment({
+      ENSEMBLE_RUN_RECORD: "off",
+      ENSEMBLE_STATUS: "off",
+      ...(cwd === undefined ? {} : { ENSEMBLE_RUN_RECORD_DIR: path.join(cwd, "records") })
+    }),
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 30_000
   });
@@ -38,7 +42,7 @@ test("launcher help exits quietly when its stdout reader closes", async () => {
 
 for (const fails of [false, true]) {
   test(`closed stdout preserves ${fails ? "failed" : "successful"} workflow settlement`, async () => {
-    const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-closed-stdout-");
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-closed-stdout-"));
     try {
       const script = path.join(directory, "workflow.mjs");
       await writeFile(script, fails
@@ -59,7 +63,7 @@ for (const fails of [false, true]) {
 }
 
 test("launcher does not suppress stdout errors other than EPIPE", async () => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-stdout-error-");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-stdout-error-"));
   try {
     const preload = path.join(directory, "stdout-error.mjs");
     await writeFile(preload, `

@@ -107,6 +107,23 @@ test("Codex schema rejection before generation is recognised without attributing
   );
 });
 
+test("Codex recognises a typed provider request rejection, never the catch-all code or prose alone", () => {
+  const classify = (payload: string | null, code = "other") => classifyAttemptFailure(evidence({
+    engine: "codex",
+    failure: { kind: "AppServerRequestError", message: "invalid_request_error: prompt rejected" },
+    appServerDiagnostic: { code, payload }
+  }));
+  const notification = (message: unknown) => JSON.stringify({ error: { message } });
+  const provider = JSON.stringify({ error: { type: "invalid_request_error", message: "arbitrary wording" } });
+  assert.deepEqual(classify(notification(provider)), { class: "unclassified", rule: "codex.provider-request-rejected" });
+  for (const payload of [null, "not JSON", "null", "[]", "{}", notification(null), notification("prompt rejected"),
+    notification("null"), notification("[]"), notification(JSON.stringify({ error: { type: "unknown_error" } }))]) {
+    assert.deepEqual(classify(payload), { class: "unclassified", rule: null });
+  }
+  assert.deepEqual(classify(notification(provider), "somethingNew"), { class: "unclassified", rule: null });
+  assert.deepEqual(classify(notification(provider), "serverOverloaded"), { class: "availability", rule: "codex.server-overloaded" });
+});
+
 test("an unrecognised Codex diagnostic is unclassified with no rule, never defaulted into a class", () => {
   // A code the table has never seen — the shape a stale table produces when
   // Codex rewords its errors. `rule: null` is the archive's tell.

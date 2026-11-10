@@ -17517,7 +17517,29 @@ function classifyCodexFailure(kind, diagnostic) {
       return { class: "availability", rule };
     }
   }
+  if (code === "other" && codexProviderRejectedRequest(diagnostic?.payload)) {
+    return { class: "unclassified", rule: "codex.provider-request-rejected" };
+  }
   return CODEX_ERROR_CLASSES.get(kind) ?? { class: "unclassified", rule: null };
+}
+function codexProviderRejectedRequest(payload) {
+  if (payload == null) {
+    return false;
+  }
+  try {
+    const notification = JSON.parse(payload);
+    const message = objectField(objectField(notification, "error"), "message");
+    if (typeof message !== "string") {
+      return false;
+    }
+    const provider = JSON.parse(message);
+    return objectField(objectField(provider, "error"), "type") === "invalid_request_error";
+  } catch {
+    return false;
+  }
+}
+function objectField(value, key) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value[key] : void 0;
 }
 function classifyClaudeFailure(kind, diagnostics) {
   if (kind === "claude-worker-diagnostic") {

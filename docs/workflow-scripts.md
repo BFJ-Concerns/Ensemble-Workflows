@@ -560,7 +560,10 @@ engine's own diagnostic:
   class advances a fallback chain.
 - **output** — the worker answered badly: empty, unparseable, or off-schema.
 - **unclassified** — anything else, including a deadline, a Codex schema
-  rejection, and a client error about a bad model name. A diagnostic that no
+  rejection, a provider request rejection, and a client error about a bad
+  model name. Codex forwards a provider JSON `invalid_request_error` as
+  `other`; this is recognised by `codex.provider-request-rejected`, retried
+  in place within `maxAttempts`, and never advances a chain. A diagnostic that no
   rule recognised is recorded with `rule: null`.
 
 With a chain declared, a failure that matches no rule leaves the chain

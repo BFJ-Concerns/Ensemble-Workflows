@@ -36,7 +36,7 @@ export interface FailureClassification {
 export interface AttemptFailureEvidence {
   engine: EngineName;
   failure: { kind: string; message: string };
-  appServerDiagnostic: { code: number | string | null; httpStatusCode?: number | null } | null;
+  appServerDiagnostic: { code: number | string | null; httpStatusCode?: number | null; payload?: string | null } | null;
   diagnostics: JsonObject | undefined;
 }
 
@@ -237,7 +237,38 @@ function classifyCodexFailure(
       return { class: "availability", rule };
     }
   }
+  if (code === "other" && codexProviderRejectedRequest(diagnostic?.payload)) {
+    return { class: "unclassified", rule: "codex.provider-request-rejected" };
+  }
   return CODEX_ERROR_CLASSES.get(kind) ?? { class: "unclassified", rule: null };
+}
+
+/**
+ * Codex forwards a provider's invalid_request_error as `other`, with the
+ * provider JSON in the notification's error.message. Read that typed cause,
+ * not incidental words in the diagnostic or the catch-all `other` alone.
+ */
+function codexProviderRejectedRequest(payload: string | null | undefined): boolean {
+  if (payload == null) {
+    return false;
+  }
+  try {
+    const notification: unknown = JSON.parse(payload);
+    const message = objectField(objectField(notification, "error"), "message");
+    if (typeof message !== "string") {
+      return false;
+    }
+    const provider: unknown = JSON.parse(message);
+    return objectField(objectField(provider, "error"), "type") === "invalid_request_error";
+  } catch {
+    // Non-JSON diagnostics are outside this rule; retain their unknown status.
+    return false;
+  }
+}
+
+function objectField(value: unknown, key: string): unknown {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)[key] : undefined;
 }
 
 function classifyClaudeFailure(kind: string, diagnostics: JsonObject | undefined): FailureClassification {

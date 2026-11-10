@@ -203,7 +203,7 @@ test("a new writer's startup sweep removes the files of runs whose owner is prov
 });
 
 test("temp sweep refutes reused pids by start ticks and retains unjudgeable files", async () => {
-  const root = await mkdtemp("/mnt/ai-data/scratch/status-temp-sweep-");
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-status-temp-sweep-"));
   const procDir = path.join(root, "proc");
   const dir = path.join(root, "status");
   await mkdir(dir);
@@ -251,7 +251,7 @@ test("temp sweep refutes reused pids by start ticks and retains unjudgeable file
 });
 
 test("atomic temp names carry the same start identity as the published owner", async () => {
-  const root = await mkdtemp("/mnt/ai-data/scratch/status-temp-identity-");
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-status-temp-identity-"));
   const procDir = path.join(root, "proc");
   await writeProcStat(procDir, process.pid, "77777");
   try {

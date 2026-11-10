@@ -320,6 +320,24 @@ type AgentExecutionCompletion =
   | { ok: true; execution: AgentExecutionOutcome }
   | { ok: false; error: unknown };
 
+function identifiedResult(options: { label?: string }, output: unknown, record: RuntimeAgentRecord): IdentifiedAgentResult {
+  return {
+    label: options.label ?? null,
+    phase: record.phase,
+    output,
+    failure: record.status === "complete" ? null : { message: settledFailureMessage(record) }
+  };
+}
+
+function identifiedFailure(options: { identity?: boolean; label?: string; phase?: string }, error: unknown, phase = options.phase ?? null): unknown {
+  if (options.identity !== true) return error;
+  // Combinators read the carrier to retain the failed call's envelope.
+  // Wrap non-Error rejections so they can carry the same identity.
+  const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
+  attachAgentIdentity(carrier, { label: options.label ?? null, phase });
+  return carrier;
+}
+
 /** A worker session's runtime-internal state, owned by EnsembleRuntime. */
 interface WorkerSessionState {
   id: number;
@@ -354,7 +372,7 @@ interface WorkerSessionState {
  * here — computed by the runtime, acted on only by the script: a send to a
  * stale-marked session still executes.
  */
-export class WorkerSession {
+export class WorkerSession<Identified extends boolean = false> {
   #state: WorkerSessionState;
   #now: () => number;
   #sendTurn: (prompt: string, turn: SessionTurnOptions) => Promise<unknown>;
@@ -396,8 +414,13 @@ export class WorkerSession {
    * The idle gap at which this session reads stale: the resolved runtime
    * option, or the engine's default advisory threshold.
    */
-  get staleAfterMs(): number {
-    return this.#state.stalenessThresholdMs;
+  get staleAfterMs(): number | null {
+    return this.#state.markStaleness ? this.#state.stalenessThresholdMs : null;
+  }
+
+  /** Whether this session reports staleness after its idle threshold. */
+  get stalenessMark(): boolean {
+    return this.#state.markStaleness;
   }
 
   /**
@@ -417,9 +440,9 @@ export class WorkerSession {
     return this.#now() - state.lastTurnEndedAt >= state.stalenessThresholdMs;
   }
 
-  send(prompt: string, turn: SessionTurnOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  send(prompt: string, turn?: SessionTurnOptions & { schema?: undefined }): Promise<string | null>;
-  send(prompt: string, turn?: SessionTurnOptions): Promise<string | unknown | null>;
+  send(prompt: string, turn: SessionTurnOptions & { schema: JsonSchema }): Promise<Identified extends true ? IdentifiedAgentResult : unknown | null>;
+  send(prompt: string, turn?: SessionTurnOptions & { schema?: undefined }): Promise<Identified extends true ? IdentifiedAgentResult : string | null>;
+  send(prompt: string, turn?: SessionTurnOptions): Promise<Identified extends true ? IdentifiedAgentResult : unknown>;
   send(prompt: string, turn: SessionTurnOptions = {}): Promise<string | unknown | null> {
     return this.#sendTurn(prompt, turn);
   }
@@ -846,25 +869,11 @@ export class EnsembleRuntime {
         // completed, so a worker's genuine null answer and an exhausted
         // collapse never read alike. The durable record is unchanged — it
         // already carries label and phase as first-class fields.
-        const failure =
-          agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
-        return { label: options.label ?? null, phase, output, failure };
+        return identifiedResult(options, output, agentRecord);
       }
       return output;
     } catch (error) {
-      if (options.identity === true) {
-        // An identified call keeps its identity through operational failure:
-        // the combinators' collapse reads this carrier and resolves
-        // the failure-bearing envelope instead of bare null. A non-Error
-        // rejection cannot carry the property, so it is wrapped — losing
-        // the discrimination to a rejection's spelling would re-open the
-        // silent-empty-success case. The call's own contract is otherwise
-        // unchanged — the error still propagates.
-        const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
-        attachAgentIdentity(carrier, { label: options.label ?? null, phase });
-        throw carrier;
-      }
-      throw error;
+      throw identifiedFailure(options, error, phase);
     } finally {
       this.#noteAgentSettled(agentId);
     }
@@ -930,7 +939,10 @@ export class EnsembleRuntime {
    * worker itself starts at the first `send()`. An engine that does not
    * hold sessions (opencode) throws before any worker exists.
    */
-  createWorkerSession(options: WorkerSessionOptions): WorkerSession {
+  createWorkerSession(options: WorkerSessionOptions & { identity: true }): WorkerSession<true>;
+  createWorkerSession(options: WorkerSessionOptions & { identity?: false }): WorkerSession<false>;
+  createWorkerSession(options: WorkerSessionOptions): WorkerSession<boolean>;
+  createWorkerSession(options: WorkerSessionOptions): WorkerSession<boolean> {
     if (this.#closed) {
       throw new SessionClosedError();
     }
@@ -976,7 +988,7 @@ export class EnsembleRuntime {
       pendingTurn: null,
       closed: false
     };
-    const session = new WorkerSession({
+    const session = new WorkerSession<boolean>({
       state,
       now: this.#now,
       sendTurn: (prompt, turn) => {
@@ -1013,6 +1025,7 @@ export class EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
+    let phase = options.phase ?? null;
     state.inFlight = true;
     try {
       // Each turn is its own dispatch: budget admission is judged here, at
@@ -1025,7 +1038,7 @@ export class EnsembleRuntime {
         label: options.label ?? null,
         phase: options.phase ?? null
       });
-      const phase = this.progress.queuedAgentPhase(agentId);
+      phase = this.progress.queuedAgentPhase(agentId);
       if (engine.name === "claude" && options.model === undefined && state.turnCount === 0) {
         this.#emitEvent({
           method: "claude/unpinnedModel",
@@ -1088,6 +1101,9 @@ export class EnsembleRuntime {
           // is not a served-model claim, and a missing response stays null.
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
+          if (options.identity === true) {
+            return identifiedResult(options, output, agentRecord);
+          }
           return output;
         } catch (error) {
           // A failed first turn can still have reached a live session and
@@ -1102,6 +1118,10 @@ export class EnsembleRuntime {
         state.turnCount = turnNumber;
         state.lastTurnEndedAt = this.#now();
       }
+    } catch (error) {
+      // Admission can refuse a turn before it has a record or a worker.
+      // Its rejection still carries the session's opted-in identity.
+      throw identifiedFailure(options, error, phase);
     } finally {
       state.inFlight = false;
     }

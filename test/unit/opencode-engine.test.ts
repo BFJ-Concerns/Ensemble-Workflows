@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import childProcess, { ChildProcess, execFile } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { PassThrough } from "node:stream";
 import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -213,6 +215,152 @@ test("a worker killed by signal leaves its exit evidence in the attempt record",
     await runtime.close();
     await rm(cwd, { recursive: true, force: true });
     await rm(store, { recursive: true, force: true });
+  }
+});
+
+test("an opencode subprocess stopped by its turn deadline records a timeout", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-deadline-"));
+  const bin = path.join(directory, "opencode");
+  const records: RuntimeAgentRecord[] = [];
+  await writeFile(bin, "#!/bin/sh\nexec sleep 2\n");
+  await chmod(bin, 0o755);
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([
+      new OpenCodeEngineAdapter({
+        cwd: directory,
+        runner: new OpenCodeCliRunner(bin, { killGraceMs: 20 }),
+        modelRegistry: testOpenCodeModelRegistry
+      })
+    ]),
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+  } as unknown as RunRecordWriter);
+
+  try {
+    assert.equal(await runtime.agent("outlast the deadline", {
+      engine: "opencode",
+      model: "glm-5.2",
+      timeoutMs: 50,
+      maxAttempts: 1
+    }), null);
+    const record = records.at(-1);
+    assert.equal(record?.status, "timed-out");
+    assert.equal(record.terminationCause?.kind, "turn-timeout");
+    assert.match(record.terminationCause.message, /50ms/);
+    assert.equal(record.attempts[0]?.failure?.kind, "TurnTimeoutError");
+    assert.match(record.attempts[0]?.failure?.message ?? "", /50ms/);
+    assert.deepEqual(record.attempts[0]?.workerExit, { exitCode: null, signal: "SIGTERM" });
+    assert.deepEqual(record.attempts[0]?.classification, { class: "unclassified", rule: "opencode.deadline" });
+  } finally {
+    await runtime.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an opencode deadline keeps the spend and transcript the stream had already shown", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-deadline-usage-"));
+  const bin = path.join(directory, "opencode");
+  const records: RuntimeAgentRecord[] = [];
+  const stream = [
+    JSON.stringify({ type: "session.created", sessionID: "ses_deadline_usage" }),
+    JSON.stringify({
+      type: "step_finish",
+      sessionID: "ses_deadline_usage",
+      part: { type: "step-finish", tokens: { input: 5, output: 3, reasoning: 2, cache: { read: 0, write: 0 } } }
+    })
+  ];
+  await writeFile(bin, `#!/bin/sh\nprintf '%s\\n' '${stream[0]}' '${stream[1]}'\nexec sleep 2\n`);
+  await chmod(bin, 0o755);
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([
+      new OpenCodeEngineAdapter({
+        cwd: directory,
+        runner: new OpenCodeCliRunner(bin, { killGraceMs: 20 }),
+        modelRegistry: testOpenCodeModelRegistry
+      })
+    ]),
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+  } as unknown as RunRecordWriter);
+
+  try {
+    assert.equal(await runtime.agent("spend, then outlast the deadline", {
+      engine: "opencode",
+      model: "glm-5.2",
+      timeoutMs: 500,
+      maxAttempts: 1
+    }), null);
+    const attempt = records.at(-1)?.attempts[0];
+    assert.equal(attempt?.failure?.kind, "TurnTimeoutError");
+    assert.equal(attempt.tokenUsageEvents.length, 1);
+    assert.equal(attempt.tokenUsageEvents[0]?.last.totalTokens, 10);
+    assert.equal(attempt.transcripts.length, 1);
+    assert.match(attempt.transcripts[0]?.content ?? "", /ses_deadline_usage/);
+  } finally {
+    await runtime.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an opencode deadline keeps the engine diagnostic in the failure record", async () => {
+  for (const diagnostic of [
+    { stdout: "", stderr: "provider connection stalled" },
+    { stdout: JSON.stringify({ type: "error", error: { data: { message: "provider connection stalled" } } }), stderr: "" }
+  ]) {
+    const runner = new FakeOpenCodeRunner({
+      runResult: { ...diagnostic, deadlineExpired: true, exitCode: null, signal: "SIGTERM" }
+    });
+    const records: RuntimeAgentRecord[] = [];
+    const runtime = new EnsembleRuntime({
+      engines: new EngineRegistry([new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry })]),
+      defaultMaxAttempts: 1
+    });
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+    } as unknown as RunRecordWriter);
+    try {
+      assert.equal(await runtime.agent("stall", { engine: "opencode", model: "glm-5.2", timeoutMs: 500 }), null);
+      const record = records.at(-1);
+      assert.equal(record?.status, "timed-out");
+      assert.match(record.attempts[0]?.failure?.message ?? "", /500ms.*provider connection stalled/s);
+      assert.match(record.terminationCause?.message ?? "", /provider connection stalled/);
+      assert.equal(runner.exports.length, 0);
+    } finally {
+      await runtime.close();
+    }
+  }
+});
+
+test("an opencode process that exited before its streams close is not timed out", async (t) => {
+  const child = new ChildProcess();
+  Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
+  const spawn = t.mock.method(childProcess, "spawn", () => child);
+  const kill = t.mock.method(child, "kill", () => true);
+  syncBuiltinESMExports();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const pending = new OpenCodeCliRunner().run({
+      prompt: "finish", cwd: process.cwd(), providerModel: "fixture/model", timeoutMs: 100
+    });
+    child.emit("exit", 0, null);
+    // Deterministically separate exit from close: the process has finished,
+    // but a pipe is still open when the former deadline would have fired.
+    t.mock.timers.tick(101);
+    child.stdout?.emit("data", "completed stream");
+    child.emit("close", 0, null);
+    const result = await pending;
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "completed stream");
+    assert.equal(result.deadlineExpired, false);
+    assert.equal(kill.mock.callCount(), 0);
+  } finally {
+    t.mock.timers.reset();
+    spawn.mock.restore();
+    syncBuiltinESMExports();
   }
 });
 

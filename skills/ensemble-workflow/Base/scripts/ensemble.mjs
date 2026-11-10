@@ -16433,9 +16433,7 @@ function transcriptAbsenceReason(record) {
   if (record.attempts.length === 0) {
     return "no-attempt-ran";
   }
-  if (record.attempts.every(
-    (attempt) => attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
-  )) {
+  if (substratesNeverStarted(record)) {
     return "substrate-never-started";
   }
   if (record.status === "interrupted") {
@@ -16463,7 +16461,24 @@ function agentUsage(record) {
   if (record.status === "in-progress") {
     return { unavailable: "record-unsettled" };
   }
-  return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
+  if (record.attempts.length === 0) {
+    return { unavailable: "no-attempt-ran" };
+  }
+  if (substratesNeverStarted(record)) {
+    return { unavailable: "substrate-never-started" };
+  }
+  if (record.status === "interrupted") {
+    return { unavailable: "worker-interrupted" };
+  }
+  if (record.status === "timed-out") {
+    return { unavailable: "worker-timed-out" };
+  }
+  return { unavailable: "engine-reported-no-usage" };
+}
+function substratesNeverStarted(record) {
+  return record.attempts.length > 0 && record.attempts.every(
+    (attempt) => attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
+  );
 }
 function buildCostRollup(records) {
   const rollup = {};

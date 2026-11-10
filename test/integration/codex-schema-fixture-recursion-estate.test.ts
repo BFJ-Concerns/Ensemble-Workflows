@@ -30,8 +30,9 @@ const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensem
 const recordingFixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 const scopeProperties = ["-p", "TasksMax=60", "-p", "MemoryMax=500M", "-p", "MemorySwapMax=0"];
 let scopeCounter = 0;
+const ingressTimeoutMs = 45_000;
 
-test("built CLI schema fixture fails closed on every recursive executable ingress without process growth", { timeout: 45_000 }, async (t) => {
+test("built CLI schema fixture fails closed on every recursive executable ingress without process growth", async (t) => {
   const estate = await createEstate("recursion");
   try {
     const symlinkPath = path.join(estate.directory, "schema-codex-link");
@@ -88,7 +89,9 @@ test("built CLI schema fixture fails closed on every recursive executable ingres
     ];
 
     for (const ingress of cases) {
-      await t.test(ingress.name, async () => {
+      // Each ingress owns its start-up budget; ten sequential launches must
+      // not spend the same 45 seconds. Leave headroom for scope cleanup.
+      await t.test(ingress.name, { timeout: ingressTimeoutMs + 15_000 }, async () => {
         if (ingress.pathEntry !== undefined) {
           await symlink(ingress.pathEntry, path.join(estate.binDirectory, ingress.command));
         }
@@ -337,7 +340,14 @@ function startBoundedScope(command: string[], env: NodeJS.ProcessEnv): {
 
 async function runInBoundedScope(command: string[], env: NodeJS.ProcessEnv): Promise<ScopeResult> {
   const scoped = startBoundedScope(command, env);
-  return await scoped.result;
+  try {
+    return await withDeadline(scoped.result, ingressTimeoutMs, "schema ingress did not settle");
+  } finally {
+    // A failed or timed-out ingress owns every process in this private scope.
+    // Reap it before the next ingress or the estate directory is removed.
+    await killScope(scoped.unit);
+    await scoped.result;
+  }
 }
 
 async function observeScope(unit: string, child: ReturnType<typeof spawn>): Promise<{

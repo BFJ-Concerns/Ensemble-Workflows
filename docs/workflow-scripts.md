@@ -304,7 +304,10 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   never settles, the call fails before the worker spawns rather than run
   unstripped.
 - **Claude** applies deny rules for `Skill`, and for `Task`, `Agent`,
-  `ListAgents`, and `SendMessage`, through the per-dispatch settings file.
+  `ListAgents`, `SendMessage`, and `Workflow`, through the per-dispatch
+  settings file. `Workflow` is included because its scripts can spawn agents.
+  The agent record names the configured deny rules; it does not claim a
+  runtime measurement of the worker’s tool inventory.
 - **opencode** rejects any strip before the worker spawns.
 
 Each agent record lists the requested strips and how each was enforced.
@@ -322,6 +325,22 @@ not manage or remove those native worktrees.
 With `isolation: "worktree"` the worker runs in a fresh linked git worktree on
 a temporary branch. With `cwd` as well, `cwd` selects the source repository; a
 `cwd` that is not in a git repository fails before the worker spawns.
+The branch starts at the source checkout's `HEAD`. All checkouts of one
+repository share a `<repo>.ensemble-workflows-worktrees/` container. Its
+location comes from shared Git metadata, independently of the dispatch
+checkout:
+
+- A recorded `core.worktree` places the container beside that main checkout.
+- Otherwise, a common Git directory named `.git` places it beside that
+  directory's parent, as in a conventional repository.
+- Any other common Git directory places it beside that directory. For example,
+  a bare repository at `/code/repo.git` uses
+  `/code/repo.git.ensemble-workflows-worktrees/`; a separate Git directory at
+  `/code/meta` uses `/code/meta.ensemble-workflows-worktrees/`.
+
+Separate Git directories need no `core.worktree` setting for shared placement.
+An external directory named `.git` follows the same parent rule from every
+checkout, including the original one.
 Placement is decided once per target and kept across that target's retries; a
 fallback step to another target opens its own.
 
@@ -541,10 +560,10 @@ rejects, such as for an unknown model, is the attempt's own failure.
 ### Claude background tasks
 
 A Claude worker's answer is its final reply, never an interim one. Claude Code
-can move a long command or a Monitor into the background and let the model
-end its turn with a "waiting" message, then wake the session when the task
-ends. Ensemble does not collect that interim reply: it waits for the reply
-that follows the task's delivered notification. A Monitor stays outstanding
+can run a long command, a Monitor or a native `Workflow` task in the
+background and let the model end its turn with a "waiting" message, then wake
+the session when the task ends. Ensemble does not collect that interim reply:
+it waits for the reply that follows the task's delivered notification. A Monitor stays outstanding
 until its own ending (expired, timed out, or stopped) or the end of its
 watched source is delivered and answered. For a task the model stops with
 `TaskStop`, the successful `TaskStop` result stands in for the notification.
@@ -576,7 +595,12 @@ A call checks its engine's token ceiling (`--budget`) when it is dispatched,
 before it joins the concurrency queue, and again when a fallback step moves it
 to another engine. Once spend reaches the
 ceiling, a call that has not yet been dispatched throws a budget-exhausted
-error; a ceiling of 0 admits no call and says so. A call that started under
+error; a ceiling of 0 admits no dispatch and says so. The refusal names the
+dispatch, fallback dispatch (with its agent id), or numbered session turn it
+blocked. A session's first `send()` is `session turn 1`, even when admission
+refuses it before the worker opens; a refused send does not advance the turn
+number. Earlier targets or session turns may already have run and caused
+side effects. A call that started under
 the ceiling runs its full retry bound even if concurrent spend crosses the
 ceiling, so turns already running can together overshoot it.
 
@@ -618,7 +642,10 @@ await builder.close();
 - **Identified turns:** `identity: true` at creation makes every `send()`
   resolve `{ label, phase, output, failure }`. `failure` is `null` for a
   successful answer, including a valid JSON `null`; a failed turn carries
-  its recorded failure message. The option cannot vary per turn.
+  its recorded failure message. A budget refusal retains the explicit session
+  phase, or the current `phase()` title at `send()` when no phase was set,
+  without creating a queued worker or an agent record. The option cannot vary
+  per turn.
 - **Turns are sequential:** calling `send()` while a previous send is
   unsettled throws, as does `send()` after `close()` or after the run ends.
 - **Concurrency and budget are per turn:** a turn holds its engine slot from

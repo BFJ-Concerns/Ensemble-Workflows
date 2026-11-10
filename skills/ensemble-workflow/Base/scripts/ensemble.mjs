@@ -14090,10 +14090,9 @@ var BudgetExceededError = class extends EnsembleError {
   engine;
   total;
   spent;
-  constructor(engine, total, spent) {
-    super(
-      total === 0 ? `Token budget for ${engine} is 0, which admits no agent: this agent was not started` : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`
-    );
+  constructor(engine, total, spent, admission = "dispatch") {
+    const reason = total === 0 ? `Token budget for ${engine} is 0, which admits no dispatch` : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`;
+    super(`${reason}; refused ${admission}`);
     this.engine = engine;
     this.total = total;
     this.spent = spent;
@@ -14649,7 +14648,7 @@ function isStatusFileName(name) {
   return name.startsWith(STATUS_FILE_PREFIX) && name.endsWith(STATUS_FILE_SUFFIX) && name.length > STATUS_FILE_PREFIX.length + STATUS_FILE_SUFFIX.length;
 }
 var DEFAULT_HEARTBEAT_MS = 1e4;
-var STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.[1-9]\d*\.tmp$/;
+var STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.(?:(\d+|unknown)\.)?[1-9]\d*\.tmp$/;
 async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
   if (owner === void 0 || typeof owner.pid !== "number" || owner.host !== host) {
     return false;
@@ -14772,8 +14771,9 @@ var StatusFileWriter = class {
   }
   async #writeAtomic(snapshot) {
     if (!await this.#initialSweep) return;
-    const tmp = `${this.#target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
-    const published = { ...snapshot, owner: await this.#ownerEvidence };
+    const owner = await this.#ownerEvidence;
+    const tmp = `${this.#target}.${owner.pid}.${owner.start_ticks ?? "unknown"}.${this.#tmpSeq += 1}.tmp`;
+    const published = { ...snapshot, owner };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
 `, "utf8");
     await this.#fileOperations.rename(tmp, this.#target);
@@ -14783,7 +14783,7 @@ var StatusFileWriter = class {
    * The new-writer trigger for what a killed run left behind (the same
    * discipline as the archive reaper): every status file in the directory
    * whose owner is *provably* gone is removed, and a temp file whose writer
-   * pid is dead with it. The judgement is the owner evidence, never age —
+   * identity is refuted with it. The judgement is the owner evidence, never age —
    * a slow run is not an orphan, an unparseable file is not this writer's
    * to destroy, and a file with no evidence is left for its owner.
    */
@@ -14802,7 +14802,7 @@ var StatusFileWriter = class {
       const temp = STATUS_TEMP_SUFFIX_PATTERN.exec(entry);
       if (temp !== null) {
         const ownerPid = Number(temp[1]);
-        if (isStatusFileName(entry.slice(0, -temp[0].length)) && Number.isSafeInteger(ownerPid) && await this.#writerGone(ownerPid)) {
+        if (isStatusFileName(entry.slice(0, -temp[0].length)) && Number.isSafeInteger(ownerPid) && await this.#writerGone(ownerPid, temp[2])) {
           await this.#unlinkQuietly(file);
         }
         continue;
@@ -14822,11 +14822,18 @@ var StatusFileWriter = class {
     }
   }
   /**
-   * A temp file names only its writer's pid, so the judgement is the proc
-   * filesystem's: the pid absent where this process can read its own stat
-   * is death evidence; an unreadable proc filesystem decides nothing.
+   * New temp files carry the same start identity as snapshots. Legacy names
+   * only support judging an absent pid; unreadable proc evidence never
+   * proves death for either format.
    */
-  async #writerGone(pid) {
+  async #writerGone(pid, startTicks) {
+    if (startTicks !== void 0) {
+      return snapshotOwnerGone({
+        host: hostname(),
+        pid,
+        start_ticks: startTicks === "unknown" ? null : startTicks
+      }, this.#procDir);
+    }
     if (await readProcessStartTicks(this.#procDir, pid) !== null) {
       return false;
     }
@@ -17011,14 +17018,14 @@ var GitWorktreeIsolationManager = class {
   #repoRoots = /* @__PURE__ */ new Map();
   #worktreeRoots = /* @__PURE__ */ new Map();
   async create(baseCwd) {
-    const repoRoot = await this.#gitRepoRoot(baseCwd);
+    const repoRoots = await this.#gitRepoRoots(baseCwd);
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path8.join(path8.dirname(repoRoot), `${path8.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
+    const worktreePath = path8.join(repoRoots.container, name);
     await mkdir5(path8.dirname(worktreePath), { recursive: true });
-    await git2(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+    await git2(repoRoots.checkout, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
     const baseCommit = (await git2(worktreePath, ["rev-parse", "HEAD"])).trim();
-    this.#worktreeRoots.set(worktreePath, repoRoot);
+    this.#worktreeRoots.set(worktreePath, repoRoots.checkout);
     return {
       path: worktreePath,
       branch,
@@ -17056,23 +17063,31 @@ var GitWorktreeIsolationManager = class {
       removed: true
     };
   }
-  async #gitRepoRoot(baseCwd) {
+  async #gitRepoRoots(baseCwd) {
     const resolvedCwd = path8.resolve(baseCwd);
-    let repoRoot = this.#repoRoots.get(resolvedCwd);
-    if (repoRoot === void 0) {
-      repoRoot = git2(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
+    let repoRoots = this.#repoRoots.get(resolvedCwd);
+    if (repoRoots === void 0) {
+      repoRoots = this.#resolveRepoRoots(resolvedCwd).catch((error) => {
         throw new WorktreePlacementRejectedError(resolvedCwd, {
           cause: error
         });
       });
-      this.#repoRoots.set(resolvedCwd, repoRoot);
+      this.#repoRoots.set(resolvedCwd, repoRoots);
     }
     try {
-      return (await repoRoot).trim();
+      return await repoRoots;
     } catch (error) {
       this.#repoRoots.delete(resolvedCwd);
       throw error;
     }
+  }
+  async #resolveRepoRoots(cwd) {
+    const checkout = (await git2(cwd, ["rev-parse", "--show-toplevel"])).trim();
+    const common = (await git2(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+    const worktree = (await git2(cwd, ["--git-dir", common, "config", "--get", "--default", "", "core.worktree"])).trim();
+    const root = worktree.length > 0 ? path8.resolve(common, worktree) : path8.basename(common) === ".git" ? path8.dirname(common) : common;
+    const container = path8.join(path8.dirname(root), `${path8.basename(root)}.ensemble-workflows-worktrees`);
+    return { checkout, container };
   }
   #uniqueName() {
     this.#counter += 1;
@@ -17296,11 +17311,11 @@ var TokenBudget = class {
     }
     return Math.max(0, ceiling - this.spent(engine));
   }
-  assertCanStart(engine) {
+  assertCanStart(engine, admission = "dispatch") {
     const ceiling = this.ceilings[engine] ?? null;
     const spent = this.spent(engine);
     if (ceiling !== null && spent >= ceiling) {
-      throw new BudgetExceededError(engine, ceiling, spent);
+      throw new BudgetExceededError(engine, ceiling, spent, admission);
     }
   }
   record(engine, event) {
@@ -20361,6 +20376,7 @@ function usageSince(entries, fromIndex = 0) {
 }
 var BACKGROUND_TASK_STARTS = [
   { pattern: /Command running in background with ID: ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /^Workflow launched in background\. Task ID: ([A-Za-z0-9_-]+)/, from: (call) => call.tool === "Workflow" },
   { pattern: /Monitor started \(task ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
   { pattern: /^Command did not complete within its \S+ timeout and was moved to the background \(ID: ([A-Za-z0-9_-]+)\)/, from: (call) => call.tool === "Bash" }
 ];
@@ -20552,7 +20568,7 @@ function zeroUsage() {
 // src/claude-engine.ts
 var CAPABILITY_DENY_RULES = {
   skills: ["Skill"],
-  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
+  agents: ["Task", "Agent", "ListAgents", "SendMessage", "Workflow"]
 };
 function permissionDenyRulesFor(strip) {
   return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
@@ -22846,27 +22862,15 @@ function codexProgressObservers(context) {
 var ClaudeEngineAdapter = class {
   name = "claude";
   concurrency;
-  /**
-   * Claude strips both named minimum capabilities mechanically: permission
-   * deny rules ride the per-dispatch settings file the control plane already
-   * writes (the one surface measured to reach the daemon-served session).
-   * Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used
-   * `mcp__`-prefixed names; that session's skills pair showed the bare `Skill`
-   * deny working (`Skill` absent under a skills strip, present in the
-   * baseline). The agents deny set was witnessed 2026-08-30 on Claude Code
-   * 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker,
-   * while the unstripped control demonstrated discovery and messaging.
-   * `Agent` was also absent, but the witness cannot isolate it from the
-   * machine-wide `Agent` deny. `Task` remains in the delivered deny set, which
-   * the exact-set regression proves. Deny rules outrank every allow layer and
-   * permission mode, `--dangerously-skip-permissions` included — a live test
-   * asserts that at the worker itself.
-   */
+  /** The archive names the configured rules, without claiming a tool-inventory measurement. */
   capabilities = {
-    skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
+    skills: {
+      route: "config",
+      detail: `permissions.deny ${JSON.stringify(permissionDenyRulesFor(["skills"]))} in the per-dispatch settings file`
+    },
     agents: {
       route: "config",
-      detail: "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: ListAgents and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. Agent was also absent, but the witness cannot isolate it from the machine-wide Agent deny. Task remains in the delivered deny set, which the exact-set regression proves."
+      detail: `permissions.deny ${JSON.stringify(permissionDenyRulesFor(["agents"]))} in the per-dispatch settings file`
     }
   };
   #scheduler;
@@ -23665,10 +23669,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
-    let phase = options.phase ?? null;
+    let phase = options.phase ?? this.progress.snapshot().currentPhase;
     state.inFlight = true;
     try {
-      this.budget.assertCanStart(engine.name);
+      this.budget.assertCanStart(engine.name, `session turn ${state.turnCount + 1}`);
       const queuedAt = Date.now();
       const agentId = this.progress.queueAgent({
         engine: engine.name,
@@ -23963,7 +23967,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let started = false;
     try {
       if (readmitting) {
-        this.budget.assertCanStart(engine.name);
+        this.budget.assertCanStart(engine.name, `fallback dispatch for agent ${agentId}`);
       }
       return await this.#admission.admit(
         engine.name,

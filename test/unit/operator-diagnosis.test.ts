@@ -363,7 +363,7 @@ test("a zero token budget says it admitted nothing and names the ceiling to set,
   const rendered = presentTerminalError(new BudgetExceededError("codex", 0, 0), noContext);
   assert.ok(rendered !== null, "the budget refusal must be diagnosed, not handed back to the stack renderer");
   const lines = rendered.split("\n");
-  assert.equal(lines[0], "Token budget for codex is 0, which admits no agent: this agent was not started");
+  assert.equal(lines[0], "Token budget for codex is 0, which admits no dispatch; refused dispatch");
   assert.match(lines[1] ?? "", /--budget codex=<tokens>/);
   assert.doesNotMatch(rendered, /exhausted|spent 0 of 0|BudgetExceededError/);
   assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
@@ -371,7 +371,7 @@ test("a zero token budget says it admitted nothing and names the ceiling to set,
 
 test("a spent token budget keeps its spend figures and gains the same remedy", () => {
   const rendered = presentTerminalError(new BudgetExceededError("claude", 5, 7), noContext) ?? "";
-  assert.match(rendered, /^Token budget exhausted for claude: spent 7 of 5 tokens\n {2}Raise the claude ceiling/);
+  assert.match(rendered, /^Token budget exhausted for claude: spent 7 of 5 tokens; refused dispatch\n {2}Raise the claude ceiling/);
 });
 
 test("an exhausted agent's attempt line keeps vocabulary kinds but never prints an internal error class name", () => {

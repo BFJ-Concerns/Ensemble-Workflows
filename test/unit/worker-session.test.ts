@@ -445,7 +445,12 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
   });
 
   const recordsBefore = captured.length;
-  await assert.rejects(session.send("second turn"), BudgetExceededError);
+  await assert.rejects(session.send("second turn"), (error: unknown) => {
+    assert.ok(error instanceof BudgetExceededError);
+    assert.equal(error.message, "Token budget exhausted for codex: spent 500 of 100 tokens; refused session turn 2");
+    assert.doesNotMatch(error.message, /agent was not started/);
+    return true;
+  });
   // A blocked send is a pre-dispatch rejection: no engine reach, no record.
   assert.equal(transport.turns.length, 1);
   assert.equal(captured.length, recordsBefore);
@@ -454,31 +459,41 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
 
 test("identified session budget refusals keep their envelope through combinators before and after opening", async () => {
   for (const opened of [false, true]) {
-    for (const identity of [true, false]) {
+    for (const [identity, phase] of [[true, "build"], [true, undefined], [false, undefined]] as const) {
       const transport = new ScriptedTransport([turnResult("first answer")]);
       const runtime = codexRuntime(transport, { codexBudget: opened ? 100 : 0 });
-      const session = runtime.createWorkerSession({ engine: "codex", identity, label: "held", phase: "build" });
+      const session = runtime.createWorkerSession({ engine: "codex", identity, label: "held", ...(phase === undefined ? {} : { phase }) });
       try {
         if (opened) {
           await session.send("first turn");
           runtime.budget.record("codex", spendEvent("thread-1", 100));
         }
         const recordBefore = runtime.lastAgentRecord();
+        const progressBefore = runtime.progress.snapshot().agents;
+        const message = opened
+          ? "Token budget exhausted for codex: spent 100 of 100 tokens; refused session turn 2"
+          : "Token budget for codex is 0, which admits no dispatch; refused session turn 1";
         for (const combinator of ["parallel", "pipeline"]) {
+          const currentPhase = `refused through ${combinator}`;
+          runtime.notePhase(currentPhase);
           const send = () => session.send("blocked turn");
           const result = combinator === "parallel"
             ? await parallel([send], () => {})
             : await pipeline(["go"], [send], () => {});
-          const failure = new BudgetExceededError("codex", opened ? 100 : 0, opened ? 100 : 0);
           assert.deepEqual(result, [identity ? {
-            label: "held", phase: "build", output: null, failure: { message: failure.message }
+            label: "held", phase: phase ?? currentPhase, output: null, failure: { message }
           } : null]);
         }
         // Direct sends still reject, and admission never opens or records a turn.
-        await assert.rejects(session.send("blocked directly"), BudgetExceededError);
+        await assert.rejects(session.send("blocked directly"), (error: unknown) => {
+          assert.ok(error instanceof BudgetExceededError);
+          assert.equal(error.message, message);
+          return true;
+        });
         assert.equal(transport.openedThreads.length, opened ? 1 : 0);
         assert.equal(transport.turns.length, opened ? 1 : 0);
         assert.equal(runtime.lastAgentRecord(), recordBefore);
+        assert.deepEqual(runtime.progress.snapshot().agents, progressBefore);
       } finally {
         await runtime.close();
       }

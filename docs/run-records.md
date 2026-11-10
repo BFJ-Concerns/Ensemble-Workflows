@@ -37,6 +37,11 @@ visible for their whole lifetime: a later run never overwrites an earlier
 run's view, and a run that ends removes only its own file. A file left by a
 killed run stays until the next run publishing to the same status directory
 starts; its startup sweep removes any file whose writer is provably dead (below).
+Atomic-write temp files carry the writer's pid and process start ticks as
+`<status file>.<pid>.<start-ticks>.<sequence>.tmp`, so the sweep also removes
+leftovers when a pid has been reused. If start ticks cannot be read, the name
+uses `unknown` and the sweep retains the file. Legacy temp names without start
+ticks are removed only when their pid is absent and proc evidence is readable.
 
 Consumers list the directory for `ensemble.*.local.json` and parse each file
 directly; Ensemble provides no rendering command. A reader decides liveness by
@@ -446,8 +451,12 @@ families with their own schema versions (`3` and `3`), described above.
   an unknown engine, a budget refusal, a whole-run timeout — or `null` when the
   run ended cleanly. Present on both the manifest and `result.json`. A budget
   refusal at a ceiling of 0 reads `Token budget for <engine> is 0, which admits
-  no agent: this agent was not started`; a spent ceiling reads `Token budget
-  exhausted for <engine>: spent N of M tokens`.
+  no dispatch; refused <admission>`; a spent ceiling reads `Token budget
+  exhausted for <engine>: spent N of M tokens; refused <admission>`. The
+  admission names a dispatch, a fallback dispatch with its agent id, or a
+  numbered session turn, starting at `session turn 1` for the first `send()`
+  even before the worker opens. A refused send does not advance that number;
+  refusing it does not imply earlier work never ran.
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. See
   [Token usage and cost](#token-usage-and-cost).
 - `files`: integrity table for archived artefacts, each with `path`, `size`,
@@ -609,7 +618,8 @@ The fields present throughout a record's lifetime are:
   - `worker_exit`: `{ exit_code, signal }` when the worker process died
     rather than returned; `null` otherwise.
   - `background_waits`: the background tasks the worker started and Ensemble
-    waited on, each `{ task_id, description, observed_at, ended_at }`
+    waited on (including Claude native `Workflow` tasks), each
+    `{ task_id, description, observed_at, ended_at }`
     (`ended_at` is `null` where the attempt ended before the task woke the
     session); empty for engines without background tasks.
 - `classification` on a failed attempt: `{ class, rule }`. `class` is

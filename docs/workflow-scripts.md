@@ -428,6 +428,10 @@ editor. If tmux becomes unavailable, a one-shot correction starts a fresh sessio
 opening delivery also requires tmux.
 Codex and opencode retry with the failure appended to the prompt.
 
+An opencode model absent from the machine registry, a missing model, or an
+unsupported registry variant is refused before worker admission: the call
+throws, leaves no agent record, and adds nothing to the worker tally.
+
 Operational failures — a Claude session that never registered or died, a
 transcript that could not be read, an opencode subprocess killed at its
 deadline or exiting non-zero, a Codex turn deadline, first-output deadline, or

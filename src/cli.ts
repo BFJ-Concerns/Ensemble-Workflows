@@ -1360,7 +1360,8 @@ async function parseAgentInvocation(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliUsageError(message);
+    const unknown = /^Unknown option '([^']+)'/.exec(message)?.[1];
+    throw new CliUsageError(unknown === undefined ? message : unknownAgentOptionMessage(unknown));
   }
 
   if (parsed.positionals.length > 1) {
@@ -1417,6 +1418,36 @@ async function parseAgentInvocation(
     ...(workerScope !== undefined ? { workerScope } : {}),
     ...(holdScope !== undefined ? { holdScope } : {})
   };
+}
+
+/** Keep option hints stable across Node versions and quote the positional example completely. */
+function unknownAgentOptionMessage(option: string): string {
+  const name = option.split("=", 1)[0]!;
+  const candidates = Object.keys(AGENT_INVOCATION_OPTIONS)
+    .map((key) => ({ flag: `--${key}`, distance: optionDistance(name, `--${key}`) }))
+    .filter(({ distance }) => distance <= 2)
+    .sort((left, right) => left.distance - right.distance || left.flag.localeCompare(right.flag));
+  const best = candidates[0];
+  if (best !== undefined && (candidates[1] === undefined || best.distance < candidates[1].distance)) {
+    return `Unknown option ${JSON.stringify(option)}. Did you mean ${JSON.stringify(best.flag)}?`;
+  }
+  return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${JSON.stringify(option)}`;
+}
+
+function optionDistance(left: string, right: string): number {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = [row];
+    for (let column = 1; column <= right.length; column += 1) {
+      current[column] = Math.min(
+        current[column - 1]! + 1,
+        previous[column]! + 1,
+        previous[column - 1]! + (left[row - 1] === right[column - 1] ? 0 : 1)
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length]!;
 }
 
 async function readPrompt(stdin: Readable): Promise<string> {

@@ -117,7 +117,8 @@ test("machine config rejects parse errors, unknown keys, invalid values, zero, a
     { source: '{"schema_version":1,"maxAgent":2}', pattern: /maxAgent.*config\.json/ },
     { source: '{"schema_version":1,"agent_ceiling":"2"}', pattern: /agent_ceiling.*config\.json/ },
     { source: '{"schema_version":1,"concurrency":{"codex":0}}', pattern: /concurrency\.codex.*config\.json/ },
-    { source: '{"schema_version":2}', pattern: /schema_version 2.*config\.json.*understood versions: 1/ }
+    { source: '{"schema_version":999,"future_key":true}', pattern: /schema_version 999.*config\.json.*newer Ensemble.*Upgrade Ensemble/ },
+    { source: '{"schema_version":2}', pattern: /schema_version 2.*config\.json.*newer Ensemble.*Upgrade Ensemble/ }
   ];
 
   for (const entry of cases) {

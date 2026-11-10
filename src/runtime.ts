@@ -15,27 +15,29 @@ import {
   snapshotAgentCwd
 } from "./engine-option-validation.js";
 import {
-  AppServerExitedError,
   AgentPromptRejectedError,
+  appServerDiagnosticOf,
+  AppServerExitedError,
+  attachAgentIdentity,
+  CodexSchemaSubsetUnsupportedError,
+  describeError,
   EngineShutdownError,
+  failedTurnResultOf,
   FallbackTargetRejectedError,
+  firstDeltaMsOf,
   HoldRejectedError,
+  isRunEnding,
+  markRunEnding,
   MissingEngineError,
   MultiTurnUnsupportedError,
-  CodexSchemaSubsetUnsupportedError,
+  partialTranscriptOf,
+  partialWorkerTextOf,
   PreSpawnAuthorError,
   SessionBusyError,
   SessionClosedError,
-  TallyRejectedError,
-  appServerDiagnosticOf,
-  attachAgentIdentity,
   attachFailedTurnResult,
-  describeError,
-  failedTurnResultOf,
-  firstDeltaMsOf,
-  partialWorkerTextOf,
-  partialTranscriptOf,
   SubstrateRefusedError,
+  TallyRejectedError,
   TurnTimeoutError,
   UnknownEngineError,
   workerExitStatusOf
@@ -646,6 +648,27 @@ export class EnsembleRuntime {
     this.progress.setArchiveDir(recorder?.archiveDir ?? null);
   }
 
+  /**
+   * Holds a promise the script receives from a combinator — `parallel()`,
+   * `pipeline()` — open from creation to settlement, exactly as `agent()`
+   * holds its own, so a run ending that rejects it (the combinators rethrow
+   * the run's own ending) is marked handled at close when nothing awaits
+   * it, never raised against a run that ended cleanly. Before close, an
+   * unhandled rejection remains visible to the launcher.
+   */
+  trackCallPromise<T>(promise: Promise<T>): Promise<T> {
+    const call: AgentCall = { outward: null };
+    this.#openCalls.add(call);
+    const outward = promise.finally(() => {
+      this.#openCalls.delete(call);
+    });
+    call.outward = outward;
+    if (this.#closed) {
+      void outward.catch(() => undefined);
+    }
+    return outward;
+  }
+
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
   notePhase(title: string): void {
     this.progress.setPhase(title);
@@ -732,7 +755,9 @@ export class EnsembleRuntime {
 
   async #agentCall(prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null> {
     if (this.#closed) {
-      throw new Error("EnsembleRuntime is closed");
+      // A call made after the run began ending is the run's ending reaching
+      // the body, not a worker failing: marked, so a combinator rethrows it.
+      throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
     // `cwd` is read here and nowhere else on this path: what follows works
@@ -792,6 +817,7 @@ export class EnsembleRuntime {
       label: options.label ?? null,
       phase: options.phase ?? null
     });
+    const phase = this.progress.queuedAgentPhase(agentId);
     if (engine.name === "claude" && options.model === undefined) {
       // Unpinned Claude burns the ambient default model silently; make it visible.
       this.#emitEvent({
@@ -800,7 +826,9 @@ export class EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
+    const agentRecord = this.#newAgentRecord(
+      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, stripRoutes
+    );
     const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     // Dispatch-time record: persisted in-progress before the engine is
@@ -820,7 +848,7 @@ export class EnsembleRuntime {
         // already carries label and phase as first-class fields.
         const failure =
           agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
-        return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
+        return { label: options.label ?? null, phase, output, failure };
       }
       return output;
     } catch (error) {
@@ -833,7 +861,7 @@ export class EnsembleRuntime {
         // silent-empty-success case. The call's own contract is otherwise
         // unchanged — the error still propagates.
         const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
-        attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
+        attachAgentIdentity(carrier, { label: options.label ?? null, phase });
         throw carrier;
       }
       throw error;
@@ -968,7 +996,11 @@ export class EnsembleRuntime {
   }
 
   async #runSessionTurn(state: WorkerSessionState, prompt: string, turn: SessionTurnOptions): Promise<unknown> {
-    if (this.#closed || state.closed) {
+    if (this.#closed) {
+      // The run's ending, not the session's own close: marked for the combinators.
+      throw markRunEnding(new SessionClosedError());
+    }
+    if (state.closed) {
       throw new SessionClosedError();
     }
     if (state.inFlight) {
@@ -993,6 +1025,7 @@ export class EnsembleRuntime {
         label: options.label ?? null,
         phase: options.phase ?? null
       });
+      const phase = this.progress.queuedAgentPhase(agentId);
       if (engine.name === "claude" && options.model === undefined && state.turnCount === 0) {
         this.#emitEvent({
           method: "claude/unpinnedModel",
@@ -1013,7 +1046,7 @@ export class EnsembleRuntime {
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
         ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
         ...(options.label !== undefined ? { label: options.label } : {}),
-        ...(options.phase !== undefined ? { phase: options.phase } : {}),
+        ...(phase !== null ? { phase } : {}),
         ...(turn.schema !== undefined ? { schema: turn.schema } : {}),
         ...(options.strip !== undefined ? { strip: options.strip } : {})
       };
@@ -1043,7 +1076,7 @@ export class EnsembleRuntime {
           const output = await this.#runChained(
             engine,
             targets,
-            { label: options.label ?? null, phase: options.phase ?? null },
+            { label: options.label ?? null, phase },
             options.maxAttempts,
             agentId,
             agentRecord,
@@ -1110,7 +1143,7 @@ export class EnsembleRuntime {
       const placement = state.placement;
       state.placement = null;
       await this.#placement.close(placement).catch(() => undefined);
-      throw new SessionClosedError();
+      throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
     agentRecord.resolvedCwd = state.placement.cwd;
     this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
@@ -1143,11 +1176,11 @@ export class EnsembleRuntime {
         // a later answer from that same worker still has that served model.
         if (
           result.resolvedModel === undefined &&
-          state.resolvedModel !== null &&
-          result.attemptFailure === undefined &&
-          result.text.trim().length > 0
+          agentRecord.resolvedModel !== null &&
+          (agentRecord.attempts.at(-1)?.target.engine === target.engine ||
+            (result.attemptFailure === undefined && result.text.trim().length > 0))
         ) {
-          return { ...result, resolvedModel: state.resolvedModel };
+          return { ...result, resolvedModel: agentRecord.resolvedModel };
         }
         return result;
       }
@@ -1255,7 +1288,7 @@ export class EnsembleRuntime {
     return this.#runChained(
       engine,
       chainTargets(engine.name, options),
-      { label: options.label ?? null, phase: options.phase ?? null },
+      { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,
       agentRecord,
@@ -1332,6 +1365,10 @@ export class EnsembleRuntime {
             if (settled.status !== "refused") {
               return settled;
             }
+            // The next target is a fresh worker: the refused one's served
+            // identity stays on its own attempts and is never the record's.
+            agentRecord.resolvedModel = null;
+            agentRecord.resolvedEffort = null;
           }
           throw new Error("fallback chain ended without a settlement");
         })
@@ -1393,6 +1430,11 @@ export class EnsembleRuntime {
         this.#settleTerminalStatus(agentRecord, error, "queued");
         agentRecord.queuedMs += Math.max(0, Date.now() - queuedAt);
         await this.#recordSettlementSafely(agentId, agentRecord);
+        // A queued leg the shutdown cancelled leaves as the run's ending
+        // too — this path never reaches #executeAgent's marking site.
+        if (error instanceof Error && this.#runSettlementCause(error, "queued") !== null) {
+          markRunEnding(error);
+        }
       }
       throw error;
     }
@@ -1428,7 +1470,10 @@ export class EnsembleRuntime {
       if (outcome === "done") {
         agentRecord.status = "complete";
       } else {
-        this.#settleTerminalStatus(agentRecord, execution.cause ?? null);
+        // A returned failure was settled by the attempt loop before
+        // invocation and placement cleanup. Shutdown during that cleanup
+        // cannot turn the worker's own failure into the run's ending.
+        this.#settleWorkerFailure(agentRecord, execution.cause ?? null);
       }
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
@@ -1477,6 +1522,11 @@ export class EnsembleRuntime {
         // tells the operator the chain behind it was spent.
         if (agentRecord.attempts.at(-1)?.chainDecision === "exhausted") {
           this.#announceFailure(engineName, identity, agentId, agentRecord, error);
+        }
+        // The run's own ending leaves marked, so the combinators rethrow
+        // it rather than collapse it to a value or an identity envelope.
+        if (error instanceof Error && this.#runSettlementCause(error) !== null) {
+          markRunEnding(error);
         }
         throw error;
       }
@@ -1561,7 +1611,7 @@ export class EnsembleRuntime {
         phase: identity.phase,
         status: agentRecord.status,
         attempts: agentRecord.attempts.length,
-        targetsTried: agentRecord.fallback === null ? null : 1 + advancesOf(agentRecord).length,
+        targetsTried: agentRecord.fallback === null ? null : targetsTriedOf(agentRecord),
         failure: { kind: failure.kind, message: failure.message },
         diagnosis
       },
@@ -1974,7 +2024,11 @@ export class EnsembleRuntime {
     // latch is read through it, so a leg torn down mid-open settles as the
     // run's ending and not as the substrate refusing.
     const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
-    if (error instanceof EngineShutdownError || (substrate instanceof AppServerExitedError && this.#closed)) {
+    if (
+      this.#closed &&
+      (isRunEnding(error) || error instanceof EngineShutdownError ||
+        error instanceof TurnTimeoutError || substrate instanceof AppServerExitedError)
+    ) {
       return this.#closeCause(dispatch);
     }
     return null;
@@ -2011,6 +2065,11 @@ export class EnsembleRuntime {
       record.terminationCause = settlement;
       return;
     }
+    this.#settleWorkerFailure(record, error);
+  }
+
+  /** Settle the worker's own failure without consulting a later run ending. */
+  #settleWorkerFailure(record: RuntimeAgentRecord, error: unknown): void {
     if (error instanceof TurnTimeoutError) {
       record.status = "timed-out";
       record.terminationCause = {
@@ -2026,16 +2085,18 @@ export class EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    // Where an attempt ran, its own failure is the engine's account and the
-    // record's home for it; a cause here would only restate that entry, so
-    // null keeps one home for one account and the two can never disagree.
+    // A final failed attempt carries the engine's account. A completed
+    // attempt followed by a close failure needs a separate terminal cause;
+    // an earlier attempt's failure does not explain why this call ended.
     // An agent refused before any attempt was observed — an unknown model
     // rejected at dispatch, a placement that never opened — has no such
     // entry, and leaving this null there publishes a bare `failed` while
     // the engine's rejection is legible in the run's own output. The cause
     // is then taken from the account the runtime is holding, never
     // synthesised from the status.
-    record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
+    record.terminationCause = record.attempts.at(-1)?.status === "complete" || attemptedFailureAccount(record) === null
+      ? failedWithoutAttemptCause(error, record.attempts.length > 0)
+      : null;
   }
 
   /**
@@ -2827,8 +2888,8 @@ function failureFromError(error: unknown): { kind: string; message: string } {
  * The engine's own account of why this agent failed, as the attempts array
  * recorded it: the last attempt that named a failure, or null when no
  * attempt did — either because none ran, or because none observed a fault.
- * This is the record's home for a diagnosed failure; `terminationCause`
- * speaks only where this is silent.
+ * A separate `terminationCause` can explain a later close failure or the
+ * run's ending rather than any failure an attempt observed.
  */
 function attemptedFailureAccount(record: RuntimeAgentRecord): { kind: string; message: string } | null {
   for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
@@ -2841,20 +2902,21 @@ function attemptedFailureAccount(record: RuntimeAgentRecord): { kind: string; me
 }
 
 /**
- * The cause a failed agent records when no attempt of its own named one.
+ * The cause a failed agent records when its attempts have no terminal
+ * failure account of their own.
  * The runtime publishes what it is actually holding — the rejection that
  * ended the call, in the engine's own words — and where it holds nothing it
  * says so with the reason, because a record that reads `failed` and nothing
  * else is indistinguishable from one whose diagnostic was lost.
  * Nothing here is inferred from the status.
  */
-function failedWithoutAttemptCause(error: unknown): TerminalErrorRecord {
+function failedWithoutAttemptCause(error: unknown, hasAttempt: boolean): TerminalErrorRecord {
   if (error === null || error === undefined) {
-    return unavailableCause("no error was reported to the runtime");
+    return unavailableCause("no error was reported to the runtime", hasAttempt);
   }
   const described = describedRejection(error);
   if (described === null) {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`, hasAttempt);
   }
   if (described.message.trim() === "") {
     // A `failed` status beside an empty message is the bare status this
@@ -2862,7 +2924,7 @@ function failedWithoutAttemptCause(error: unknown): TerminalErrorRecord {
     // as a diagnostic lost in transit alike. Naming the silence, and the
     // shape that was silent, keeps the record honest without wording the
     // engine never produced.
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`, hasAttempt);
   }
   return described;
 }
@@ -2873,8 +2935,11 @@ function failedWithoutAttemptCause(error: unknown): TerminalErrorRecord {
  * diagnostic that was lost — the honesty rule in its other direction, where
  * a generic "failed" would be the fabrication.
  */
-function unavailableCause(reason: string): TerminalErrorRecord {
-  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+function unavailableCause(reason: string, hasAttempt: boolean): TerminalErrorRecord {
+  return {
+    kind: "unavailable",
+    message: `the agent failed ${hasAttempt ? "after an attempt without its own failure account" : "with no attempt recorded"} and ${reason}`
+  };
 }
 
 /**
@@ -2918,12 +2983,25 @@ function advancesOf(record: RuntimeAgentRecord): RuntimeAgentAttemptRecord[] {
   return record.attempts.filter((attempt) => attempt.chainDecision === "advanced");
 }
 
-function settledFailureAccount(record: RuntimeAgentRecord): { kind: string; message: string } {
-  const attempted = attemptedFailureAccount(record);
-  if (attempted !== null) {
-    return attempted;
+/** Count only targets with a numbered dispatch, even if placement of the next entry failed. */
+function targetsTriedOf(record: RuntimeAgentRecord): number {
+  if (record.attempts.length === 0) {
+    return 0;
   }
-  return record.terminationCause ?? { kind: "unavailable", message: "the agent failed without a recorded cause" };
+  // An advance names the target that refused. The next target counts only
+  // once it has an attempt of its own; placement can fail before that.
+  return advancesOf(record).length + (record.attempts.at(-1)?.chainDecision === "advanced" ? 0 : 1);
+}
+
+function settledFailureAccount(record: RuntimeAgentRecord): { kind: string; message: string } {
+  // A completed correction can be followed by a close failure. Its own
+  // terminal cause takes precedence over failures from earlier attempts.
+  if (record.attempts.at(-1)?.status === "complete" && record.terminationCause !== null) {
+    return record.terminationCause;
+  }
+  return attemptedFailureAccount(record) ?? record.terminationCause ?? {
+    kind: "unavailable", message: "the agent failed without a recorded cause"
+  };
 }
 
 /** The one-line rendering of that account an identified envelope's `failure` carries. */

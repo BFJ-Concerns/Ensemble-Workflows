@@ -114,6 +114,19 @@ const CLAUDE_AVAILABILITY_CODES = new Map<string, string>([
   ["overloaded_error", "claude.overloaded"]
 ]);
 
+/**
+ * The availability class moves a call down its fallback chain, where the
+ * same prompt is launched on another target. A kind the engine raises may
+ * therefore sit in that class only when the failure shows the session never
+ * held the prompt: the launch was refused, no session registered, or the
+ * session never wrote a transcript. Once a transcript exists the session
+ * took something, and a prompt that did not arrive as sent is a delivery
+ * failure: retried on the same target, after the engine has stopped that
+ * session or followed its turn to the end, and never a reason to start the
+ * work a second time elsewhere. (A refusal by the API is classed from the
+ * status the transcript records, in `classifyClaudeFailure`: the provider
+ * declined the turn, whatever the session held.)
+ */
 const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
   // The Claude dispatch command failed before a worker registered. The engine throws
   // it rather than returning a failed turn, so the kind is the thrown class
@@ -128,6 +141,9 @@ const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
   ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],
   ["claude-blocked", { class: "unclassified", rule: "claude.blocked" }],
   ["claude-valve-error", { class: "unclassified", rule: "claude.valve" }],
+  // Submitted, but the transcript never showed the session holding the text
+  // as sent: evidence about the delivery, not about the engine's availability.
+  ["claude-delivery-error", { class: "unclassified", rule: "claude.delivery" }],
   ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);
@@ -148,7 +164,7 @@ export function classifyAttemptFailure(evidence: AttemptFailureEvidence): Failur
     return { class: "unclassified", rule: "run-settlement" };
   }
   if (kind === "EngineShutdownError") {
-    return { class: "unclassified", rule: "run-settlement" };
+    return { class: "unclassified", rule: "engine-shutdown" };
   }
   switch (evidence.engine) {
     case "codex":

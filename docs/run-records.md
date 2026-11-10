@@ -37,6 +37,11 @@ visible for their whole lifetime: a later run never overwrites an earlier
 run's view, and a run that ends removes only its own file. A file left by a
 killed run stays until the next run publishing to the same status directory
 starts; its startup sweep removes any file whose writer is provably dead (below).
+Atomic-write temp files carry the writer's pid and process start ticks as
+`<status file>.<pid>.<start-ticks>.<sequence>.tmp`, so the sweep also removes
+leftovers when a pid has been reused. If start ticks cannot be read, the name
+uses `unknown` and the sweep retains the file. Legacy temp names without start
+ticks are removed only when their pid is absent and proc evidence is readable.
 
 Consumers list the directory for `ensemble.*.local.json` and parse each file
 directly; Ensemble provides no rendering command. A reader decides liveness by

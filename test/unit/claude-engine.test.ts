@@ -544,7 +544,7 @@ test("SIGTERM during Claude dispatch stops the worker before scopes close and se
   let dispatchArrived!: () => void;
   const arrived = new Promise<void>((resolve) => { dispatchArrived = resolve; });
   await withControlPlane([{ busyPolls: Number.MAX_SAFE_INTEGER }], async (controlPlane) => {
-    const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-sigterm-dispatch-");
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-sigterm-dispatch-"));
     try {
       const script = path.join(directory, "workflow.js");
       await writeFile(script, 'export const meta = { name: "sigterm-dispatch" }; await agent("work", { engine: "claude" });');

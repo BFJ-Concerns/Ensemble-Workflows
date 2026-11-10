@@ -116,32 +116,62 @@ export function assertValidAgentOptions(options: object): void {
   }
 
   const values = options as Record<string, unknown>;
-  collect(() => {
-    if (values.cwd !== undefined && typeof values.cwd !== "string") {
-      throw new InvalidAgentOptionValueError("cwd", values.cwd, "a string path");
+  const unreadable = Symbol("unreadable option");
+  const read = (key: string, expected: string): unknown | typeof unreadable => {
+    try {
+      return values[key];
+    } catch (error) {
+      errors.push(new UnreadableAgentOptionError(key, expected, error));
+      return unreadable;
     }
-  });
-  collect(() => {
-    if (values.isolation !== undefined && values.isolation !== "worktree") {
-      throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
-    }
-  });
+  };
+  const cwd = read("cwd", "a string path");
+  if (cwd !== unreadable) {
+    collect(() => {
+      if (cwd !== undefined && typeof cwd !== "string") {
+        throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
+      }
+    });
+  }
+  const isolation = read("isolation", 'exactly "worktree"');
+  if (isolation !== unreadable) {
+    collect(() => {
+      if (isolation !== undefined && isolation !== "worktree") {
+        throw new InvalidAgentOptionValueError("isolation", isolation, 'exactly "worktree"');
+      }
+    });
+  }
   // Harness-owned domain, judged before any worker spawns; opencode's
   // effort is the registry entry's served variants, judged by its adapter.
-  if (values.engine !== "opencode") {
-    collect(() => assertCanonicalEffortSupported(values.effort));
-  }
-  collect(() => assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS));
-  collect(() => assertPositiveIntegerOption(values, "maxAttempts"));
-  collect(() => {
-    if (values.identity !== undefined && typeof values.identity !== "boolean") {
-      throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
+  const engine = read("engine", "an engine name");
+  if (engine !== unreadable && engine !== "opencode") {
+    const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+    if (effort !== unreadable) {
+      collect(() => assertCanonicalEffortSupported(effort));
     }
-  });
-  if (values.strip !== undefined) {
-    collect(() => assertValidStripOption(values.strip));
   }
-  collect(() => assertValidFallbackChain(values.fallback));
+  for (const key of ["timeoutMs", "maxAttempts"] as const) {
+    const value = read(key, "a positive integer");
+    if (value !== unreadable) {
+      collect(() => assertPositiveIntegerOption({ [key]: value }, key, key === "timeoutMs" ? MAX_TIMER_DELAY_MS : undefined));
+    }
+  }
+  const identity = read("identity", "a boolean");
+  if (identity !== unreadable) {
+    collect(() => {
+      if (identity !== undefined && typeof identity !== "boolean") {
+        throw new InvalidAgentOptionValueError("identity", identity, "a boolean");
+      }
+    });
+  }
+  const strip = read("strip", "a list of capabilities");
+  if (strip !== unreadable && strip !== undefined) {
+    collect(() => assertValidStripOption(strip));
+  }
+  const fallback = read("fallback", "a valid fallback chain");
+  if (fallback !== unreadable) {
+    collect(() => assertValidFallbackChain(fallback));
+  }
   if (errors.length === 1) {
     throw errors[0];
   }
@@ -162,15 +192,15 @@ const WORKER_SESSION_OPTION_KEYS = Object.keys({
   label: true,
   phase: true,
   strip: true,
-  stalenessMark: true
+  stalenessMark: true,
+  identity: true
 } satisfies Record<keyof WorkerSessionOptions, true>);
 const WORKER_SESSION_OPTION_KEY_SET = new Set<string>(WORKER_SESSION_OPTION_KEYS);
 
 /**
- * Session creation options. The absence of `schema` and `identity`
- * from the known set is the contract, not an oversight: per-turn variation
- * is schema alone, carried by each `send()` — a creation-time schema would
- * claim one shape for turns whose whole point is having different ones.
+ * Session creation options. `identity` fixes the resolution shape for every
+ * turn; only `schema` varies per turn. A creation-time schema would claim one
+ * shape for turns whose whole point is having different ones.
  */
 export function assertValidWorkerSessionOptions(options: object): void {
   for (const key of Object.keys(options)) {
@@ -197,6 +227,9 @@ export function assertValidWorkerSessionOptions(options: object): void {
   assertPositiveIntegerOption(values, "maxAttempts");
   if (values.stalenessMark !== undefined && typeof values.stalenessMark !== "boolean") {
     throw new InvalidAgentOptionValueError("stalenessMark", values.stalenessMark, "a boolean");
+  }
+  if (values.identity !== undefined && typeof values.identity !== "boolean") {
+    throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
   }
   if (values.strip !== undefined) {
     assertValidStripOption(values.strip);

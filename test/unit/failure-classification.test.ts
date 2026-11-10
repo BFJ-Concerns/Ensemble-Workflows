@@ -90,6 +90,10 @@ test("a dead or unstartable Codex substrate is availability, a deadline is recog
     classifyAttemptFailure(evidence({ engine: "codex", failure: { kind: "TurnTimeoutError", message: "deadline" } })),
     { class: "unclassified", rule: "codex.deadline" }
   );
+  assert.deepEqual(
+    classifyAttemptFailure(evidence({ engine: "opencode", failure: { kind: "TurnTimeoutError", message: "deadline" } })),
+    { class: "unclassified", rule: "opencode.deadline" }
+  );
 });
 
 test("Codex schema rejection before generation is recognised without attributing a worker answer", () => {
@@ -192,7 +196,7 @@ test("a Claude worker that could not start or never showed life is availability;
   );
 });
 
-test("the run's own settlement is never a refusal, whatever engine the turn was on", () => {
+test("run settlement and a local engine shutdown have distinct non-refusal rules", () => {
   for (const engine of ["codex", "claude", "opencode"] as const) {
     assert.deepEqual(
       classifyAttemptFailure(evidence({ engine, failure: { kind: "run-interrupted", message: "the run ended" } })),
@@ -200,7 +204,7 @@ test("the run's own settlement is never a refusal, whatever engine the turn was 
     );
     assert.deepEqual(
       classifyAttemptFailure(evidence({ engine, failure: { kind: "EngineShutdownError", message: "shutting down" } })),
-      { class: "unclassified", rule: "run-settlement" }
+      { class: "unclassified", rule: "engine-shutdown" }
     );
   }
 });

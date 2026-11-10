@@ -4,6 +4,9 @@ import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
+import { Writable } from "node:stream";
+
+import { programNameFor, runEnsembleCli } from "../../src/cli.js";
 
 import { CodexAppServerTransport } from "../../src/app-server.js";
 import { TurnTimeoutError } from "../../src/errors.js";
@@ -46,29 +49,10 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
 
     assert.equal(result.code, 2, result.stderr);
     assert.equal(result.stdout, "");
-    // Run as `node ensemble.mjs`, so the usage names that invocation.
-    assert.equal(
-      result.stderr,
-      "Usage: node ensemble.mjs [run options] <script.js> [args...]\n" +
-      "       node ensemble.mjs agent --engine <engine> [agent options] [prompt]\n" +
-      "       node ensemble.mjs workflows\n" +
-      "       node ensemble.mjs holds [--json] [--scope <scope> | --all]\n" +
-      "       node ensemble.mjs holds answer <hold-id> --verdict <verdict>\n" +
-      "                         [--note <note>]\n" +
-      "\n" +
-      "Run options (before the script path):\n" +
-      "  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N\n" +
-      "  --agent-ceiling N|null  --timeout ms  --strip capability\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run\n" +
-      "Agent options (after agent, before the prompt):\n" +
-      "  --model <model>  --effort <effort>  --label <label>  --phase <phase>\n" +
-      "  --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'\n" +
-      "  --max-attempts N  --task <identity>  --strip capability  --budget engine=N\n" +
-      "  --agent-ceiling N|null  --concurrency engine=N  --timeout ms\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run\n" +
-      "The prompt is the one positional argument, or stdin when omitted.\n" +
-      "Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.\n"
-    );
+    let expected = "";
+    const capture = new Writable({ write(chunk, _encoding, callback) { expected += String(chunk); callback(); } });
+    await runEnsembleCli([], { stderr: capture, programName: programNameFor(bundledCliPath), env: hermeticEstateEnvironment() });
+    assert.equal(result.stderr, expected);
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) {
@@ -2433,6 +2417,42 @@ test("a body's process.exit — direct or from a lingering callback — leaves a
       assert.ok(manifest.ended_at !== null, `${ending.name}: the record is sealed before the process exits`);
       assert.equal(sentinel.manifest.sha256, manifest.integrity.manifest_sha256, ending.name);
       assert.equal(result.stderr.split("\n").filter((line) => /^\s+at /.test(line)).length, 0, `${ending.name}:\n${result.stderr}`);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("unawaited combinators report literal preflight and dynamic author errors", { timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-unawaited-author-error-"));
+  try {
+    for (const cli of [path.resolve("dist/src/cli/ensemble.js"), bundledCliPath]) {
+      for (const combinator of ["parallel", "pipeline"]) {
+        for (const reference of [
+          { name: "literal", call: 'workflow("./does-not-exist.js")', errorKind: "WorkflowResolutionError" },
+          { name: "dynamic", call: "workflow(args[0])", errorKind: "WorkflowUncaughtExceptionError" }
+        ]) {
+          const script = path.join(directory, `${combinator}-${reference.name}.js`);
+          // Literal names fail before the body runs. A name supplied through
+          // args reaches the unawaited combinator and must still fail the run.
+          await writeFile(script, `
+            export const meta = { name: "unawaited-author-error" };
+            ${combinator === "parallel" ? `parallel([() => ${reference.call}])` : `pipeline(["item"], () => ${reference.call})`};
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            return "must not succeed";
+          `);
+          const result = await runNode([cli, script, "./does-not-exist.js"], {
+            ENSEMBLE_RUN_RECORD: "0",
+            ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records"),
+            ENSEMBLE_STATUS: "0"
+          });
+          const context = `${combinator}/${reference.name}: ${result.stderr}`;
+          assert.equal(result.code, 1, context);
+          const envelope = assertSalvageEnvelope(result.stdout, "failed");
+          assert.equal(envelope.error.kind, reference.errorKind, context);
+          assert.match(envelope.error.message, /does-not-exist/, context);
+        }
+      }
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

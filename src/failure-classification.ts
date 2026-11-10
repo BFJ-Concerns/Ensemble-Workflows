@@ -148,6 +148,13 @@ const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);
 
+// The opencode runner's failure kinds: a run that exited in error, and the
+// harness's own per-turn deadline ending the subprocess.
+const OPENCODE_FAILURE_KINDS = new Map<string, FailureClassification>([
+  ["opencode-run-error", { class: "unclassified", rule: "opencode.run-error" }],
+  ["TurnTimeoutError", { class: "unclassified", rule: "opencode.deadline" }]
+]);
+
 /**
  * Classify one failed attempt from the evidence its record carries. Pure
  * and total: every input yields a classification, and only a diagnostic
@@ -164,7 +171,7 @@ export function classifyAttemptFailure(evidence: AttemptFailureEvidence): Failur
     return { class: "unclassified", rule: "run-settlement" };
   }
   if (kind === "EngineShutdownError") {
-    return { class: "unclassified", rule: "run-settlement" };
+    return { class: "unclassified", rule: "engine-shutdown" };
   }
   // The launch environment denied a resource the engine needs, judged
   // before its substrate started: the same on every engine, and the engine
@@ -181,9 +188,7 @@ export function classifyAttemptFailure(evidence: AttemptFailureEvidence): Failur
     case "claude":
       return classifyClaudeFailure(kind, evidence.diagnostics);
     case "opencode":
-      return kind === "opencode-run-error"
-        ? { class: "unclassified", rule: "opencode.run-error" }
-        : { class: "unclassified", rule: null };
+      return OPENCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
   }
 }
 

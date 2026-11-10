@@ -7999,7 +7999,7 @@ var require_acorn = __commonJS({
       Parser3.parse = function parse5(input, options) {
         return new this(options, input).parse();
       };
-      Parser3.parseExpressionAt = function parseExpressionAt3(input, pos, options) {
+      Parser3.parseExpressionAt = function parseExpressionAt4(input, pos, options) {
         var parser = new this(options, input, pos);
         parser.nextToken();
         return parser.parseExpression();
@@ -13104,7 +13104,7 @@ var require_acorn = __commonJS({
       function parse4(input, options) {
         return Parser3.parse(input, options);
       }
-      function parseExpressionAt2(input, pos, options) {
+      function parseExpressionAt3(input, pos, options) {
         return Parser3.parseExpressionAt(input, pos, options);
       }
       function tokenizer2(input, options) {
@@ -13127,7 +13127,7 @@ var require_acorn = __commonJS({
       exports2.lineBreakG = lineBreakG2;
       exports2.nonASCIIwhitespace = nonASCIIwhitespace2;
       exports2.parse = parse4;
-      exports2.parseExpressionAt = parseExpressionAt2;
+      exports2.parseExpressionAt = parseExpressionAt3;
       exports2.tokContexts = types2;
       exports2.tokTypes = types$12;
       exports2.tokenizer = tokenizer2;
@@ -14409,30 +14409,60 @@ function assertValidAgentOptions(options) {
     }
   }
   const values = options;
-  collect(() => {
-    if (values.cwd !== void 0 && typeof values.cwd !== "string") {
-      throw new InvalidAgentOptionValueError("cwd", values.cwd, "a string path");
+  const unreadable = /* @__PURE__ */ Symbol("unreadable option");
+  const read = (key, expected) => {
+    try {
+      return values[key];
+    } catch (error) {
+      errors.push(new UnreadableAgentOptionError(key, expected, error));
+      return unreadable;
     }
-  });
-  collect(() => {
-    if (values.isolation !== void 0 && values.isolation !== "worktree") {
-      throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
-    }
-  });
-  if (values.engine !== "opencode") {
-    collect(() => assertCanonicalEffortSupported(values.effort));
+  };
+  const cwd = read("cwd", "a string path");
+  if (cwd !== unreadable) {
+    collect(() => {
+      if (cwd !== void 0 && typeof cwd !== "string") {
+        throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
+      }
+    });
   }
-  collect(() => assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS));
-  collect(() => assertPositiveIntegerOption(values, "maxAttempts"));
-  collect(() => {
-    if (values.identity !== void 0 && typeof values.identity !== "boolean") {
-      throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
-    }
-  });
-  if (values.strip !== void 0) {
-    collect(() => assertValidStripOption(values.strip));
+  const isolation = read("isolation", 'exactly "worktree"');
+  if (isolation !== unreadable) {
+    collect(() => {
+      if (isolation !== void 0 && isolation !== "worktree") {
+        throw new InvalidAgentOptionValueError("isolation", isolation, 'exactly "worktree"');
+      }
+    });
   }
-  collect(() => assertValidFallbackChain(values.fallback));
+  const engine = read("engine", "an engine name");
+  if (engine !== unreadable && engine !== "opencode") {
+    const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+    if (effort !== unreadable) {
+      collect(() => assertCanonicalEffortSupported(effort));
+    }
+  }
+  for (const key of ["timeoutMs", "maxAttempts"]) {
+    const value = read(key, "a positive integer");
+    if (value !== unreadable) {
+      collect(() => assertPositiveIntegerOption({ [key]: value }, key, key === "timeoutMs" ? MAX_TIMER_DELAY_MS : void 0));
+    }
+  }
+  const identity = read("identity", "a boolean");
+  if (identity !== unreadable) {
+    collect(() => {
+      if (identity !== void 0 && typeof identity !== "boolean") {
+        throw new InvalidAgentOptionValueError("identity", identity, "a boolean");
+      }
+    });
+  }
+  const strip = read("strip", "a list of capabilities");
+  if (strip !== unreadable && strip !== void 0) {
+    collect(() => assertValidStripOption(strip));
+  }
+  const fallback = read("fallback", "a valid fallback chain");
+  if (fallback !== unreadable) {
+    collect(() => assertValidFallbackChain(fallback));
+  }
   if (errors.length === 1) {
     throw errors[0];
   }
@@ -14452,7 +14482,8 @@ var WORKER_SESSION_OPTION_KEYS = Object.keys({
   label: true,
   phase: true,
   strip: true,
-  stalenessMark: true
+  stalenessMark: true,
+  identity: true
 });
 var WORKER_SESSION_OPTION_KEY_SET = new Set(WORKER_SESSION_OPTION_KEYS);
 function assertValidWorkerSessionOptions(options) {
@@ -14475,6 +14506,9 @@ function assertValidWorkerSessionOptions(options) {
   assertPositiveIntegerOption(values, "maxAttempts");
   if (values.stalenessMark !== void 0 && typeof values.stalenessMark !== "boolean") {
     throw new InvalidAgentOptionValueError("stalenessMark", values.stalenessMark, "a boolean");
+  }
+  if (values.identity !== void 0 && typeof values.identity !== "boolean") {
+    throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
   }
   if (values.strip !== void 0) {
     assertValidStripOption(values.strip);
@@ -16193,6 +16227,7 @@ var RunRecordWriter = class _RunRecordWriter {
       }
     }
     const agentJsonPath = `${agentDir}/agent.json`;
+    const unsettledTiming = record.status === "in-progress" || record.status === "abandoned";
     await this.#writeJson(agentJsonPath, {
       ...this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id) } } : {},
       schema_version: SCHEMA_VERSION,
@@ -16223,7 +16258,7 @@ var RunRecordWriter = class _RunRecordWriter {
       label: record.label,
       phase: record.phase,
       status: record.status,
-      termination_cause: record.terminationCause,
+      termination_cause: record.status === "in-progress" && record.terminationCause === null ? { kind: "record-unsettled", message: "the writer has not observed this worker's outcome" } : record.terminationCause,
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
@@ -16241,8 +16276,8 @@ var RunRecordWriter = class _RunRecordWriter {
       // none — an agent with no usage data must be legible as "unknown for
       // this reason", never indistinguishable from zero spend.
       usage: agentUsage(record),
-      queued_ms: record.queuedMs,
-      execution_ms: record.executionMs,
+      queued_ms: unsettledTiming && record.queuedMs === 0 ? null : record.queuedMs,
+      execution_ms: unsettledTiming && record.executionMs === 0 ? null : record.executionMs,
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,
@@ -17385,6 +17420,10 @@ var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);
+var OPENCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
+  ["opencode-run-error", { class: "unclassified", rule: "opencode.run-error" }],
+  ["TurnTimeoutError", { class: "unclassified", rule: "opencode.deadline" }]
+]);
 function classifyAttemptFailure(evidence) {
   const { kind } = evidence.failure;
   if (OUTPUT_FAILURE_KINDS.has(kind)) {
@@ -17394,7 +17433,7 @@ function classifyAttemptFailure(evidence) {
     return { class: "unclassified", rule: "run-settlement" };
   }
   if (kind === "EngineShutdownError") {
-    return { class: "unclassified", rule: "run-settlement" };
+    return { class: "unclassified", rule: "engine-shutdown" };
   }
   if (kind === "SubstrateRefusedError") {
     return { class: "availability", rule: "substrate.refused" };
@@ -17408,7 +17447,7 @@ function classifyAttemptFailure(evidence) {
     case "claude":
       return classifyClaudeFailure(kind, evidence.diagnostics);
     case "opencode":
-      return kind === "opencode-run-error" ? { class: "unclassified", rule: "opencode.run-error" } : { class: "unclassified", rule: null };
+      return OPENCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
   }
 }
 function classifyCodexFailure(kind, diagnostic) {
@@ -17569,6 +17608,10 @@ var RunProgress = class {
     this.#counters(input.engine).queued += 1;
     this.#touch();
     return id;
+  }
+  /** The phase fixed for a worker when it entered the queue. */
+  queuedAgentPhase(id) {
+    return this.#live.get(id)?.phase ?? null;
   }
   /**
    * Returns a running worker to the queue on another engine: a fallback
@@ -18817,7 +18860,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         source: "codex-app-server-events",
         threadId,
         content: this.#transcriptText(threadId),
-        partial: true
+        partial: turn.completedAt === null
       });
     }
     this.#transcripts.delete(threadId);
@@ -21163,6 +21206,7 @@ var ClaudeEngineInvocation = class {
     return {
       handle,
       transcript,
+      completed: turnComplete(transcript.entries, fromIndex) && outstandingBackgroundTasks(transcript.entries, fromIndex).length === 0,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: this.#unaccountedUsage(handle, transcript.entries),
@@ -21376,7 +21420,7 @@ function failedTurnResult(error, evidence, usageEvent) {
           source: "claude-session-jsonl",
           sessionId: evidence.handle.sessionId,
           content: evidence.transcript.text,
-          partial: true
+          partial: !evidence.completed
         }
       ]
     }
@@ -21544,9 +21588,9 @@ var OpenCodeEngineInvocation = class {
         streamEvents.push(...parsed.events);
         streamSessionId ??= parsed.sessionId;
       }
-      const usage3 = usageFromStream(streamEvents);
-      if (usage3.breakdown !== null) {
-        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage3.breakdown, usage3.cost);
+      const usage2 = usageFromStream(streamEvents);
+      if (usage2.breakdown !== null) {
+        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
       }
     };
     const run = await this.#runner.run({
@@ -21566,6 +21610,29 @@ var OpenCodeEngineInvocation = class {
         attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
         { exitCode: run.exitCode, signal: run.signal }
       );
+    }
+    if (run.deadlineExpired === true && this.#options.timeoutMs !== void 0) {
+      const workerExit = { exitCode: run.exitCode, signal: run.signal };
+      const timeout = new TurnTimeoutError(
+        `opencode turn timed out after ${this.#options.timeoutMs}ms: ${openCodeFailureMessage(run, parsedRun.events)}`,
+        {
+          kind: "turn",
+          timeoutMs: this.#options.timeoutMs,
+          threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
+        }
+      );
+      const evidence = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, null);
+      attachFailedTurnResult(timeout, {
+        text: fallback,
+        resolvedModel: this.#providerModel,
+        workerExit,
+        deltaText: fallback,
+        durationMs: run.durationMs,
+        firstDeltaMs: null,
+        items: {},
+        ...evidence
+      });
+      throw attachWorkerExitStatus(attachPartialWorkerText(timeout, fallback), workerExit);
     }
     let exportData = null;
     let exportDiagnostic;
@@ -21613,23 +21680,7 @@ var OpenCodeEngineInvocation = class {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
-      breakdown: usageFromExport(exportData),
-      cost: exportData.info?.cost ?? null
-    };
-    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
-    if (usage2.breakdown !== null) {
-      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
-    }
-    const transcripts = [
-      {
-        filename: "transcript.opencode.jsonl",
-        format: "jsonl",
-        source: "opencode run --format json",
-        content: transcriptContent(run.stdout, exportData),
-        ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
-      }
-    ];
+    const { tokenUsageEvents, transcripts } = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, exportData);
     if (run.exitCode !== 0) {
       return {
         text,
@@ -21643,7 +21694,7 @@ var OpenCodeEngineInvocation = class {
         durationMs: run.durationMs,
         firstDeltaMs: null,
         items: {},
-        tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+        tokenUsageEvents,
         transcripts,
         diagnostics: {
           opencode: {
@@ -21659,13 +21710,39 @@ var OpenCodeEngineInvocation = class {
       durationMs: run.durationMs,
       firstDeltaMs: null,
       items: {},
-      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      tokenUsageEvents,
       transcripts,
       diagnostics: {
         opencode: {
           session_export: exportDiagnostic
         }
       }
+    };
+  }
+  /**
+   * The spend and transcript one attempt produced: the export's account when
+   * it was read, else the stream's. Reports the spend as it does so.
+   */
+  #attemptEvidence(stdout, parsedRun, streamSessionId, exportData) {
+    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
+      breakdown: usageFromExport(exportData),
+      cost: exportData.info?.cost ?? null
+    };
+    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
+    if (usage2.breakdown !== null) {
+      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
+    }
+    return {
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts: [
+        {
+          filename: "transcript.opencode.jsonl",
+          format: "jsonl",
+          source: "opencode run --format json",
+          content: transcriptContent(stdout, exportData),
+          ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
+        }
+      ]
     };
   }
   async close() {
@@ -21754,9 +21831,11 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
     const stdout = [];
     const stderr = [];
     let settled = false;
+    let exited = false;
+    let deadlineExpired = false;
     let killEscalation;
     const terminate = () => {
-      if (settled || killEscalation !== void 0) {
+      if (settled || exited || killEscalation !== void 0) {
         return;
       }
       child.kill("SIGTERM");
@@ -21765,7 +21844,12 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
       }, killGraceMs);
       killEscalation.unref();
     };
-    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(terminate, timeoutMs);
+    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(() => {
+      if (!settled && !exited) {
+        deadlineExpired = true;
+        terminate();
+      }
+    }, timeoutMs);
     if (abortSignal?.aborted === true) {
       terminate();
     } else {
@@ -21799,6 +21883,11 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
       abortSignal?.removeEventListener("abort", terminate);
       reject(error);
     });
+    child.on("exit", () => {
+      exited = true;
+      clearTimeout(timeout);
+      clearTimeout(killEscalation);
+    });
     child.on("close", (exitCode, signal) => {
       if (settled) {
         return;
@@ -21812,7 +21901,8 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
         signal,
         stdout: stdout.join(""),
         stderr: stderr.join(""),
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        deadlineExpired
       });
     });
   });
@@ -23058,6 +23148,20 @@ var BODY_RETURNED_LEG = {
   dispatching: "its dispatch record was still landing, so no outcome was observed"
 };
 var BODY_RETURNED = "the script returned without awaiting this worker";
+function identifiedResult(options, output, record) {
+  return {
+    label: options.label ?? null,
+    phase: record.phase,
+    output,
+    failure: record.status === "complete" ? null : { message: settledFailureMessage(record) }
+  };
+}
+function identifiedFailure(options, error, phase = options.phase ?? null) {
+  if (options.identity !== true) return error;
+  const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
+  attachAgentIdentity(carrier, { label: options.label ?? null, phase });
+  return carrier;
+}
 var WorkerSession = class {
   #state;
   #now;
@@ -23090,7 +23194,11 @@ var WorkerSession = class {
    * option, or the engine's default advisory threshold.
    */
   get staleAfterMs() {
-    return this.#state.stalenessThresholdMs;
+    return this.#state.markStaleness ? this.#state.stalenessThresholdMs : null;
+  }
+  /** Whether this session reports staleness after its idle threshold. */
+  get stalenessMark() {
+    return this.#state.markStaleness;
   }
   /**
    * The advisory staleness mark: true once the idle gap since the
@@ -23305,6 +23413,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.#openCalls.delete(call);
     });
     call.outward = outward;
+    if (this.#closed) {
+      void outward.catch(() => void 0);
+    }
     return outward;
   }
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
@@ -23390,12 +23501,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
     this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
-    const phase = options.phase ?? this.progress.snapshot().currentPhase;
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
-      phase
+      phase: options.phase ?? null
     });
+    const phase = this.progress.queuedAgentPhase(agentId);
     if (engine.name === "claude" && options.model === void 0) {
       this.#emitEvent({
         method: "claude/unpinnedModel",
@@ -23403,7 +23514,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, { ...dispatchOptions, ...phase !== null ? { phase } : {} }, stripRoutes);
+    const agentRecord = this.#newAgentRecord(
+      agentId,
+      engine.name,
+      prompt,
+      { ...dispatchOptions, ...phase !== null ? { phase } : {} },
+      stripRoutes
+    );
     const unsettled = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     try {
@@ -23411,17 +23528,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       unsettled.stage = "admitting";
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        const failure = agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
-        return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
+        return identifiedResult(options, output, agentRecord);
       }
       return output;
     } catch (error) {
-      if (options.identity === true) {
-        const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
-        attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
-        throw carrier;
-      }
-      throw error;
+      throw identifiedFailure(options, error, phase);
     } finally {
       this.#noteAgentSettled(agentId);
     }
@@ -23477,13 +23588,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
   }
-  /**
-   * Open a multi-turn worker session: one worker, held across turns,
-   * with engine, model, and effort fixed for its life. Creation spawns
-   * nothing — validation and strip enforcement run here, pre-spawn, and the
-   * worker itself starts at the first `send()`. An engine that does not
-   * hold sessions (opencode) throws before any worker exists.
-   */
   createWorkerSession(options) {
     if (this.#closed) {
       throw new SessionClosedError();
@@ -23561,16 +23665,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
+    let phase = options.phase ?? null;
     state.inFlight = true;
     try {
       this.budget.assertCanStart(engine.name);
       const queuedAt = Date.now();
-      const phase = options.phase ?? this.progress.snapshot().currentPhase;
       const agentId = this.progress.queueAgent({
         engine: engine.name,
         label: options.label ?? null,
-        phase
+        phase: options.phase ?? null
       });
+      phase = this.progress.queuedAgentPhase(agentId);
       if (engine.name === "claude" && options.model === void 0 && state.turnCount === 0) {
         this.#emitEvent({
           method: "claude/unpinnedModel",
@@ -23609,7 +23714,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           const output = await this.#runChained(
             engine,
             targets,
-            { label: options.label ?? null, phase: options.phase ?? null },
+            { label: options.label ?? null, phase },
             options.maxAttempts,
             agentId,
             agentRecord,
@@ -23618,6 +23723,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
           );
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
+          if (options.identity === true) {
+            return identifiedResult(options, output, agentRecord);
+          }
           return output;
         } catch (error) {
           state.resolvedModel ??= agentRecord.resolvedModel;
@@ -23629,6 +23737,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         state.turnCount = turnNumber;
         state.lastTurnEndedAt = this.#now();
       }
+    } catch (error) {
+      throw identifiedFailure(options, error, phase);
     } finally {
       state.inFlight = false;
     }
@@ -23675,8 +23785,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const invocation = {
       runAttempt: async (context) => {
         const result = await turnInvocation.runAttempt(context);
-        if (result.resolvedModel === void 0 && state.resolvedModel !== null && result.attemptFailure === void 0 && result.text.trim().length > 0) {
-          return { ...result, resolvedModel: state.resolvedModel };
+        if (result.resolvedModel === void 0 && agentRecord.resolvedModel !== null && (agentRecord.attempts.at(-1)?.target.engine === target.engine || result.attemptFailure === void 0 && result.text.trim().length > 0)) {
+          return { ...result, resolvedModel: agentRecord.resolvedModel };
         }
         return result;
       }
@@ -23761,7 +23871,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return this.#runChained(
       engine,
       chainTargets(engine.name, options),
-      { label: options.label ?? null, phase: options.phase ?? null },
+      { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,
       agentRecord,
@@ -23820,6 +23930,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
             if (settled.status !== "refused") {
               return settled;
             }
+            agentRecord.resolvedModel = null;
+            agentRecord.resolvedEffort = null;
           }
           throw new Error("fallback chain ended without a settlement");
         })
@@ -23893,7 +24005,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (outcome === "done") {
         agentRecord.status = "complete";
       } else {
-        this.#settleTerminalStatus(agentRecord, execution.cause ?? null);
+        this.#settleWorkerFailure(agentRecord, execution.cause ?? null);
       }
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
@@ -23991,7 +24103,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         phase: identity.phase,
         status: agentRecord.status,
         attempts: agentRecord.attempts.length,
-        targetsTried: agentRecord.fallback === null ? null : 1 + advancesOf(agentRecord).length,
+        targetsTried: agentRecord.fallback === null ? null : targetsTriedOf(agentRecord),
         failure: { kind: failure.kind, message: failure.message },
         diagnosis
       },
@@ -24340,7 +24452,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   #runSettlementCause(error, dispatch = "in-flight") {
     const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
-    if (error instanceof EngineShutdownError || substrate instanceof AppServerExitedError && this.#closed) {
+    if (this.#closed && (isRunEnding(error) || error instanceof EngineShutdownError || error instanceof TurnTimeoutError || substrate instanceof AppServerExitedError)) {
       return this.#closeCause(dispatch);
     }
     return null;
@@ -24372,6 +24484,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       record.terminationCause = settlement;
       return;
     }
+    this.#settleWorkerFailure(record, error);
+  }
+  /** Settle the worker's own failure without consulting a later run ending. */
+  #settleWorkerFailure(record, error) {
     if (error instanceof TurnTimeoutError) {
       record.status = "timed-out";
       record.terminationCause = {
@@ -24387,7 +24503,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
+    record.terminationCause = record.attempts.at(-1)?.status === "complete" || attemptedFailureAccount(record) === null ? failedWithoutAttemptCause(error, record.attempts.length > 0) : null;
   }
   /**
    * One target's placement, invocation, and bounded attempts. Resolves to
@@ -24990,21 +25106,24 @@ function attemptedFailureAccount(record) {
   }
   return null;
 }
-function failedWithoutAttemptCause(error) {
+function failedWithoutAttemptCause(error, hasAttempt) {
   if (error === null || error === void 0) {
-    return unavailableCause("no error was reported to the runtime");
+    return unavailableCause("no error was reported to the runtime", hasAttempt);
   }
   const described = describedRejection(error);
   if (described === null) {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`, hasAttempt);
   }
   if (described.message.trim() === "") {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`, hasAttempt);
   }
   return described;
 }
-function unavailableCause(reason) {
-  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+function unavailableCause(reason, hasAttempt) {
+  return {
+    kind: "unavailable",
+    message: `the agent failed ${hasAttempt ? "after an attempt without its own failure account" : "with no attempt recorded"} and ${reason}`
+  };
 }
 function describedRejection(error) {
   try {
@@ -25027,12 +25146,20 @@ function rejectionShape(error) {
 function advancesOf(record) {
   return record.attempts.filter((attempt) => attempt.chainDecision === "advanced");
 }
-function settledFailureAccount(record) {
-  const attempted = attemptedFailureAccount(record);
-  if (attempted !== null) {
-    return attempted;
+function targetsTriedOf(record) {
+  if (record.attempts.length === 0) {
+    return 0;
   }
-  return record.terminationCause ?? { kind: "unavailable", message: "the agent failed without a recorded cause" };
+  return advancesOf(record).length + (record.attempts.at(-1)?.chainDecision === "advanced" ? 0 : 1);
+}
+function settledFailureAccount(record) {
+  if (record.attempts.at(-1)?.status === "complete" && record.terminationCause !== null) {
+    return record.terminationCause;
+  }
+  return attemptedFailureAccount(record) ?? record.terminationCause ?? {
+    kind: "unavailable",
+    message: "the agent failed without a recorded cause"
+  };
 }
 function settledFailureMessage(record) {
   const account = settledFailureAccount(record);
@@ -25063,13 +25190,13 @@ function createWorkflowHooks(options) {
   }
   return {
     agent: agentWithDefaults,
-    session: (sessionOptions) => {
+    session: ((sessionOptions) => {
       const createWorkerSession = options.runtime.createWorkerSession;
       if (createWorkerSession === void 0) {
         throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
       }
       return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions));
-    },
+    }),
     hold: (holdOptions) => {
       const raiseHold = options.runtime.raiseHold;
       if (raiseHold === void 0) {
@@ -30895,6 +31022,9 @@ Parser.acorn = {
 function parse3(input, options) {
   return Parser.parse(input, options);
 }
+function parseExpressionAt2(input, pos, options) {
+  return Parser.parseExpressionAt(input, pos, options);
+}
 
 // src/script-runner.ts
 var import_acorn_globals = __toESM(require_acorn_globals(), 1);
@@ -31177,6 +31307,9 @@ async function runWorkflowScript(options) {
   });
   const declaredMeta = readWorkflowMeta(options.source, options.filename);
   assertKnownFreeIdentifiers(buildWrappedSource(extracted), options.filename);
+  if (workflowDepth === 0) {
+    await assertKnownWorkflowReferences(extracted, options.filename, cwd, options.env);
+  }
   const run = await importWorkflowBody(extracted, resolvedFilename);
   const bindings = {
     agent: hooks.agent,
@@ -31391,13 +31524,25 @@ ${workflow.bodySource}${WORKFLOW_WRAPPER_SUFFIX}`;
 }
 var registeredWorkflowModules = /* @__PURE__ */ new Map();
 var workflowModuleLoaderRegistered = false;
+function workflowModuleOrigin(workflow, filename) {
+  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
+  return {
+    authorPath: filename,
+    source: workflow.source,
+    bodyLine: bodyPosition.line,
+    bodyColumn: bodyPosition.column
+  };
+}
 var workflowModuleOrigins = /* @__PURE__ */ new Map();
 function positionAt(source, offset2) {
   let line = 1;
   let lineStart = 0;
   const end = Math.min(offset2, source.length);
   for (let index = 0; index < end; index += 1) {
-    if (source[index] === "\n") {
+    if (/[\r\n\u2028\u2029]/.test(source[index])) {
+      if (source[index] === "\r" && source[index + 1] === "\n" && index + 1 < end) {
+        index += 1;
+      }
       line += 1;
       lineStart = index + 1;
     }
@@ -31444,13 +31589,7 @@ async function importWrappedModule(wrappedSource, filename, workflow) {
   const digest = createHash5("sha256").update(wrappedSource).digest("hex");
   const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
   registeredWorkflowModules.set(url, wrappedSource);
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  workflowModuleOrigins.set(url, {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
-  });
+  workflowModuleOrigins.set(url, workflowModuleOrigin(workflow, filename));
   return await import(url);
 }
 async function importWorkflowBody(workflow, filename) {
@@ -31493,23 +31632,17 @@ async function importWorkflowBody(workflow, filename) {
 }
 function workflowSyntaxError(error, workflow, filename) {
   const wrappedSource = buildWrappedSource(workflow);
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  const origin = {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
-  };
+  const origin = workflowModuleOrigin(workflow, filename);
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
   const bodyEndOffset = wrappedSource.length - WORKFLOW_WRAPPER_SUFFIX.length;
   const bodyEnd = positionAt(wrappedSource, bodyEndOffset);
-  const pointsPastBody = wrappedPosition !== null && (wrappedPosition.line > bodyEnd.line || wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column);
-  const earlyClose = pointsPastBody ? prematureWrapperClose(wrappedSource, bodyEndOffset, origin) : null;
+  const pointsPastBody = wrappedPosition !== null && (wrappedPosition.line > bodyEnd.line || wrappedPosition.line === bodyEnd.line && wrappedPosition.column >= bodyEnd.column);
+  const earlyClose = prematureWrapperClose(wrappedSource, bodyEndOffset, origin);
   const authorPosition = earlyClose ?? (pointsPastBody ? positionAt(workflow.source, workflow.source.trimEnd().length) : wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column));
   if (authorPosition === null) {
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
-  const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
+  const sourceLine = workflow.source.split(/\r\n|[\r\n\u2028\u2029]/)[authorPosition.line - 1] ?? "";
   const start = Math.max(0, authorPosition.column - 1 - 72);
   const end = Math.min(sourceLine.length, start + 96);
   const prefix = start > 0 ? "\u2026" : "";
@@ -31526,16 +31659,18 @@ function workflowSyntaxError(error, workflow, filename) {
 }
 function prematureWrapperClose(wrappedSource, bodyEndOffset, origin) {
   try {
-    const program = parse3(wrappedSource.slice(0, bodyEndOffset), { ecmaVersion: "latest", sourceType: "module" });
-    const declaration = program.body[0];
-    if (declaration?.type !== "ExportDefaultDeclaration" || declaration.declaration.type !== "ArrowFunctionExpression" || declaration.declaration.body.type !== "BlockStatement") {
+    const expression = parseExpressionAt2(wrappedSource, "export default ".length, {
+      ecmaVersion: "latest",
+      sourceType: "module"
+    });
+    if (expression.type !== "ArrowFunctionExpression" || expression.body.type !== "BlockStatement" || expression.body.end > bodyEndOffset) {
       return null;
     }
-    const closingBrace = positionAt(wrappedSource, declaration.declaration.body.end - 1);
+    const closingBrace = positionAt(wrappedSource, expression.body.end - 1);
     return authorPositionOf(origin, closingBrace.line, closingBrace.column);
   } catch {
-    return null;
   }
+  return null;
 }
 function v8SyntaxErrorPosition(error) {
   const stack = typeof error.stack === "string" ? error.stack : "";
@@ -31712,6 +31847,128 @@ function assertKnownFreeIdentifiers(wrappedSource, filename) {
     throw new WorkflowScriptError(
       `Workflow ${filename} references identifiers that are not defined: ${unknown.join(", ")}. A free identifier must be a Node global, a bound hook, or a module-scope binding (require, dynamic import(), import.meta) \u2014 a mistyped name fails here, at load, before any worker spawns.`
     );
+  }
+}
+async function assertKnownWorkflowReferences(workflow, filename, cwd, env) {
+  const wrappedSource = buildWrappedSource(workflow);
+  let program;
+  try {
+    program = parse3(wrappedSource, { ecmaVersion: "latest", sourceType: "module" });
+  } catch {
+    return;
+  }
+  const declaration = program.body[0];
+  if (declaration?.type !== "ExportDefaultDeclaration" || declaration.declaration.type !== "ArrowFunctionExpression") {
+    return;
+  }
+  const body = declaration.declaration.body;
+  if (body.type !== "BlockStatement") {
+    return;
+  }
+  const literalCalls = [];
+  const asNode = (value) => typeof value === "object" && value !== null && "type" in value && typeof value.type === "string" ? value : null;
+  const bindsWorkflow = (pattern) => {
+    const node = asNode(pattern);
+    if (node === null) return false;
+    switch (node.type) {
+      case "Identifier":
+        return node.name === "workflow";
+      case "RestElement":
+        return bindsWorkflow(node.argument);
+      case "AssignmentPattern":
+        return bindsWorkflow(node.left);
+      case "ArrayPattern":
+        return Array.isArray(node.elements) && node.elements.some(bindsWorkflow);
+      case "ObjectPattern":
+        return Array.isArray(node.properties) && node.properties.some((property) => {
+          const entry = asNode(property);
+          return entry?.type === "RestElement" ? bindsWorkflow(entry.argument) : bindsWorkflow(entry?.value);
+        });
+      default:
+        return false;
+    }
+  };
+  const declarationBindsWorkflow = (statement, includeVar) => {
+    if (statement.type === "VariableDeclaration") {
+      return (includeVar || statement.kind !== "var") && Array.isArray(statement.declarations) && statement.declarations.some((entry) => bindsWorkflow(asNode(entry)?.id));
+    }
+    return (statement.type === "FunctionDeclaration" || statement.type === "ClassDeclaration") && bindsWorkflow(statement.id);
+  };
+  const bodyBindsWorkflow = (statements, includeVar) => Array.isArray(statements) && statements.some((statement) => {
+    const node = asNode(statement);
+    return node !== null && declarationBindsWorkflow(node, includeVar);
+  });
+  const hasHoistedVar = (candidate) => {
+    const node = asNode(candidate);
+    if (node === null || ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression", "ClassDeclaration", "ClassExpression"].includes(node.type)) {
+      return false;
+    }
+    if (node.type === "VariableDeclaration" && node.kind === "var" && declarationBindsWorkflow(node, true)) {
+      return true;
+    }
+    return Object.entries(node).some(([key, value]) => key !== "start" && key !== "end" && hasHoistedVarIn(value));
+  };
+  const hasHoistedVarIn = (value) => Array.isArray(value) ? value.some(hasHoistedVar) : hasHoistedVar(value);
+  const inspectNode = (node, shadowed) => {
+    if (typeof node !== "object" || node === null) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((child) => inspectNode(child, shadowed));
+      return;
+    }
+    const expression = asNode(node);
+    if (expression === null) return;
+    let localShadow = shadowed;
+    if (expression.type === "BlockStatement" || expression.type === "StaticBlock") {
+      localShadow ||= bodyBindsWorkflow(expression.body, false) || expression.type === "StaticBlock" && hasHoistedVar(expression);
+    } else if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(expression.type)) {
+      localShadow ||= bindsWorkflow(expression.id) || Array.isArray(expression.params) && expression.params.some(bindsWorkflow);
+      inspectNode(expression.params, localShadow);
+      inspectNode(expression.body, localShadow || hasHoistedVar(expression.body));
+      return;
+    } else if (expression.type === "CatchClause") {
+      localShadow ||= bindsWorkflow(expression.param);
+    } else if (["ForStatement", "ForInStatement", "ForOfStatement"].includes(expression.type)) {
+      const binding = asNode(expression.init ?? expression.left);
+      localShadow ||= binding !== null && declarationBindsWorkflow(binding, false);
+    } else if (expression.type === "SwitchStatement") {
+      inspectNode(expression.discriminant, shadowed);
+      localShadow ||= Array.isArray(expression.cases) && expression.cases.some((entry) => bodyBindsWorkflow(asNode(entry)?.consequent, false));
+      inspectNode(expression.cases, localShadow);
+      return;
+    } else if (expression.type === "ClassExpression") {
+      localShadow ||= bindsWorkflow(expression.id);
+    }
+    if (expression.type === "CallExpression") {
+      const callee = asNode(expression.callee);
+      const first = Array.isArray(expression.arguments) ? asNode(expression.arguments[0]) : null;
+      if (!localShadow && callee?.type === "Identifier" && callee.name === "workflow" && first?.type === "Literal" && typeof first.value === "string") {
+        literalCalls.push({ name: first.value, offset: expression.start ?? 0 });
+      }
+    }
+    for (const [key, value] of Object.entries(expression)) {
+      if (key !== "start" && key !== "end") inspectNode(value, localShadow);
+    }
+  };
+  for (const statement of body.body.slice(1)) inspectNode(statement, false);
+  const origin = workflowModuleOrigin(workflow, filename);
+  for (const call of literalCalls) {
+    try {
+      await resolveWorkflowReference(call.name, {
+        cwd,
+        ...env !== void 0 ? { env } : {},
+        readMeta: readWorkflowMeta
+      });
+    } catch (error) {
+      if (!(error instanceof WorkflowResolutionError)) {
+        throw error;
+      }
+      const wrappedPosition = positionAt(wrappedSource, call.offset);
+      const authorPosition = authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+      const location = authorPosition === null ? filename : `${filename}:${authorPosition.line}:${authorPosition.column}`;
+      throw new WorkflowResolutionError(`${location}: ${error.message}`, { cause: error });
+    }
   }
 }
 function asWorkflowReference(value) {

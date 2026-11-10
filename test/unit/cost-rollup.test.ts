@@ -73,3 +73,51 @@ test("only the last attempt of an interrupted record was cut short; a refusal sp
     { agent: 1, attempt: 3, reason: "worker-interrupted", measured: "partial" }
   ]);
 });
+
+test("a timed-out attempt the runtime retried keeps its partial spend marked, though the agent completed", () => {
+  const rollup = buildCostRollup([
+    agent(1, "complete", [attempt(1, { failureKind: "TurnTimeoutError" }), attempt(2)])
+  ]);
+  const leaf = rollup.codex?.["gpt-6-luna"];
+  assert.equal(leaf?.tokens !== undefined && "totalTokens" in leaf.tokens ? leaf.tokens.totalTokens : null, 28);
+  assert.equal(leaf?.complete, false);
+  assert.deepEqual(leaf?.unobserved, [{ agent: 1, attempt: 1, reason: "worker-timed-out", measured: "partial" }]);
+});
+
+test("a retried attempt that timed out before reporting usage measured none of its spend", () => {
+  const rollup = buildCostRollup([
+    agent(1, "complete", [attempt(1, { failureKind: "TurnTimeoutError", tokenUsageEvents: [] }), attempt(2)])
+  ]);
+  assert.deepEqual(rollup.codex?.["gpt-6-luna"]?.unobserved, [
+    { agent: 1, attempt: 1, reason: "worker-timed-out", measured: "none" }
+  ]);
+});
+
+test("every recorded timeout spelling ends its own attempt as timed out", () => {
+  for (const failureKind of ["TurnTimeoutError", "claude-poll-timeout", "claude-first-life-timeout", "claude-registration-timeout"]) {
+    const rollup = buildCostRollup([
+      agent(1, "failed", [
+        attempt(1, { failureKind, tokenUsageEvents: [] }),
+        attempt(2, { failureKind: "SomeEngineFailure" })
+      ])
+    ]);
+    assert.deepEqual(
+      rollup.codex?.["gpt-6-luna"]?.unobserved,
+      [{ agent: 1, attempt: 1, reason: "worker-timed-out", measured: "none" }],
+      failureKind
+    );
+  }
+});
+
+test("a run deadline that ended the record marks only its last attempt timed out", () => {
+  const rollup = buildCostRollup([
+    agent(1, "timed-out", [
+      attempt(1, { failureKind: "SomeEngineFailure", tokenUsageEvents: [] }),
+      attempt(2, { failureKind: "run-timed-out" })
+    ])
+  ]);
+  assert.deepEqual(rollup.codex?.["gpt-6-luna"]?.unobserved, [
+    { agent: 1, attempt: 1, reason: "engine-reported-no-usage", measured: "none" },
+    { agent: 1, attempt: 2, reason: "worker-timed-out", measured: "partial" }
+  ]);
+});

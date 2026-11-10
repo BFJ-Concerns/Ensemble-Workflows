@@ -4,6 +4,7 @@ import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
+import { isTimeoutFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure } from "./failure-classification.js";
 
 import type { DischargedEnforcement } from "./capability-stripping.js";
@@ -2116,8 +2117,8 @@ export class EnsembleRuntime {
       };
       return;
     }
-    const lastFailure = record.attempts.at(-1)?.failure;
-    if (lastFailure?.kind.endsWith("-timeout") === true) {
+    const lastFailure = record.attempts.at(-1)?.failure ?? null;
+    if (lastFailure !== null && isTimeoutFailureKind(lastFailure.kind)) {
       record.status = "timed-out";
       record.terminationCause = { kind: lastFailure.kind, message: lastFailure.message };
       return;

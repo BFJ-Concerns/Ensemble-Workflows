@@ -768,7 +768,7 @@ Each leaf has four fields:
   |---|---|
   | `record-unsettled` | had no observed outcome: still running in a live manifest, or running when its writer died (SIGKILL), so the sweep listed it as `abandoned` |
   | `worker-interrupted` | was cut short by the run's interrupt (SIGINT or SIGTERM), or by a script body returning with it in flight |
-  | `worker-timed-out` | was cut short by a run or turn deadline the runtime enforced |
+  | `worker-timed-out` | was cut short by a run or turn deadline the runtime enforced, including a timed-out attempt the runtime then retried, so an agent whose record reads `complete` can still name one here |
   | `engine-reported-no-usage` | settled on its engine's own account, which carried no usage |
 
 An attempt refused before any worker existed spent nothing. It books its leaf

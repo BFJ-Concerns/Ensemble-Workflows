@@ -724,7 +724,9 @@ The fields present throughout a record's lifetime are:
   generation). Codex provider request rejections forwarded as `other` with
   a JSON `invalid_request_error` cause use rule
   `codex.provider-request-rejected`: recognised, retried in place, and never
-  an availability failure. Other unrecognised `other` diagnostics keep a
+  an availability failure. A recognised schema rejection retains
+  `codex.schema-rejected` even in this envelope and settles immediately
+  without retrying. Other unrecognised `other` diagnostics keep a
   null rule. Credential failures use kind `authentication-failure` and rule
   `<engine>.authentication-failure`; Codex unknown-model failures use kind
   `model-not-found` and rule `codex.model-not-found`. Both keep the engine's

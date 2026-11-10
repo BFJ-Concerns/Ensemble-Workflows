@@ -237,10 +237,16 @@ function classifyCodexFailure(
       return { class: "availability", rule };
     }
   }
+  // A catch-all provider envelope must not replace a more specific known
+  // failure, especially a schema rejection that settles before generation.
+  const knownFailure = CODEX_ERROR_CLASSES.get(kind);
+  if (knownFailure !== undefined) {
+    return knownFailure;
+  }
   if (code === "other" && codexProviderRejectedRequest(diagnostic?.payload)) {
     return { class: "unclassified", rule: "codex.provider-request-rejected" };
   }
-  return CODEX_ERROR_CLASSES.get(kind) ?? { class: "unclassified", rule: null };
+  return { class: "unclassified", rule: null };
 }
 
 /**

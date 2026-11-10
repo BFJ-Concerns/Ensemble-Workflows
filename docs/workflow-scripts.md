@@ -563,7 +563,9 @@ engine's own diagnostic:
   rejection, a provider request rejection, and a client error about a bad
   model name. Codex forwards a provider JSON `invalid_request_error` as
   `other`; this is recognised by `codex.provider-request-rejected`, retried
-  in place within `maxAttempts`, and never advances a chain. A diagnostic that no
+  in place within `maxAttempts`, and never advances a chain. A recognised
+  schema rejection instead keeps `codex.schema-rejected` and settles without
+  retrying, including when forwarded in this envelope. A diagnostic that no
   rule recognised is recorded with `rule: null`.
 
 With a chain declared, a failure that matches no rule leaves the chain

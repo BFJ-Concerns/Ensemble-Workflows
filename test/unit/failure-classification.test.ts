@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { appServerErrorFromPayload } from "../../src/app-server.js";
+import { appServerDiagnosticOf, CodexSchemaSubsetUnsupportedError } from "../../src/errors.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure } from "../../src/failure-classification.js";
 
 import type { AttemptFailureEvidence } from "../../src/failure-classification.js";
@@ -105,6 +107,26 @@ test("Codex schema rejection before generation is recognised without attributing
     })),
     { class: "unclassified", rule: "codex.schema-rejected" }
   );
+});
+
+test("Codex schema rejections forwarded as typed invalid requests keep their specific rule", () => {
+  const body = JSON.stringify({ error: {
+    message: "Invalid schema for response_format 'x'",
+    type: "invalid_request_error",
+    param: "text.format.schema",
+    code: "invalid_json_schema"
+  } });
+  const error = appServerErrorFromPayload("turn notification", {
+    code: "other",
+    message: body,
+    data: { error: { message: body, codexErrorInfo: "other" } }
+  });
+  assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
+  assert.deepEqual(classifyAttemptFailure(evidence({
+    engine: "codex",
+    failure: { kind: error.constructor.name, message: error.message },
+    appServerDiagnostic: appServerDiagnosticOf(error)
+  })), { class: "unclassified", rule: "codex.schema-rejected" });
 });
 
 test("Codex recognises a typed provider request rejection, never the catch-all code or prose alone", () => {

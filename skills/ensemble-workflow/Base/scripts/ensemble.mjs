@@ -17517,10 +17517,14 @@ function classifyCodexFailure(kind, diagnostic) {
       return { class: "availability", rule };
     }
   }
+  const knownFailure = CODEX_ERROR_CLASSES.get(kind);
+  if (knownFailure !== void 0) {
+    return knownFailure;
+  }
   if (code === "other" && codexProviderRejectedRequest(diagnostic?.payload)) {
     return { class: "unclassified", rule: "codex.provider-request-rejected" };
   }
-  return CODEX_ERROR_CLASSES.get(kind) ?? { class: "unclassified", rule: null };
+  return { class: "unclassified", rule: null };
 }
 function codexProviderRejectedRequest(payload) {
   if (payload == null) {

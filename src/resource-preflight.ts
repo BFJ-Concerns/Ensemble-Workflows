@@ -303,10 +303,21 @@ export class EngineResourceGate {
     const key = JSON.stringify([engine, requirements]);
     let judged = this.#judged.get(key);
     if (judged === undefined) {
-      judged = probeResources(requirements);
+      judged = probeResources(requirements).catch((error: unknown) => {
+        // Cleanup failure is not an access verdict and no worker ran.
+        // Let a later call probe afresh rather than caching this rejected
+        // operation. Each waiter wraps the cause separately below.
+        this.#judged.delete(key);
+        throw error;
+      });
       this.#judged.set(key, judged);
     }
-    const denials = await judged;
+    let denials: ResourceDenial[];
+    try {
+      denials = await judged;
+    } catch (error) {
+      throw new SubstrateRefusedError(`resource preflight for ${engine} could not finish: ${messageOf(error)}`, { cause: error });
+    }
     if (denials.length > 0) {
       throw new ResourcePreflightRefusedError(denials, diagnoseCallerSandbox(this.#env, denials));
     }

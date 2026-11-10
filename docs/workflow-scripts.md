@@ -329,7 +329,7 @@ cannot pass silently:
   could not be opened, an engine refusing the dispatch itself
   (`ClaudeDispatchError`, `CodexSubstrateRefusedError`), a strip that cannot
   be enforced, or a budget refusal. Before an engine's first attempt in a
-  run, the launcher also checks that it can use the directories that engine
+  run, the runtime also checks that it can use the directories that engine
   needs, resolved from the environment that engine is launched with:
   Codex's `CODEX_HOME` (else `$HOME/.codex`); Claude's `CLAUDE_CONFIG_DIR`
   (else `$HOME/.claude`), global configuration and daemon sockets; and
@@ -353,7 +353,9 @@ cannot pass silently:
   from and the error. Evidence identifying a Codex sandbox adds its name and
   the `danger-full-access` mode that lifts it; without such evidence the
   refusal says that no caller sandbox was identified. These checks exercise
-  current access and cannot guarantee later writes will succeed.
+  current access and cannot guarantee later writes will succeed. A probe
+  that cannot finish its own cleanup raises a substrate refusal with the
+  cause retained; that failed check is not cached as a resource verdict.
 - The run's own ending — an interrupt or a whole-run timeout — which throws
   through any call it cut short.
 

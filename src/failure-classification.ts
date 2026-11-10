@@ -153,6 +153,9 @@ export function classifyAttemptFailure(evidence: AttemptFailureEvidence): Failur
   // The launch environment denied a resource the engine needs, judged
   // before its substrate started: the same on every engine, and the engine
   // never saw the prompt.
+  if (kind === "SubstrateRefusedError") {
+    return { class: "availability", rule: "substrate.refused" };
+  }
   if (kind === "ResourcePreflightRefusedError") {
     return { class: "availability", rule: "preflight.resource-denied" };
   }

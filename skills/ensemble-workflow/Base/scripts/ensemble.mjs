@@ -17384,6 +17384,9 @@ function classifyAttemptFailure(evidence) {
   if (kind === "EngineShutdownError") {
     return { class: "unclassified", rule: "run-settlement" };
   }
+  if (kind === "SubstrateRefusedError") {
+    return { class: "availability", rule: "substrate.refused" };
+  }
   if (kind === "ResourcePreflightRefusedError") {
     return { class: "availability", rule: "preflight.resource-denied" };
   }
@@ -17917,10 +17920,18 @@ var EngineResourceGate = class {
     const key = JSON.stringify([engine, requirements]);
     let judged = this.#judged.get(key);
     if (judged === void 0) {
-      judged = probeResources(requirements);
+      judged = probeResources(requirements).catch((error) => {
+        this.#judged.delete(key);
+        throw error;
+      });
       this.#judged.set(key, judged);
     }
-    const denials = await judged;
+    let denials;
+    try {
+      denials = await judged;
+    } catch (error) {
+      throw new SubstrateRefusedError(`resource preflight for ${engine} could not finish: ${messageOf(error)}`, { cause: error });
+    }
     if (denials.length > 0) {
       throw new ResourcePreflightRefusedError(denials, diagnoseCallerSandbox(this.#env, denials));
     }

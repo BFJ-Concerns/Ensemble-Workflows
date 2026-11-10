@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import fsPromises, { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import test from "node:test";
 
@@ -8,6 +9,7 @@ import { ENGINE_RESOURCE_RESOLVERS, claudeConfigDirectory, engineResourceRequire
 import { createDefaultEngineRegistry, EngineRegistry, type EngineAdapter } from "../../src/engines.js";
 import { launchEnvironment } from "../../src/engine-environment.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { SubstrateRefusedError } from "../../src/errors.js";
 import { classifyAttemptFailure } from "../../src/failure-classification.js";
 import {
   EngineResourceGate,
@@ -34,6 +36,18 @@ async function withDirectory(run: (dir: string) => Promise<void>, root = tmpdir(
 
 function requirement(overrides: Partial<ResourceRequirement> & { path: string }): ResourceRequirement {
   return { owner: "launcher", role: "test store", access: "create-entries", resolvedFrom: "the test", ...overrides };
+}
+
+function recordingAdapter(name: EngineName, ran: EngineName[]): EngineAdapter {
+  return {
+    name, concurrency: 1,
+    schedule: async (run) => run(),
+    createInvocation: () => ({ runAttempt: async () => {
+      ran.push(name);
+      return { text: "fallback answer", deltaText: "fallback answer", durationMs: 1, firstDeltaMs: 1, items: {}, tokenUsageEvents: [] };
+    } }),
+    close: async () => undefined
+  };
 }
 
 test("a usable directory passes both probes and is left as it was", async () => {
@@ -147,6 +161,10 @@ test("a preflight refusal is an availability failure on every engine", () => {
       }),
       { class: "availability", rule: "preflight.resource-denied" }
     );
+    assert.deepEqual(classifyAttemptFailure({
+      engine, failure: { kind: "SubstrateRefusedError", message: "probe could not finish" },
+      appServerDiagnostic: null, diagnostics: undefined
+    }), { class: "availability", rule: "substrate.refused" });
   }
 });
 
@@ -242,18 +260,9 @@ test("a denied Claude scratch home falls back before its worker runs and does no
     await writeFile(blocker, "not a directory");
     const ran: EngineName[] = [];
     const resolved: EngineName[] = [];
-    const adapter = (name: EngineName): EngineAdapter => ({
-      name, concurrency: 1,
-      schedule: async (run) => run(),
-      createInvocation: () => ({ runAttempt: async () => {
-        ran.push(name);
-        return { text: "fallback answer", deltaText: "fallback answer", durationMs: 1, firstDeltaMs: 1, items: {}, tokenUsageEvents: [] };
-      } }),
-      close: async () => undefined
-    });
     const runtime = new EnsembleRuntime({
       cwd: dir, defaultMaxAttempts: 1,
-      engines: new EngineRegistry([adapter("claude"), adapter("codex"), adapter("opencode")], [], (engine) => {
+      engines: new EngineRegistry([recordingAdapter("claude", ran), recordingAdapter("codex", ran), recordingAdapter("opencode", ran)], [], (engine) => {
         resolved.push(engine);
         return engineResourceRequirements(engine, { HOME: dir }, dir, { HOME: dir, TMPDIR: blocker });
       })
@@ -346,7 +355,7 @@ test("a socket directory without search permission preserves the resource refusa
       assert.match(error.message, /the claude engine's test store/);
       return true;
     });
-  }, "/mnt/ai-data/scratch");
+  }, "/tmp");
 });
 
 test("an empty Claude config override keeps the default home and daemon identity", () => {
@@ -361,4 +370,44 @@ test("an empty Claude config override keeps the default home and daemon identity
 test("a relative Codex HOME is resolved against the app-server launch directory", () => {
   const resources = engineResourceRequirements("codex", { HOME: "relative-home", CODEX_HOME: "" }, "/run/base", {});
   assert.equal(resources[0]?.path, "/run/base/relative-home/.codex");
+});
+
+
+test("probe cleanup errors stay pre-spawn and do not poison later resource checks", async (t) => {
+  await withDirectory(async (dir) => {
+    const cause = Object.assign(new Error("probe cleanup denied"), { code: "EACCES" });
+    const gate = new EngineResourceGate(() => [requirement({ owner: "codex", path: dir })]);
+    const remove = t.mock.method(fsPromises, "rm", async () => { throw cause; });
+    syncBuiltinESMExports();
+    try {
+      const errors = await Promise.all([
+        gate.require("codex").catch((error: unknown) => error),
+        gate.require("codex").catch((error: unknown) => error)
+      ]);
+      assert.notEqual(errors[0], errors[1]);
+      for (const error of errors) {
+        assert.ok(error instanceof SubstrateRefusedError);
+        assert.equal(error.cause, cause);
+        assert.match(error.message, /resource preflight.*codex.*probe cleanup denied/);
+      }
+      const ran: EngineName[] = [];
+      const runtime = new EnsembleRuntime({
+        cwd: dir, defaultMaxAttempts: 2,
+        engines: new EngineRegistry([recordingAdapter("claude", ran), recordingAdapter("codex", ran)], [],
+          (engine) => engine === "claude" ? [requirement({ owner: "claude", path: dir })] : [])
+      });
+      try {
+        assert.equal(await runtime.agent("work", { engine: "claude", fallback: [{ engine: "codex", model: "gpt-6-sol" }] }), "fallback answer");
+        assert.deepEqual(ran, ["codex"]);
+        assert.equal(runtime.lastAgentRecord()?.attempts[0]?.classification?.class, "availability");
+      } finally {
+        await runtime.close();
+      }
+    } finally {
+      remove.mock.restore();
+      syncBuiltinESMExports();
+    }
+    // The rejected judgement must not remain cached after cleanup works.
+    await gate.require("codex");
+  });
 });

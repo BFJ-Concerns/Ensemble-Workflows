@@ -322,6 +322,22 @@ not manage or remove those native worktrees.
 With `isolation: "worktree"` the worker runs in a fresh linked git worktree on
 a temporary branch. With `cwd` as well, `cwd` selects the source repository; a
 `cwd` that is not in a git repository fails before the worker spawns.
+The branch starts at the source checkout's `HEAD`. All checkouts of one
+repository share a `<repo>.ensemble-workflows-worktrees/` container. Its
+location comes from shared Git metadata, independently of the dispatch
+checkout:
+
+- A recorded `core.worktree` places the container beside that main checkout.
+- Otherwise, a common Git directory named `.git` places it beside that
+  directory's parent, as in a conventional repository.
+- Any other common Git directory places it beside that directory. For example,
+  a bare repository at `/code/repo.git` uses
+  `/code/repo.git.ensemble-workflows-worktrees/`; a separate Git directory at
+  `/code/meta` uses `/code/meta.ensemble-workflows-worktrees/`.
+
+Separate Git directories need no `core.worktree` setting for shared placement.
+An external directory named `.git` follows the same parent rule from every
+checkout, including the original one.
 Placement is decided once per target and kept across that target's retries; a
 fallback step to another target opens its own.
 

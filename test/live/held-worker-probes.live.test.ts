@@ -23,7 +23,7 @@ for (const engine of ["claude", "codex"] as const) {
   test(
     `live ${engine} held probe writes its shell's cgroup, holds until released, and repeats on a follow-up turn`,
     { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 1_200_000 },
-    async () => {
+    async (t) => {
       const directory = await mkdtemp(path.join(tmpdir(), `ensemble-held-probe-${engine}-`));
       const runtime = await createRuntime({
         cwd: directory,
@@ -57,6 +57,9 @@ for (const engine of ["claude", "codex"] as const) {
           assert.equal(evidence.trimEnd(), marker, `${engine} did not write the marker on its follow-up turn`);
         });
         assert.match(secondReply ?? "", new RegExp(second.token), `${engine} did not reply with its follow-up token`);
+      } catch (error) {
+        t.diagnostic(JSON.stringify(runtime.lastAgentRecord()?.attempts.map(({ failure }) => failure)));
+        throw error;
       } finally {
         // Release both probes whatever happened above, so a failed
         // observation never leaves a worker polling out its hold limit.
@@ -81,12 +84,24 @@ async function observeHeldTurn(
   observe: () => Promise<void>
 ): Promise<string | null> {
   let settled = false;
+  const observation = new AbortController();
   const tracked = turn.finally(() => {
     settled = true;
+    observation.abort(new Error("the worker settled before it was released"));
   });
-  await waitForPath(probe.paths.ready, 420_000);
+  // Handle a rejection while observing readiness, then propagate it below.
+  void tracked.catch(() => undefined);
+  try {
+    await waitForPath(probe.paths.ready, 420_000, observation.signal);
+  } catch (error) {
+    // A failed turn cannot create its ready file. Preserve thrown failures;
+    // null and early answers fail the handshake rather than waiting it out.
+    if (settled) await tracked;
+    throw error;
+  }
   assert.equal(settled, false, "the worker settled before it was released");
   await observe();
+  assert.equal(settled, false, "the worker settled during observation");
   await writeFile(probe.paths.release, "");
   return tracked;
 }

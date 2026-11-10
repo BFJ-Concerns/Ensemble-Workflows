@@ -618,7 +618,7 @@ test("opencode option refusals leave no progress or archive worker", async () =>
       await assert.rejects(runtime.agent("never spawn", { engine: "opencode", ...options }), ErrorClass);
       assert.equal(records.length, 0);
       assert.equal(runtime.progress.snapshot().agents.length, 0);
-      assert.deepEqual(runtime.progress.snapshot().totals, { active: 0, queued: 0, done: 0, failed: 0 });
+      assert.deepEqual(runtime.progress.snapshot().totals, { active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 0 });
     }
     assert.equal(runner.runs.length, 0);
   } finally {

@@ -2239,7 +2239,7 @@ for (const grows of [false, true]) {
     class AbsentWhilePending extends FakeControlPlane {
       override async poll(): Promise<ClaudeSessionStatus> { return { status: "absent", state: "unknown", present: false }; }
     }
-    const plane = new AbsentWhilePending(dir, [{ assistant: { id: "first-call", text: "working", input: 100, output: 10, stop: "tool_use" } }], { openingArrival: sent => sent.trimEnd() });
+    const plane = new AbsentWhilePending(dir, [{ assistant: { id: "first-call", text: "working", input: 100, output: 10, stop: "tool_use" } }], { openingArrival: sent => sent.replace("decide ", "decide") });
     const runtime = makeRuntime(plane, { maxAttempts: 2 });
     const records: RuntimeAgentRecord[] = [];
     runtime.setRunRecorder({
@@ -2310,7 +2310,7 @@ for (const [altered, lateOpening] of [[true, false], [false, false], [false, tru
       }
     }
     const plane = new LateNudge(dir, [{ outcome: "blocked" }, { assistant: { text: "answer after exact redelivery" } }], {
-      openingArrival: sent => lateOpening ? null : altered ? sent.trimEnd() : sent
+      openingArrival: sent => lateOpening ? null : altered ? sent.replace("decide ", "decide") : sent
     });
     const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 1, blockedRecoveryBound: 1 });
     const records: RuntimeAgentRecord[] = [];

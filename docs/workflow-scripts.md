@@ -368,9 +368,12 @@ unclassified delivery failure even without a transcript, so it cannot advance
 fallback.
 A model context rejection after exact delivery retains its own diagnostic.
 
-The editor transport applies the same exact-text checks as follow-ups below.
-Native whitespace trimming or other input transformation fails delivery
-explicitly. Host memory, storage and model context still bound prompt size.
+Ensemble encloses the opening task in boundary tags chosen to be absent from
+its text. The caller's text stays literal, including leading and trailing
+whitespace; the closing tag keeps it inside the message when Claude trims
+the message boundary. The complete opening still requires an exact receipt,
+so any input transformation fails delivery explicitly. Host memory, storage
+and model context still bound prompt size.
 
 ### Retries
 

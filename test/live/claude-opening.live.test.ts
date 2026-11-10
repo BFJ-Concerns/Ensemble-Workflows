@@ -13,25 +13,30 @@ import { TYPED_FOLLOW_UP_OPENING_PROMPT } from "./claude-follow-up-typed-prompts
 
 const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
-for (const [size, trailingNewline] of [[300_000, false], [2_000_000, false], [0, true]] as const) {
-  test(trailingNewline ? "built Claude opening reports native input changes without fallback" :
-    `built Claude opening arrives as one exact native user turn at ${size} characters`, {
+for (const [size, suffix, expectedAnswer, description] of [
+  [0, "\n", "PINEAPPLE", "a trailing newline"],
+  [0, "\n \t\u00a0\u2003\n", "PINEAPPLE", "mixed trailing whitespace"],
+  [300_000, "END", "OK", "300,000 characters"],
+  [300_000, "END\n \t\u00a0\u2003\n", "OK", "whitespace after 300,000 characters"],
+  [2_000_000, "END\n", null, "whitespace after 2,000,000 characters"]
+] as const) {
+  test(`built Claude opening preserves ${description} in one exact native user turn`, {
     skip: process.env.ENSEMBLE_LIVE !== "1", timeout: 360_000
   }, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-live-"));
     try {
-      // Reuse the existing authored opening; the suffix is indexed test data.
+      // The short prompt is the verifier's witness; long prompts reuse the
+      // existing authored opening with indexed terminal-delivery test data.
       const data = Array.from({ length: 70_000 }, (_, i) => `${i}: café £ Ω 中文 😀; Mixed CASE.`).join("\n");
-      const prompt = trailingNewline ? TYPED_FOLLOW_UP_OPENING_PROMPT + "\n" :
-        (TYPED_FOLLOW_UP_OPENING_PROMPT + "\n" + data).slice(0, size) + "END";
+      const prompt = size === 0 ? "Reply with exactly the word PINEAPPLE and nothing else." + suffix :
+        (TYPED_FOLLOW_UP_OPENING_PROMPT + "\n" + data).slice(0, size) + suffix;
       const promptFile = path.join(dir, "prompt.txt");
       await writeFile(promptFile, prompt);
       const workflow = path.join(dir, "workflow.mjs");
       await writeFile(workflow, `
         export const meta = { name: "opening-receipt" };
         const fs = await import("node:fs/promises");
-        await agent(await fs.readFile(${JSON.stringify(promptFile)}, "utf8"), ${JSON.stringify({ engine: "claude", model: "claude-haiku-5-5", effort: "low", cwd: dir, timeoutMs: 240_000, maxAttempts: 1, ...(trailingNewline ? { fallback: [{engine: "claude", model: "claude-haiku-5-5"}] } : {}) })});
-        return "finished";
+        return await agent(await fs.readFile(${JSON.stringify(promptFile)}, "utf8"), ${JSON.stringify({ engine: "claude", model: "claude-haiku-5-5", effort: "low", cwd: dir, timeoutMs: 240_000, maxAttempts: 1 })});
       `);
       const store = path.join(dir, "records");
       const result = await runNode([bundle, "--timeout", "300000", workflow], {
@@ -42,7 +47,7 @@ for (const [size, trailingNewline] of [[300_000, false], [2_000_000, false], [0,
       const files = (await readdir(archive, { recursive: true })).filter(file => path.basename(file) === "agent.json");
       assert.equal(files.length, 1);
       const record = JSON.parse(await readFile(path.join(archive, files[0]!), "utf8")) as {
-        status: string; attempts: Array<{ failure: {kind: string} | null; classification: {class: string} | null; chain_decision: string | null }>; transcripts: Array<{ path: string; source: string; session_id: string }>
+        status: string; attempts: Array<{ failure: {kind: string} | null }>; transcripts: Array<{ path: string; source: string; session_id: string }>
       };
       const reference = record.transcripts[0];
       assert.ok(reference, result.stderr);
@@ -52,19 +57,17 @@ for (const [size, trailingNewline] of [[300_000, false], [2_000_000, false], [0,
       assert.equal(users.length, 1, "opening split into multiple turns or acquired a bootstrap turn");
       const opening = users[0]?.message?.content;
       assert.equal(typeof opening, "string");
-      // The engine supplies its existing autonomy preamble before Task:.
-      const boundary = (opening as string).indexOf("\nTask:\n");
-      assert.ok(boundary >= 0, "native opening lacks the dispatch task boundary");
-      const task = (opening as string).slice(boundary + "\nTask:\n".length);
-      if (trailingNewline && task !== prompt) {
-        assert.equal(task, prompt.trimEnd());
-        assert.equal(record.status, "failed");
-        assert.equal(record.attempts.length, 1, "a native trim advanced fallback");
-        assert.equal(record.attempts[0]?.failure?.kind, "claude-delivery-error");
-        assert.equal(record.attempts[0]?.classification?.class, "unclassified");
-        assert.equal(record.attempts[0]?.chain_decision, "exhausted");
-      } else assert.equal(task, prompt);
-      console.log(JSON.stringify({ size: prompt.length, bytes: Buffer.byteLength(prompt), sha256: createHash("sha256").update(prompt).digest("hex"), session: reference.session_id, status: record.status, failure: record.attempts.at(-1)?.failure, exact: task === prompt }));
+      assert.ok((opening as string).includes(prompt), "the native opening lost or transformed the caller's task bytes");
+      assert.equal(record.attempts.length, 1);
+      assert.equal(JSON.parse(result.stdout), expectedAnswer, result.stderr);
+      if (expectedAnswer !== null) {
+        assert.equal(record.status, "complete");
+        assert.equal(record.attempts[0]?.failure, null);
+      } else {
+        assert.equal(record.status, "failed", "the oversized task must retain the native context rejection");
+        assert.notEqual(record.attempts[0]?.failure?.kind, "claude-delivery-error");
+      }
+      console.log(JSON.stringify({ size: prompt.length, bytes: Buffer.byteLength(prompt), sha256: createHash("sha256").update(prompt).digest("hex"), session: reference.session_id, status: record.status, failure: record.attempts.at(-1)?.failure, exact: true, answer: JSON.parse(result.stdout) }));
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 }

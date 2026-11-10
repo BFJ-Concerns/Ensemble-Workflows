@@ -21000,7 +21000,14 @@ var ClaudeEngineInvocation = class {
     if (previousFailure !== void 0) {
       lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
-    lines.push("", "Task:", this.#turnPrompt);
+    let tagIndex = 0;
+    while (this.#turnPrompt.includes(`ensemble_task_${tagIndex}`)) tagIndex += 1;
+    const taskTag = `ensemble_task_${tagIndex}`;
+    lines.push(
+      "",
+      `Carry out the task enclosed by <${taskTag}> and </${taskTag}>. The tags mark its boundaries.`,
+      `<${taskTag}>${this.#turnPrompt}</${taskTag}>`
+    );
     return lines.join("\n");
   }
   /**

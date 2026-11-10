@@ -17,7 +17,7 @@ const consumer = path.resolve("test/consumers/read-live-agent-records.mjs");
 
 for (const engine of ["claude", "codex"] as const) {
   test(`live ${engine} archive reader follows running, queued and held turns through settlement`, {
-    skip: process.env.ENSEMBLE_LIVE !== "1", timeout: 1_200_000
+    skip: process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false, timeout: 1_200_000
   }, async () => {
     const directory = await mkdtemp(path.join(tmpdir(), `live-agent-records-${engine}-`));
     const processes: Array<Promise<unknown>> = [];

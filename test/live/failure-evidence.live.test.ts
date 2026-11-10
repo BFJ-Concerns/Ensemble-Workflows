@@ -12,9 +12,9 @@ import { liveOpenCodeModel } from "./live-models.js";
 // These destructive legs are separate from the ordinary live estate: each
 // observes text from the real worker transport before terminating that worker.
 const liveSkip = process.env.ENSEMBLE_LIVE !== "1"
-  ? "ENSEMBLE_LIVE is unset"
+  ? "ENSEMBLE_LIVE must be 1"
   : process.env.ENSEMBLE_LIVE_FAILURE_EVIDENCE !== "1"
-    ? "ENSEMBLE_LIVE_FAILURE_EVIDENCE is unset; these tests terminate their own real workers"
+    ? "ENSEMBLE_LIVE_FAILURE_EVIDENCE must be 1; these tests terminate their own real workers"
     : false;
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
@@ -22,13 +22,12 @@ for (const scenario of [
   { engine: "claude", model: null, error: /claude-poll-timeout: worker left the roster/ },
   // An opencode run failure consumes its (single) attempt, so exhaustion
   // surfaces the engine diagnostic on the failure notice.
-  ...(liveOpenCodeModel !== undefined
-    ? [{ engine: "opencode", model: liveOpenCodeModel, error: /opencode run failed/ }]
-    : [])
+  { engine: "opencode", model: liveOpenCodeModel, error: /opencode run failed/ }
 ] as const) {
   test(
     `live built CLI archives observed partial ${scenario.engine} text and reports its termination cause`,
-    { skip: liveSkip, timeout: 300_000 },
+    { skip: liveSkip || (scenario.engine === "opencode" && scenario.model === undefined
+      ? "ENSEMBLE_LIVE_OPENCODE_MODEL is unset" : false), timeout: 300_000 },
     async (t) => {
       const directory = await mkdtemp(path.join(tmpdir(), `ensemble-live-${scenario.engine}-failure-`));
       const script = path.join(directory, "workflow.js");

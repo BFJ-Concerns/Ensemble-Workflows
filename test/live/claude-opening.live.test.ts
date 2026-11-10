@@ -4,6 +4,7 @@ import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { inspect } from "node:util";
 
 import { ClaudeCliControlPlane } from "../../src/claude-control-plane.js";
 import { ClaudeRegistrationTimeoutError, failedTurnResultOf } from "../../src/errors.js";
@@ -21,7 +22,7 @@ for (const [size, suffix, expectedAnswer, description] of [
   [2_000_000, "END\n", null, "whitespace after 2,000,000 characters"]
 ] as const) {
   test(`built Claude opening preserves ${description} in one exact native user turn`, {
-    skip: process.env.ENSEMBLE_LIVE !== "1", timeout: 360_000
+    skip: process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false, timeout: 360_000
   }, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-live-"));
     try {
@@ -73,7 +74,7 @@ for (const [size, suffix, expectedAnswer, description] of [
 }
 
 test("a native empty launch that cannot submit is removed before its availability failure is reported", {
-  skip: process.env.ENSEMBLE_LIVE !== "1", timeout: 120_000
+  skip: process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false, timeout: 120_000
 }, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-launch-failure-"));
   try {
@@ -86,7 +87,8 @@ test("a native empty launch that cannot submit is removed before its availabilit
       prompt: TYPED_FOLLOW_UP_OPENING_PROMPT,
       name: `opening-refusal-${process.pid}`, cwd: dir, model: "claude-haiku-5-5", effort: "low"
     }), error => {
-      assert.ok(error instanceof ClaudeRegistrationTimeoutError);
+      assert.ok(error instanceof ClaudeRegistrationTimeoutError,
+        `Expected ClaudeRegistrationTimeoutError; received ${inspect(error)}`);
       assert.match(error.message, /submission failed.*fixture attachment refused/);
       const account = failedTurnResultOf(error)?.diagnostics?.claudeLaunch as {
         command: { exitCode: number }; roster: { id: string; sessionId: string; name: string }

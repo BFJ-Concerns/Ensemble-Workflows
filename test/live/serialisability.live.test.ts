@@ -48,7 +48,7 @@ function withoutUnpinnedNotice(stderr: string): string {
 
 test(
   "live built CLI salvages completed Codex output and a consumer can recover it from the archive alone",
-  { skip: !isLive, timeout: 300_000 },
+  { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 300_000 },
   async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-serialisability-"));
     const script = path.join(directory, "workflow.js");

@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 
 import { ENGINE_RESOURCE_RESOLVERS, engineResourceRequirements } from "../../src/engine-resources.js";
+import { EngineRegistry, type EngineAdapter } from "../../src/engines.js";
+import { EnsembleRuntime } from "../../src/runtime.js";
 import { classifyAttemptFailure } from "../../src/failure-classification.js";
 import {
   EngineResourceGate,
@@ -170,4 +172,100 @@ test("every engine declares the filesystem resources it needs", () => {
       assert.ok(path.isAbsolute(declared.path), `${engine}: ${declared.path} is not absolute`);
     }
   }
+});
+
+
+test("Claude checks its own homes and sockets separately from launcher scratch and valve paths", () => {
+  const requirements = engineResourceRequirements("claude", {
+    HOME: "/worker", CLAUDE_CONFIG_DIR: "/mnt/ai-data/scratch/ensemble-home-preflight/claude",
+    TMPDIR: "/worker/tmp", TMUX_TMPDIR: "/worker/valve"
+  }, "/work", { HOME: "/launcher", TMPDIR: "/launcher/tmp", TMUX_TMPDIR: "/launcher/valve" });
+  assert.deepEqual(requirements.map((r) => [r.role, r.path, r.access]), [
+    ["Claude home", "/mnt/ai-data/scratch/ensemble-home-preflight/claude", "create-entries"],
+    ["Claude global configuration", "/mnt/ai-data/scratch/ensemble-home-preflight/claude", "create-entries"],
+    ["daemon sockets", `/tmp/cc-daemon-${process.getuid?.() ?? 0}/31fe4a63`, "bind-socket"],
+    ["dispatch settings scratch files", "/launcher/tmp", "create-entries"],
+    ["reply valve sockets", "/launcher/valve", "bind-socket"],
+    ["Claude scratch files", `/worker/tmp/claude-${process.getuid?.() ?? 0}`, "create-entries"]
+  ]);
+  const defaults = engineResourceRequirements("claude", { HOME: "/declared" }, "/work", {});
+  assert.equal(defaults[0]?.path, "/declared/.claude");
+  assert.equal(defaults[1]?.path, "/declared");
+  assert.equal(defaults[3]?.path, "/tmp");
+  assert.equal(defaults[4]?.path, "/tmp");
+});
+
+test("opencode checks every XDG home and its worker temporary directory", () => {
+  const requirements = engineResourceRequirements("opencode", {
+    HOME: "/worker", XDG_DATA_HOME: "data", XDG_CONFIG_HOME: "/config",
+    XDG_STATE_HOME: "/state", XDG_CACHE_HOME: "/cache", TMPDIR: "/worker/tmp"
+  }, "/work", { HOME: "/launcher", TMPDIR: "/launcher/tmp" });
+  assert.deepEqual(requirements.map((r) => r.path), [
+    "/work/data/opencode", "/config/opencode", "/state/opencode", "/cache/opencode", "/worker/tmp/opencode"
+  ]);
+  assert.deepEqual(engineResourceRequirements("opencode", undefined, "/work", { HOME: "/worker" }).map((r) => r.path), [
+    "/worker/.local/share/opencode", "/worker/.config/opencode", "/worker/.local/state/opencode", "/worker/.cache/opencode", "/tmp/opencode"
+  ]);
+});
+
+test("a Codex marker identifies a denied caller without mistaking a malformed path for sandbox denial", () => {
+  const denial = { requirement: requirement({ path: "/store" }), probedPath: "/store", code: "EROFS", message: "read-only" };
+  assert.equal(diagnoseCallerSandbox({}, [denial]), null);
+  assert.equal(diagnoseCallerSandbox({ CODEX_THREAD_ID: "an-unsandboxed-caller" }, [denial]), null);
+  const identified = diagnoseCallerSandbox({ CODEX_SANDBOX_NETWORK_DISABLED: "1" }, [denial]);
+  assert.equal(identified?.name, "Codex");
+  assert.match(identified?.lift ?? "", /danger-full-access/);
+  assert.equal(diagnoseCallerSandbox({ CODEX_SANDBOX_NETWORK_DISABLED: "1" }, [{ ...denial, code: "ENOTDIR" }]), null);
+});
+
+test("a denied engine scratch directory refuses before the engine starts", async () => {
+  await withDirectory(async (dir) => {
+    const blocker = path.join(dir, "scratch");
+    await writeFile(blocker, "not a directory");
+    const gate = new EngineResourceGate((engine) => engineResourceRequirements(engine, { HOME: dir }, dir, { HOME: dir, TMPDIR: blocker }));
+    await assert.rejects(gate.require("claude"), (error: unknown) => {
+      assert.ok(error instanceof ResourcePreflightRefusedError);
+      assert.match(error.message, /dispatch settings scratch files.*launcher TMPDIR.*ENOTDIR/);
+      return true;
+    });
+  });
+});
+
+
+test("a denied Claude scratch home falls back before its worker runs and does not inspect unused engines", async () => {
+  await withDirectory(async (dir) => {
+    const blocker = path.join(dir, "scratch");
+    await writeFile(blocker, "not a directory");
+    const ran: EngineName[] = [];
+    const resolved: EngineName[] = [];
+    const adapter = (name: EngineName): EngineAdapter => ({
+      name, concurrency: 1,
+      schedule: async (run) => run(),
+      createInvocation: () => ({ runAttempt: async () => {
+        ran.push(name);
+        return { text: "fallback answer", deltaText: "fallback answer", durationMs: 1, firstDeltaMs: 1, items: {}, tokenUsageEvents: [] };
+      } }),
+      close: async () => undefined
+    });
+    const runtime = new EnsembleRuntime({
+      cwd: dir, defaultMaxAttempts: 1,
+      engines: new EngineRegistry([adapter("claude"), adapter("codex"), adapter("opencode")], [], (engine) => {
+        resolved.push(engine);
+        return engineResourceRequirements(engine, { HOME: dir }, dir, { HOME: dir, TMPDIR: blocker });
+      })
+    });
+    try {
+      assert.equal(await runtime.agent("work", { engine: "claude", fallback: [{ engine: "codex", model: "gpt-6-sol" }] }), "fallback answer");
+      assert.deepEqual(ran, ["codex"]);
+      assert.deepEqual(resolved, ["claude", "codex"]);
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
+
+test("relative Claude configuration stays on one home when dispatch and roster commands have different working directories", () => {
+  const requirements = engineResourceRequirements("claude", { CLAUDE_CONFIG_DIR: "relative-home" }, "/worker/cwd", {});
+  assert.equal(requirements[0]?.path, path.resolve("relative-home"));
 });

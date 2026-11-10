@@ -330,10 +330,25 @@ cannot pass silently:
   (`ClaudeDispatchError`, `CodexSubstrateRefusedError`), a strip that cannot
   be enforced, or a budget refusal. Before an engine's first attempt in a
   run, the launcher also checks that it can use the directories that engine
-  needs (the Codex home: `CODEX_HOME`, else `~/.codex`, as the engine is
-  launched); a denied one refuses every dispatch on that engine with
+  needs, resolved from the environment that engine is launched with:
+  Codex's `CODEX_HOME` (else `$HOME/.codex`); Claude's `CLAUDE_CONFIG_DIR`
+  (else `$HOME/.claude`), global configuration and daemon sockets; and
+  opencode's data, configuration, state and cache homes under the matching
+  `XDG_*_HOME` variables, plus its temporary directory. Claude's dispatch
+  settings scratch files use the launcher's `TMPDIR` (then `TMP`, `TEMP`,
+  `/tmp`), and reply valve sockets use its `TMUX_TMPDIR` (else `/tmp`),
+  independently of worker overrides. Claude's own scratch files use
+  `CLAUDE_CODE_TMPDIR` or its temporary directory, under `claude-<uid>`.
+  Relative `CLAUDE_CONFIG_DIR` values resolve from the launcher's working
+  directory so dispatch and roster commands share one home.
+  Claude's daemon sockets use `/tmp/cc-daemon-<uid>/<config hash>` on Linux,
+  independently of `TMPDIR`. Unused engines are not checked. A denied
+  resource refuses every dispatch on that engine with
   `ResourcePreflightRefusedError`, naming the directory, the setting it came
-  from and the error.
+  from and the error. Evidence identifying a Codex sandbox adds its name and
+  the `danger-full-access` mode that lifts it; without such evidence the
+  refusal says that no caller sandbox was identified. These checks exercise
+  current access and cannot guarantee later writes will succeed.
 - The run's own ending — an interrupt or a whole-run timeout — which throws
   through any call it cut short.
 

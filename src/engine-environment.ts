@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { withoutRunScopedVariables } from "./ambient-settings.js";
 
 import type { EngineName } from "./types.js";
@@ -48,7 +50,14 @@ export function launchEnvironment(
   inherited: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
   if (engine === "claude") {
-    return { ...withoutRunScopedVariables(inherited), ...declared, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
+    const env: NodeJS.ProcessEnv = { ...withoutRunScopedVariables(inherited), ...declared, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
+    // Dispatch runs in the worker's cwd; roster and stop commands run in
+    // the launcher's. Keep a relative config directory on the same daemon
+    // and transcript store across all those commands.
+    if (env.CLAUDE_CONFIG_DIR !== undefined) {
+      env.CLAUDE_CONFIG_DIR = path.resolve(env.CLAUDE_CONFIG_DIR.normalize("NFC"));
+    }
+    return env;
   }
   return { ...inherited, ...declared };
 }

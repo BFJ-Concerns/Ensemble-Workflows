@@ -1,7 +1,8 @@
 import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { homedir, hostname, tmpdir } from "node:os";
+import { hostname } from "node:os";
 import path from "node:path";
 
+import { claudeConfigDirectory, claudeValveDirectory, temporaryDirectory } from "./engine-resources.js";
 import { launchEnvironment, SANDBOXED_WORKSPACE_VARIABLE } from "./engine-environment.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js";
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
@@ -267,7 +268,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // declared variables above it, the sandboxed-workspace declaration last
     // (see `launchEnvironment`).
     this.#env = launchEnvironment("claude", this.#workerEnv);
-    const configDir = this.#env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude");
+    const configDir = claudeConfigDirectory(this.#env, process.cwd());
     this.#projectsDir = options.projectsDir ?? path.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
@@ -275,7 +276,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1_000;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2_000;
-    this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
+    this.#valveSocketRoot = claudeValveDirectory(process.env);
     this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
     this.#placementSettleMs = options.placementSettleMs ?? 10_000;
@@ -457,7 +458,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // this directory could be misjudged — between mkdtemp and the owner
     // write — is one the sweep treats as unjudgeable, never as abandoned.
     const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname()))}\n`;
-    const dir = await mkdtemp(path.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
+    const dir = await mkdtemp(path.join(temporaryDirectory(process.env, process.cwd()).path, `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
       // Beside the settings file, never inside it: the file stays Claude
       // Code's single-purpose input, and the owner record is the harness's
@@ -501,7 +502,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * here may fail or delay a dispatch on its own account.
    */
   async #sweepOrphanedSettingsDirs(): Promise<void> {
-    const root = tmpdir();
+    const root = temporaryDirectory(process.env, process.cwd()).path;
     const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
     const host = hostname();
     for (const entry of entries) {

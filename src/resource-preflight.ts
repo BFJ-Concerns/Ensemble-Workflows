@@ -106,7 +106,19 @@ export interface CallerSandboxRule {
  * environment. Where no rule matches, the refusal names the denied
  * resources and says that no sandbox was identified, rather than guessing.
  */
-export const CALLER_SANDBOX_RULES: readonly CallerSandboxRule[] = [];
+export const CALLER_SANDBOX_RULES: readonly CallerSandboxRule[] = [
+  {
+    // Measured with Codex 0.167.0: workspace-write exports this marker and
+    // denies writes outside its roots with EROFS; danger-full-access does
+    // neither. The marker identifies Codex, not its filesystem policy.
+    name: "Codex",
+    lift: 'launch Ensemble with sandbox_mode="danger-full-access", or a permission profile granting these paths and Unix socket access',
+    detect: (env, denials) =>
+      env.CODEX_SANDBOX_NETWORK_DISABLED === "1" && denials.some((denial) => ["EROFS", "EACCES", "EPERM"].includes(denial.code))
+        ? "CODEX_SANDBOX_NETWORK_DISABLED=1; filesystem or socket access denied"
+        : null
+  }
+];
 
 export function diagnoseCallerSandbox(
   env: NodeJS.ProcessEnv,
@@ -147,7 +159,7 @@ function refusalMessage(denials: readonly ResourceDenial[], sandbox: CallerSandb
   const cause =
     sandbox === null
       ? "no sandbox around the launching process was identified; grant it this access, or move the path by the setting named"
-      : `the launching process runs inside the ${sandbox.name} sandbox (${sandbox.evidence}), which denies it; ${sandbox.lift}`;
+      : `the launching process runs inside the ${sandbox.name} sandbox (${sandbox.evidence}), and access was denied; ${sandbox.lift}`;
   return `${denied.join("; ")} — ${cause}`;
 }
 

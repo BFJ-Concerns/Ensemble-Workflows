@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -51,30 +52,63 @@ export function codexResources(env: EngineResourceEnvironment): ResourceRequirem
   return [{ owner: "codex", role: "Codex home", path: home.path, access: "create-entries", resolvedFrom: home.from }];
 }
 
-/**
- * Claude's requirements are not yet resolved. What they cover: the config
- * directory (`CLAUDE_CONFIG_DIR`, else `.claude` under the home — resolved
- * the way the control plane resolves its projects directory, so the two
- * never disagree); the directory the Claude daemon binds its sockets under
- * (`bind-socket`; observed as `/tmp/cc-daemon-<uid>`, where a sandboxed
- * caller met `EPERM` listening — how Claude Code chooses it is unmeasured);
- * and, from the launcher environment, the per-dispatch settings directories
- * under `tmpdir()` and the valve socket directories under `TMUX_TMPDIR`
- * (else `/tmp`), each read from the same expression the control plane
- * creates them with.
- */
-export function claudeResources(): ResourceRequirement[] {
-  throw new Error("the claude engine's resource requirements are not yet resolved (src/engine-resources.ts)");
+/** Claude Code 2.1.321: its daemon sockets are independent of TMPDIR. */
+export function claudeResources(env: EngineResourceEnvironment): ResourceRequirement[] {
+  const config = claudeConfigDirectory(env.worker, env.cwd);
+  const uid = process.getuid?.() ?? 0;
+  const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path.join(env.worker.PREFIX, "tmp") : "/tmp";
+  const daemon = path.join(daemonRoot, `cc-daemon-${uid}`, createHash("sha256").update(config).digest("hex").slice(0, 8));
+  const configFrom = env.worker.CLAUDE_CONFIG_DIR !== undefined ? "CLAUDE_CONFIG_DIR" : "default: $HOME/.claude";
+  const scratch = temporaryDirectory(env.launcher, process.cwd());
+  const valve = claudeValveDirectory(env.launcher);
+  const workerScratch = env.worker.CLAUDE_CODE_TMPDIR
+    ? { path: path.resolve(env.cwd, env.worker.CLAUDE_CODE_TMPDIR), from: "CLAUDE_CODE_TMPDIR" }
+    : temporaryDirectory(env.worker, env.cwd);
+  return [
+    { owner: "claude", role: "Claude home", path: config, access: "create-entries", resolvedFrom: configFrom },
+    { owner: "claude", role: "Claude global configuration", path: env.worker.CLAUDE_CONFIG_DIR ? config : path.resolve(env.cwd, homeOf(env.worker)), access: "create-entries", resolvedFrom: env.worker.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "HOME (.claude.json)" },
+    { owner: "claude", role: "daemon sockets", path: daemon, access: "bind-socket", resolvedFrom: `${configFrom}; daemon default: ${daemonRoot}/cc-daemon-<uid>/<config hash>` },
+    { owner: "claude", role: "dispatch settings scratch files", path: scratch.path, access: "create-entries", resolvedFrom: `launcher ${scratch.from}` },
+    { owner: "claude", role: "reply valve sockets", path: valve, access: "bind-socket", resolvedFrom: env.launcher.TMUX_TMPDIR ? "launcher TMUX_TMPDIR" : "launcher default: /tmp" },
+    { owner: "claude", role: "Claude scratch files", path: path.join(workerScratch.path, `claude-${uid}`), access: "create-entries", resolvedFrom: workerScratch.from }
+  ];
 }
 
-/**
- * opencode's requirements are not yet resolved. What they cover: the
- * directories `opencode run` writes its data, state and configuration
- * under, resolved from the launch environment's XDG variables as opencode
- * resolves them (unmeasured).
- */
-export function openCodeResources(): ResourceRequirement[] {
-  throw new Error("the opencode engine's resource requirements are not yet resolved (src/engine-resources.ts)");
+/** opencode's XDG homes and temporary directory, as reported by `opencode debug paths`. */
+export function openCodeResources(env: EngineResourceEnvironment): ResourceRequirement[] {
+  const homes = [
+    ["XDG_DATA_HOME", ".local/share", "data"],
+    ["XDG_CONFIG_HOME", ".config", "configuration"],
+    ["XDG_STATE_HOME", ".local/state", "state"],
+    ["XDG_CACHE_HOME", ".cache", "cache"]
+  ] as const;
+  const scratch = temporaryDirectory(env.worker, env.cwd);
+  return [
+    ...homes.map(([key, fallback, role]): ResourceRequirement => ({
+      owner: "opencode", role: `opencode ${role}`, access: "create-entries",
+      path: path.resolve(env.cwd, env.worker[key] || path.join(homeOf(env.worker), fallback), "opencode"),
+      resolvedFrom: env.worker[key] ? key : `default: $HOME/${fallback}`
+    })),
+    { owner: "opencode", role: "opencode scratch files", path: path.join(scratch.path, "opencode"), access: "create-entries", resolvedFrom: scratch.from }
+  ];
+}
+
+/** Shared with the control plane so transcript reads and preflight use the same home. */
+export function claudeConfigDirectory(env: NodeJS.ProcessEnv, cwd: string): string {
+  return path.resolve(cwd, (env.CLAUDE_CONFIG_DIR ?? path.join(homeOf(env), ".claude")).normalize("NFC"));
+}
+
+/** The launcher creates the tmux socket here, independently of the worker environment. */
+export function claudeValveDirectory(env: NodeJS.ProcessEnv): string {
+  return path.resolve(env.TMUX_TMPDIR || "/tmp");
+}
+
+/** Node's Unix tmpdir selection; relative declarations resolve where the process starts. */
+export function temporaryDirectory(env: NodeJS.ProcessEnv, cwd: string): { path: string; from: string } {
+  for (const key of ["TMPDIR", "TMP", "TEMP"]) {
+    if (env[key]) return { path: path.resolve(cwd, env[key]), from: key };
+  }
+  return { path: "/tmp", from: "default: /tmp" };
 }
 
 /** One resolver per engine: a new engine cannot be added without declaring what it needs. */

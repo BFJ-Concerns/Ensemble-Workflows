@@ -269,7 +269,10 @@ code. Other stdout errors remain failures.
 
 - **Signals.** The first SIGINT or SIGTERM while the script is running (or
   about to start) marks the run interrupted, and the launcher then ends it
-  once, fully recorded. A second signal during that shutdown is absorbed;
+  once, fully recorded. Worker teardown includes Claude launches still
+  waiting for their session handles: their workers are stopped before shared
+  scopes close, the archive is sealed, and the completion sentinel is written.
+  A second signal during that shutdown is absorbed;
   SIGKILL remains the way to end the process sooner, at the cost of the
   sentinel. A signal that arrives after the script has returned changes
   nothing: the printed result stands and the run ends `complete`.

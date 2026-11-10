@@ -21155,10 +21155,8 @@ var ClaudeEngineInvocation = class {
       this.#closed = true;
       this.#abortController.abort();
       try {
-        if (this.#handle !== null) {
-          await this.#settlement?.catch(() => void 0);
-          await this.#teardown();
-        }
+        await this.#settlement?.catch(() => void 0);
+        await this.#teardown();
       } finally {
         this.#onClose?.(this);
       }

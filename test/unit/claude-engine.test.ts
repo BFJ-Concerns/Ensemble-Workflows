@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
@@ -14,6 +15,7 @@ import {
   failedTurnResultOf,
   partialWorkerTextOf
 } from "../../src/errors.js";
+import { runEnsembleCli } from "../../src/cli.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { parallel, pipeline } from "../../src/hooks.js";
 import { usageSince } from "../../src/claude-transcript.js";
@@ -505,11 +507,75 @@ test("an initial-dispatch interruption retains transcript evidence before teardo
         assert.equal(failedTurnResultOf(error)?.resolvedModel, "claude-raced");
         return true;
       });
-      assert.equal(closeCompletedBeforeDispatchReleased, true, "close must not wait for the in-flight dispatch");
+      assert.equal(closeCompletedBeforeDispatchReleased, false, "close must wait for the in-flight dispatch and its teardown");
       assert.equal(controlPlane.stopCount, 1);
     },
     { dispatchGate: { arrived: () => dispatchArrived?.(), release: dispatchReleased } }
   );
+});
+
+test("SIGTERM during Claude dispatch stops the worker before scopes close and seals the run", async () => {
+  let releaseDispatch!: () => void;
+  const dispatchReleased = new Promise<void>((resolve) => { releaseDispatch = resolve; });
+  let dispatchArrived!: () => void;
+  const arrived = new Promise<void>((resolve) => { dispatchArrived = resolve; });
+  await withControlPlane([{ busyPolls: Number.MAX_SAFE_INTEGER }], async (controlPlane) => {
+    const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-sigterm-dispatch-");
+    try {
+      const script = path.join(directory, "workflow.js");
+      await writeFile(script, 'export const meta = { name: "sigterm-dispatch" }; await agent("work", { engine: "claude" });');
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      let output = "";
+      let diagnostics = "";
+      stdout.on("data", (chunk) => { output += String(chunk); });
+      stderr.on("data", (chunk) => { diagnostics += String(chunk); });
+      let scopesClosed = false;
+      let stoppedAfterScopesClosed: boolean | undefined;
+      const stop = controlPlane.stop.bind(controlPlane);
+      controlPlane.stop = async () => {
+        stoppedAfterScopesClosed = scopesClosed;
+        await stop();
+      };
+      const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+      const registry = new EngineRegistry([adapter], [{ close: async () => { scopesClosed = true; } }]);
+      const run = runEnsembleCli([script], {
+        cwd: directory, stdout, stderr,
+        env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
+        runRecordDir: path.join(directory, "records"),
+        createRuntime: async () => new EnsembleRuntime({ engines: registry, defaultMaxAttempts: 1 })
+      });
+      await Promise.race([arrived, run.then(() => { throw new Error(diagnostics); })]);
+      process.emit("SIGTERM");
+      // Let the signal's shutdown reach the adapter while dispatch remains
+      // blocked. No timing threshold is needed: the dispatch is ours to release.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const closedDuringDispatch = scopesClosed;
+      releaseDispatch();
+      assert.equal(await run, 143, diagnostics);
+      assert.equal(closedDuringDispatch, false, "shared scopes must remain open for late worker teardown");
+      assert.equal(stoppedAfterScopesClosed, false);
+      assert.equal(controlPlane.stopCount, 1);
+      assert.equal(scopesClosed, true);
+      assert.equal(JSON.parse(output).reason, "interrupted");
+      const sentinelPath = diagnostics.match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+      assert.ok(sentinelPath, diagnostics);
+      const archive = JSON.parse(diagnostics.match(/\[run-record-archive\] (.+)/)![1]!).archive_path as string;
+      const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8"));
+      assert.equal(manifest.status, "interrupted");
+      assert.ok(manifest.ended_at);
+      const sentinel = JSON.parse(await readFile(sentinelPath, "utf8"));
+      assert.equal(sentinel.outcome, "interrupted");
+      assert.equal(sentinel.exit_code, 143);
+      assert.deepEqual(sentinel.workers, { done: 0, failed: 0, cut_short: 1, unsettled: 0 });
+      const record = JSON.parse(await readFile(path.join(archive, "agents", "000001", "agent.json"), "utf8"));
+      assert.equal(record.status, "interrupted");
+      assert.equal(record.termination_cause.kind, "run-interrupted");
+    } finally {
+      releaseDispatch();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, { dispatchGate: { arrived: dispatchArrived, release: dispatchReleased } });
 });
 
 test("Claude interruption retains transcript-proved turn evidence in the archive", async () => {

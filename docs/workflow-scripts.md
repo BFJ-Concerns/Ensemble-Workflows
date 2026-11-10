@@ -312,11 +312,39 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   result is cached per working directory for the run. If discovery errors or
   never settles, the call fails before the worker spawns rather than run
   unstripped.
-- **Claude** applies deny rules for `Skill`, and for `Task`, `Agent`,
-  `ListAgents`, `SendMessage`, and `Workflow`, through the per-dispatch
-  settings file. `Workflow` is included because its scripts can spawn agents.
-  The agent record names the configured deny rules; it does not claim a
-  runtime measurement of the worker’s tool inventory.
+- **Claude** applies deny rules through the per-dispatch settings file, and
+  derives them from the tools the served Claude Code actually offers. Before
+  the first stripped worker in a working directory dispatches, Ensemble
+  starts a probe session through the same route as a worker. That session's
+  model provider is a local stand-in that answers every request with an
+  error, so no model is called. Ensemble reads the session's tools from the
+  requests it sends. `agents` denies `Agent`, `Task`, `ListAgents`,
+  `SendMessage` and `Workflow` (whose scripts can spawn agents), and
+  `advisor`, a tool the model provider runs by handing the conversation to
+  another model; `skills` denies `Skill`. Either strip also denies every
+  built-in tool that Ensemble has not classified, so a new agent tool is
+  denied as soon as a Claude Code release adds it. MCP tools from the
+  operator's configuration are left in place. Deny rules do not reach
+  `advisor`, so the settings file's `env` block also sets
+  `CLAUDE_CODE_DISABLE_ADVISOR_TOOL`, over any value the machine declares
+  for workers. A second probe under the derived settings must show none of
+  the denied tools, no unclassified tool, and every unrelated one. If either
+  surface cannot be read or the confirmation fails, the call refuses before
+  the worker spawns. A probe substrate that cannot start or answer within
+  the 90-second preparation deadline is recorded as an availability failure:
+  a remaining fallback target is tried, otherwise the refusal propagates.
+  Opening delivery and polling share that deadline. Each cleanup phase has
+  a separate reclamation deadline (30 seconds by default), plus the
+  command's cancellation grace. Unconfirmed probe-session cleanup is
+  [reported with the session name](configuration.md#worker_environment).
+  A provider-side tool that remains available under its removal settings
+  also refuses the call. The result is reused for the rest of the run, for
+  each working directory,
+  model and strip, until a worker reports serving a different Claude Code
+  version. Unstripped workers are never probed.
+  The agent record's enforcement detail names the deny rules and `env`
+  variables, the Claude Code version that was probed, and which tools were
+  denied or left in place.
 - **opencode** rejects any strip before the worker spawns.
 
 Each agent record lists the requested strips and how each was enforced.

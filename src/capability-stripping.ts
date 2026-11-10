@@ -67,6 +67,23 @@ export function effectiveStrip(
 export type DischargedEnforcement = { route: "config" | "absent"; detail: string };
 
 /**
+ * One dispatch's strip, settled by an engine that judges enforcement
+ * against what is live rather than against its declared table alone
+ * (`EngineAdapter.prepareStrip`). The runtime records `enforcement` as the
+ * agent record's strip entry and hands the whole object back unchanged in
+ * `EngineTurnOptions.preparedStrip`, so the record states the enforcement
+ * that was actually dispatched. `engine` keeps one engine's preparation
+ * from reaching another's dispatch: a chain step onto another engine
+ * prepares afresh. Each engine extends this with the native settings its
+ * dispatch applies.
+ */
+export interface PreparedStrip {
+  readonly engine: EngineName;
+  readonly requested: readonly StrippableCapability[];
+  readonly enforcement: Readonly<Partial<Record<StrippableCapability, DischargedEnforcement>>>;
+}
+
+/**
  * Pre-spawn enforcement check: every requested capability must resolve to a
  * `config` or `absent` route on the target engine's declared table. An
  * engine with no table cannot enforce anything — fail closed, same as an

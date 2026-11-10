@@ -168,6 +168,32 @@ that refuses the control-command scope fails that command; Ensemble does not
 retry inside the launcher's box, where it could start the shared supervisor.
 The best-effort worker placement below concerns adoption of existing processes.
 
+Cancelling a control command — a Claude dispatch whose caller gave up
+waiting, or a run ending while a dispatch waits for its session — signals
+that command's own process alone: SIGTERM, then SIGKILL two seconds later,
+with a further second for its output to close. Its process group, its
+descendants and its scope are left alone, so a supervisor the command started
+keeps serving every other session. A dispatch cancelled before its session
+was accepted leaves Ensemble owning the dispatch's name until the run ends:
+a session the supervisor registers under that name is then stopped and
+removed with its settings file. Where the run's end cannot confirm that —
+the roster cannot be read, the session's teardown is not confirmed, or no
+session had registered when it looked — stderr says so:
+
+```text
+[claude] launch <name> not reclaimed: <reason>; a session under that name is left for the operator
+```
+
+A dispatch cancelled before registration holds no prompt, since Ensemble
+submits the opening only after registration. A registered tool-surface probe
+holds only its nonce marker. Probe cleanup phases use independent deadlines;
+unconfirmed probe-session teardown reports this same event and retains the
+settings rather than claiming the session was reclaimed. `claude agents`
+lists it by that name, and `claude stop` and `claude rm` end it. Its settings
+file is left for the next launcher's sweep,
+which removes it once this launcher has ended. Library event listeners
+receive `claude/launchUnreclaimed` with the dispatch name and the reason.
+
 Claude sessions and the Codex app-server are placed in transient scopes in
 the slice that holds the launcher. `worker_scope` chooses one scope per Claude
 worker and one for the run's shared Codex app-server (`worker`, the default),

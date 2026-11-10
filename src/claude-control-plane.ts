@@ -1,15 +1,25 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
+
 import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 
 import { claudeConfigDirectory, claudeValveDirectory, temporaryDirectory } from "./engine-resources.js";
 import { launchEnvironment, SANDBOXED_WORKSPACE_VARIABLE } from "./engine-environment.js";
-import { attachFailedTurnResult, ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js";
+import { attachFailedTurnResult, ClaudeDispatchError, ClaudeRegistrationTimeoutError, EngineShutdownError, SubstrateRefusedError } from "./errors.js";
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
+import { claudeToolSurfaceProbePrompt, readClaudeToolSurface, type ClaudeToolSurface } from "./claude-tool-surface.js";
+import { startCaptureProvider } from "./provider-capture.js";
+import { DEFAULT_COMMAND_BOUNDS, runOwnedCommand, type CommandBounds, type CommandResult } from "./owned-command.js";
 import type { JsonObject, RuntimeEvent } from "./types.js";
 import { NoWorkerScopes, RUN_SCOPE_GROUP, processTree, type WorkerScopeGrouping, type ScopePlacement, type WorkerScopes } from "./worker-scopes.js";
+
+// One process-wide context; the owner check keeps sibling control planes independent.
+const controlCommandContext = new AsyncLocalStorage<{ owner: ClaudeCliControlPlane; signal: AbortSignal }>();
 
 /**
  * Per-dispatch ownership tag. The variable rides the same settings-file `env`
@@ -56,6 +66,12 @@ export interface ClaudeControlPlane {
    *   (`ClaudeDispatchError`, `ClaudeRegistrationTimeoutError`). A failure
    *   that leaves a session holding any part of the prompt is never
    *   reported by rejecting.
+   * - Rejects with the reason of `options.signal` — the caller cancelled
+   *   before the opening was submitted. No session holds the prompt, but
+   *   the launch may still be running or about to register a session:
+   *   that residue stays the control plane's to end (see `close`), and the
+   *   caller's wait does not carry it. Cancellation is the caller's
+   *   choice, not the target's failure, so it advances no fallback chain.
    */
   dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle>;
   /** One reading of the session's lifecycle state. */
@@ -72,7 +88,58 @@ export interface ClaudeControlPlane {
   stop(handle: ClaudeSessionHandle): Promise<void>;
   /** Whether the tmux valve is usable; gates in-session correction and blocked recovery. */
   tmuxAvailable(): Promise<boolean>;
+  /**
+   * Read the tool surface a worker dispatched with these inputs would be
+   * offered (see `claude-tool-surface.ts`). Optional: a control plane
+   * without it cannot prepare a strip, so every Claude strip refuses
+   * before spawn.
+   *
+   * The CLI control plane launches the probe exactly as `dispatch` launches
+   * a worker: the same executable, daemon, `cwd`, model pin, launch
+   * environment, and per-dispatch settings file with the declared worker
+   * variables and these deny rules and `env` variables, written as
+   * `dispatch` writes a strip's. The probe has no effort pin, since
+   * effort does not change the tool surface. The
+   * settings `env` block routes `ANTHROPIC_BASE_URL` to the `origin` of a
+   * capture provider (`startCaptureProvider`) that this probe owns. A
+   * declared value for that variable is overridden, because the probe must
+   * not reach a real provider. A worker environment that routes Claude
+   * through Bedrock, Vertex or another provider switch would bypass the
+   * capture provider, so the probe rejects a declared switch rather than
+   * send a request there. The per-session settings also force those switches
+   * off to override a daemon's inherited environment or user/project settings. The opening prompt is `claudeToolSurfaceProbePrompt(nonce)`.
+   * The probe waits until the session stops sending requests: its turn has
+   * ended, or one second has passed with no new capture. It then stops the
+   * session with `stop`'s full teardown, closes the provider, and returns
+   * `readClaudeToolSurface(requests, nonce)`. Cancellation before a surface
+   * is established tears everything down and rejects. Once established,
+   * cleanup uses an independent bound and cannot replace that result.
+   */
+  probeToolSurface?: ClaudeToolSurfaceProbe;
+  /**
+   * End what cancelled launches left behind: every dispatch whose caller
+   * cancelled before its session was accepted. A session registered under
+   * such a dispatch's name is stopped and removed with its settings, as
+   * `stop` does. Bounded; never throws; a second call awaits the first.
+   * What cannot be confirmed within the bound is reported, never waited
+   * for (`ClaudeCliControlPlane.close` states the unconfirmed case).
+   * Called once, when the engine that owns this control plane closes.
+   */
+  close(): Promise<void>;
 }
+
+/** One probe: what the probe session is launched with, and the bound that tears it down. */
+export interface ClaudeToolSurfaceProbeRequest {
+  cwd: string;
+  model?: string;
+  /** Empty for the inventory probe; the derived rules for the confirming one. */
+  permissionDenyRules: readonly string[];
+  /** Empty for the inventory probe; the derived strip's removal variables for the confirming one. */
+  settingsEnv: Readonly<Record<string, string>>;
+  signal: AbortSignal;
+}
+
+export type ClaudeToolSurfaceProbe = (request: ClaudeToolSurfaceProbeRequest) => Promise<ClaudeToolSurface>;
 
 /**
  * What the valve can attest about one injection: whether it submitted the
@@ -104,11 +171,26 @@ export interface ClaudeDispatchOptions {
    * Permission deny rules for the worker session (capability stripping).
    * Delivered through the per-dispatch settings file — the surface
    * measured to reach the daemon-served session — as `permissions.deny`.
-   * That deny rules outrank every allow layer and permission mode
-   * (`--dangerously-skip-permissions` included) is a stated judgement
-   * until a live test observes it at a real worker.
+   * The rules come from a strip preparation (`ClaudeStripPreparer`), whose
+   * confirming probe ran under these same rules and was offered none of
+   * the denied tools.
    */
-  permissionDenyRules?: string[];
+  permissionDenyRules?: readonly string[];
+  /**
+   * Settings `env` variables that remove tools the deny rules do not reach
+   * (capability stripping; `CLAUDE_TOOL_REMOVAL_ENV`). Written to the same
+   * settings file's `env` block after the declared worker variables, so no
+   * declaration can give a stripped worker the tool back.
+   */
+  settingsEnv?: Readonly<Record<string, string>>;
+  /**
+   * Cancels the dispatch while it waits for its session — a caller's
+   * deadline, or the engine closing. The launch command is ended within
+   * the control plane's command bounds and the call rejects with the
+   * signal's reason; once the opening has been submitted, the signal no
+   * longer applies and the session is the caller's like any other.
+   */
+  signal?: AbortSignal;
 }
 
 
@@ -200,6 +282,24 @@ export interface ClaudeCliControlPlaneOptions {
   projectsDir?: string;
   /** How long to wait for a dispatched session to register in the roster. */
   dispatchTimeoutMs?: number;
+  /**
+   * How long a cancelled control command may take to end (`CommandBounds`:
+   * SIGTERM, then SIGKILL after `stopGraceMs`, then `drainMs` for its
+   * streams). Every `claude` and `tmux` command this control plane starts
+   * runs under it. It is what a cancelled dispatch adds to its caller's
+   * deadline before the launch command is gone: a caller that aborts at
+   * its deadline has its rejection at once, and the command it owned is
+   * ended no later than this bound after.
+   */
+  commandBounds?: CommandBounds;
+  /**
+   * Bound on `close()`'s reclamation of cancelled launches: their commands
+   * settling, one roster read, and the teardown of every session found.
+   * Defaults to 30 seconds. A session that registers only after that
+   * read, or whose teardown the bound cuts short, is reported, not owned
+   * any longer.
+   */
+  reclaimTimeoutMs?: number;
   /** Grace between SIGTERM and SIGKILL when reaping tagged descendants at stop(). */
   reapGraceMs?: number;
   /** The proc filesystem root the reaper scans. Injectable for tests; on a platform without one the reap is a no-op. */
@@ -243,12 +343,18 @@ export interface ClaudeCliControlPlaneOptions {
   onEvent?: (event: RuntimeEvent) => void;
 }
 
-interface ExecResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-  exitCode: number | null;
-  signal: string | null;
+/**
+ * A dispatch whose caller cancelled before its session was accepted. The
+ * dispatch's name is the authority over it: the name is unique per
+ * dispatch, the roster lists a registered session under it, and every
+ * process the session starts carries it (`WORKER_MARKER_VARIABLE`). The
+ * settings directory stays while the launch may still read it.
+ */
+interface UnclaimedLaunch {
+  name: string;
+  settingsDir: string;
+  /** The launch command's settlement, bounded by the command bounds. */
+  command: Promise<CommandResult>;
 }
 
 /**
@@ -296,6 +402,17 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #settingsDirs = new Map<string, string>();
   /** The one-time sweep of settings directories earlier launchers left behind, run before this control plane's first dispatch. */
   #orphanSweep: Promise<void> | null = null;
+  #commandBounds: CommandBounds;
+  #reclaimTimeoutMs: number;
+  /** Cancelled launches this control plane still owns, by dispatch name; `close()` ends them. */
+  #unclaimed = new Map<string, UnclaimedLaunch>();
+  /** Dispatches still waiting for their session: `close()` cancels them and waits for each to settle. */
+  #inFlight = new Set<Promise<void>>();
+  /** Probes remain owned through capture closure and session teardown. */
+  #probes = new Set<Promise<void>>();
+  /** Aborted by `close()`; every dispatch listens to it beside its caller's own signal. */
+  #closeController = new AbortController();
+  #closing: Promise<void> | null = null;
 
   constructor(options: ClaudeCliControlPlaneOptions = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
@@ -312,6 +429,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     const configDir = claudeConfigDirectory(this.#env, process.cwd());
     this.#projectsDir = options.projectsDir ?? path.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
+    this.#commandBounds = options.commandBounds ?? DEFAULT_COMMAND_BOUNDS;
+    this.#reclaimTimeoutMs = options.reclaimTimeoutMs ?? 30_000;
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
     this.#procDir = options.procDir ?? "/proc";
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
@@ -334,7 +453,111 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return this.#placements.get(handle.sessionId)?.outcome ?? null;
   }
 
+  async probeToolSurface(request: ClaudeToolSurfaceProbeRequest): Promise<ClaudeToolSurface> {
+    const signal = AbortSignal.any([request.signal, this.#closeController.signal]);
+    signal.throwIfAborted();
+    const settled = Promise.withResolvers<void>();
+    this.#probes.add(settled.promise);
+    try {
+      return await controlCommandContext.run({ owner: this, signal }, () => this.#readProbeSurface(request, signal));
+    } finally {
+      this.#probes.delete(settled.promise);
+      settled.resolve();
+    }
+  }
+
+  async #readProbeSurface(request: ClaudeToolSurfaceProbeRequest, signal: AbortSignal): Promise<ClaudeToolSurface> {
+    // These provider switches ignore ANTHROPIC_BASE_URL. Refuse rather than
+    // letting an inventory probe reach a hosted provider.
+    for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) {
+      const value = this.#env[key];
+      if (value !== undefined && value !== "0" && value !== "false" && value !== "") {
+        throw new Error(`tool-surface capture cannot override ${key}`);
+      }
+    }
+    const provider = await startCaptureProvider().catch((error: unknown) => {
+      throw new SubstrateRefusedError("Claude tool-surface capture provider could not start", { cause: error });
+    });
+    const nonce = randomUUID();
+    let handle: ClaudeSessionHandle | undefined;
+    let established = false;
+    const readSurface = (): ClaudeToolSurface => {
+      const surface = readClaudeToolSurface(provider.requests(), nonce);
+      established = true;
+      return surface;
+    };
+    try {
+      handle = await this.dispatch({
+        prompt: claudeToolSurfaceProbePrompt(nonce),
+        name: `ensemble-tool-surface-${nonce}`,
+        cwd: request.cwd,
+        ...(request.model !== undefined ? { model: request.model } : {}),
+        permissionDenyRules: [...request.permissionDenyRules],
+        settingsEnv: {
+          ...request.settingsEnv, ANTHROPIC_BASE_URL: provider.origin,
+          // Per-session settings outrank a daemon's inherited environment
+          // and user/project settings, which the launcher cannot inspect.
+          CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0"
+        },
+        signal
+      });
+      if (handle.launchFailure !== undefined) throw new ClaudeDispatchError(handle.launchFailure.message);
+      let count = 0;
+      let lastCapture = Date.now();
+      for (;;) {
+        signal.throwIfAborted();
+        const captures = provider.requests();
+        if (captures.length !== count) {
+          count = captures.length;
+          lastCapture = Date.now();
+        }
+        // Wait for at least one nonce-bearing Messages request. A title or
+        // telemetry request alone cannot establish the worker's surface.
+        let surface: ClaudeToolSurface | undefined;
+        try { surface = readClaudeToolSurface(captures, nonce); } catch { /* Keep waiting for the worker's request. */ }
+        if (surface !== undefined && Date.now() - lastCapture >= 1_000) return readSurface();
+        const status = await this.#poll(handle, signal);
+        signal.throwIfAborted();
+        if (!status.present || status.state === "done") return readSurface();
+        await sleep(100, undefined, { signal });
+      }
+    } finally {
+      try {
+        if (handle !== undefined) {
+          const cleanup = AbortSignal.timeout(this.#reclaimTimeoutMs);
+          const session = handle;
+          const confirmed = await controlCommandContext.run({ owner: this, signal: cleanup }, () => this.#stopSession(session, true, cleanup)).catch(() => false);
+          if (!confirmed) {
+            this.#onEvent?.({
+              method: "claude/launchUnreclaimed",
+              params: { name: handle.name, reason: "tool-surface probe session cleanup was not confirmed within the reclamation bound" },
+              receivedAt: Date.now()
+            });
+          }
+        }
+      } finally { await provider.close(); }
+      if (!established) signal.throwIfAborted();
+    }
+  }
+
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+    // The caller's cancellation and the control plane's own closing end the
+    // wait alike; after close() every dispatch is refused here.
+    const signal = options.signal === undefined
+      ? this.#closeController.signal
+      : AbortSignal.any([options.signal, this.#closeController.signal]);
+    signal.throwIfAborted();
+    const settled = Promise.withResolvers<void>();
+    this.#inFlight.add(settled.promise);
+    try {
+      return await this.#dispatch(options, signal);
+    } finally {
+      this.#inFlight.delete(settled.promise);
+      settled.resolve();
+    }
+  }
+
+  async #dispatch(options: ClaudeDispatchOptions, signal: AbortSignal): Promise<ClaudeSessionHandle> {
     const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
     if (options.model !== undefined) {
       args.push("--model", options.model);
@@ -356,28 +579,59 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // share the first one's sweep.
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.settingsEnv);
     args.push("--settings", path.join(settingsDir, "settings.json"));
     let registered: ClaudeSessionHandle | null = null;
     let candidate: { handle: ClaudeSessionHandle; pid: number | null; row: RosterRow } | null = null;
-    const dispatch: { result: ExecResult | null } = { result: null };
+    const dispatch: { result: CommandResult | null } = { result: null };
     let accepted = false;
     let discarded = false;
+    let unclaimed = false;
     let lastSeen: { handle: ClaudeSessionHandle; pid: number | null; row: RosterRow } | null = null;
+    let launch: Promise<CommandResult> | undefined;
+    let openingStarted = false;
+    const acceptHandle = (handle: ClaudeSessionHandle): ClaudeSessionHandle => {
+      accepted = true;
+      this.#settingsDirs.set(handle.sessionId, settingsDir);
+      if (!(this.#scopes instanceof NoWorkerScopes)) {
+        this.#watchedSessions.set(handle.sessionId, handle);
+        this.#schedulePlacementWatch();
+      }
+      return handle;
+    };
     try {
+      signal?.throwIfAborted();
       // Start an empty native session. The complete opening rides the same
       // file-backed editor as later turns, avoiding Claude's stdin reader,
       // duplicated dispatch-file payload and cold-spawn argument limit.
-      void this.#runWithInput(this.#claudeBin, args, "", options.cwd).then(
-        (result) => (dispatch.result = result),
-        (error: unknown) => (dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error), exitCode: null, signal: null })
-      );
+      // The launch command shares the dispatch's signal, so cancelling ends
+      // the command itself within the command bounds.
+      const launched = this.#launch(this.#claudeBin, args, { input: "", cwd: options.cwd, signal });
+      launch = launched;
+      void launched.then((result) => (dispatch.result = result));
+      // Cancelled before the opening was submitted: no session holds the
+      // prompt. Whether the launch already asked the supervisor for a
+      // session cannot be known here — a registration can be one roster read
+      // newer than the last, and a dying command may already have been
+      // answered — so the name and its settings pass to the control plane,
+      // which ends them at close(), and the caller's wait ends now.
+      const releaseIfCancelled = (): void => {
+        if (!signal.aborted) return;
+        this.#unclaimed.set(options.name, { name: options.name, settingsDir, command: launched });
+        unclaimed = true;
+        signal.throwIfAborted();
+      };
       let deadline: number | null = null;
       let placementDeadline: number | null = null;
       let placed = false;
       let placementPid: number | null = null;
       for (;;) {
-        candidate = await this.#findByName(options.name);
+        releaseIfCancelled();
+        candidate = await this.#findByName(options.name, signal);
+        // A roster read the signal cut short reads as no candidate, and a
+        // command the signal ended reads as a failed launch: neither is
+        // evidence about the target, so cancellation is judged first.
+        releaseIfCancelled();
         if (candidate !== null) {
           registered = candidate.handle;
           lastSeen = candidate;
@@ -390,7 +644,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           }
           if (candidate.pid !== null && !placed) {
             placementDeadline ??= Date.now() + this.#placementSettleMs;
-            const outcome = await this.#place(registered, candidate.pid);
+            const outcome = await this.#observePlacement(this.#place(registered, candidate.pid), signal);
             placed = outcome.kind !== "refused" || Date.now() >= placementDeadline;
           }
         }
@@ -411,29 +665,50 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
             );
           }
         }
-        await delay(100);
+        await delay(100, signal);
       }
       if (registered === null || dispatch.result === null) throw new Error("Claude dispatch lost its ready session");
+      releaseIfCancelled();
       const handle = registered;
       // Register ownership before opening delivery so every failure can use
       // stop()'s complete teardown, including tagged descendants and settings.
       this.#settingsDirs.set(handle.sessionId, settingsDir);
-      const delivery = await this.steer(handle, options.prompt);
+      signal?.throwIfAborted();
+      openingStarted = true;
+      const delivery = await controlCommandContext.run({ owner: this, signal }, () => this.steer(handle, options.prompt));
       if (!delivery.submitted) {
         throw new ClaudeRegistrationTimeoutError(
           `Claude opening submission failed for worker '${options.name}' in ${options.cwd}: ${delivery.reason}; ` +
           launchAccount(dispatch.result)
         );
       }
-      accepted = true;
-      if (!(this.#scopes instanceof NoWorkerScopes)) {
-        this.#watchedSessions.set(handle.sessionId, handle);
-        this.#schedulePlacementWatch();
-      }
-      return handle;
+      return acceptHandle(handle);
     } catch (error) {
+      // A cancellation's residue is the control plane's, and its reason is
+      // the caller's own value: no launch account is attached to it.
+      if (signal.aborted && !openingStarted) {
+        if (launch !== undefined) {
+          this.#unclaimed.set(options.name, { name: options.name, settingsDir, command: launch });
+          unclaimed = true;
+        }
+        throw signal.reason;
+      }
+      if (unclaimed) throw error;
+      if (signal.aborted && registered !== null) {
+        // Delivery has begun and may have submitted. Hand the owned session
+        // to the caller, whose receipt and shutdown path retain its native
+        // evidence before teardown. A cancellation is never a launch timeout.
+        registered.launchFailure = {
+          message: "Claude opening delivery was cancelled",
+          diagnostics: { claudeLaunch: { failure: "opening cancelled", cleanupConfirmed: false } }
+        };
+        return acceptHandle(registered);
+      }
+      // Opening may already have submitted. Reclaim it before reporting a
+      // failure, under a fresh cleanup bound.
+      const cleanup = AbortSignal.timeout(this.#reclaimTimeoutMs);
       if (error instanceof Error) {
-        const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id]).catch(() => null);
+        const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id], cleanup).catch(() => null);
         const file = registered === null ? null : await this.transcriptPath(registered).catch(() => null);
         const transcript = file === null ? null : await readFile(file, "utf8").catch(() => null);
         const diagnostics = { claudeLaunch: {
@@ -444,20 +719,17 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           logs: logs === null ? null : { ...logs }
         } };
         if (registered !== null) {
-          discarded = await this.#stopSession(registered, true).catch(() => false);
+          discarded = await controlCommandContext.run(
+            { owner: this, signal: cleanup },
+            () => this.#stopSession(registered!, true, cleanup)
+          ).catch(() => false);
           diagnostics.claudeLaunch.cleanupConfirmed = discarded;
           if (!discarded) {
             // No rejection may hand this prompt to another target while a
             // launch we could not remove still exists. The engine owns its
             // receipt and subsequent teardown, including the original account.
             registered.launchFailure = { message: error.message, diagnostics };
-            accepted = true;
-            this.#settingsDirs.set(registered.sessionId, settingsDir);
-            if (!(this.#scopes instanceof NoWorkerScopes)) {
-              this.#watchedSessions.set(registered.sessionId, registered);
-              this.#schedulePlacementWatch();
-            }
-            return registered;
+            return acceptHandle(registered);
           }
         }
         attachFailedTurnResult(error, {
@@ -471,7 +743,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       }
       throw error;
     } finally {
-      if (!accepted) {
+      if (!accepted && !unclaimed) {
         if (registered !== null && !discarded) await this.stop(registered);
         await this.#removeSettingsDir(settingsDir);
       }
@@ -480,7 +752,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
   /**
    * Write the per-dispatch settings file carrying the declared worker
-   * environment plus the dispatch's ownership tag (`WORKER_MARKER_VARIABLE`).
+   * environment, a strip's removal variables over it, and the dispatch's
+   * ownership tag (`WORKER_MARKER_VARIABLE`).
    * Written on every dispatch: the tag is what lets `stop()` reap the
    * worker's surviving descendants, so an untagged worker would be an
    * unowned one. (This supersedes the earlier no-declaration-no-flag
@@ -489,7 +762,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[]): Promise<string> {
+  async #writeWorkerSettings(
+    dispatchName: string,
+    permissionDenyRules?: readonly string[],
+    stripEnv?: Readonly<Record<string, string>>
+  ): Promise<string> {
     // The ownership tag is harness bookkeeping and always lands last.
     // The hold scope is per-lead coordination state whose contract is
     // inheritance by every nested invocation (`HOLD_SCOPE_ENV`). It is
@@ -502,6 +779,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     const env = {
       ...(this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {}),
       ...this.#workerEnv,
+      ...stripEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
     // The deny block joins the same single-purpose file rather than a second
@@ -594,7 +872,12 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   async poll(handle: ClaudeSessionHandle): Promise<ClaudeSessionStatus> {
-    const roster = await this.#roster();
+    return this.#poll(handle);
+  }
+
+  async #poll(handle: ClaudeSessionHandle, signal?: AbortSignal): Promise<ClaudeSessionStatus> {
+    const roster = await this.#roster(signal);
+    signal?.throwIfAborted();
     if (!roster.ok) {
       // The roster query itself failed (daemon busy, transient non-zero exit).
       // Do NOT read this as absence — that would tear down a live worker. Report
@@ -611,7 +894,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // pending even when the pid stays the same.
     const previous = this.#placements.get(handle.sessionId);
     if (typeof record.pid === "number" && (previous?.pid !== record.pid || previous.outcome.kind === "refused")) {
-      await this.#place(handle, record.pid);
+      await this.#observePlacement(this.#place(handle, record.pid), signal);
     }
     const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : undefined;
     return {
@@ -646,7 +929,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
-    if ((await this.poll(handle)).present === false) {
+    const signal = this.#operationSignal();
+    const status = await this.poll(handle);
+    signal?.throwIfAborted();
+    if (status.present === false) {
       return { submitted: false, reason: "the session is no longer in the daemon's roster" };
     }
 
@@ -690,10 +976,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       const created = await this.#launch(this.#tmuxBin, [
         ...server, "-f", "/dev/null", "new-session", "-d", "-s", valve,
         `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
-      ], null, undefined, { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand });
+      ], { input: null, env: { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand } });
       if (!created.ok) return refused("tmux new-session", created);
 
-      await delay(this.#valveAttachSettleMs);
+      await delay(this.#valveAttachSettleMs, signal);
       const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
       if (!opened.ok) return refused("tmux send-keys (editor)", opened);
       const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
@@ -707,14 +993,14 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         if (Date.now() >= copyDeadline) {
           return { submitted: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
         }
-        await delay(50);
+        await delay(50, signal);
       }
-      await delay(this.#valveSubmitSettleMs);
+      await delay(this.#valveSubmitSettleMs, signal);
       submitAttempted = true;
       const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
       if (!submitted.ok) return refused("tmux send-keys (submit)", submitted);
 
-      await delay(this.#valveKillSettleMs);
+      await delay(this.#valveKillSettleMs, signal);
       return { submitted: true };
     } catch (error) {
       return submitAttempted ? { submitted: true } : {
@@ -722,7 +1008,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       };
     } finally {
       // The server and all editor files belong to this delivery alone.
-      await this.#run(this.#tmuxBin, [...server, "kill-server"]);
+      await this.#run(this.#tmuxBin, [...server, "kill-server"], AbortSignal.timeout(this.#reclaimTimeoutMs));
       await rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
@@ -770,10 +1056,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
   /** One roster read serves every owned session, including those between turns. */
   #schedulePlacementWatch(): void {
-    if (this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
+    if (this.#closeController.signal.aborted || this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
     this.#placementTimer = setTimeout(() => {
       this.#placementTimer = null;
       this.#placementSweep = this.#refreshPlacements().catch((error: unknown) => {
+        if (this.#closeController.signal.aborted) return;
         this.#onEvent?.({
           method: "claude/workerScopeWatchError",
           params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
@@ -788,20 +1075,108 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   async #refreshPlacements(): Promise<void> {
-    const roster = await this.#roster();
+    const signal = this.#closeController.signal;
+    const roster = await this.#roster(signal);
     // An unavailable roster is not evidence that an owned session ended.
     if (!roster.ok) return;
     for (const handle of this.#watchedSessions.values()) {
       const row = roster.rows.find((entry) => matchesHandle(entry, handle));
-      if (typeof row?.pid === "number") await this.#place(handle, row.pid);
+      if (typeof row?.pid === "number") await this.#observePlacement(this.#place(handle, row.pid), signal);
     }
+  }
+
+  #operationSignal(): AbortSignal | undefined {
+    const context = controlCommandContext.getStore();
+    return context?.owner === this ? context.signal : undefined;
+  }
+
+  /** Observe shared placement work only while this caller still owns its wait. */
+  async #observePlacement<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+    signal ??= this.#operationSignal();
+    if (signal === undefined) return pending;
+    const observed = signal;
+    return new Promise<T>((resolve, reject) => {
+      const abort = (): void => {
+        observed.removeEventListener("abort", abort);
+        reject(observed.reason);
+      };
+      observed.addEventListener("abort", abort, { once: true });
+      pending.then(
+        value => { observed.removeEventListener("abort", abort); resolve(value); },
+        error => { observed.removeEventListener("abort", abort); reject(error); }
+      );
+      if (observed.aborted) abort();
+    });
   }
 
   async stop(handle: ClaudeSessionHandle): Promise<void> {
     await this.#stopSession(handle).catch(() => false);
   }
 
-  async #stopSession(handle: ClaudeSessionHandle, requireClean = false): Promise<boolean> {
+  /**
+   * Cancel every dispatch and probe, await the probes' independently bounded
+   * cleanup, then reclaim cancelled launches under `reclaimTimeoutMs`:
+   *
+   * 1. In-flight dispatches are cancelled and awaited, so a dispatch the
+   *    close itself cancelled is among those reclaimed. One already past
+   *    cancellation — submitting its opening — returns its session to its
+   *    caller, which owns it from there.
+   * 2. Each cancelled launch's command is awaited; each settles within the
+   *    command bounds of its cancellation.
+   * 3. One roster read. A session registered under a cancelled launch's
+   *    name is stopped and removed as `stop` does, its settings with it.
+   *
+   * Unconfirmed, the launch is reported (`claude/launchUnreclaimed`, with
+   * the reason) and no longer owned: the roster could not be read, a
+   * session's teardown was not confirmed, the launch command's own exit
+   * was never observed, or no session had registered by the read. The
+   * settings directory is then left where it is, because a launch that is
+   * still being served reads it; the next launcher's sweep removes it once
+   * this launcher has ended. A session that registers later holds no
+   * prompt — the opening is only ever submitted after registration — and
+   * carries the dispatch's name in the roster and in its processes'
+   * environment.
+   */
+  close(): Promise<void> {
+    this.#closing ??= this.#reclaimUnclaimed();
+    return this.#closing;
+  }
+
+  async #reclaimUnclaimed(): Promise<void> {
+    const signal = AbortSignal.timeout(this.#reclaimTimeoutMs);
+    const expired = new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    this.#closeController.abort(new EngineShutdownError("claude"));
+    await Promise.race([Promise.all(this.#inFlight), expired]);
+    // Each probe uses its own bounded cleanup. Keep shared placement
+    // resources alive until those teardowns and capture closures settle.
+    await Promise.all(this.#probes);
+    if (this.#unclaimed.size === 0) return;
+    const launches = [...this.#unclaimed.values()];
+    this.#unclaimed.clear();
+    const endings = await Promise.race([Promise.all(launches.map((launch) => launch.command)), expired.then(() => null)]);
+    const roster = await this.#roster(signal);
+    for (const [index, launch] of launches.entries()) {
+      const found = roster.ok ? backgroundSessionNamed(roster.rows, launch.name) : null;
+      let reason: string | null;
+      if (found !== null) {
+        this.#settingsDirs.set(found.handle.sessionId, launch.settingsDir);
+        reason = (await this.#stopSession(found.handle, true, signal).catch(() => false))
+          ? null
+          : "the registered session's teardown was not confirmed";
+      } else if (!roster.ok) {
+        reason = signal.aborted ? "the roster read did not finish within the reclamation bound" : "the roster could not be read";
+      } else if (endings === null || endings[index]!.ending === "unconfirmed") {
+        reason = "the launch command's exit was not observed";
+      } else {
+        reason = "no session had registered under the name when the roster was read";
+      }
+      if (reason !== null) {
+        this.#onEvent?.({ method: "claude/launchUnreclaimed", params: { name: launch.name, reason }, receivedAt: Date.now() });
+      }
+    }
+  }
+
+  async #stopSession(handle: ClaudeSessionHandle, requireClean = false, signal?: AbortSignal): Promise<boolean> {
     this.#watchedSessions.delete(handle.sessionId);
     if (this.#watchedSessions.size === 0 && this.#placementTimer !== null) {
       clearTimeout(this.#placementTimer);
@@ -809,18 +1184,18 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
     // A roster read or placement already in flight must finish before teardown
     // removes session state or the registry closes its shared scope manager.
-    await this.#placementSweep;
-    await this.#placing.get(handle.sessionId);
+    await this.#observePlacement(Promise.all([this.#placementSweep, this.#placing.get(handle.sessionId)]), signal);
     // Best-effort teardown; `stop`/`rm` can mishandle an already-exited session,
     // so failures are swallowed rather than allowed to mask the real result.
-    const stopped = await this.#run(this.#claudeBin, ["stop", handle.id]);
+    const stopped = await this.#run(this.#claudeBin, ["stop", handle.id], signal);
+    signal?.throwIfAborted();
     this.#placements.delete(handle.sessionId);
     // The session is over; anything still carrying its tag is a descendant
     // the daemon will never reap (they reparent to the user session, not to
     // the harness). Ownership means killing them here, not warning about them.
-    await this.#reapTaggedDescendants(handle.name);
-    const removed = await this.#run(this.#claudeBin, ["rm", handle.id]);
-    const roster = await this.#roster();
+    await this.#reapTaggedDescendants(handle.name, signal);
+    const removed = await this.#run(this.#claudeBin, ["rm", handle.id], signal);
+    const roster = await this.#roster(signal);
     const clean = stopped.ok && removed.ok && roster.ok && !roster.rows.some(row => matchesHandle(row, handle)) &&
       (await this.#findTaggedProcesses(handle.name)).length === 0;
     // The session is gone, so its settings file (which carries the declared
@@ -841,7 +1216,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * a readable proc filesystem the scan finds nothing and the reap is a
    * no-op.
    */
-  async #reapTaggedDescendants(dispatchName: string): Promise<void> {
+  async #reapTaggedDescendants(dispatchName: string, signal?: AbortSignal): Promise<void> {
     const tagged = await this.#findTaggedProcesses(dispatchName);
     if (tagged.length === 0) {
       return;
@@ -853,7 +1228,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         // Already gone, or not ours to signal.
       }
     }
-    await delay(this.#reapGraceMs);
+    await delay(this.#reapGraceMs, signal);
     // Re-establish identity before escalating: a pid from the first scan can
     // exit during the grace period and be reused by an unrelated process, so
     // a bare liveness check is not authority for SIGKILL — only a process
@@ -904,34 +1279,16 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   /** The roster's row for a dispatch, as a handle plus the pid the row names (null until the supervisor reports one). */
-  async #findByName(name: string): Promise<{ handle: ClaudeSessionHandle; pid: number | null; row: RosterRow } | null> {
-    const { rows } = await this.#roster();
-    const match = rows.find(
-      (row) => row.kind === "background" && row.name === name && typeof row.sessionId === "string"
-    );
-    if (match === undefined || typeof match.sessionId !== "string") {
-      return null;
-    }
-    // The short id is preferred for steer/stop; fall back to sessionId if the
-    // daemon has not yet surfaced one.
-    const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
-    return {
-      handle: {
-        id,
-        sessionId: match.sessionId,
-        name,
-        cwd: typeof match.cwd === "string" ? match.cwd : ""
-      },
-      pid: typeof match.pid === "number" && match.pid > 0 ? match.pid : null,
-      row: match
-    };
+  async #findByName(name: string, signal?: AbortSignal): Promise<RosterSession | null> {
+    return backgroundSessionNamed((await this.#roster(signal)).rows, name);
   }
 
   // `ok: false` means the query could not be performed (process error, empty or
-  // unparseable output) — distinct from "queried fine, session not listed",
-  // which is `{ ok: true, rows: [...] }` with the session simply absent.
-  async #roster(): Promise<{ ok: boolean; rows: RosterRow[] }> {
-    const result = await this.#run(this.#claudeBin, ["agents", "--json"]);
+  // unparseable output, or cancelled by the signal) — distinct from "queried
+  // fine, session not listed", which is `{ ok: true, rows: [...] }` with the
+  // session simply absent.
+  async #roster(signal?: AbortSignal): Promise<{ ok: boolean; rows: RosterRow[] }> {
+    const result = await this.#run(this.#claudeBin, ["agents", "--json"], signal);
     if (!result.ok || result.stdout.trim().length === 0) {
       return { ok: false, rows: [] };
     }
@@ -947,58 +1304,29 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return { ok: true, rows: parsed.filter((row): row is RosterRow => typeof row === "object" && row !== null) };
   }
 
-  #run(file: string, args: string[], cwd?: string): Promise<ExecResult> {
-    return this.#launch(file, args, null, cwd);
-  }
-
-  #runWithInput(file: string, args: string[], input: string, cwd?: string): Promise<ExecResult> {
-    return this.#launch(file, args, input, cwd);
+  #run(file: string, args: string[], signal?: AbortSignal): Promise<CommandResult> {
+    return this.#launch(file, args, { input: null, ...(signal !== undefined ? { signal } : {}) });
   }
 
   /**
    * The one route every control-plane child takes: launched by the scope
    * manager (outside the launcher's box, where a systemd user manager is
-   * reachable), under the spread `#env`, with its output collected and its
-   * exit status read as the verdict. `input` is streamed to stdin and the
-   * stream then closed; null closes it at once.
+   * reachable), under the spread `#env` unless the caller names another,
+   * with its output collected and its exit status read as the verdict.
+   * `input` is streamed to stdin and the stream then closed; null closes it
+   * at once. A command given a signal is the caller's to cancel, and ends
+   * within the command bounds (`runOwnedCommand`); one without runs to its
+   * own end.
    */
-  async #launch(file: string, args: string[], input: string | null, cwd?: string, env = this.#env): Promise<ExecResult> {
-    const child = await this.#scopes.launch(file, args, {
-      ...(cwd !== undefined ? { cwd } : {}),
-      env,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    return new Promise<ExecResult>((resolve) => {
-      const stdout: Buffer[] = [];
-      const stderr: Buffer[] = [];
-      let settled = false;
-      const finish = (result: ExecResult): void => {
-        if (!settled) {
-          settled = true;
-          resolve(result);
-        }
-      };
-
-      child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
-      child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
-      child.on("error", (error) => {
-        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message, exitCode: null, signal: null });
-      });
-      child.on("close", (code, signal) => {
-        finish({
-          ok: code === 0,
-          exitCode: code,
-          signal,
-          stdout: Buffer.concat(stdout).toString(),
-          stderr: Buffer.concat(stderr).toString()
-        });
-      });
-
-      // A child that rejects input may close stdin before this write completes.
-      // Its exit status/stderr above is the useful dispatch error; suppress the
-      // stream's secondary EPIPE so it cannot become an unhandled exception.
-      child.stdin?.on("error", () => undefined);
-      child.stdin?.end(input ?? undefined);
+  #launch(
+    file: string,
+    args: string[],
+    options: { input: string | null; cwd?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal }
+  ): Promise<CommandResult> {
+    const signal = options.signal ?? this.#operationSignal();
+    return runOwnedCommand(this.#scopes, file, args, {
+      env: this.#env, ...options, bounds: this.#commandBounds,
+      ...(signal !== undefined ? { signal } : {})
     });
   }
 }
@@ -1017,6 +1345,35 @@ interface RosterRow {
   cwd?: unknown;
 }
 
+/** A dispatch's roster row, as a handle plus the pid the row names (null until the supervisor reports one). */
+interface RosterSession {
+  handle: ClaudeSessionHandle;
+  pid: number | null;
+  row: RosterRow;
+}
+
+function backgroundSessionNamed(rows: readonly RosterRow[], name: string): RosterSession | null {
+  const match = rows.find(
+    (row) => row.kind === "background" && row.name === name && typeof row.sessionId === "string"
+  );
+  if (match === undefined || typeof match.sessionId !== "string") {
+    return null;
+  }
+  // The short id is preferred for steer/stop; fall back to sessionId if the
+  // daemon has not yet surfaced one.
+  const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
+  return {
+    handle: {
+      id,
+      sessionId: match.sessionId,
+      name,
+      cwd: typeof match.cwd === "string" ? match.cwd : ""
+    },
+    pid: typeof match.pid === "number" && match.pid > 0 ? match.pid : null,
+    row: match
+  };
+}
+
 function matchesHandle(row: RosterRow, handle: ClaudeSessionHandle): boolean {
   return (
     (typeof row.id === "string" && row.id === handle.id) ||
@@ -1032,12 +1389,12 @@ function normaliseState(state: unknown): ClaudeSessionState {
 }
 
 /** A refused valve step, named with the bounded text tmux gave for it. */
-function refused(step: string, result: ExecResult): ValveSubmission {
+function refused(step: string, result: CommandResult): ValveSubmission {
   const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
   return { submitted: false, reason: `${step} failed: ${boundedEvidence(said)}` };
 }
 
-function launchAccount(result: ExecResult): string {
+function launchAccount(result: CommandResult): string {
   return `dispatch exit ${result.exitCode ?? "unknown"}, signal ${result.signal ?? "none"}; ` +
     `stdout: ${boundedEvidence(result.stdout.trim() || "(empty)")}; ` +
     `stderr: ${boundedEvidence(result.stderr.trim() || "(empty)")}`;
@@ -1047,9 +1404,16 @@ function shellQuote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'";
 }
 
-function delay(ms: number): Promise<void> {
+/** Wait `ms`, or less: an abort of `signal` ends the wait early and quietly, leaving the caller to judge it. */
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
   });
 }
 

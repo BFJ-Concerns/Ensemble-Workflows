@@ -104,6 +104,20 @@ export const REFUSED_BEFORE_WORKER_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Whether a recorded failure kind is a deadline the runtime enforced on
+ * the worker. Two spellings reach a record: a thrown deadline recorded by
+ * its class name (`TurnTimeoutError`, raised for Codex and opencode turn
+ * and request deadlines), and an engine's own attempt-failure kind ending
+ * in `-timeout` (Claude's `claude-poll-timeout`,
+ * `claude-first-life-timeout`, `claude-registration-timeout`). The
+ * runtime settles an agent `timed-out` by this same test, so an attempt
+ * and its agent cannot disagree about whether a deadline ended it.
+ */
+export function isTimeoutFailureKind(kind: string): boolean {
+  return kind === "TurnTimeoutError" || kind.endsWith("-timeout");
+}
+
+/**
  * An agent record reduced to what the roll-up reads, in either writer's
  * terms. `attempts` lists every attempt that demonstrably ran, settled ones
  * first in number order and then, where one exists, the unsettled attempt
@@ -135,9 +149,14 @@ export interface RollupAttemptView {
 }
 
 /**
- * How an attempt ended. The runtime cuts short only the attempt in flight
- * when it ends a record — the last one — so earlier attempts of an
- * interrupted or timed-out record settled on their own.
+ * How an attempt ended, judged from the attempt's own evidence first. A
+ * worker deadline ends only the attempt it fell on, and the runtime may
+ * retry it, so an attempt whose failure is a timeout was cut short
+ * whatever became of the agent afterwards — a complete agent can carry a
+ * timed-out attempt. The agent's status speaks only for its last settled
+ * attempt: a run interrupt or run deadline cuts short the attempt in
+ * flight when it ends the record, so earlier attempts settled on their
+ * own.
  */
 export function attemptEnding(agent: RollupAgentView, attempt: RollupAttemptView): AttemptEnding {
   if (!attempt.settled) {
@@ -145,6 +164,9 @@ export function attemptEnding(agent: RollupAgentView, attempt: RollupAttemptView
   }
   if (attempt.failureKind !== null && REFUSED_BEFORE_WORKER_KINDS.has(attempt.failureKind)) {
     return "refused";
+  }
+  if (attempt.failureKind !== null && isTimeoutFailureKind(attempt.failureKind)) {
+    return "timed-out";
   }
   const last = agent.attempts.findLast((candidate) => candidate.settled) === attempt;
   if (last && agent.status === "interrupted") {

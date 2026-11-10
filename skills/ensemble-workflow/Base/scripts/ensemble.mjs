@@ -15867,12 +15867,18 @@ var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
   "CodexSubstrateRefusedError",
   "ClaudeDispatchError"
 ]);
+function isTimeoutFailureKind(kind) {
+  return kind === "TurnTimeoutError" || kind.endsWith("-timeout");
+}
 function attemptEnding(agent, attempt) {
   if (!attempt.settled) {
     return "unsettled";
   }
   if (attempt.failureKind !== null && REFUSED_BEFORE_WORKER_KINDS.has(attempt.failureKind)) {
     return "refused";
+  }
+  if (attempt.failureKind !== null && isTimeoutFailureKind(attempt.failureKind)) {
+    return "timed-out";
   }
   const last = agent.attempts.findLast((candidate) => candidate.settled) === attempt;
   if (last && agent.status === "interrupted") {
@@ -24780,8 +24786,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       };
       return;
     }
-    const lastFailure = record.attempts.at(-1)?.failure;
-    if (lastFailure?.kind.endsWith("-timeout") === true) {
+    const lastFailure = record.attempts.at(-1)?.failure ?? null;
+    if (lastFailure !== null && isTimeoutFailureKind(lastFailure.kind)) {
       record.status = "timed-out";
       record.terminationCause = { kind: lastFailure.kind, message: lastFailure.message };
       return;

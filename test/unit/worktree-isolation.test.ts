@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -126,6 +126,32 @@ test("a retained changed worktree keeps its container after an unchanged sibling
     // The retained worktree is real work product; its container must stand.
     await access(container);
     await access(changed.path);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a symlink to a repository subdirectory shares the physical checkout's container", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-symlink-"));
+  const repo = path.join(directory, "repo");
+  const subdirectory = path.join(repo, "sub");
+  const alias = path.join(directory, "alias");
+  await initialiseRepo(repo);
+  await mkdir(subdirectory);
+  await symlink(subdirectory, alias);
+
+  try {
+    const manager = new GitWorktreeIsolationManager();
+    const physical = await manager.create(subdirectory);
+    const symbolic = await manager.create(alias);
+    try {
+      assert.equal(path.dirname(symbolic.path), path.dirname(physical.path));
+      assert.equal(path.dirname(symbolic.path), path.join(directory, "repo.ensemble-workflows-worktrees"));
+      assert.equal(symbolic.baseCommit, physical.baseCommit);
+    } finally {
+      await manager.finish(physical);
+      await manager.finish(symbolic);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

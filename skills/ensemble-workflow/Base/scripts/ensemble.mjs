@@ -17032,7 +17032,7 @@ var GitWorktreeIsolationManager = class {
   }
   async #resolveRepoRoots(cwd) {
     const checkout = (await git2(cwd, ["rev-parse", "--show-toplevel"])).trim();
-    const common = path8.resolve(cwd, (await git2(cwd, ["rev-parse", "--git-common-dir"])).trim());
+    const common = (await git2(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
     const worktree = (await git2(cwd, ["--git-dir", common, "config", "--get", "--default", "", "core.worktree"])).trim();
     const root = worktree.length > 0 ? path8.resolve(common, worktree) : path8.basename(common) === ".git" ? path8.dirname(common) : common;
     const container = path8.join(path8.dirname(root), `${path8.basename(root)}.ensemble-workflows-worktrees`);

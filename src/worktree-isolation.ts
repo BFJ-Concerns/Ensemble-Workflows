@@ -120,7 +120,7 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
 
   async #resolveRepoRoots(cwd: string): Promise<RepositoryRoots> {
     const checkout = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
-    const common = path.resolve(cwd, (await git(cwd, ["rev-parse", "--git-common-dir"])).trim());
+    const common = (await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
     // Address the main Git directory so config.worktree is read from there,
     // rather than from the linked checkout that happens to dispatch this call.
     const worktree = (await git(cwd, ["--git-dir", common, "config", "--get", "--default", "", "core.worktree"])).trim();

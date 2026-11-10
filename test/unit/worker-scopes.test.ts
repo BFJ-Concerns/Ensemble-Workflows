@@ -223,6 +223,21 @@ test("launch runs a command outside the launcher's slice with its streams, envir
   await scopes.close();
 });
 
+test("launch hands back the command's own process, so signalling it reaches the command and nothing else", async () => {
+  // `systemd-run --scope` execs the command in place. Cancellation
+  // (`runOwnedCommand`) signals this pid alone and relies on it being the
+  // command's: were the wrapper to fork instead, signalling it would leave
+  // the command running.
+  const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `exec-${process.pid}` });
+  // The command's own pid is the first field of its stat file; no `$` in the
+  // arguments, which systemd-run would expand.
+  const child = await scopes.launch("cat", ["/proc/self/stat"], { env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+  const result = await collect(child, "");
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(Number(result.stdout.split(" ")[0]), child.pid);
+  await scopes.close();
+});
+
 test("without a reachable user manager, placement is unavailable and launch runs the command in place", async () => {
   // No bus address and no runtime directory: busctl cannot find the user manager.
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };

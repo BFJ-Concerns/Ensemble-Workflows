@@ -1,4 +1,4 @@
-import { readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 
@@ -45,8 +45,10 @@ const STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.[1-9]\d*\.tmp$/;
 
 export interface StatusFileWriterOptions {
   progress: RunProgress;
-  /** Existing opted-in directory to publish the snapshot into. Never created by the writer. */
+  /** Directory to publish the snapshot into. */
   dir: string;
+  /** Create the automatic data-home directory; explicit directories must exist. */
+  createDirectory?: boolean;
   /** Notified on write failure. Defaults to swallowing — status never breaks a run. */
   onError?: (error: unknown) => void;
   /** Interval for re-stamping a quiet run's snapshot. Tests inject a tiny value. */
@@ -103,6 +105,7 @@ export async function snapshotOwnerGone(
 }
 
 export interface StatusFileOperations {
+  mkdir(directory: string, options: { recursive: true }): Promise<unknown>;
   readFile(file: string, encoding: "utf8"): Promise<string>;
   readdir(directory: string): Promise<string[]>;
   rename(source: string, destination: string): Promise<void>;
@@ -110,7 +113,7 @@ export interface StatusFileOperations {
   writeFile(file: string, contents: string, encoding: "utf8"): Promise<void>;
 }
 
-const DEFAULT_FILE_OPERATIONS: StatusFileOperations = { readFile, readdir, rename, unlink, writeFile };
+const DEFAULT_FILE_OPERATIONS: StatusFileOperations = { mkdir, readFile, readdir, rename, unlink, writeFile };
 
 /**
  * Serialises a {@link RunProgress} model to this run's own status file on
@@ -139,10 +142,12 @@ export class StatusFileWriter {
 
   #writing: Promise<void> | null = null;
   #dirty = false;
+  #published = false;
+  #unavailable = false;
   #closed = false;
   #tmpSeq = 0;
   #heartbeat: NodeJS.Timeout;
-  #initialSweep: Promise<void>;
+  #initialSweep: Promise<boolean>;
   #ownerEvidence: Promise<SnapshotOwnerEvidence>;
   #procDir: string;
 
@@ -158,7 +163,17 @@ export class StatusFileWriter {
       pid: process.pid,
       start_ticks: await readProcessStartTicks(procDir, process.pid)
     }))();
-    this.#initialSweep = this.#sweepDeadRuns(options.dir);
+    const fileOperations = this.#fileOperations;
+    this.#initialSweep = (async () => {
+      if (options.createDirectory === true) {
+        await fileOperations.mkdir(options.dir, { recursive: true });
+      }
+      await this.#sweepDeadRuns(options.dir);
+      return true;
+    })().catch((error) => {
+      this.#reportError(error);
+      return false;
+    });
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     // Progress transitions re-stamp updatedAt and notify subscribers (i.e. this
     // writer), so a run with long quiet turns never reads as stale/absent.
@@ -166,6 +181,12 @@ export class StatusFileWriter {
     this.#heartbeat.unref();
     // Publish an initial snapshot so the run shows up before its first agent.
     this.#request();
+  }
+
+  /** Wait for the initial publication before announcing its location. */
+  async ready(): Promise<boolean> {
+    await this.#writing;
+    return this.#published;
   }
 
   /** The path this run publishes to. */
@@ -181,6 +202,9 @@ export class StatusFileWriter {
     while (this.#writing !== null) {
       await this.#writing;
     }
+    if (!this.#published) {
+      return;
+    }
     // The file is this run's alone, so removal needs no ownership check:
     // nothing else publishes under this name.
     try {
@@ -194,7 +218,7 @@ export class StatusFileWriter {
 
   #request(): void {
     // Once closed, only close()'s own final flush may publish.
-    if (this.#closed) {
+    if (this.#closed || this.#unavailable) {
       return;
     }
     this.#dirty = true;
@@ -217,16 +241,21 @@ export class StatusFileWriter {
     try {
       await this.#writeAtomic(this.#progress.snapshot());
     } catch (error) {
-      // The opted-in namespace may disappear after configuration resolution.
-      // Treat that race as publication being off, without recreating or reporting it.
-      if (!isNodeError(error) || error.code !== "ENOENT") {
-        this.#reportError(error);
+      // The CLI announces only successful initial publication. A later retry
+      // must not create a file whose path was never announced.
+      if (!this.#published) {
+        this.#unavailable = true;
+        this.#dirty = false;
       }
+      if (this.#published && isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#reportError(error);
     }
   }
 
   async #writeAtomic(snapshot: ProgressSnapshot): Promise<void> {
-    await this.#initialSweep;
+    if (!(await this.#initialSweep)) return;
     // pid + sequence keep a killed writer's leftover temp file attributable
     // to it, so the next writer's sweep can remove it on evidence.
     const tmp = `${this.#target}.${process.pid}.${(this.#tmpSeq += 1)}.tmp`;
@@ -235,6 +264,7 @@ export class StatusFileWriter {
     const published = { ...snapshot, owner: await this.#ownerEvidence };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}\n`, "utf8");
     await this.#fileOperations.rename(tmp, this.#target);
+    this.#published = true;
   }
 
   /**

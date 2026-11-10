@@ -108,3 +108,41 @@ test("an independent reader follows queued, retried and held workers through the
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test("a failed live observation stops and reaps its reader with an incomplete archive", { timeout: 15_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-reader-cleanup-"));
+  const acknowledgements = path.join(directory, "observed");
+  let reader: ReturnType<typeof runNode> | undefined;
+  try {
+    const archive = path.join(directory, "records", "run");
+    const agent = path.join(archive, "agents", "000001");
+    await mkdir(agent, { recursive: true });
+    await writeFile(acknowledgements, "");
+    // A dispatch refusal can settle the run before all four agents exist.
+    await writeFile(path.join(archive, "manifest.json"), JSON.stringify({ status: "failed" }));
+    await writeFile(path.join(agent, "agent.json"), JSON.stringify({
+      id: 1, label: "first", status: "in-progress", session: null
+    }));
+    reader = runNode([consumer, path.join(directory, "records"), "4", "5000", acknowledgements], {}, 10_000);
+    const observationFailure = new Error("probe readiness failed");
+    await assert.rejects(async () => {
+      try {
+        const deadline = Date.now() + 5_000;
+        while (!(await readFile(acknowledgements, "utf8")).includes("queued:first\n")) {
+          assert.ok(Date.now() < deadline, "reader never opened the incomplete archive");
+          await delay(10);
+        }
+        throw observationFailure;
+      } finally {
+        await appendFile(acknowledgements, "stop\n");
+        const result = await reader!;
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(result.stdout, "", "cancelled observation must not masquerade as a complete read");
+      }
+    }, (error: unknown) => error === observationFailure);
+  } finally {
+    await reader;
+    await rm(directory, { recursive: true, force: true });
+  }
+});

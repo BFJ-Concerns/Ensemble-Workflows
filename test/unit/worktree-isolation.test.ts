@@ -181,22 +181,33 @@ test("a submodule stores isolated worktrees beside its checkout", async () => {
   }
 });
 
-test("a repository with a separate git directory keeps its worktree beside the checkout", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-separate-git-"));
-  const repo = path.join(directory, "repo");
-  await initialiseRepo(repo, ["--separate-git-dir", path.join(directory, "git-dir")]);
+for (const gitDir of ["git-dir", "metadata/.git"]) {
+  test(`a separate git directory at ${gitDir} keeps worktrees beside the checkout`, async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-separate-git-"));
+    const repo = path.join(directory, "repo");
+    await mkdir(path.dirname(path.join(directory, gitDir)), { recursive: true });
+    await initialiseRepo(repo, ["--separate-git-dir", path.join(directory, gitDir)]);
 
-  try {
-    const manager = new GitWorktreeIsolationManager();
-    const worktree = await manager.create(repo).catch((error: unknown): never => {
-      assert.fail(`separate git directory must support worktree creation: ${String(error)}`);
-    });
-    assert.equal(path.dirname(worktree.path), path.join(directory, "repo.ensemble-workflows-worktrees"));
-    await manager.finish(worktree);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
+    try {
+      const manager = new GitWorktreeIsolationManager();
+      const worktree = await manager.create(repo).catch((error: unknown): never => {
+        assert.fail(`separate git directory must support worktree creation: ${String(error)}`);
+      });
+      assert.equal(path.dirname(worktree.path), path.join(directory, "repo.ensemble-workflows-worktrees"));
+      await manager.finish(worktree);
+
+      // An explicit main checkout path also makes linked dispatch unambiguous.
+      await git(repo, ["config", "core.worktree", repo]);
+      const linked = path.join(directory, "linked");
+      await git(repo, ["worktree", "add", "-b", "linked", linked]);
+      const fromLinked = await manager.create(linked);
+      assert.equal(path.dirname(fromLinked.path), path.join(directory, "repo.ensemble-workflows-worktrees"));
+      await manager.finish(fromLinked);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
 
 test("one manager creates worktrees from different repositories independently", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-multi-repo-"));

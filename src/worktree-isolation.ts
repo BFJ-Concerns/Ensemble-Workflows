@@ -121,12 +121,16 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
   async #resolveRepoRoots(cwd: string): Promise<RepositoryRoots> {
     const checkout = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
     const common = path.resolve(cwd, (await git(cwd, ["rev-parse", "--git-common-dir"])).trim());
+    const gitDir = (await git(cwd, ["rev-parse", "--absolute-git-dir"])).trim();
     const worktree = (await git(cwd, ["config", "--get", "--default", "", "core.worktree"])).trim();
-    // A normal repository stores its common directory at <main>/.git.
+    // The non-linked checkout knows its own root, even with an external .git.
+    // A normal linked checkout stores its common directory at <main>/.git.
     // Submodules record the main checkout relative to their common git dir.
-    // A separate git dir without core.worktree records no main checkout path;
-    // keep placement beside the checkout in that layout.
+    // An external git dir without core.worktree records no main checkout path;
+    // from a linked checkout, an external .git is indistinguishable from the
+    // normal layout. Other external names fall back to the dispatch checkout.
     const main = worktree.length > 0 ? path.resolve(common, worktree)
+      : gitDir === common ? checkout
       : path.basename(common) === ".git" ? path.dirname(common)
       : checkout;
     return { checkout, main };

@@ -296,9 +296,13 @@ a temporary branch. With `cwd` as well, `cwd` selects the source repository; a
 `cwd` that is not in a git repository fails before the worker spawns.
 The worktree is placed in `<repo>.ensemble-workflows-worktrees/` beside the
 repository's main checkout, including when `cwd` is inside a linked worktree.
-If the repository uses a separate git directory without a recorded main
-checkout path, the container is instead placed beside the checkout selected
-by `cwd`.
+With a separate git directory, dispatch from the original checkout places the
+container beside that checkout. From a linked checkout, `core.worktree` locates
+the main checkout when configured; otherwise a common directory named `.git`
+is treated as `<main>/.git`, and any other name falls back to the dispatch
+checkout. Git does not distinguish an external directory named `.git` from
+that normal layout when queried from a linked checkout, so that layout needs
+`core.worktree` to locate the main checkout correctly.
 Placement is decided once per target and kept across that target's retries; a
 fallback step to another target opens its own.
 

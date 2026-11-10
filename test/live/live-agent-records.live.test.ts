@@ -48,26 +48,31 @@ for (const engine of ["claude", "codex"] as const) {
         return "complete";
       `);
       let settled = false;
+      const observation = new AbortController();
       const runProcess = runNode([bundle, workflow], {
         ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: store, ENSEMBLE_STATUS: "0",
         ENSEMBLE_CONCURRENCY_CODEX: "1", ENSEMBLE_CONCURRENCY_CLAUDE: "1",
         XDG_CONFIG_HOME: path.join(directory, "config")
       }, 1_100_000).finally(() => { settled = true; });
+      void runProcess.then(
+        (result) => observation.abort(new Error(`workflow settled while its probe was held: ${result.code}\n${result.stderr}`)),
+        (error: unknown) => observation.abort(error)
+      );
       const readProcess = runNode([consumer, store, "4", "1100000", acknowledgements], {}, 1_110_000);
       processes.push(runProcess, readProcess);
       for (const [index, probe] of probes.entries()) {
-        await waitForPath(probe.paths.ready, 210_000);
+        await waitForPath(probe.paths.ready, 210_000, observation.signal);
         assert.equal(settled, false, "workflow settled while its probe was held");
         assert.equal((await readFile(probe.paths.evidence, "utf8")).trimEnd(),
           probe.evidence.kind === "marker" ? probe.evidence.content : "");
-        await waitForAcknowledgement(acknowledgements, `observed:${index + 1}:1:started`, readProcess);
+        await waitForAcknowledgement(acknowledgements, `observed:${index + 1}:1:started`, readProcess, observation.signal);
         // Growth after the reader's first open proves a scrolling live file.
-        await waitForAcknowledgement(acknowledgements, `growth:${index + 1}:1`, readProcess);
-        if (index === 0) await waitForAcknowledgement(acknowledgements, "queued:queued", readProcess);
+        await waitForAcknowledgement(acknowledgements, `growth:${index + 1}:1`, readProcess, observation.signal);
+        if (index === 0) await waitForAcknowledgement(acknowledgements, "queued:queued", readProcess, observation.signal);
         // Claude can append session bookkeeping after the captured turn ends.
         // Retain every byte observed while the probe is held, then release it.
         await appendFile(acknowledgements, `seal:${index + 1}:1\n`);
-        await waitForAcknowledgement(acknowledgements, `sealed:${index + 1}:1`, readProcess);
+        await waitForAcknowledgement(acknowledgements, `sealed:${index + 1}:1`, readProcess, observation.signal);
         assert.equal(settled, false, "workflow settled before release");
         await writeFile(probe.paths.release, "");
       }
@@ -116,12 +121,13 @@ for (const engine of ["claude", "codex"] as const) {
   });
 }
 
-async function waitForAcknowledgement(file: string, marker: string, reader: Promise<ProcessResult>): Promise<void> {
+async function waitForAcknowledgement(file: string, marker: string, reader: Promise<ProcessResult>, signal: AbortSignal): Promise<void> {
   const deadline = Date.now() + 120_000;
+  signal.throwIfAborted();
   while (!(await readFile(file, "utf8")).split("\n").includes(marker)) {
     assert.ok(Date.now() < deadline, `independent reader never acknowledged ${marker}`);
     await Promise.race([
-      delay(100),
+      delay(100, undefined, { signal }),
       reader.then((result) => {
         assert.equal(result.code, 0, result.stderr);
         assert.fail(`independent reader exited before acknowledging ${marker}`);

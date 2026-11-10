@@ -17395,11 +17395,11 @@ function isJsonObject(value) {
 // src/failure-classification.ts
 function diagnoseAttemptFailure(evidence) {
   const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
-  if (classifyAttemptFailure(evidence).class === "availability") {
-    return failure;
-  }
   const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
   const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
+  if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
+    return failure;
+  }
   const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
     const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude" ? "Run `claude auth login`." : "Run `opencode auth login` for the provider you selected.";

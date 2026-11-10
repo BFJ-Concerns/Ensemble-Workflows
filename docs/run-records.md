@@ -642,7 +642,9 @@ The fields present throughout a record's lifetime are:
   generation). Credential failures use kind `authentication-failure` and rule
   `<engine>.authentication-failure`; Codex unknown-model failures use kind
   `model-not-found` and rule `codex.model-not-found`. Both keep the engine's
-  diagnostic and add a recovery step to `failure.message`. `rule` names
+  diagnostic and add a recovery step to `failure.message`. An explicit
+  provider HTTP 401 remains `authentication-failure` when Codex's
+  retry-promise bound wraps that diagnostic. `rule` names
   the classifier rule that matched (`codex.usage-limit`, `claude.rate-limit`,
   `codex.substrate-dead`, `engine-shutdown`, `run-settlement`, …) and is `null`
   only when no rule recognised the diagnostic — a sign that an engine's error wording is not

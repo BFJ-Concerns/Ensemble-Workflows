@@ -43,13 +43,14 @@ export interface AttemptFailureEvidence {
 /** Preserve the provider's cause and add the engine's recovery step. */
 export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): AttemptFailureEvidence["failure"] {
   const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
-  // Substrate failures may quote credential errors from recent stderr.
-  // Their established availability class must still advance the chain.
-  if (classifyAttemptFailure(evidence).class === "availability") {
-    return failure;
-  }
   const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
   const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
+  // Substrate failures may quote credential errors from recent stderr.
+  // Words alone must not override availability. An explicit provider 401
+  // identifies authentication even when retry-promise bounds wrap the error.
+  if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
+    return failure;
+  }
   // An explicit status outranks incidental error words in a gateway message.
   const authentication = status != null ? status === 401 :
     apiError?.code === "authentication_error" || apiError?.code === "invalid_api_key" ||

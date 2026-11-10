@@ -237,3 +237,23 @@ test("credential words do not override an established availability diagnosis", (
     assert.deepEqual(classifyAttemptFailure({ ...input, failure }), { class: "availability", rule });
   }
 });
+
+test("a structured provider 401 outranks the retry-promise availability wrapper", () => {
+  for (const status of [401, 429, 503, null]) {
+    const input = evidence({
+      engine: "codex",
+      failure: { kind: "AppServerRetryPromiseBrokenError", message: "Reconnecting... unexpected status 401 Unauthorized" },
+      appServerDiagnostic: { code: "responseStreamDisconnected", httpStatusCode: status }
+    });
+    const failure = diagnoseAttemptFailure(input);
+    if (status === 401) {
+      assert.equal(failure.kind, "authentication-failure");
+      assert.match(failure.message, /codex login/);
+      assert.ok(failure.message.includes(input.failure.message));
+      assert.deepEqual(classifyAttemptFailure({ ...input, failure }), { class: "unclassified", rule: "codex.authentication-failure" });
+    } else {
+      assert.deepEqual(failure, input.failure);
+      assert.equal(classifyAttemptFailure({ ...input, failure }).class, "availability");
+    }
+  }
+});

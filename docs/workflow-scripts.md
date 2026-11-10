@@ -466,6 +466,8 @@ Codex and opencode retry with the failure appended to the prompt.
 Rejected credentials on a started worker consume an attempt and retry within
 the same bound. A dead or unstartable substrate retains its availability
 classification even when its diagnostic mentions credentials.
+An explicit provider HTTP 401 on a started turn records authentication
+failure even when Codex's retry-promise bound ends the turn.
 The attempt records `authentication-failure`, the engine's
 diagnostic, and a sign-in step: `codex login`, `claude auth login`, or
 `opencode auth login`. These failures are `unclassified`, with a named

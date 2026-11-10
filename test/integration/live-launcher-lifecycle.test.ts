@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -8,7 +9,7 @@ import { runLauncher } from "../live/launcher.js";
 import { hermeticEstateEnvironment } from "./estate-process.js";
 
 test("live launcher helper bounds a workflow that never returns", { timeout: 20_000 }, async (t) => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/live-launcher-deadline-");
+  const directory = await mkdtemp(path.join(tmpdir(), "live-launcher-deadline-"));
   try {
     const script = path.join(directory, "workflow.js");
     await writeFile(script, 'export const meta = { name: "stalled" }; await new Promise(() => { setInterval(() => {}, 1000); });');
@@ -25,7 +26,7 @@ test("live launcher helper bounds a workflow that never returns", { timeout: 20_
 });
 
 test("live launcher helper reaps its child before cancellation settles", { timeout: 20_000 }, async (t) => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/live-launcher-cancel-");
+  const directory = await mkdtemp(path.join(tmpdir(), "live-launcher-cancel-"));
   const controller = new AbortController();
   const signal = AbortSignal.any([t.signal, controller.signal]);
   let running: ReturnType<typeof runLauncher> | undefined;

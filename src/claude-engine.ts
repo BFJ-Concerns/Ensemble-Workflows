@@ -1037,6 +1037,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     return {
       handle,
       transcript,
+      completed: turnComplete(transcript.entries, fromIndex) &&
+        outstandingBackgroundTasks(transcript.entries, fromIndex).length === 0,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: this.#unaccountedUsage(handle, transcript.entries),
@@ -1306,7 +1308,7 @@ function failedTurnResult(
               source: "claude-session-jsonl",
               sessionId: evidence.handle.sessionId,
               content: evidence.transcript.text,
-              partial: true
+              partial: !evidence.completed
             }
           ]
         })
@@ -1317,6 +1319,7 @@ function failedTurnResult(
 interface FailureEvidence {
   handle: Pick<ClaudeSessionHandle, "sessionId">;
   transcript: Pick<TranscriptFile, "text" | "entries">;
+  completed: boolean;
   resolvedModel: string | null;
   resolvedEffort: string | null;
   usage: TokenUsageBreakdown;

@@ -15,6 +15,7 @@ import {
   partialWorkerTextOf
 } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { parallel, pipeline } from "../../src/hooks.js";
 import { usageSince } from "../../src/claude-transcript.js";
 
 import { RunRecordWriter } from "../../src/run-record.js";
@@ -1476,6 +1477,7 @@ test("a client diagnostic in place of a model reply still keeps the transcript a
         // make the archive report that the engine produced none.
         assert.equal(attempt?.transcripts.length, 1);
         assert.match(attempt?.transcripts[0]?.content ?? "", /unknown provider/);
+        assert.equal(attempt?.transcripts[0]?.partial, false);
         // The diagnostic stays a failure and the placeholder stays no model:
         // retaining the evidence reclassifies nothing.
         assert.equal(records.at(-1)?.resolvedModel, null);
@@ -1863,6 +1865,8 @@ test("a background task that never wakes the session times the attempt out, with
       assert.equal(attempt?.backgroundWaits.length, 1);
       assert.equal(attempt?.backgroundWaits[0]?.taskId, "bya9z1l44");
       assert.equal(attempt?.backgroundWaits[0]?.endedAt, null, "an open wait names the task that never woke the session");
+      assert.equal(attempt?.transcripts[0]?.partial, true,
+        "an interim reply does not complete the transcript while its background task is outstanding");
     } finally {
       await runtime.close();
     }
@@ -2210,6 +2214,40 @@ test("a held Claude turn retains observed identity before new assistant output",
   });
 });
 
+
+test("closing a held Claude session mid-turn stays a worker failure through combinators", async () => {
+  for (const shape of ["parallel", "pipeline"]) {
+    await withControlPlane([{ busyPolls: 10_000 }], async (controlPlane) => {
+      let markPolled: (() => void) | undefined;
+      const polled = new Promise<void>((resolve) => { markPolled = resolve; });
+      const poll = controlPlane.poll.bind(controlPlane);
+      controlPlane.poll = async () => {
+        const status = await poll();
+        markPolled?.();
+        return status;
+      };
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 3 });
+      const session = runtime.createWorkerSession({ engine: "claude", model: "opus" });
+      try {
+        const send = () => session.send("work");
+        const result = shape === "parallel"
+          ? parallel([send], () => {})
+          : pipeline(["item"], [send], () => {});
+        await polled;
+        await session.close();
+        assert.deepEqual(await result, [null], shape);
+        assert.equal(runtime.lastAgentRecord()?.status, "failed");
+        assert.equal(runtime.lastAgentRecord()?.attempts[0]?.failure?.kind, "EngineShutdownError");
+        assert.equal(runtime.lastAgentRecord()?.attempts.length, 3);
+        assert.ok(runtime.lastAgentRecord()?.attempts.every((attempt) =>
+          attempt.classification?.rule === "engine-shutdown"));
+        assert.equal(controlPlane.dispatchCount, 1, "retry accounting never starts another worker");
+      } finally {
+        await runtime.close();
+      }
+    });
+  }
+});
 test("a successful native turn retains the account of a launch that could not be safely discarded", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-recovered-launch-"));
   const diagnostics = { claudeLaunch: { failure: "attachment outcome uncertain", cleanupConfirmed: false, command: { exitCode: 0 } } };

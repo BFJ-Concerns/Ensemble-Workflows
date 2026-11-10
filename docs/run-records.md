@@ -432,8 +432,9 @@ families with their own schema versions (`3` and `3`), described above.
 - `hold_events`: the run's hold lifecycle — raise, accepted answer, rejected
   answer, timeout, and retirements of dead raisers this run observed — in
   event order. Each entry carries `hold_id`, `event`, `verdict` or `reason`
-  where applicable, and a timestamp. An `answered` entry also carries
-  `answered_by` (the answerer the decision file named, or `null`) and the
+  where applicable, and a timestamp. Both `answered` and `answer-rejected`
+  entries carry `answered_by` (the answerer the decision file named, or
+  `null` when absent or unreadable). An `answered` entry also carries the
   decider's `note` (or `null`).
 - `tallies`: `name -> number`, the counts the script recorded with `tally()`,
   stored verbatim (last write per name wins) and written as each is recorded,

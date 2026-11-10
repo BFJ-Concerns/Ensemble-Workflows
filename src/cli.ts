@@ -447,6 +447,28 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     }
 
     runtime.onEvent((event) => {
+      if (event.method === "hold/raised") {
+        const holdId = String(event.params.holdId);
+        const verdicts = event.params.verdicts as string[];
+        // JSON keeps opaque verdicts on one terminal line; single-quoted
+        // shell arguments preserve their exact spelling in answer commands.
+        const answerCommands = verdicts.map((verdict) =>
+          `${program} holds answer '${holdId.replaceAll("'", "'\"'\"'")}' --verdict='${verdict.replaceAll("'", "'\"'\"'")}'`
+        );
+        stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, event: "raised", verdicts, answer_commands: answerCommands })}\n`);
+        return;
+      }
+      if (event.method === "hold/answerRejected") {
+        stderr.write(`[hold] ${JSON.stringify({
+          hold_id: event.params.holdId,
+          event: "answer-rejected",
+          reason: event.params.reason,
+          attempted_verdict: event.params.attemptedVerdict,
+          attempted_verdict_state: event.params.attemptedVerdictState,
+          answered_by: event.params.answeredBy ?? null
+        })}\n`);
+        return;
+      }
       if (event.method === "claude/workerScopeWatchError") {
         stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
         return;

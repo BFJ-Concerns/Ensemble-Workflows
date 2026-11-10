@@ -14,6 +14,10 @@ alias ensemble='node /path/to/Ensemble-Workflows/skills/ensemble-workflow/Base/s
 Running the launcher with no arguments prints this usage text on stderr. It
 names the launcher by the absolute path it was invoked through, preserving a
 symlink path. Script paths include `node`; executable shims name themselves.
+Blank-prompt errors name the same absolute launcher path. A near-miss agent
+option such as `--modle` suggests `--model`; other unknown agent options explain
+how to pass a dash-leading prompt after `--`, quoting the complete argument
+for a POSIX shell so that variables and command substitutions stay literal.
 Paths containing shell metacharacters are quoted for a POSIX shell. The
 launcher path stays whole even when it exceeds 80 columns; the remaining
 usage wraps to that width. For a launcher at `/opt/ensemble.mjs`:

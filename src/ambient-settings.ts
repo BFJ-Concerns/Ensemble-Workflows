@@ -239,14 +239,18 @@ function readMachineConfig(configFile: string): MachineConfig | null {
     throw fileValueError(configFile, "<root>", "must be a JSON object");
   }
 
-  assertKnownKeys(
-    parsed,
-    ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
-    configFile
-  );
+  const newer = typeof parsed.schema_version === "number" && parsed.schema_version > CONFIG_SCHEMA_VERSION;
+  if (!newer) {
+    assertKnownKeys(
+      parsed,
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+      configFile
+    );
+  }
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
     throw new AmbientConfigError(
-      `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
+      `Unsupported schema_version ${JSON.stringify(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}` +
+      (newer ? "; this file was written for a newer Ensemble. Upgrade Ensemble to read it." : "")
     );
   }
   if (parsed.worker_scope !== undefined) {

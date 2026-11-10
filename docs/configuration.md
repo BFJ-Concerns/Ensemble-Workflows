@@ -97,7 +97,9 @@ version 1:
 Every numeric value must be an integer of at least 1. The file is strict: an
 unsupported `schema_version`, an unknown key, an invalid value, an unreadable
 file, or invalid JSON stops the run before any worker starts, naming the file
-and the key where applicable.
+and the key where applicable. A newer `schema_version` is reported as a file
+written for a newer Ensemble, with a recommendation to upgrade Ensemble; this
+check precedes unknown-key validation.
 
 ### `worker_environment`
 

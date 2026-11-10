@@ -15353,14 +15353,17 @@ function readMachineConfig(configFile) {
   if (!isObject(parsed) || Array.isArray(parsed)) {
     throw fileValueError(configFile, "<root>", "must be a JSON object");
   }
-  assertKnownKeys(
-    parsed,
-    ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
-    configFile
-  );
+  const newer = typeof parsed.schema_version === "number" && parsed.schema_version > CONFIG_SCHEMA_VERSION;
+  if (!newer) {
+    assertKnownKeys(
+      parsed,
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+      configFile
+    );
+  }
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
     throw new AmbientConfigError(
-      `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
+      `Unsupported schema_version ${JSON.stringify(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}` + (newer ? "; this file was written for a newer Ensemble. Upgrade Ensemble to read it." : "")
     );
   }
   if (parsed.worker_scope !== void 0) {
@@ -23587,6 +23590,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
+    }
+    if (engine instanceof OpenCodeEngineAdapter) {
+      if (options.model === void 0) {
+        throw new OpenCodeModelRequiredError(engine.modelRegistry.names());
+      }
+      validateEngineDefaults(engine.name, options, engine.modelRegistry);
     }
     const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
     this.budget.assertCanStart(engine.name);
@@ -33204,7 +33213,8 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliUsageError(message);
+    const unknown = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ? unknownAgentOption(argv) : void 0;
+    throw new CliUsageError(unknown === void 0 ? message : unknownAgentOptionMessage(unknown));
   }
   if (parsed.positionals.length > 1) {
     throw new CliUsageError(`${program} agent accepts exactly one prompt argument, or reads the prompt from stdin`);
@@ -33255,6 +33265,45 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...workerScope !== void 0 ? { workerScope } : {},
     ...holdScope !== void 0 ? { holdScope } : {}
   };
+}
+function unknownAgentOption(argv) {
+  try {
+    const { tokens } = parseArgs({
+      args: argv,
+      options: AGENT_INVOCATION_OPTIONS,
+      strict: false,
+      allowPositionals: true,
+      tokens: true
+    });
+    const unknown = tokens.find((token) => token.kind === "option" && !Object.hasOwn(AGENT_INVOCATION_OPTIONS, token.name));
+    return unknown?.kind === "option" ? argv[unknown.index] : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function unknownAgentOptionMessage(option) {
+  const name = option.split("=", 1)[0];
+  const candidates = Object.keys(AGENT_INVOCATION_OPTIONS).map((key) => ({ flag: `--${key}`, distance: optionDistance(name, `--${key}`) })).filter(({ distance }) => distance <= 2).sort((left, right) => left.distance - right.distance || left.flag.localeCompare(right.flag));
+  const best = candidates[0];
+  if (best !== void 0 && (candidates[1] === void 0 || best.distance < candidates[1].distance)) {
+    return `Unknown option ${JSON.stringify(option)}. Did you mean ${JSON.stringify(best.flag)}?`;
+  }
+  return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${quoteShellArgument(option)}`;
+}
+function optionDistance(left, right) {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current2 = [row];
+    for (let column = 1; column <= right.length; column += 1) {
+      current2[column] = Math.min(
+        current2[column - 1] + 1,
+        previous[column] + 1,
+        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1)
+      );
+    }
+    previous = current2;
+  }
+  return previous[right.length];
 }
 async function readPrompt(stdin) {
   const chunks = [];
@@ -33657,8 +33706,11 @@ function programNameFor(scriptPath) {
     return DEFAULT_PROGRAM_NAME;
   }
   const absolutePath = path17.resolve(scriptPath);
-  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : `'${absolutePath.replaceAll("'", `'"'"'`)}'`;
+  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : quoteShellArgument(absolutePath);
   return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
+}
+function quoteShellArgument(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 var USAGE_WIDTH = 80;
 var USAGE_LEAD = "Usage: ";

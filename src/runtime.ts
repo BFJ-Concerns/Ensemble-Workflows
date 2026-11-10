@@ -12,7 +12,8 @@ import {
   assertValidAgentOptions,
   assertValidSessionTurnOptions,
   assertValidWorkerSessionOptions,
-  snapshotAgentCwd
+  snapshotAgentCwd,
+  validateEngineDefaults
 } from "./engine-option-validation.js";
 import {
   AgentPromptRejectedError,
@@ -30,6 +31,7 @@ import {
   markRunEnding,
   MissingEngineError,
   MultiTurnUnsupportedError,
+  OpenCodeModelRequiredError,
   partialTranscriptOf,
   partialWorkerTextOf,
   PreSpawnAuthorError,
@@ -822,6 +824,12 @@ export class EnsembleRuntime {
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
+    }
+    if (engine instanceof OpenCodeEngineAdapter) {
+      if (options.model === undefined) {
+        throw new OpenCodeModelRequiredError(engine.modelRegistry.names());
+      }
+      validateEngineDefaults(engine.name, options, engine.modelRegistry);
     }
     const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
     // The per-engine budget is an admission boundary, judged once per

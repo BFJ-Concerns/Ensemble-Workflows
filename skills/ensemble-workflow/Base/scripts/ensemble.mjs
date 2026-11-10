@@ -19499,12 +19499,12 @@ var ClaudeCliControlPlane = class {
       const editor = path11.join(socketDir, "editor.cjs");
       const copied = path11.join(socketDir, "copied");
       await writeFile5(payload, message, { mode: 384 });
-      await writeFile5(editor, `#!${process.execPath}
+      await writeFile5(editor, `
         const fs = require("node:fs");
         fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
         fs.writeFileSync(${JSON.stringify(copied)}, "complete", { mode: 0o600 });
-      `, { mode: 448 });
-      const editorCommand = editor;
+      `, { mode: 384 });
+      const editorCommand = `${process.execPath} ${editor}`;
       const created = await this.#launch(this.#tmuxBin, [
         ...server,
         "-f",

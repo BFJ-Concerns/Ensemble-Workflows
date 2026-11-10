@@ -950,7 +950,7 @@ test("concurrent multi-megabyte follow-ups use private editors and no payload ar
       const copied = JSON.parse((await readFile(path.join(dir, "copied.jsonl"), "utf8")).trim()) as { text: string; mode: number; editorMode: number; root: string };
       assert.equal(copied.text, message);
       assert.equal(copied.mode, 0o600);
-      assert.equal(copied.editorMode, 0o700);
+      assert.equal(copied.editorMode, 0o600);
       const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
         .map(line => JSON.parse(line) as { argv: string[]; env: { base: string; token: string; sandboxed: string } });
       for (const call of calls) {

@@ -653,12 +653,14 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       await writeFile(payload, message, { mode: 0o600 });
       // The helper takes only Claude's editor filename on argv. All payload
       // bytes remain in private files, independent of argv and tmux caps.
-      await writeFile(editor, `#!${process.execPath}
+      await writeFile(editor, `
         const fs = require("node:fs");
         fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
         fs.writeFileSync(${JSON.stringify(copied)}, "complete", { mode: 0o600 });
-      `, { mode: 0o700 });
-      const editorCommand = editor;
+      `, { mode: 0o600 });
+      // Claude splits editor commands on spaces rather than through a
+      // shell. Invoke Node directly so the payload directory may be noexec.
+      const editorCommand = `${process.execPath} ${editor}`;
       const created = await this.#launch(this.#tmuxBin, [
         ...server, "-f", "/dev/null", "new-session", "-d", "-s", valve,
         `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`

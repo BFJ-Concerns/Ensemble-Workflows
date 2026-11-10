@@ -26,8 +26,10 @@ import type {
   ClaudeDispatchOptions,
   ClaudeSessionHandle,
   ClaudeSessionStatus,
+  ClaudeToolSurfaceProbeRequest,
   ValveSubmission
 } from "../../src/claude-control-plane.js";
+import type { ClaudeToolSurface } from "../../src/claude-tool-surface.js";
 
 /**
  * One scripted worker turn — what a single dispatch or steer produces:
@@ -65,7 +67,15 @@ interface ScriptedTurn {
   };
 }
 
+/**
+ * The tool surface the fake control plane's probe reports: one tool of each
+ * class, including `SpawnTeammate`, a built-in nobody has classified, which
+ * stands for an agent tool a new Claude Code release introduces.
+ */
+const FAKE_TOOL_SURFACE = ["Agent", "Bash", "ListAgents", "Read", "SendMessage", "Skill", "SpawnTeammate", "mcp__fake__lookup"];
+
 class FakeControlPlane implements ClaudeControlPlane {
+  readonly probed: ClaudeToolSurfaceProbeRequest[] = [];
   dispatchCount = 0;
   steerCount = 0;
   stopCount = 0;
@@ -107,6 +117,16 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#refuseDispatch = options.refuseDispatch;
     this.#registrationTimeout = options.registrationTimeout;
     this.#openingArrival = options.openingArrival ?? ((sent) => sent);
+  }
+
+  /** A probe session offers the fixed surface minus whatever its settings deny. */
+  async probeToolSurface(request: ClaudeToolSurfaceProbeRequest): Promise<ClaudeToolSurface> {
+    this.probed.push(request);
+    return {
+      cliVersion: "2.1.322-fake",
+      source: "fake probe",
+      tools: FAKE_TOOL_SURFACE.filter((name) => !request.permissionDenyRules.includes(name)).map((name) => ({ name, exposure: "loaded" }))
+    };
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -643,32 +663,24 @@ test("a per-call cwd reaches Claude dispatch and overrides the adapter cwd", asy
   }
 });
 
-test("an agents strip denies Claude spawn, discovery, and messaging tools", async () => {
+test("a Claude strip denies what the live tool surface classifies, unknown built-ins included", async () => {
   await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
     const runtime = makeRuntime(controlPlane);
     try {
       await runtime.agent("restricted", { engine: "claude", strip: ["skills", "agents"] });
-      assert.deepEqual(controlPlane.dispatched[0]?.permissionDenyRules, [
-        "Skill",
-        "Task",
-        "Agent",
-        "ListAgents",
-        "SendMessage",
-        "Workflow"
-      ]);
-      assert.deepEqual(runtime.lastAgentRecord()?.strip, {
-        requested: ["skills", "agents"],
-        enforcement: {
-          skills: {
-            route: "config",
-            detail: 'permissions.deny ["Skill"] in the per-dispatch settings file'
-          },
-          agents: {
-            route: "config",
-            detail: 'permissions.deny ["Task","Agent","ListAgents","SendMessage","Workflow"] in the per-dispatch settings file'
-          }
-        }
-      });
+      // Every classified member is denied whether or not the surface shows
+      // it; the unclassified built-in is denied too; unrelated and operator
+      // tools are not.
+      const denied = ["Agent", "ListAgents", "SendMessage", "Skill", "SpawnTeammate", "Task", "Workflow"];
+      assert.deepEqual(controlPlane.dispatched[0]?.permissionDenyRules, denied);
+      // One inventory probe, then one confirming probe under the dispatched rules.
+      assert.deepEqual(controlPlane.probed.map((probe) => probe.permissionDenyRules), [[], denied]);
+      const enforcement = runtime.lastAgentRecord()?.strip?.enforcement;
+      for (const capability of ["skills", "agents"] as const) {
+        assert.equal(enforcement?.[capability]?.route, "config");
+        assert.match(enforcement?.[capability]?.detail ?? "", /Claude Code 2\.1\.322-fake/);
+        assert.match(enforcement?.[capability]?.detail ?? "", /unclassified and denied: \["SpawnTeammate"\]/);
+      }
     } finally {
       await runtime.close();
     }
@@ -681,6 +693,7 @@ test("an unstripped Claude dispatch carries no permission deny rules", async () 
     try {
       await runtime.agent("unrestricted", { engine: "claude" });
       assert.equal(controlPlane.dispatched[0]?.permissionDenyRules, undefined);
+      assert.equal(controlPlane.probed.length, 0, "an unstripped worker paid for a tool-surface probe");
     } finally {
       await runtime.close();
     }

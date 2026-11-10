@@ -5,7 +5,8 @@ import type { LiveTranscriptObserver } from "./types.js";
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { createWorkerScopes, RUN_SCOPE_GROUP, type WorkerScopeGrouping, type WorkerScopes } from "./worker-scopes.js";
-import { ClaudeEngineInvocation, claudeNativeEffort, permissionDenyRulesFor } from "./claude-engine.js";
+import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
+import { ClaudeStripPreparer } from "./claude-strip-preparation.js";
 import { requireRegisteredOpenCodeModel } from "./engine-option-validation.js";
 import { engineResourceRequirements } from "./engine-resources.js";
 import {
@@ -30,7 +31,7 @@ import {
   defaultOpenCodeConcurrency
 } from "./concurrency-defaults.js";
 
-import type { EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";
+import type { EngineCapabilityTable, PreparedStrip, StrippableCapability } from "./capability-stripping.js";
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { WorkerExitStatus } from "./errors.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
@@ -62,6 +63,20 @@ export interface EngineTurnOptions {
    * `absent` ones need nothing by construction.
    */
   strip?: StrippableCapability[];
+  /**
+   * This dispatch's strip as the adapter's `prepareStrip` settled it, handed
+   * back unchanged. Present exactly when the adapter prepares strips and
+   * `strip` is non-empty; the adapter's dispatch applies this and nothing
+   * re-derived.
+   */
+  preparedStrip?: PreparedStrip;
+}
+
+/** What a strip preparation is judged against: the dispatch's resolved inputs that can change the tool surface. */
+export interface StripPreparationContext {
+  /** The attempt's resolved placement (a worktree's root under isolation). */
+  cwd: string;
+  model?: string;
 }
 
 /**
@@ -163,6 +178,21 @@ export interface EngineAdapter {
    * stripping can never silently dispatch an unrestricted worker.
    */
   readonly capabilities?: EngineCapabilityTable;
+  /**
+   * Settle one dispatch's strip against what is live, for an engine whose
+   * declared table says only that a route exists. Optional: an adapter
+   * without it dispatches on its table alone. The runtime still judges the
+   * table pre-admission, synchronously, so dispatch order stays the
+   * admission order. Then, for a non-empty strip, it awaits this once per
+   * target, after the placement opens and before the invocation or
+   * session is created. That covers each chain target and a held
+   * session's creating turn; retries reuse the result and later turns keep
+   * it. The record's strip entry takes the returned `enforcement`, and
+   * `EngineTurnOptions.preparedStrip` carries the object to the dispatch.
+   * A rejection with `CapabilityStripUnsupportedError` refuses the worker
+   * before it spawns.
+   */
+  prepareStrip?(strip: readonly StrippableCapability[], context: StripPreparationContext): Promise<PreparedStrip>;
   schedule<T>(task: () => Promise<T>): Promise<T>;
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation;
   /**
@@ -534,19 +564,20 @@ export interface ClaudeEngineAdapterOptions {
   config?: ClaudeEngineConfig;
 }
 
+const CLAUDE_STRIP_ROUTE =
+  "permissions.deny in the per-dispatch settings file, derived from the served Claude Code's live tool surface";
+
 export class ClaudeEngineAdapter implements EngineAdapter {
   readonly name = "claude" satisfies EngineName;
   readonly concurrency: number;
-  /** The archive names the configured rules, without claiming a tool-inventory measurement. */
+  /**
+   * The route only. Which tools a strip denies is settled per dispatch by
+   * `prepareStrip` from the served Claude Code's live tool surface, and the
+   * record's detail is replaced by that preparation's.
+   */
   readonly capabilities: EngineCapabilityTable = {
-    skills: {
-      route: "config",
-      detail: `permissions.deny ${JSON.stringify(permissionDenyRulesFor(["skills"]))} in the per-dispatch settings file`
-    },
-    agents: {
-      route: "config",
-      detail: `permissions.deny ${JSON.stringify(permissionDenyRulesFor(["agents"]))} in the per-dispatch settings file`
-    }
+    skills: { route: "config", detail: CLAUDE_STRIP_ROUTE },
+    agents: { route: "config", detail: CLAUDE_STRIP_ROUTE }
   };
 
   #scheduler: Scheduler;
@@ -555,6 +586,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #config: ClaudeEngineConfig | undefined;
   #activeInvocations = new Set<ClaudeEngineInvocation>();
+  #strips: ClaudeStripPreparer;
   #closed = false;
 
   constructor(options: ClaudeEngineAdapterOptions = {}) {
@@ -564,10 +596,18 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     this.#controlPlane = options.controlPlane ?? new ClaudeCliControlPlane();
     this.#onEvent = options.onEvent;
     this.#config = options.config;
+    this.#strips = new ClaudeStripPreparer({
+      probe: this.#controlPlane.probeToolSurface?.bind(this.#controlPlane),
+      ...(options.config?.stripPreparationTimeoutMs !== undefined ? { timeoutMs: options.config.stripPreparationTimeoutMs } : {})
+    });
   }
 
   schedule<T>(task: () => Promise<T>): Promise<T> {
     return this.#scheduler.schedule(task);
+  }
+
+  prepareStrip(strip: readonly StrippableCapability[], context: StripPreparationContext): Promise<PreparedStrip> {
+    return this.#strips.prepare({ strip, ...context });
   }
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
@@ -622,6 +662,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   async close(): Promise<void> {
     this.#closed = true;
     this.#scheduler.close(new EngineShutdownError(this.name));
+    this.#strips.close();
     await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
   }
 }

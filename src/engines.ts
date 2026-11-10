@@ -5,7 +5,7 @@ import type { LiveTranscriptObserver } from "./types.js";
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { createWorkerScopes, RUN_SCOPE_GROUP, type WorkerScopeGrouping, type WorkerScopes } from "./worker-scopes.js";
-import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
+import { ClaudeEngineInvocation, claudeNativeEffort, permissionDenyRulesFor } from "./claude-engine.js";
 import { requireRegisteredOpenCodeModel } from "./engine-option-validation.js";
 import {
   AppServerExitedError,
@@ -516,28 +516,15 @@ export interface ClaudeEngineAdapterOptions {
 export class ClaudeEngineAdapter implements EngineAdapter {
   readonly name = "claude" satisfies EngineName;
   readonly concurrency: number;
-  /**
-   * Claude strips both named minimum capabilities mechanically: permission
-   * deny rules ride the per-dispatch settings file the control plane already
-   * writes (the one surface measured to reach the daemon-served session).
-   * Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used
-   * `mcp__`-prefixed names; that session's skills pair showed the bare `Skill`
-   * deny working (`Skill` absent under a skills strip, present in the
-   * baseline). The agents deny set was witnessed 2026-08-30 on Claude Code
-   * 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker,
-   * while the unstripped control demonstrated discovery and messaging.
-   * `Agent` was also absent, but the witness cannot isolate it from the
-   * machine-wide `Agent` deny. `Task` remains in the delivered deny set, which
-   * the exact-set regression proves. Deny rules outrank every allow layer and
-   * permission mode, `--dangerously-skip-permissions` included — a live test
-   * asserts that at the worker itself.
-   */
+  /** The archive names the configured rules, without claiming a tool-inventory measurement. */
   readonly capabilities: EngineCapabilityTable = {
-    skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
+    skills: {
+      route: "config",
+      detail: `permissions.deny ${JSON.stringify(permissionDenyRulesFor(["skills"]))} in the per-dispatch settings file`
+    },
     agents: {
       route: "config",
-      detail:
-        "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: ListAgents and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. Agent was also absent, but the witness cannot isolate it from the machine-wide Agent deny. Task remains in the delivered deny set, which the exact-set regression proves."
+      detail: `permissions.deny ${JSON.stringify(permissionDenyRulesFor(["agents"]))} in the per-dispatch settings file`
     }
   };
 

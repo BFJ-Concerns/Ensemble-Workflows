@@ -369,7 +369,9 @@ session is between turns when the retry begins. The retry never sends the
 follow-up a second time as though it were new: a submission that turns out to
 have landed late is collected as the answer, and otherwise the follow-up goes
 again with a preface telling the worker it replaces the earlier copy. Because
-of that preface a leading `/skill` line is not expanded on the retry.
+of that preface a leading `/skill` line is not expanded on the retry. Usage
+already accounted for by a failed attempt is excluded from the pending
+submission's recovery attempt.
 
 When a single `ensemble agent` run times out, the error says which deadline
 expired, because the remedies differ: the call's own `timeoutMs` (raise it or

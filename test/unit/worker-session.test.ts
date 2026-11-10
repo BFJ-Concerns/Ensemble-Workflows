@@ -7,6 +7,7 @@ import test from "node:test";
 import { ClaudeEngineAdapter, CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
   BudgetExceededError,
+  ClaudePollTimeoutError,
   FallbackTargetRejectedError,
   InvalidAgentOptionValueError,
   MultiTurnUnsupportedError,
@@ -749,13 +750,15 @@ async function withClaudeRuntime(
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-worker-session-"));
   try {
     const controlPlane = new SessionFakeControlPlane(dir, turns, options);
+    let runtime: EnsembleRuntime | null = null;
     const adapter = new ClaudeEngineAdapter({
       concurrency: 4,
       cwd: "/fake/cwd",
       controlPlane,
-      config: { pollIntervalMs: 1, receiptTimeoutMs: 200 }
+      config: { pollIntervalMs: 1, receiptTimeoutMs: 200 },
+      onEvent: event => runtime?.handleEngineEvent("claude", event)
     });
-    const runtime = new EnsembleRuntime({
+    runtime = new EnsembleRuntime({
       engines: new EngineRegistry([adapter, ...(options.alongside ?? [])]),
       defaultTurnTimeoutMs: 5_000,
       defaultMaxAttempts: 2,
@@ -929,6 +932,68 @@ test("a follow-up the session received altered is never submitted again as it wa
     }
   );
 });
+
+test("resuming a pending submission counts only usage beyond the earlier attempt", async () => {
+  for (const evidenceTokens of [0, 20]) {
+    await withClaudeRuntime([
+      { text: "opening" },
+      { text: "unused", arrival: sent => sent.trimEnd(), busyPolls: 100 }
+    ], async (runtime, controlPlane) => {
+      const records = captureRecords(runtime);
+      const session = runtime.createWorkerSession({ engine: "claude", maxAttempts: 2 });
+      assert.equal(await session.send("opening fixture"), "opening");
+      const native = (id: string, input: number, stop: string) => JSON.stringify({
+        type: "assistant", message: {
+          id, role: "assistant", content: [{ type: "text", text: id }], stop_reason: stop,
+          usage: { input_tokens: input, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+        }
+      }) + "\n";
+      const submit = controlPlane.steer.bind(controlPlane);
+      controlPlane.steer = async (handle, message) => {
+        const result = await submit(handle, message);
+        const file = await controlPlane.transcriptPath();
+        assert.ok(file);
+        await appendFile(file, native("first call", 100, "tool_use"));
+        return result;
+      };
+      let interrupted = false;
+      let finished = false;
+      let evidenceWritten = false;
+      const locate = controlPlane.transcriptPath.bind(controlPlane);
+      controlPlane.transcriptPath = async () => {
+        const file = await locate();
+        if (interrupted && !evidenceWritten && evidenceTokens > 0 && file !== null) {
+          evidenceWritten = true;
+          await appendFile(file, native("failure evidence call", evidenceTokens, "tool_use"));
+        }
+        return file;
+      };
+      controlPlane.poll = async () => {
+        if (!interrupted) {
+          interrupted = true;
+          throw new ClaudePollTimeoutError("controlled interruption after the first call");
+        }
+        if (!finished) {
+          finished = true;
+          const file = await controlPlane.transcriptPath();
+          assert.ok(file);
+          await appendFile(file, native("second call", 50, "end_turn"));
+        }
+        return { status: "idle", state: "working", present: true };
+      };
+      assert.equal(await session.send("wanted fixture "), null);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.equal(attempts.length, 2);
+      assert.deepEqual({
+        attemptTokens: attempts.map(attempt => attempt.tokenUsageEvents.at(-1)?.total.totalTokens),
+        spent: runtime.budget.spent("claude")
+      }, { attemptTokens: [100 + evidenceTokens, 50], spent: 150 + evidenceTokens });
+      assert.equal(controlPlane.steered.length, 1, "recovery must collect the pending submission, not send another copy");
+      await runtime.close();
+    });
+  }
+});
+
 
 test("a replacement that arrives as sent answers the turn", async () => {
   await withClaudeRuntime(

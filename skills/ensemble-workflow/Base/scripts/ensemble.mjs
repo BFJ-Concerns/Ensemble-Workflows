@@ -20202,6 +20202,8 @@ var ClaudeEngineInvocation = class {
   #controlPlane;
   #onEvent;
   #reportedUsage = null;
+  /** Usage already settled for a pending submission before the current attempt began. */
+  #usageBaseline = null;
   /** The background tasks this attempt's turn waited on, in the order observed; reset per attempt. */
   #waits = [];
   /**
@@ -20286,6 +20288,7 @@ var ClaudeEngineInvocation = class {
   async #runAttempt(context) {
     this.#assertOpen();
     this.#reportedUsage = null;
+    this.#usageBaseline = this.#pending?.accountedUsage == null ? null : { mark: this.#pending.mark, total: this.#pending.accountedUsage };
     this.#waits = [];
     this.#nudges = 0;
     let fromIndex = 0;
@@ -20322,7 +20325,7 @@ var ClaudeEngineInvocation = class {
       return await this.#dispatchAndCollect(previousFailure, context);
     } catch (error) {
       const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex) : null;
+      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex, context) : null;
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
@@ -20373,7 +20376,7 @@ var ClaudeEngineInvocation = class {
     this.#turn = "verified";
     if (this.#closed) {
       const error = new EngineShutdownError("claude");
-      const evidence = await this.#tryFailureEvidence(0);
+      const evidence = await this.#tryFailureEvidence(0, observers);
       if (evidence !== null) {
         this.#attachWorkerText(error, evidence, 0);
       }
@@ -20435,7 +20438,7 @@ var ClaudeEngineInvocation = class {
     if (!outcome.submitted) {
       throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
     }
-    this.#pending = { ...submission, answersTurn: true };
+    this.#pending = { ...submission, answersTurn: true, accountedUsage: null };
     if (submission.carriesTurn) {
       this.#turn = "accepted";
     }
@@ -20672,7 +20675,7 @@ var ClaudeEngineInvocation = class {
     }
     const resolvedModel = resolvedModelSince(entries, fromIndex);
     const resolvedEffort = effortSince(entries, fromIndex);
-    const usage2 = usageSince(entries, fromIndex);
+    const usage2 = this.#attemptUsage(entries, fromIndex);
     this.#reportUsage(handle, entries, fromIndex);
     const usageEvent = this.#usageEvent(handle, usage2, usage2);
     return {
@@ -20725,7 +20728,7 @@ var ClaudeEngineInvocation = class {
    * the failure, and the transcript itself. Best-effort — an unreadable or
    * absent transcript is `null`, and nothing here polls or retries.
    */
-  async #tryFailureEvidence(fromIndex) {
+  async #tryFailureEvidence(fromIndex, observers) {
     const handle = this.#handle;
     if (handle === null) {
       return null;
@@ -20734,12 +20737,16 @@ var ClaudeEngineInvocation = class {
     if (transcript === null) {
       return null;
     }
+    this.#reportUsage(handle, transcript.entries, fromIndex, observers);
+    if (this.#pending !== null) {
+      this.#pending.accountedUsage = usageSince(transcript.entries, this.#pending.mark);
+    }
     return {
       handle,
       transcript,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex),
+      usage: this.#attemptUsage(transcript.entries, fromIndex),
       apiError: apiErrorSince(transcript.entries, fromIndex),
       backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
     };
@@ -20761,6 +20768,12 @@ var ClaudeEngineInvocation = class {
       attachPartialWorkerText(error, text);
     }
   }
+  /** The current attempt's share of a transcript window, excluding usage settled before recovery. */
+  #attemptUsage(entries, fromIndex) {
+    const total = usageSince(entries, fromIndex);
+    const baseline = this.#usageBaseline;
+    return baseline !== null && baseline.mark === fromIndex ? subtractUsage(total, baseline.total) : total;
+  }
   /**
    * Feed transcript-derived usage through the same event shape Codex emits.
    * The adapter registration labels it as Claude before the runtime records
@@ -20773,7 +20786,7 @@ var ClaudeEngineInvocation = class {
    * usage summarises — budget and archive read one arithmetic.
    */
   #reportUsage(handle, entries, fromIndex, observers) {
-    const total = usageSince(entries, fromIndex);
+    const total = this.#attemptUsage(entries, fromIndex);
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
       return;

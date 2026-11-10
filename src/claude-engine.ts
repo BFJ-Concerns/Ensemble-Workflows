@@ -212,6 +212,8 @@ interface PendingSubmission extends Submission {
    * False once a later turn has begun: its reply then answers no `send()`.
    */
   answersTurn: boolean;
+  /** Cumulative usage at this submission's mark already accounted for by earlier attempts. */
+  accountedUsage: TokenUsageBreakdown | null;
 }
 
 /**
@@ -250,6 +252,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #controlPlane: ClaudeControlPlane;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #reportedUsage: TokenUsageBreakdown | null = null;
+  /** Usage already settled for a pending submission before the current attempt began. */
+  #usageBaseline: { mark: number; total: TokenUsageBreakdown } | null = null;
   /** The background tasks this attempt's turn waited on, in the order observed; reset per attempt. */
   #waits: BackgroundTaskWait[] = [];
   /**
@@ -347,6 +351,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     this.#assertOpen();
     this.#reportedUsage = null;
+    this.#usageBaseline = this.#pending?.accountedUsage == null
+      ? null
+      : { mark: this.#pending.mark, total: this.#pending.accountedUsage };
     this.#waits = [];
     this.#nudges = 0;
     let fromIndex = 0;
@@ -406,7 +413,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       // and attached its one evidence read before it tears the new handle
       // down. Every other failure keeps this existing catch-path read.
       const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex) : null;
+      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex, context) : null;
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
@@ -480,7 +487,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       // as already read, so #runAttempt's catch will not race a second read
       // against teardown.
       const error = new EngineShutdownError("claude");
-      const evidence = await this.#tryFailureEvidence(0);
+      const evidence = await this.#tryFailureEvidence(0, observers);
       if (evidence !== null) {
         this.#attachWorkerText(error, evidence, 0);
       }
@@ -556,7 +563,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     if (!outcome.submitted) {
       throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
     }
-    this.#pending = { ...submission, answersTurn: true };
+    this.#pending = { ...submission, answersTurn: true, accountedUsage: null };
     if (submission.carriesTurn) {
       this.#turn = "accepted";
     }
@@ -859,7 +866,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // served model — evidence, never the dispatched flag, so a clamped or
     // silently defaulted dispatch is visible in the record as what ran.
     const resolvedEffort = effortSince(entries, fromIndex);
-    const usage = usageSince(entries, fromIndex);
+    const usage = this.#attemptUsage(entries, fromIndex);
     this.#reportUsage(handle, entries, fromIndex);
     const usageEvent = this.#usageEvent(handle, usage, usage);
     return {
@@ -916,7 +923,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * the failure, and the transcript itself. Best-effort — an unreadable or
    * absent transcript is `null`, and nothing here polls or retries.
    */
-  async #tryFailureEvidence(fromIndex: number): Promise<FailureEvidence | null> {
+  async #tryFailureEvidence(fromIndex: number, observers?: AttemptObservers): Promise<FailureEvidence | null> {
     const handle = this.#handle;
     if (handle === null) {
       return null;
@@ -925,12 +932,21 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     if (transcript === null) {
       return null;
     }
+    // Calls can finish between the last poll and this evidence read. Charge
+    // that final delta before its usage becomes a recovery baseline.
+    this.#reportUsage(handle, transcript.entries, fromIndex, observers);
+    if (this.#pending !== null) {
+      // The failed attempt settles all usage it observed, including calls
+      // in a nested pending nudge. Retain that submission's own window so
+      // recovering it cannot charge the same calls to another attempt.
+      this.#pending.accountedUsage = usageSince(transcript.entries, this.#pending.mark);
+    }
     return {
       handle,
       transcript,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex),
+      usage: this.#attemptUsage(transcript.entries, fromIndex),
       apiError: apiErrorSince(transcript.entries, fromIndex),
       backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
     };
@@ -959,6 +975,13 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     }
   }
 
+  /** The current attempt's share of a transcript window, excluding usage settled before recovery. */
+  #attemptUsage(entries: TranscriptEntry[], fromIndex: number): TokenUsageBreakdown {
+    const total = usageSince(entries, fromIndex);
+    const baseline = this.#usageBaseline;
+    return baseline !== null && baseline.mark === fromIndex ? subtractUsage(total, baseline.total) : total;
+  }
+
   /**
    * Feed transcript-derived usage through the same event shape Codex emits.
    * The adapter registration labels it as Claude before the runtime records
@@ -971,7 +994,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * usage summarises — budget and archive read one arithmetic.
    */
   #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number, observers?: AttemptObservers): void {
-    const total = usageSince(entries, fromIndex);
+    const total = this.#attemptUsage(entries, fromIndex);
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
       return;

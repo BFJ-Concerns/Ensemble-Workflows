@@ -54,7 +54,7 @@ export interface OpenCodeRunResult {
   stdout: string;
   stderr: string;
   durationMs: number;
-  /** The runner's own per-turn timer fired before the subprocess settled. */
+  /** The runner's per-turn timer expired while the subprocess was still running. */
   deadlineExpired?: boolean;
 }
 
@@ -248,7 +248,8 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       // already showed — its spend and its transcript — is the attempt's
       // evidence all the same, and rides the timeout to the recorder.
       const workerExit = { exitCode: run.exitCode, signal: run.signal };
-      const timeout = new TurnTimeoutError(`opencode turn timed out after ${this.#options.timeoutMs}ms`, {
+      const timeout = new TurnTimeoutError(
+        `opencode turn timed out after ${this.#options.timeoutMs}ms: ${openCodeFailureMessage(run, parsedRun.events)}`, {
         kind: "turn",
         timeoutMs: this.#options.timeoutMs,
         threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
@@ -517,12 +518,13 @@ function runProcess(
     const stdout: string[] = [];
     const stderr: string[] = [];
     let settled = false;
+    let exited = false;
     let deadlineExpired = false;
     let killEscalation: NodeJS.Timeout | undefined;
     // Shared by the deadline and the abort signal: SIGTERM first, and a
     // worker that ignores it is SIGKILLed after the grace period.
     const terminate = (): void => {
-      if (settled || killEscalation !== undefined) {
+      if (settled || exited || killEscalation !== undefined) {
         return;
       }
       child.kill("SIGTERM");
@@ -533,7 +535,7 @@ function runProcess(
     };
     // No timeoutMs → the subprocess is not killed on a deadline; it runs to completion.
     const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
-      if (!settled) {
+      if (!settled && !exited) {
         deadlineExpired = true;
         terminate();
       }
@@ -575,6 +577,13 @@ function runProcess(
       clearTimeout(killEscalation);
       abortSignal?.removeEventListener("abort", terminate);
       reject(error);
+    });
+    // Exit ends the execution deadline. Close can arrive later while pipes
+    // drain, and must not turn an already completed process into a timeout.
+    child.on("exit", () => {
+      exited = true;
+      clearTimeout(timeout);
+      clearTimeout(killEscalation);
     });
     child.on("close", (exitCode, signal) => {
       if (settled) {

@@ -351,8 +351,10 @@ on the attempt record. A call whose deadline should end it outright sets
 `maxAttempts: 1`.
 
 An opencode subprocess stopped by its per-attempt deadline records a turn
-timeout, with the deadline and subprocess exit signal on the attempt. A
-subprocess that exits non-zero for another reason records an opencode run error.
+timeout, retaining its engine diagnostic, streamed usage, transcript, and
+subprocess exit signal on the attempt. The execution deadline stops when the
+subprocess exits, even if its output streams are still draining. A subprocess
+that exits non-zero for another reason records an opencode run error.
 
 When a single `ensemble agent` run times out, the error says which deadline
 expired, because the remedies differ: the call's own `timeoutMs` (raise it or

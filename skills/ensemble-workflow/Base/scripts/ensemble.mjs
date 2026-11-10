@@ -20999,11 +20999,14 @@ var OpenCodeEngineInvocation = class {
     }
     if (run.deadlineExpired === true && this.#options.timeoutMs !== void 0) {
       const workerExit = { exitCode: run.exitCode, signal: run.signal };
-      const timeout = new TurnTimeoutError(`opencode turn timed out after ${this.#options.timeoutMs}ms`, {
-        kind: "turn",
-        timeoutMs: this.#options.timeoutMs,
-        threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
-      });
+      const timeout = new TurnTimeoutError(
+        `opencode turn timed out after ${this.#options.timeoutMs}ms: ${openCodeFailureMessage(run, parsedRun.events)}`,
+        {
+          kind: "turn",
+          timeoutMs: this.#options.timeoutMs,
+          threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
+        }
+      );
       const evidence = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, null);
       attachFailedTurnResult(timeout, {
         text: fallback,
@@ -21214,10 +21217,11 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
     const stdout = [];
     const stderr = [];
     let settled = false;
+    let exited = false;
     let deadlineExpired = false;
     let killEscalation;
     const terminate = () => {
-      if (settled || killEscalation !== void 0) {
+      if (settled || exited || killEscalation !== void 0) {
         return;
       }
       child.kill("SIGTERM");
@@ -21227,7 +21231,7 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
       killEscalation.unref();
     };
     const timeout = timeoutMs === void 0 ? void 0 : setTimeout(() => {
-      if (!settled) {
+      if (!settled && !exited) {
         deadlineExpired = true;
         terminate();
       }
@@ -21264,6 +21268,11 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
       clearTimeout(killEscalation);
       abortSignal?.removeEventListener("abort", terminate);
       reject(error);
+    });
+    child.on("exit", () => {
+      exited = true;
+      clearTimeout(timeout);
+      clearTimeout(killEscalation);
     });
     child.on("close", (exitCode, signal) => {
       if (settled) {

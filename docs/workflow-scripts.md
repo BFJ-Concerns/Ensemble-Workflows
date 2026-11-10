@@ -599,16 +599,19 @@ await builder.close();
 - **Claude follow-ups need tmux:** a private attach client loads the complete
   UTF-8 message through Claude Code's external prompt editor, then submits it
   once. The payload stays in a private file, avoiding command-line size and
-  per-character input limits. It arrives as ordinary typed text, so a leading
-  `/skill` line expands. Ensemble overrides `VISUAL` and `EDITOR` only for
-  that attach client and removes its files and tmux server after delivery.
+  per-character input limits. Tasks with leading or trailing whitespace use
+  the opening's collision-free task tags, preserving the caller's text inside
+  the message boundary. Redelivery repeats that framed copy. Tasks without
+  edge whitespace arrive as ordinary typed text, so a leading `/skill` line
+  expands. Ensemble overrides `VISUAL` and `EDITOR` only for that attach client and removes its files and tmux server after delivery.
   It loads no tmux configuration and does not appear among your own sessions.
   Delivery requires a new native user row equal to the message sent (or the
   matching command name and arguments for a slash command). Roster activity
   and model output do not prove delivery. Missing or differing text fails with
   `claude-delivery-error`, including UTF-8 lengths and SHA-256 digests for a
-  mismatch. Ensemble applies no whitespace conversion: if Claude's normal
-  editor/submission handling trims or transforms the text, equality fails.
+  mismatch. Ensemble applies no whitespace conversion to the caller's task;
+  delivery compares the complete framed message where tags are needed. Any
+  other transformation by native submission still fails equality.
   Model context limits still apply after successful delivery; a subsequent
   context rejection retains the model's diagnostic on the failed attempt.
   Without tmux, follow-ups and corrections fail rather than starting a fresh worker.

@@ -16548,6 +16548,9 @@ function addProviderCost(target, event) {
 async function resolveRunDirectory(storeDir, cwd, runUuid) {
   return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
 }
+async function resolveRunId(cwd, runUuid) {
+  return `${(await deriveNamespace(cwd)).id}:${runUuid}`;
+}
 async function reapAbandonedRuns(options) {
   const procDir = options.procDir ?? "/proc";
   const host = options.host ?? os.hostname();
@@ -32477,7 +32480,7 @@ async function runEnsembleCli(argv, options = {}) {
       });
       if (await statusWriter.ready()) {
         try {
-          stderr.write(`[status-file] ${JSON.stringify({ run_id: runtimeRunId, status_path: statusWriter.path })}
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: runRecordWriter?.manifest.run_id ?? await resolveRunId(cwd, runtimeRunId), status_path: statusWriter.path })}
 `);
         } catch {
         }

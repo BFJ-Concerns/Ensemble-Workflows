@@ -14,7 +14,7 @@ import { boundedEvidence, presentOperationalError, presentTerminalError } from "
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
-import { RunRecordWriter } from "./run-record.js";
+import { resolveRunId, RunRecordWriter } from "./run-record.js";
 import { judgeResources } from "./resource-preflight.js";
 
 import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
@@ -439,7 +439,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       });
       if (await statusWriter.ready()) {
         try {
-          stderr.write(`[status-file] ${JSON.stringify({ run_id: runtimeRunId, status_path: statusWriter.path })}\n`);
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: runRecordWriter?.manifest.run_id ?? await resolveRunId(cwd, runtimeRunId), status_path: statusWriter.path })}\n`);
         } catch {
           // A broken supervision stream cannot fail a run that published status.
         }

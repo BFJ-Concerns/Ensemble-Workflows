@@ -2169,3 +2169,26 @@ test("a held Claude turn retains observed identity before new assistant output",
     } finally { await held.close(); await adapter.close(); }
   });
 });
+
+test("a successful native turn retains the account of a launch that could not be safely discarded", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-recovered-launch-"));
+  const diagnostics = { claudeLaunch: { failure: "attachment outcome uncertain", cleanupConfirmed: false, command: { exitCode: 0 } } };
+  class AccountedLaunch extends FakeControlPlane {
+    override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+      const handle = await super.dispatch(options);
+      return { ...handle, launchFailure: { message: "attachment outcome uncertain", diagnostics } };
+    }
+  }
+  const plane = new AccountedLaunch(dir, [{ assistant: { text: "answer" } }]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = makeRuntime(plane, { maxAttempts: 1 });
+  runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); } } as unknown as RunRecordWriter);
+  try {
+    assert.equal(await runtime.agent("decide", { engine: "claude" }), "answer");
+    assert.equal(records.at(-1)?.status, "complete");
+    assert.deepEqual(records.at(-1)?.attempts[0]?.diagnostics, diagnostics);
+  } finally {
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

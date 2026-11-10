@@ -930,6 +930,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     const usageEvent = this.#usageEvent(handle, usage, usage);
     return {
       text,
+      ...(handle.launchFailure === undefined ? {} : { diagnostics: handle.launchFailure.diagnostics }),
       ...(resolvedModel !== null ? { resolvedModel } : {}),
       ...(resolvedEffort !== null ? { resolvedEffort } : {}),
       ...(this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {}),

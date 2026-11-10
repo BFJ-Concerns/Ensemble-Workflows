@@ -14,7 +14,8 @@ import { TYPED_FOLLOW_UP_OPENING_PROMPT } from "./claude-follow-up-typed-prompts
 const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 for (const [size, trailingNewline] of [[300_000, false], [2_000_000, false], [0, true]] as const) {
-  test(`built Claude opening arrives as one exact native user turn at ${size} characters${trailingNewline ? " with a trailing newline" : ""}`, {
+  test(trailingNewline ? "built Claude opening reports native input changes without fallback" :
+    `built Claude opening arrives as one exact native user turn at ${size} characters`, {
     skip: process.env.ENSEMBLE_LIVE !== "1", timeout: 360_000
   }, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-live-"));

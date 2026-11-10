@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The gate rebuilt and checked the tracked launcher at this same SHA.
+      # Version checking must not rebuild it and conceal a stale version.
+      - name: Check version and tag
+        run: |
+          node scripts/release-version.mjs check "$RELEASE_TAG"
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p "$RUNNER_TEMP/ensemble-release"
+          cp skills/ensemble-workflow/Base/scripts/ensemble.mjs "$RUNNER_TEMP/ensemble-release/ensemble.mjs"
+          cd "$RUNNER_TEMP/ensemble-release"
+          sha256sum ensemble.mjs > SHA256SUMS
+
+      - name: Publish GitHub Release
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "$RUNNER_TEMP/ensemble-release/ensemble.mjs" \
+            "$RUNNER_TEMP/ensemble-release/SHA256SUMS" \
+            --verify-tag --title "$RELEASE_TAG" --generate-notes
+
+      - name: Read back published assets
+        run: |
+          expected=$(node scripts/release-artifact.mjs digest)
+          actual=$(node scripts/release-artifact.mjs read "$RELEASE_TAG")
+          test "$actual" = "$expected"

@@ -8,7 +8,8 @@ import type { LiveAgentSnapshot } from "../../src/progress.js";
 import type { TurnProgressObserver } from "../../src/app-server.js";
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { CodexEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { parallel } from "../../src/hooks.js";
+import { createWorkflowHooks, parallel, pipeline } from "../../src/hooks.js";
+import { isRunEnding } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import {
   AgentCwdRejectedError,
@@ -37,7 +38,7 @@ import {
 } from "../../src/errors.js";
 
 import { RunRecordWriter, type RuntimeAgentRecord } from "../../src/run-record.js";
-import { Scheduler } from "../../src/scheduler.js";
+import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
 import type { EngineAdapter, EngineAttemptContext, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
 
@@ -528,6 +529,69 @@ test("the spawn boundary: the run's own ending still throws through a dispatched
   await assert.rejects(leg, EngineShutdownError);
   assert.equal(records.at(-1)?.status, "interrupted");
   assert.equal(records.at(-1)?.terminationCause?.kind, "run-interrupted");
+});
+
+test("the run's own ending throws through parallel() and pipeline(), never collapsing to a slot the body resumes on", async () => {
+  // End to end from the raise site: the run closes under a leg inside a
+  // fan-out, and the combinator rejects with the run's ending rather than
+  // resolving `[null]` — identity envelope or not.
+  for (const identity of [false, true]) {
+    const transport = new ClosingTransport(new EngineShutdownError("codex"));
+    const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+    const logs: string[] = [];
+    const fanOut = parallel([() => runtime.agent("outlive the run", { engine: "codex", ...(identity ? { identity: true, label: "builder" } : {}) })], (message) => logs.push(message));
+    await transport.started;
+    await runtime.close("interrupted");
+    await assert.rejects(fanOut, (error: unknown) => error instanceof EngineShutdownError && isRunEnding(error));
+    assert.deepEqual(logs, [], `identity ${identity}: the ending is not logged as a collapsed thunk`);
+    const record = runtime.lastAgentRecord();
+    assert.equal(record?.status, "interrupted");
+    assert.equal(record?.terminationCause?.kind, "run-interrupted");
+  }
+  const transport = new ClosingTransport(new EngineShutdownError("codex"));
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const chain = pipeline(["item"], [() => runtime.agent("outlive the run", { engine: "codex" })], () => {});
+  await transport.started;
+  await runtime.close("interrupted");
+  await assert.rejects(chain, (error: unknown) => error instanceof EngineShutdownError && isRunEnding(error));
+});
+
+test("a queued leg the shutdown cancels, and a call made after the run began ending, leave marked as the run's ending too", async () => {
+  // The queued path settles before #executeAgent and so never reaches its
+  // marking site; a call after close never reaches a worker at all. Both
+  // are the run's ending reaching the body, and both must rethrow through
+  // a combinator rather than collapse to a slot the body resumes on.
+  const transport = new ClosingTransport(new EngineShutdownError("codex"));
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const inFlight = runtime.agent("holds the one slot", { engine: "codex" });
+  await transport.started;
+  const queued = parallel([() => runtime.agent("waits for the slot", { engine: "codex" })], () => {});
+  await runtime.close("interrupted");
+  await assert.rejects(inFlight, (error: unknown) => error instanceof EngineShutdownError && isRunEnding(error));
+  await assert.rejects(queued, (error: unknown) => error instanceof EngineShutdownError && isRunEnding(error));
+  await assert.rejects(parallel([() => runtime.agent("after the ending", { engine: "codex" })], () => {}), (error: unknown) => isRunEnding(error));
+});
+
+test("a combinator the script never awaited is marked handled at close, so the run's ending raises no unhandled rejection", async () => {
+  const transport = new ClosingTransport(new EngineShutdownError("codex"));
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const unhandled: unknown[] = [];
+  const listener = (reason: unknown): void => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", listener);
+  try {
+    const hooks = createWorkflowHooks({ runtime, args: [], log: () => {}, workflow: async () => null });
+    // Started and dropped, as a body that returns without awaiting would.
+    void hooks.parallel([() => runtime.agent("dropped", { engine: "codex" })]);
+    await transport.started;
+    await runtime.close("interrupted");
+    // Unhandled rejections are reported on a later macrotask.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", listener);
+  }
 });
 
 test("an identified schema collapse still carries the worker's identity", async () => {
@@ -3340,47 +3404,6 @@ test("a thrown string reaches the record as the words the engine actually threw"
 // records the chain wrote.
 // ---------------------------------------------------------------------------
 
-/**
- * One scripted engine: each createInvocation consumes the next step for its
- * model. The cap is the adapter's own — the runtime reads an injected
- * adapter's `concurrency`, never the `concurrencyCaps` option, which only
- * shapes the default registry — so a test that wants a cap of one says so
- * here.
- */
-class ChainEngine implements EngineAdapter {
-  readonly concurrency: number;
-  readonly dispatches: Array<{ model: string | undefined; effort: string | undefined; prompt: string }> = [];
-  readonly scheduler: Scheduler;
-  #steps: Array<() => Promise<EngineAttemptResult>>;
-
-  constructor(
-    readonly name: EngineName,
-    steps: Array<() => Promise<EngineAttemptResult>>,
-    concurrency = 4
-  ) {
-    this.#steps = [...steps];
-    this.concurrency = concurrency;
-    this.scheduler = new Scheduler(concurrency);
-  }
-
-  schedule<T>(task: () => Promise<T>): Promise<T> {
-    return this.scheduler.schedule(task);
-  }
-
-  createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
-    this.dispatches.push({ model: options.model, effort: options.effort, prompt });
-    return {
-      runAttempt: async () => {
-        const step = this.#steps.shift();
-        assert.ok(step, `${this.name} engine ran out of scripted steps`);
-        return step();
-      }
-    };
-  }
-
-  async close(): Promise<void> {}
-}
-
 /** A Codex refusal as the transport raises it: the app-server's own code riding the error. */
 function codexRefusal(code: string): () => Promise<EngineAttemptResult> {
   return async () => {
@@ -3397,15 +3420,6 @@ function codexRetriesExhausted(httpStatusCode: number): () => Promise<EngineAtte
       message: `exceeded retry limit, last status: ${httpStatusCode}`
     });
   };
-}
-
-/** A Claude refusal as the engine returns it: a failed result carrying the API's status and code. */
-function claudeRefusal(status: number, code: string): () => Promise<EngineAttemptResult> {
-  return async () => ({
-    ...turn(""),
-    attemptFailure: { kind: "claude-worker-diagnostic", message: `API Error: Request rejected (${status})` },
-    diagnostics: { apiError: { status, code } }
-  });
 }
 
 function answers(text: string, resolvedModel?: string): () => Promise<EngineAttemptResult> {

@@ -67,13 +67,14 @@ const lost = new Set((manifest.integrity.files_lost ?? []).map((entry) => entry.
 // surfacing as whichever read happens to fault first.
 const agentRecordPaths = manifest.files
   .map((file) => file.path)
-  .filter((filePath) => /^agents\/[^/]+\/agent\.json$/.test(filePath));
+  .filter((filePath) => /^agents\/[^/]+\/agent\.json$/.test(path.posix.normalize(filePath)));
 for (const recordPath of agentRecordPaths) {
   assert.ok(
     !lost.has(recordPath),
     `agent record ${recordPath} is named by the manifest but recorded lost; an archive cannot attest a run whose agent records are missing`
   );
-  const record = await lstat(await containedArchivePath(recordPath)).catch(() => null);
+  const containedPath = await containedArchivePath(recordPath);
+  const record = await lstat(containedPath).catch(() => null);
   assert.ok(record !== null, `agent record ${recordPath} is named by the manifest but missing from the archive`);
   // A record must be a file to be one. Anything else standing at the path —
   // a directory, a symlink the containment discipline already refuses to

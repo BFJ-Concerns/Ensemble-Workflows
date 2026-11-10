@@ -14148,17 +14148,21 @@ var ClaudeCollectionError = class extends ClaudeWorkerError {
 var ClaudeWorkerDiagnosticError = class extends ClaudeWorkerError {
 };
 var OpenCodeModelRequiredError = class extends AgentOptionRejectedError {
-  constructor(registered) {
-    super(`agent({ engine:'opencode' }) requires a model from the opencode registry; ${registeredOpenCodeModels(registered)}`);
+  constructor(registry) {
+    super(`agent({ engine:'opencode' }) requires a model from the opencode registry; ${registeredOpenCodeModels(registry)}`);
   }
 };
 var OpenCodeModelNotRegisteredError = class extends AgentOptionRejectedError {
-  constructor(model, registered) {
-    super(`OpenCode model ${JSON.stringify(model)} is not registered; ${registeredOpenCodeModels(registered)}`);
+  constructor(model, registry) {
+    super(`OpenCode model ${JSON.stringify(model)} is not registered; ${registeredOpenCodeModels(registry)}`);
   }
 };
-function registeredOpenCodeModels(registered) {
-  return registered.length > 0 ? `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}` : "no opencode models are declared; declare them under opencode_models in the machine configuration ($XDG_CONFIG_HOME/ensemble/config.json)";
+function registeredOpenCodeModels(registry) {
+  const registered = registry.names();
+  if (registered.length > 0) {
+    return `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`;
+  }
+  return registry.source.kind === "machine-config" ? `no opencode models are declared; declare them under opencode_models in the machine configuration (${registry.source.file})` : "no opencode models are declared; supply model entries through openCodeModels or the adapter's modelRegistry";
 }
 function renderDiagnostic(value) {
   try {
@@ -14320,7 +14324,9 @@ function resolveStripEnforcement(engine, table, strip) {
 var StaticOpenCodeModelRegistry = class {
   #models = /* @__PURE__ */ new Map();
   #names;
-  constructor(models) {
+  source;
+  constructor(models, source) {
+    this.source = source;
     for (const model of models) {
       for (const name of /* @__PURE__ */ new Set([model.key, model.providerModel])) {
         const claimed = this.#models.get(name);
@@ -14341,8 +14347,8 @@ var StaticOpenCodeModelRegistry = class {
     return [...this.#names];
   }
 };
-function createOpenCodeModelRegistry(models) {
-  return new StaticOpenCodeModelRegistry(models);
+function createOpenCodeModelRegistry(models, source = { kind: "caller" }) {
+  return new StaticOpenCodeModelRegistry(models, source);
 }
 var defaultOpenCodeModelRegistry = createOpenCodeModelRegistry([]);
 
@@ -14560,7 +14566,7 @@ function assertValidFallbackChain(chain) {
 function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRegistry) {
   const registered = registry.get(model);
   if (registered === void 0) {
-    throw new OpenCodeModelNotRegisteredError(model, registry.names());
+    throw new OpenCodeModelNotRegisteredError(model, registry);
   }
   return registered;
 }
@@ -23123,7 +23129,7 @@ var OpenCodeEngineAdapter = class {
       throw new EngineShutdownError(this.name);
     }
     if (options.model === void 0) {
-      throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
+      throw new OpenCodeModelRequiredError(this.#modelRegistry);
     }
     const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
     if (options.effort !== void 0 && !model.variants.includes(options.effort)) {
@@ -23195,7 +23201,7 @@ async function createDefaultEngineRegistry(options) {
         ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
         ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
         ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
-        ...options.openCodeModels !== void 0 ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {},
+        ...options.openCodeModels !== void 0 || options.openCodeModelSource !== void 0 ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels ?? [], options.openCodeModelSource) } : {},
         onEvent: options.onOpenCodeEvent
       })
     ],
@@ -23497,6 +23503,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
       ...options.workerEnvironment !== void 0 ? { workerEnvironment: options.workerEnvironment } : {},
       ...options.openCodeModels !== void 0 ? { openCodeModels: options.openCodeModels } : {},
+      ...options.openCodeModelSource !== void 0 ? { openCodeModelSource: options.openCodeModelSource } : {},
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? harnessVersion(),
@@ -23641,7 +23648,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     if (engine instanceof OpenCodeEngineAdapter) {
       if (options.model === void 0) {
-        throw new OpenCodeModelRequiredError(engine.modelRegistry.names());
+        throw new OpenCodeModelRequiredError(engine.modelRegistry);
       }
       validateEngineDefaults(engine.name, options, engine.modelRegistry);
     }
@@ -32565,6 +32572,9 @@ async function runEnsembleCli(argv, options = {}) {
       ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
       ...Object.keys(ambientSettings.workerEnvironment).length > 0 ? { workerEnvironment: ambientSettings.workerEnvironment } : {},
       ...ambientSettings.openCodeModels.length > 0 ? { openCodeModels: ambientSettings.openCodeModels } : {},
+      // The file as resolved from this invocation's env, not process.env:
+      // a refusal names the file this run actually read.
+      openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;

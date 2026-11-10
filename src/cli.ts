@@ -379,6 +379,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         ? { workerEnvironment: ambientSettings.workerEnvironment }
         : {}),
       ...(ambientSettings.openCodeModels.length > 0 ? { openCodeModels: ambientSettings.openCodeModels } : {}),
+      // The file as resolved from this invocation's env, not process.env:
+      // a refusal names the file this run actually read.
+      openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     // The CLI `--timeout` flag wins over a programmatically injected one; both

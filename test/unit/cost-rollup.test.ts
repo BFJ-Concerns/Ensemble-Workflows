@@ -224,14 +224,9 @@ test("a run deadline marks only the attempt it cut short timed out", () => {
   ]);
 });
 
-test("an agent known to have started nothing books a complete unresolved leaf", () => {
+test("an agent known to have started nothing books no leaf", () => {
   const rollup = buildCostRollup([agent(2, [])]);
-  assert.deepEqual(rollup.codex?.unresolved, {
-    tokens: { unavailable: "no-usage-reported" },
-    cost: { unavailable: "no-provider-cost-reported" },
-    complete: true,
-    unobserved: []
-  });
+  assert.deepEqual(rollup, {});
 });
 
 test("an agent whose start evidence may be missing books an unnumbered unobserved attempt", () => {

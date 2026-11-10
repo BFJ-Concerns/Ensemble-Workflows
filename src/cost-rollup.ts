@@ -344,11 +344,9 @@ export function buildCostRollup(agents: readonly RollupAgentView[]): CostRollup 
         measured: summary === null ? "none" : "partial"
       });
     }
-    if (agent.attempts.length === 0 || agent.mayHaveUnlistedAttempt) {
+    if (agent.mayHaveUnlistedAttempt) {
       const bucket = bucketFor(agent.engine, "unresolved");
-      if (agent.mayHaveUnlistedAttempt) {
-        bucket.unobserved.push({ agent: agent.id, attempt: null, reason: "record-unsettled", measured: "none" });
-      }
+      bucket.unobserved.push({ agent: agent.id, attempt: null, reason: "record-unsettled", measured: "none" });
     }
   }
 

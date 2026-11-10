@@ -384,7 +384,7 @@ test("CLI records effective concurrency values with mixed-layer provenance", asy
   });
 });
 
-test("a dispatched worker with no usage has an unresolved roll-up reason", async () => {
+test("only attempted workers book roll-up leaves, with a reason for missing usage", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "ensemble-empty-rollup-"));
   try {
     const start = (runUuid: string) => RunRecordWriter.start({
@@ -403,7 +403,7 @@ test("a dispatched worker with no usage has an unresolved roll-up reason", async
     };
     assert.deepEqual(emptyManifest.cost_rollup, {});
 
-    const writer = await start("cut-short-worker");
+    const writer = await start("never-dispatched-worker");
     const worker = agentRecord(1, "codex", null, 0);
     worker.status = "timed-out";
     worker.attempts = [];
@@ -413,9 +413,7 @@ test("a dispatched worker with no usage has an unresolved roll-up reason", async
     const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
       cost_rollup: Record<string, Record<string, unknown>>;
     };
-    assert.deepEqual(manifest.cost_rollup.codex?.unresolved, {
-      tokens: { unavailable: "no-usage-reported" }, cost: { unavailable: "no-provider-cost-reported" }, complete: true, unobserved: []
-    });
+    assert.deepEqual(manifest.cost_rollup, {});
 
     const attempted = await start("attempt-without-usage");
     const attempt = agentRecord(1, "codex", null, 0);

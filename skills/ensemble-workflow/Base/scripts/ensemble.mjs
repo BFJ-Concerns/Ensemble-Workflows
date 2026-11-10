@@ -25323,7 +25323,7 @@ async function parallel(thunks, log, presentError) {
       try {
         return await thunk();
       } catch (error) {
-        if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
+        if (error instanceof PreSpawnAuthorError || error instanceof BudgetExceededError || isRunEnding(error)) {
           throw error;
         }
         presentError?.(error);
@@ -25354,7 +25354,7 @@ async function pipeline(items, stages, log, presentError) {
         try {
           previous = await stage(previous, item, index);
         } catch (error) {
-          if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
+          if (error instanceof PreSpawnAuthorError || error instanceof BudgetExceededError || isRunEnding(error)) {
             throw error;
           }
           presentError?.(error);

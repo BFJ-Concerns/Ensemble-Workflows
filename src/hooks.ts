@@ -1,6 +1,6 @@
 import { assertValidAgentOptions } from "./engine-option-validation.js";
 import { attributeMergedChain } from "./fallback-source.js";
-import { PreSpawnAuthorError, agentIdentityOf, isRunEnding } from "./errors.js";
+import { BudgetExceededError, PreSpawnAuthorError, agentIdentityOf, isRunEnding } from "./errors.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 
 import type {
@@ -204,10 +204,11 @@ export async function parallel<T>(
         // The exempt family, not one class: any pre-spawn author error —
         // a rejected option, an unresolvable workflow() reference, a
         // nesting violation — fails the run rather than nulling the slot.
-        // The run's own ending passes through likewise: a leg the shutdown
-        // tore down is not a worker failing, and collapsing it would let
-        // the body resume past this await and act on a run that has ended.
-        if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
+        // Budget refusals also propagate: a refused dispatch or turn is
+        // not a worker failure. The run's own ending passes through too:
+        // a leg torn down at shutdown is not a worker failing. Collapsing
+        // it would let the body resume and act on a run that has ended.
+        if (error instanceof PreSpawnAuthorError || error instanceof BudgetExceededError || isRunEnding(error)) {
           throw error;
         }
         presentError?.(error);
@@ -252,9 +253,9 @@ export async function pipeline<Item>(
         try {
           previous = await stage(previous, item, index);
         } catch (error) {
-          // Same two pass-throughs as parallel(): the author family, and
-          // the run's own ending.
-          if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
+          // Same pass-throughs as parallel(): author errors, budget
+          // refusals, and the run's own ending.
+          if (error instanceof PreSpawnAuthorError || error instanceof BudgetExceededError || isRunEnding(error)) {
             throw error;
           }
           presentError?.(error);

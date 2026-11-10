@@ -554,20 +554,20 @@ test("the staleness mark trips at the threshold, stays off when disabled, and ne
   await runtime.close();
 });
 
-test("a machine-declared Claude cache TTL sets the staleness cliff, so mark and cache share one clock", async () => {
-  // create() wires the declared worker environment through to the session
-  // threshold; construction is lazy, so no engine process ever starts.
+test("Claude staleness uses one hour unless the library option overrides it", async () => {
+  // API-billing TTL variables do not change the subscription threshold.
+  // Construction is lazy, so no engine process ever starts.
   const declared = await EnsembleRuntime.create({
     workerEnvironment: { claude: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" } }
   });
-  assert.equal(declared.createWorkerSession({ engine: "claude" }).staleAfterMs, 300_000);
+  assert.equal(declared.createWorkerSession({ engine: "claude" }).staleAfterMs, 3_600_000);
   await declared.close();
 
   const undeclared = await EnsembleRuntime.create({});
   assert.equal(undeclared.createWorkerSession({ engine: "claude" }).staleAfterMs, 3_600_000);
   await undeclared.close();
 
-  // The explicit library option still outranks the declaration.
+  // The explicit library option controls the advisory threshold.
   const explicit = await EnsembleRuntime.create({
     workerEnvironment: { claude: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" } },
     claudeSessionStaleAfterMs: 1_000
@@ -726,16 +726,16 @@ test("a claude session's follow-up turn steers the created session, never a fres
   });
 });
 
-test("a claude session is dispatched with the 1-hour cache TTL; a one-shot worker is not", async () => {
+test("Claude sessions and one-shot workers dispatch without a cache TTL", async () => {
   await withClaudeRuntime([{ text: "session reply" }, { text: "one-shot reply" }], async (runtime, controlPlane) => {
     const session = runtime.createWorkerSession({ engine: "claude" });
     await session.send("loiter");
     await runtime.agent("one and done", { engine: "claude" });
 
-    assert.equal(controlPlane.dispatched[0]?.cacheTtl, "1h");
-    // The negative arm is the discriminating case: a blanket raise would
-    // spend the write premium on workers that gain nothing from it.
-    assert.equal(controlPlane.dispatched[1]?.cacheTtl, undefined);
+    assert.equal(controlPlane.dispatched.length, 2);
+    for (const dispatch of controlPlane.dispatched) {
+      assert.equal(Object.hasOwn(dispatch, "cacheTtl"), false);
+    }
     await runtime.close();
   });
 });

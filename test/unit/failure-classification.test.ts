@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyAttemptFailure } from "../../src/failure-classification.js";
+import { classifyAttemptFailure, diagnoseAttemptFailure } from "../../src/failure-classification.js";
 
 import type { AttemptFailureEvidence } from "../../src/failure-classification.js";
 
@@ -206,5 +206,34 @@ test("run settlement and a local engine shutdown have distinct non-refusal rules
       classifyAttemptFailure(evidence({ engine, failure: { kind: "EngineShutdownError", message: "shutting down" } })),
       { class: "unclassified", rule: "engine-shutdown" }
     );
+  }
+});
+
+test("credential diagnoses preserve engine evidence and name each engine's sign-in step", () => {
+  for (const [engine, remedy] of [["codex", "codex login"], ["claude", "claude auth login"], ["opencode", "opencode auth login"]] as const) {
+    const input = evidence({ engine, failure: { kind: "engine-error", message: "HTTP 401: invalid credentials" } });
+    const failure = diagnoseAttemptFailure(input);
+    assert.equal(failure.kind, "authentication-failure");
+    assert.ok(failure.message.includes(remedy));
+    assert.ok(failure.message.includes(input.failure.message));
+    assert.deepEqual(classifyAttemptFailure({ ...input, failure }), { class: "unclassified", rule: `${engine}.authentication-failure` });
+  }
+  const input = evidence({ engine: "codex", failure: { kind: "engine-error", message: "gateway mentions invalid_api_key" }, appServerDiagnostic: { code: "serverOverloaded", httpStatusCode: 503 } });
+  assert.deepEqual(diagnoseAttemptFailure(input), input.failure);
+  assert.equal(diagnoseAttemptFailure(evidence({ engine: "claude", failure: { kind: "claude-worker-diagnostic", message: "denied" }, diagnostics: { apiError: { status: 401, code: "authentication_error" } } })).kind, "authentication-failure");
+});
+
+test("credential words do not override an established availability diagnosis", () => {
+  const cases: Array<[AttemptFailureEvidence, string]> = [
+    [evidence({ engine: "codex", failure: { kind: "AppServerExitedError", message: "Recent stderr: 401 Unauthorized" } }), "codex.substrate-dead"],
+    [evidence({ engine: "codex", failure: { kind: "CodexSubstrateRefusedError", message: "Recent stderr: HTTP 401" } }), "codex.substrate-refused"],
+    [evidence({ engine: "claude", failure: { kind: "ClaudeDispatchError", message: "authentication failed" } }), "claude.dispatch-refused"],
+    [evidence({ engine: "claude", failure: { kind: "claude-registration-timeout", message: "invalid_api_key" } }), "claude.no-registration"],
+    [evidence({ engine: "codex", failure: { kind: "AppServerRequestError", message: "HTTP 401" }, appServerDiagnostic: { code: "httpConnectionFailed" } }), "codex.provider-unreachable"]
+  ];
+  for (const [input, rule] of cases) {
+    const failure = diagnoseAttemptFailure(input);
+    assert.deepEqual(failure, input.failure);
+    assert.deepEqual(classifyAttemptFailure({ ...input, failure }), { class: "availability", rule });
   }
 });

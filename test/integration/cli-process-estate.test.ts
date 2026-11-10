@@ -1492,7 +1492,7 @@ test("ensemble agent reports retry exhaustion as a failed partial run through th
     assert.equal(direct.code, 1);
     assertSalvageEnvelope(direct.stdout, "failed");
     assert.doesNotMatch(direct.stdout, /^null$/m);
-    assert.match(direct.stderr, /Agent exhausted its attempts without producing a result/);
+    assert.match(direct.stderr, /agent output did not contain parseable JSON/);
     assert.equal(
       (await fixture.messages()).filter((message) => message.method === "turn/start").length,
       3,
@@ -1551,7 +1551,7 @@ test("ensemble agent gives a supervisor terminal evidence in foreground and redi
       exitCode: 1,
       stdout: { reason: "failed" as const },
       outcome: "failed",
-      error: /Agent exhausted its attempts without producing a result/,
+      error: /agent output did not contain parseable JSON/,
       agentStatus: "failed"
     }
   ];
@@ -3150,3 +3150,44 @@ test("the built launcher archives worker grouping with its winning setting layer
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+for (const diagnostic of [
+  { name: "credentials", info: { responseStreamDisconnected: { httpStatusCode: 401 } }, message: "unexpected status 401 Unauthorized: Missing bearer or basic authentication", kind: "authentication-failure", remedy: /codex login/, attempts: 3 },
+  { name: "unknown-model", info: "modelNotFound", message: "The model missing-model does not exist", kind: "model-not-found", remedy: /choose a model.*\/model/, attempts: 3 }
+]) {
+  test(`built single agent surfaces ${diagnostic.name} in stderr, envelope and archive`, async () => {
+    const fixture = await createProcessFixture(`engine-diagnosis-${diagnostic.name}`, "unused");
+    const recordStore = path.join(path.dirname(fixture.script), "records");
+    const error = { error: { message: diagnostic.message, codexErrorInfo: diagnostic.info }, willRetry: false };
+    try {
+      const result = await fixture.runArgsWithEnv(
+        ["agent", "--engine=codex", "--model=missing-model", "hello"],
+        {
+          ...(diagnostic.name === "unknown-model" ? {
+            // The captured modelNotFound diagnostic is newer than CI's Codex
+            // 0.160.0 schema; exercise it as an explicit forward-compatibility frame.
+            ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(Array.from({ length: 3 }, () => [{
+              method: "error", params: error,
+              allowMalformed: "modelNotFound is absent from the Codex 0.160.0 notification schema"
+            }]))
+          } : { ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE: JSON.stringify([error, error, error]) }),
+          ENSEMBLE_RUN_RECORD: "1",
+          ENSEMBLE_RUN_RECORD_DIR: recordStore
+        }
+      );
+      assert.equal(result.code, 1, result.stderr);
+      const envelope = JSON.parse(result.stdout);
+      assert.equal(envelope.error.kind, diagnostic.kind);
+      assert.match(envelope.error.message, diagnostic.remedy);
+      assert.ok(envelope.error.message.includes(diagnostic.message));
+      assert.match(result.stderr, diagnostic.remedy);
+      assert.doesNotMatch(result.stdout + result.stderr, /Agent exhausted its attempts/);
+      const agent = await loadOnlyAgentRecord(recordStore);
+      assert.equal(agent.attempts.length, diagnostic.attempts);
+      assert.deepEqual(envelope.error, agent.attempts.at(-1)?.failure);
+      assert.equal((await fixture.messages()).filter(message => message.method === "turn/start").length, diagnostic.attempts);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+}

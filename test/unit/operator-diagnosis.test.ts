@@ -295,7 +295,7 @@ test("worker-controlled terminal control sequences never reach operator stderr",
   // interleaved with the text an operator must still see.
   const hostile =
     "before \x1b]0;pwned\x07middle \x1b[2Jkept \x1b(Balso\x07 after \x1b]8;;http://evil\x1b\\done";
-  const failed = new Error("Agent exhausted its attempts without producing a result");
+  const failed = new Error(hostile);
   failed.name = "SingleAgentFailedError";
   const record = {
     id: 7,
@@ -313,6 +313,22 @@ test("worker-controlled terminal control sequences never reach operator stderr",
   // On the pre-fix tree the OSC payload and CSI bytes passed through whole;
   // the payload is consumed with its sequence, not just the introducer.
   assert.doesNotMatch(rendered, /pwned/);
+  assert.equal(failed.message, hostile, "structured failure evidence remains unchanged");
+});
+
+test("a single-agent headline does not repeat its last attempt diagnostic", () => {
+  const message = "codex authentication failed. Run `codex login`.";
+  const failed = new Error(message);
+  failed.name = "SingleAgentFailedError";
+  const record = {
+    id: 7,
+    attempts: [{ attempt: 1, failure: { kind: "authentication-failure", message }, rawOutput: null }]
+  } as unknown as RuntimeAgentRecord;
+  const rendered = presentTerminalError(failed, { archiveDir: null, lastAgentRecord: record });
+  assert.ok(rendered !== null);
+  assert.equal(rendered.split(message).length - 1, 1);
+  assert.match(rendered, /attempt 1 \(authentication-failure\):/);
+  assert.equal(presentTerminalError(failed, noContext), message);
 });
 
 test("the combinators' context-free presentation uses the same seam", () => {

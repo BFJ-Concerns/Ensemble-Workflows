@@ -616,7 +616,11 @@ The fields present throughout a record's lifetime are:
   that died or never started — the one class that advances a fallback chain,
   consuming no attempt when it does), `"output"` (the worker answered badly: empty,
   unparseable, off-schema — retried in place), or `"unclassified"` (including
-  a Codex rejection of the authored schema before generation). `rule` names
+  rejected credentials and a Codex rejection of the authored schema before
+  generation). Credential failures use kind `authentication-failure` and rule
+  `<engine>.authentication-failure`; Codex unknown-model failures use kind
+  `model-not-found` and rule `codex.model-not-found`. Both keep the engine's
+  diagnostic and add a recovery step to `failure.message`. `rule` names
   the classifier rule that matched (`codex.usage-limit`, `claude.rate-limit`,
   `codex.substrate-dead`, `engine-shutdown`, `run-settlement`, …) and is `null`
   only when no rule recognised the diagnostic — a sign that an engine's error wording is not

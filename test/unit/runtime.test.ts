@@ -4293,6 +4293,35 @@ test("a Codex substrate refusal advances the chain to a Claude target, costing n
   await runtime.close();
 });
 
+test("credential text in substrate failures still advances the fallback chain", async () => {
+  for (const engine of ["codex", "claude"] as const) {
+    for (const schema of [false, true]) {
+      const failure = engine === "codex"
+        ? new AppServerExitedError("Recent stderr: 401 Unauthorized")
+        : new ClaudeDispatchError("launch refused: authentication failed");
+      const failing = new ChainEngine(engine, [async () => { throw failure; }]);
+      const fallbackEngine = engine === "codex" ? "claude" : "codex";
+      const fallback = new ChainEngine(fallbackEngine, [answers(schema ? '{"answer":"fallback"}' : "fallback")]);
+      const { runtime, records } = chainRuntime([failing, fallback], 1);
+      try {
+        const output = await runtime.agent("work", {
+          engine,
+          ...(schema ? { schema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } } : {}),
+          fallback: [{ engine: fallbackEngine, model: "fallback-model" }]
+        });
+        assert.deepEqual(output, schema ? { answer: "fallback" } : "fallback");
+        const settled = records.at(-1)!;
+        assert.equal(settled.attempts[0]?.failure?.message, failure.message);
+        assert.equal(settled.attempts[0]?.classification?.class, "availability");
+        assert.equal(settled.answeredBy?.engine, fallbackEngine);
+        assert.equal(settled.attempts.length, 2);
+      } finally {
+        await runtime.close();
+      }
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------
 // The chain made visible: each failed attempt's recorded decision, and the
 // notices that carry the record's account of the chain to the terminal.

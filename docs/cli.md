@@ -106,8 +106,11 @@ flag: a fallback chain is declared in a script. With `--isolation worktree`
 the worker's branch is reported on stderr, and a branch containing changed
 work is kept.
 
-A worker that exhausts its attempts exits 1 with the partial-result envelope
-(below) rather than printing a bare `null`. If the schema accepts JSON `null`
+A failed worker exits 1 with the partial-result envelope (below) rather than
+printing a bare `null`. Its `error.kind` and `error.message` carry the last
+attempt's failure, including the engine diagnostic and any recovery step.
+Authentication failures name the engine's sign-in command; Codex
+`modelNotFound` errors explain how to choose an available model. If the schema accepts JSON `null`
 and the worker returns it, the command exits 0 and prints `null`.
 
 ## Listing saved workflows

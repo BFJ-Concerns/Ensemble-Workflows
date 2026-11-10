@@ -588,9 +588,9 @@ While an attempt executes, on any engine, the record also has
   opencode has no live transcript, so its value stays `null`.
 - `resolved_model` and `resolved_effort`: the served identity the engine has
   reported for this attempt so far, written as it is reported, and `null`
-  until then. A held session's later turn starts with the identity its
-  session already served, including retries of that turn. A fresh session's
-  retry or a fallback step starts again at `null`.
+  until then. A held session's attempts start with the identity its worker
+  already served, including retries of its first turn. A fresh worker or
+  fallback target starts at `null`.
 
 A worker waiting for admission has no `current_attempt`, including while a
 fallback target waits for a slot. The field remains present between retries

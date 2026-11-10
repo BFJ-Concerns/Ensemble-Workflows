@@ -24569,7 +24569,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         attempt: context.attempt,
         startedAt: new Date(startedAt).toISOString(),
         target: { engine: target.engine, model: target.model ?? null },
-        identity: record === void 0 || record.session === null || record.session.turn === 1 ? { resolvedModel: null, resolvedEffort: null } : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
+        identity: record === void 0 || record.session === null ? { resolvedModel: null, resolvedEffort: null } : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
       }));
     }
     this.progress.noteAgentTranscript(agentId, null);

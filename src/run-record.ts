@@ -223,9 +223,10 @@ export interface LiveAttemptStart {
   /**
    * The served identity the attempt starts with: null on both halves for a
    * fresh thread or session (a first attempt, a retry, a fallback step),
-   * whose engine has yet to report; a held session's later turn starts
-   * with the identity its session already served, since that engine does
-   * not report it again for the turn.
+   * whose engine has yet to report; a held session's attempts start with
+   * the identity its worker already served, including retries of the first
+   * turn, since the engine need not report it again. A fallback target is
+   * a fresh worker and starts without the preceding target's identity.
    */
   identity: LiveAttemptIdentity;
 }

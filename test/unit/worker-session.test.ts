@@ -1401,3 +1401,58 @@ test("a later held turn keeps its served identity on every retry start", async (
     ]);
   } finally { await session.close(); await runtime.close(); }
 });
+
+for (const structured of [false, true]) {
+  test(`a first held turn keeps its served identity on ${structured ? "schema" : "text"} retries`, async () => {
+    const transport = new ScriptedTransport([
+      turnResult(structured ? "invalid JSON" : "", { resolvedModel: "served-model", resolvedEffort: "high" }),
+      turnResult(structured ? '{"answer":true}' : "answer")
+    ]);
+    const starts: LiveAttemptStart[] = [];
+    const runtime = codexRuntime(transport);
+    runtime.setRunRecorder({ recordAgent: async () => undefined, recordAttemptEnd: ignoreAttemptEnd,
+      recordAttemptStart: async (_id: number, start: LiveAttemptStart) => { starts.push(start); }
+    } as unknown as RunRecordWriter);
+    const session = runtime.createWorkerSession({ engine: "codex", maxAttempts: 2 });
+    try {
+      const result = await session.send("answer", structured ? { schema: { type: "object", required: ["answer"] } } : {});
+      assert.deepEqual(result, structured ? { answer: true } : "answer");
+      assert.equal(transport.openedThreads.length, 1, "the retry reuses the held worker");
+      assert.deepEqual(starts.map((start) => start.identity), [
+        { resolvedModel: null, resolvedEffort: null },
+        { resolvedModel: "served-model", resolvedEffort: "high" }
+      ]);
+    } finally { await session.close(); await runtime.close(); }
+  });
+}
+
+test("a held turn's fallback target clears the identity its earlier retry retained", async () => {
+  const transport = new ScriptedTransport([
+    turnResult("", { resolvedModel: "first-served", resolvedEffort: "high" }),
+    turnResult("fallback answer")
+  ]);
+  const runTurn = transport.runTurn.bind(transport);
+  let calls = 0;
+  transport.runTurn = async (threadId, prompt, options) => {
+    if (++calls === 2) {
+      throw appServerErrorFromPayload("turn notification", { code: "usageLimitExceeded", message: "refused" });
+    }
+    return runTurn(threadId, prompt, options);
+  };
+  const starts: LiveAttemptStart[] = [];
+  const runtime = codexRuntime(transport);
+  runtime.setRunRecorder({ recordAgent: async () => undefined, recordAttemptEnd: ignoreAttemptEnd,
+    recordAttemptStart: async (_id: number, start: LiveAttemptStart) => { starts.push(start); }
+  } as unknown as RunRecordWriter);
+  const session = runtime.createWorkerSession({ engine: "codex", model: "first-requested", maxAttempts: 2,
+    fallback: [{ engine: "codex", model: "fallback-requested" }] });
+  try {
+    assert.equal(await session.send("answer"), "fallback answer");
+    assert.equal(transport.openedThreads.length, 2, "the fallback creates a fresh worker");
+    assert.deepEqual(starts.map((start) => [start.target.model, start.identity]), [
+      ["first-requested", { resolvedModel: null, resolvedEffort: null }],
+      ["first-requested", { resolvedModel: "first-served", resolvedEffort: "high" }],
+      ["fallback-requested", { resolvedModel: null, resolvedEffort: null }]
+    ]);
+  } finally { await session.close(); await runtime.close(); }
+});

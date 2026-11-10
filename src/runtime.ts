@@ -1770,7 +1770,7 @@ export class EnsembleRuntime {
           attempt: context.attempt,
           startedAt: new Date(startedAt).toISOString(),
           target: { engine: target.engine, model: target.model ?? null },
-          identity: record === undefined || record.session === null || record.session.turn === 1
+          identity: record === undefined || record.session === null
             ? { resolvedModel: null, resolvedEffort: null }
             : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
         }));

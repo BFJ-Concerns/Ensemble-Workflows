@@ -181,17 +181,21 @@ the roster cannot be read, the session's teardown is not confirmed, or no
 session had registered when it looked — stderr says so:
 
 ```text
-[claude] cancelled launch <name> not reclaimed: <reason>; a session registering under that name is left for the operator
+[claude] launch <name> not reclaimed: <reason>; a session under that name is left for the operator
 ```
 
-Such a session holds no prompt, since Ensemble submits the opening only after
-registration. `claude agents` lists it by that name, and `claude stop` and
-`claude rm` end it. Its settings file is left for the next launcher's sweep,
+A dispatch cancelled before registration holds no prompt, since Ensemble
+submits the opening only after registration. A registered tool-surface probe
+holds only its nonce marker. Probe cleanup uses a separate deadline and
+reports this same event if it cannot confirm teardown; it retains the
+settings rather than claiming the session was reclaimed. `claude agents`
+lists it by that name, and `claude stop` and `claude rm` end it. Its settings file is left for the next launcher's sweep,
 which removes it once this launcher has ended. Library event listeners
 receive `claude/launchUnreclaimed` with the dispatch name and the reason. A
 library caller building `ClaudeCliControlPlane` itself sets the cancellation
-bounds with `commandBounds` (`stopGraceMs`, `drainMs`) and the run-end
-reclamation's bound with `reclaimTimeoutMs` (30 seconds by default).
+bounds with `commandBounds` (`stopGraceMs`, `drainMs`).
+`reclaimTimeoutMs` (30 seconds by default) sets the reclamation deadline
+used for probe teardown and run-end cleanup.
 
 Claude sessions and the Codex app-server are placed in transient scopes in
 the slice that holds the launcher. `worker_scope` chooses one scope per Claude

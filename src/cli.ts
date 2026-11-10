@@ -476,8 +476,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       if (event.method === "claude/launchUnreclaimed") {
         const name = boundedEvidence(String(event.params.name ?? "unknown"));
         stderr.write(
-          `[claude] cancelled launch ${name} not reclaimed: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}; ` +
-          "a session registering under that name is left for the operator\n"
+          `[claude] launch ${name} not reclaimed: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}; ` +
+          "a session under that name is left for the operator\n"
         );
         return;
       }

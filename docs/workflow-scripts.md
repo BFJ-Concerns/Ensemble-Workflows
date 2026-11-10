@@ -332,9 +332,13 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   probe fails, or the check does not hold within the preparation deadline,
   the call fails before the worker spawns. The deadline defaults to 90
   seconds; a manually constructed Claude adapter can change
-  [`config.stripPreparationTimeoutMs`](configuration.md#claude-adapter-configuration). This includes a provider-side tool that remains
-  available under its removal settings: the call refuses rather than
-  dispatching with that tool. The result is reused for the rest of the run, for each working directory,
+  [`config.stripPreparationTimeoutMs`](configuration.md#claude-adapter-configuration).
+  Polling shares that deadline. Probe teardown has a separate reclamation
+  deadline (30 seconds by default), plus the command's cancellation grace; unconfirmed
+  cleanup is [reported with the session name](configuration.md#worker_environment).
+  A provider-side tool that remains available under its removal settings
+  also refuses the call. The result is reused for the rest of the run, for
+  each working directory,
   model and strip, until a worker reports serving a different Claude Code
   version. Unstripped workers are never probed.
   The agent record's enforcement detail names the deny rules and `env`

@@ -20017,7 +20017,8 @@ var ClaudeCliControlPlane = class {
     return this.#placements.get(handle.sessionId)?.outcome ?? null;
   }
   async probeToolSurface(request) {
-    request.signal.throwIfAborted();
+    const signal = AbortSignal.any([request.signal, this.#closeController.signal]);
+    signal.throwIfAborted();
     for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) {
       const value = this.#env[key];
       if (value !== void 0 && value !== "0" && value !== "false" && value !== "") {
@@ -20035,13 +20036,13 @@ var ClaudeCliControlPlane = class {
         ...request.model !== void 0 ? { model: request.model } : {},
         permissionDenyRules: [...request.permissionDenyRules],
         settingsEnv: { ...request.settingsEnv, ANTHROPIC_BASE_URL: provider.origin },
-        signal: request.signal
+        signal
       });
       if (handle.launchFailure !== void 0) throw new Error(handle.launchFailure.message);
       let count = 0;
       let lastCapture = Date.now();
       for (; ; ) {
-        request.signal.throwIfAborted();
+        signal.throwIfAborted();
         const captures = provider.requests();
         if (captures.length !== count) {
           count = captures.length;
@@ -20053,16 +20054,28 @@ var ClaudeCliControlPlane = class {
         } catch {
         }
         if (surface !== void 0 && Date.now() - lastCapture >= 1e3) return surface;
-        const status = await this.poll(handle);
+        const status = await this.#poll(handle, signal);
+        signal.throwIfAborted();
         if (!status.present || status.state === "done") return readClaudeToolSurface(provider.requests(), nonce);
-        await sleep(100, void 0, { signal: request.signal });
+        await sleep(100, void 0, { signal });
       }
     } finally {
       try {
-        if (handle !== void 0) await this.stop(handle);
+        if (handle !== void 0) {
+          const cleanup = AbortSignal.timeout(this.#reclaimTimeoutMs);
+          const confirmed = await this.#stopSession(handle, true, cleanup).catch(() => false);
+          if (!confirmed) {
+            this.#onEvent?.({
+              method: "claude/launchUnreclaimed",
+              params: { name: handle.name, reason: "tool-surface probe session cleanup was not confirmed within the reclamation bound" },
+              receivedAt: Date.now()
+            });
+          }
+        }
       } finally {
         await provider.close();
       }
+      signal.throwIfAborted();
     }
   }
   async dispatch(options) {
@@ -20124,7 +20137,7 @@ var ClaudeCliControlPlane = class {
           }
           if (candidate.pid !== null && !placed) {
             placementDeadline ??= Date.now() + this.#placementSettleMs;
-            const outcome = await this.#place(registered, candidate.pid);
+            const outcome = await this.#observePlacement(this.#place(registered, candidate.pid), signal);
             placed = outcome.kind !== "refused" || Date.now() >= placementDeadline;
           }
         }
@@ -20298,7 +20311,11 @@ var ClaudeCliControlPlane = class {
     }
   }
   async poll(handle) {
-    const roster = await this.#roster();
+    return this.#poll(handle);
+  }
+  async #poll(handle, signal) {
+    const roster = await this.#roster(signal);
+    signal?.throwIfAborted();
     if (!roster.ok) {
       return { status: "unknown", state: "unknown", present: true };
     }
@@ -20308,7 +20325,7 @@ var ClaudeCliControlPlane = class {
     }
     const previous = this.#placements.get(handle.sessionId);
     if (typeof record.pid === "number" && (previous?.pid !== record.pid || previous.outcome.kind === "refused")) {
-      await this.#place(handle, record.pid);
+      await this.#observePlacement(this.#place(handle, record.pid), signal);
     }
     const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : void 0;
     return {
@@ -20447,10 +20464,11 @@ var ClaudeCliControlPlane = class {
   }
   /** One roster read serves every owned session, including those between turns. */
   #schedulePlacementWatch() {
-    if (this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
+    if (this.#closeController.signal.aborted || this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
     this.#placementTimer = setTimeout(() => {
       this.#placementTimer = null;
       this.#placementSweep = this.#refreshPlacements().catch((error) => {
+        if (this.#closeController.signal.aborted) return;
         this.#onEvent?.({
           method: "claude/workerScopeWatchError",
           params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
@@ -20464,12 +20482,35 @@ var ClaudeCliControlPlane = class {
     this.#placementTimer.unref();
   }
   async #refreshPlacements() {
-    const roster = await this.#roster();
+    const signal = this.#closeController.signal;
+    const roster = await this.#roster(signal);
     if (!roster.ok) return;
     for (const handle of this.#watchedSessions.values()) {
       const row = roster.rows.find((entry) => matchesHandle(entry, handle));
-      if (typeof row?.pid === "number") await this.#place(handle, row.pid);
+      if (typeof row?.pid === "number") await this.#observePlacement(this.#place(handle, row.pid), signal);
     }
+  }
+  /** Observe shared placement work only while this caller still owns its wait. */
+  async #observePlacement(pending, signal) {
+    if (signal === void 0) return pending;
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        signal.removeEventListener("abort", abort);
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      pending.then(
+        (value) => {
+          signal.removeEventListener("abort", abort);
+          resolve(value);
+        },
+        (error) => {
+          signal.removeEventListener("abort", abort);
+          reject(error);
+        }
+      );
+      if (signal.aborted) abort();
+    });
   }
   async stop(handle) {
     await this.#stopSession(handle).catch(() => false);
@@ -20536,11 +20577,11 @@ var ClaudeCliControlPlane = class {
       clearTimeout(this.#placementTimer);
       this.#placementTimer = null;
     }
-    await this.#placementSweep;
-    await this.#placing.get(handle.sessionId);
+    await this.#observePlacement(Promise.all([this.#placementSweep, this.#placing.get(handle.sessionId)]), signal);
     const stopped = await this.#run(this.#claudeBin, ["stop", handle.id], signal);
+    signal?.throwIfAborted();
     this.#placements.delete(handle.sessionId);
-    await this.#reapTaggedDescendants(handle.name);
+    await this.#reapTaggedDescendants(handle.name, signal);
     const removed = await this.#run(this.#claudeBin, ["rm", handle.id], signal);
     const roster = await this.#roster(signal);
     const clean = stopped.ok && removed.ok && roster.ok && !roster.rows.some((row) => matchesHandle(row, handle)) && (await this.#findTaggedProcesses(handle.name)).length === 0;
@@ -20559,7 +20600,7 @@ var ClaudeCliControlPlane = class {
    * a readable proc filesystem the scan finds nothing and the reap is a
    * no-op.
    */
-  async #reapTaggedDescendants(dispatchName) {
+  async #reapTaggedDescendants(dispatchName, signal) {
     const tagged = await this.#findTaggedProcesses(dispatchName);
     if (tagged.length === 0) {
       return;
@@ -20570,7 +20611,7 @@ var ClaudeCliControlPlane = class {
       } catch {
       }
     }
-    await delay(this.#reapGraceMs);
+    await delay(this.#reapGraceMs, signal);
     for (const pid of await this.#findTaggedProcesses(dispatchName)) {
       try {
         process.kill(pid, "SIGKILL");
@@ -33149,7 +33190,7 @@ async function runEnsembleCli(argv, options = {}) {
       if (event.method === "claude/launchUnreclaimed") {
         const name = boundedEvidence(String(event.params.name ?? "unknown"));
         stderr.write(
-          `[claude] cancelled launch ${name} not reclaimed: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}; a session registering under that name is left for the operator
+          `[claude] launch ${name} not reclaimed: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}; a session under that name is left for the operator
 `
         );
         return;

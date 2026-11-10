@@ -1713,14 +1713,20 @@ test("a tool-surface probe overrides only its provider URL, carries deny rules a
   const argvPath = path.join(dir, "argv.json");
   const stub = path.join(dir, "claude.mjs");
   const settings: Array<{ env: Record<string, string>; permissions?: { deny: string[] } }> = [];
-  let stopped = 0;
+  const actionsPath = path.join(dir, "actions");
+  const removedPath = path.join(dir, "removed");
   await writeFile(stub, `#!/usr/bin/env node
-    import { readFileSync, writeFileSync } from "node:fs";
+    import { readFileSync, writeFileSync, appendFileSync, existsSync, rmSync } from "node:fs";
     const args = process.argv.slice(2);
-    if (args[0] === "--bg") writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(args));
+    if (args[0] === "--bg") {
+      writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(args));
+      rmSync(${JSON.stringify(removedPath)}, { force: true });
+    }
+    if (args[0] === "stop" || args[0] === "rm") appendFileSync(${JSON.stringify(actionsPath)}, args[0] + "\\n");
+    if (args[0] === "rm") writeFileSync(${JSON.stringify(removedPath)}, "");
     if (args[0] === "agents") {
       let launch; try { launch = JSON.parse(readFileSync(${JSON.stringify(argvPath)}, "utf8")); } catch {}
-      console.log(JSON.stringify(launch ? [{ id: "surface", sessionId: "surface-session", kind: "background",
+      console.log(JSON.stringify(launch && !existsSync(${JSON.stringify(removedPath)}) ? [{ id: "surface", sessionId: "surface-session", kind: "background",
         name: launch[launch.indexOf("--name") + 1], cwd: ${JSON.stringify(dir)}, pid: process.pid, state: "done", status: "idle" }] : []));
     }
   `);
@@ -1739,10 +1745,6 @@ test("a tool-surface probe overrides only its provider URL, carries deny rules a
       }
       return { submitted: true as const };
     }
-    override async stop(handle: Parameters<ClaudeCliControlPlane["stop"]>[0]) {
-      stopped += 1;
-      await super.stop(handle);
-    }
   }
   const plane = new CaptureSubmission({ claudeBin: stub, reapGraceMs: 0, workerEnv: {
     ANTHROPIC_BASE_URL: "https://worker.invalid", DECLARED_VALUE: "kept", CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "0",
@@ -1752,7 +1754,7 @@ test("a tool-surface probe overrides only its provider URL, carries deny rules a
     const surface = await plane.probeToolSurface({ cwd: dir, permissionDenyRules: ["Agent"], settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" }, signal: AbortSignal.timeout(10_000) });
     assert.equal(surface.cliVersion, "2.1.fixture");
     assert.deepEqual(surface.tools, [{ name: "Read", exposure: "loaded" }]);
-    assert.equal(stopped, 1);
+    assert.equal(await readFile(actionsPath, "utf8"), "stop\nrm\n");
     assert.equal(settings[0]?.env.DECLARED_VALUE, "kept");
     assert.equal(settings[0]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "1");
     assert.deepEqual(settings[0]?.permissions?.deny, ["Agent"]);
@@ -1761,7 +1763,7 @@ test("a tool-surface probe overrides only its provider URL, carries deny rules a
     assert.equal(settings[1]?.env.ANTHROPIC_BASE_URL, "https://worker.invalid");
     assert.equal(settings[1]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "0");
     assert.equal(settings[1]?.permissions, undefined);
-  } finally { await rm(dir, { recursive: true, force: true }); }
+  } finally { await plane.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("a probe refuses provider switches before launching a session and honours an already aborted signal", async () => {

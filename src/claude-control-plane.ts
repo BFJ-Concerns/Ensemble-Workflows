@@ -446,7 +446,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   async probeToolSurface(request: ClaudeToolSurfaceProbeRequest): Promise<ClaudeToolSurface> {
-    request.signal.throwIfAborted();
+    const signal = AbortSignal.any([request.signal, this.#closeController.signal]);
+    signal.throwIfAborted();
     // These provider switches ignore ANTHROPIC_BASE_URL. Refuse rather than
     // letting an inventory probe reach a hosted provider.
     for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) {
@@ -466,13 +467,13 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         ...(request.model !== undefined ? { model: request.model } : {}),
         permissionDenyRules: [...request.permissionDenyRules],
         settingsEnv: { ...request.settingsEnv, ANTHROPIC_BASE_URL: provider.origin },
-        signal: request.signal
+        signal
       });
       if (handle.launchFailure !== undefined) throw new Error(handle.launchFailure.message);
       let count = 0;
       let lastCapture = Date.now();
       for (;;) {
-        request.signal.throwIfAborted();
+        signal.throwIfAborted();
         const captures = provider.requests();
         if (captures.length !== count) {
           count = captures.length;
@@ -483,13 +484,26 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         let surface: ClaudeToolSurface | undefined;
         try { surface = readClaudeToolSurface(captures, nonce); } catch { /* Keep waiting for the worker's request. */ }
         if (surface !== undefined && Date.now() - lastCapture >= 1_000) return surface;
-        const status = await this.poll(handle);
+        const status = await this.#poll(handle, signal);
+        signal.throwIfAborted();
         if (!status.present || status.state === "done") return readClaudeToolSurface(provider.requests(), nonce);
-        await sleep(100, undefined, { signal: request.signal });
+        await sleep(100, undefined, { signal });
       }
     } finally {
-      try { if (handle !== undefined) await this.stop(handle); }
-      finally { await provider.close(); }
+      try {
+        if (handle !== undefined) {
+          const cleanup = AbortSignal.timeout(this.#reclaimTimeoutMs);
+          const confirmed = await this.#stopSession(handle, true, cleanup).catch(() => false);
+          if (!confirmed) {
+            this.#onEvent?.({
+              method: "claude/launchUnreclaimed",
+              params: { name: handle.name, reason: "tool-surface probe session cleanup was not confirmed within the reclamation bound" },
+              receivedAt: Date.now()
+            });
+          }
+        }
+      } finally { await provider.close(); }
+      signal.throwIfAborted();
     }
   }
 
@@ -585,7 +599,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           }
           if (candidate.pid !== null && !placed) {
             placementDeadline ??= Date.now() + this.#placementSettleMs;
-            const outcome = await this.#place(registered, candidate.pid);
+            const outcome = await this.#observePlacement(this.#place(registered, candidate.pid), signal);
             placed = outcome.kind !== "refused" || Date.now() >= placementDeadline;
           }
         }
@@ -800,7 +814,12 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   async poll(handle: ClaudeSessionHandle): Promise<ClaudeSessionStatus> {
-    const roster = await this.#roster();
+    return this.#poll(handle);
+  }
+
+  async #poll(handle: ClaudeSessionHandle, signal?: AbortSignal): Promise<ClaudeSessionStatus> {
+    const roster = await this.#roster(signal);
+    signal?.throwIfAborted();
     if (!roster.ok) {
       // The roster query itself failed (daemon busy, transient non-zero exit).
       // Do NOT read this as absence — that would tear down a live worker. Report
@@ -817,7 +836,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // pending even when the pid stays the same.
     const previous = this.#placements.get(handle.sessionId);
     if (typeof record.pid === "number" && (previous?.pid !== record.pid || previous.outcome.kind === "refused")) {
-      await this.#place(handle, record.pid);
+      await this.#observePlacement(this.#place(handle, record.pid), signal);
     }
     const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : undefined;
     return {
@@ -976,10 +995,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
   /** One roster read serves every owned session, including those between turns. */
   #schedulePlacementWatch(): void {
-    if (this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
+    if (this.#closeController.signal.aborted || this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
     this.#placementTimer = setTimeout(() => {
       this.#placementTimer = null;
       this.#placementSweep = this.#refreshPlacements().catch((error: unknown) => {
+        if (this.#closeController.signal.aborted) return;
         this.#onEvent?.({
           method: "claude/workerScopeWatchError",
           params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
@@ -994,13 +1014,31 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   async #refreshPlacements(): Promise<void> {
-    const roster = await this.#roster();
+    const signal = this.#closeController.signal;
+    const roster = await this.#roster(signal);
     // An unavailable roster is not evidence that an owned session ended.
     if (!roster.ok) return;
     for (const handle of this.#watchedSessions.values()) {
       const row = roster.rows.find((entry) => matchesHandle(entry, handle));
-      if (typeof row?.pid === "number") await this.#place(handle, row.pid);
+      if (typeof row?.pid === "number") await this.#observePlacement(this.#place(handle, row.pid), signal);
     }
+  }
+
+  /** Observe shared placement work only while this caller still owns its wait. */
+  async #observePlacement<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal === undefined) return pending;
+    return new Promise<T>((resolve, reject) => {
+      const abort = (): void => {
+        signal.removeEventListener("abort", abort);
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      pending.then(
+        value => { signal.removeEventListener("abort", abort); resolve(value); },
+        error => { signal.removeEventListener("abort", abort); reject(error); }
+      );
+      if (signal.aborted) abort();
+    });
   }
 
   async stop(handle: ClaudeSessionHandle): Promise<void> {
@@ -1075,16 +1113,16 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
     // A roster read or placement already in flight must finish before teardown
     // removes session state or the registry closes its shared scope manager.
-    await this.#placementSweep;
-    await this.#placing.get(handle.sessionId);
+    await this.#observePlacement(Promise.all([this.#placementSweep, this.#placing.get(handle.sessionId)]), signal);
     // Best-effort teardown; `stop`/`rm` can mishandle an already-exited session,
     // so failures are swallowed rather than allowed to mask the real result.
     const stopped = await this.#run(this.#claudeBin, ["stop", handle.id], signal);
+    signal?.throwIfAborted();
     this.#placements.delete(handle.sessionId);
     // The session is over; anything still carrying its tag is a descendant
     // the daemon will never reap (they reparent to the user session, not to
     // the harness). Ownership means killing them here, not warning about them.
-    await this.#reapTaggedDescendants(handle.name);
+    await this.#reapTaggedDescendants(handle.name, signal);
     const removed = await this.#run(this.#claudeBin, ["rm", handle.id], signal);
     const roster = await this.#roster(signal);
     const clean = stopped.ok && removed.ok && roster.ok && !roster.rows.some(row => matchesHandle(row, handle)) &&
@@ -1107,7 +1145,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * a readable proc filesystem the scan finds nothing and the reap is a
    * no-op.
    */
-  async #reapTaggedDescendants(dispatchName: string): Promise<void> {
+  async #reapTaggedDescendants(dispatchName: string, signal?: AbortSignal): Promise<void> {
     const tagged = await this.#findTaggedProcesses(dispatchName);
     if (tagged.length === 0) {
       return;
@@ -1119,7 +1157,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         // Already gone, or not ours to signal.
       }
     }
-    await delay(this.#reapGraceMs);
+    await delay(this.#reapGraceMs, signal);
     // Re-establish identity before escalating: a pid from the first scan can
     // exit during the grace period and be reused by an unrelated process, so
     // a bare liveness check is not authority for SIGKILL — only a process

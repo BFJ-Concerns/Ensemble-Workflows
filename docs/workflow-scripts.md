@@ -567,16 +567,23 @@ closely, and otherwise says that none was supplied.
 
 ### Budgets
 
-A call checks its engine's token ceiling (`--budget`) when it is dispatched,
-before it joins the concurrency queue, and again when a fallback step moves it
-to another engine. Once spend reaches the
-ceiling, a call that has not yet been dispatched throws a budget-exhausted
-error; a ceiling of 0 admits no call and says so. Every call admitted below
-the ceiling still runs, including calls waiting in the concurrency queue when
-spend reaches the ceiling. Admission is not checked again when a queued call
-starts or retries on the same engine, so the whole admitted backlog can
-overshoot the ceiling, with each call running up to its retry bound. A
-session turn checks the ceiling at each `send()`, before queueing.
+A call checks its engine's token ceiling (`--budget`) before it joins the
+concurrency queue, and again when a fallback step moves it to another engine.
+A session turn checks the ceiling at each `send()`, before queueing. Once
+spend reaches the ceiling, admission throws a budget-exhausted error; a
+ceiling of 0 admits no dispatch and says so.
+
+The refusal names the dispatch, fallback dispatch (with its agent id), or
+numbered session turn it blocked. A session's first `send()` is `session
+turn 1`, even when admission refuses it before the worker opens; a refused
+send does not advance the turn number. Earlier targets or session turns may
+already have run and caused side effects.
+
+Every call admitted below the ceiling still runs, including calls waiting
+in the concurrency queue when spend reaches the ceiling. Admission is not
+checked again when a queued call starts or retries on the same engine, so
+the whole admitted backlog can overshoot the ceiling, with each call
+running up to its retry bound.
 
 ### Whole-run timeout and interrupts
 
@@ -616,7 +623,10 @@ await builder.close();
 - **Identified turns:** `identity: true` at creation makes every `send()`
   resolve `{ label, phase, output, failure }`. `failure` is `null` for a
   successful answer, including a valid JSON `null`; a failed turn carries
-  its recorded failure message. The option cannot vary per turn.
+  its recorded failure message. A budget refusal retains the explicit session
+  phase, or the current `phase()` title at `send()` when no phase was set,
+  without creating a queued worker or an agent record. The option cannot vary
+  per turn.
 - **Turns are sequential:** calling `send()` while a previous send is
   unsettled throws, as does `send()` after `close()` or after the run ends.
 - **Concurrency and budget are per turn:** a turn holds its engine slot from

@@ -444,8 +444,12 @@ families with their own schema versions (`3` and `3`), described above.
   an unknown engine, a budget refusal, a whole-run timeout — or `null` when the
   run ended cleanly. Present on both the manifest and `result.json`. A budget
   refusal at a ceiling of 0 reads `Token budget for <engine> is 0, which admits
-  no agent: this agent was not started`; a spent ceiling reads `Token budget
-  exhausted for <engine>: spent N of M tokens`.
+  no dispatch; refused <admission>`; a spent ceiling reads `Token budget
+  exhausted for <engine>: spent N of M tokens; refused <admission>`. The
+  admission names a dispatch, a fallback dispatch with its agent id, or a
+  numbered session turn, starting at `session turn 1` for the first `send()`
+  even before the worker opens. A refused send does not advance that number;
+  refusing it does not imply earlier work never ran.
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. See
   [Token usage and cost](#token-usage-and-cost).
 - `files`: integrity table for archived artefacts, each with `path`, `size`,

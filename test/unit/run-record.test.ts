@@ -2736,7 +2736,7 @@ test("runtime abandonment during the dispatch write leaves unmeasured archive ti
 for (const engine of ["codex", "claude"] as const) {
   for (const resumedSweep of [false, true]) {
     test(`${engine} abandonment retains served identity and partial transcript${resumedSweep ? " after a sweep dies" : ""}`, async () => {
-      const scratch = await mkdtemp("/mnt/ai-data/scratch/abandoned-record-test-");
+      const scratch = await mkdtemp(path.join(tmpdir(), "abandoned-record-test-"));
       try {
         const writer = await RunRecordWriter.start({
           storeDir: path.join(scratch, "store"), cwd: scratch, runUuid: "dead-writer",
@@ -2842,7 +2842,7 @@ for (const engine of ["codex", "claude"] as const) {
 }
 
 test("abandonment leaves settled attempts intact and never links an unreadable live transcript", async () => {
-  const scratch = await mkdtemp("/mnt/ai-data/scratch/abandoned-missing-transcript-");
+  const scratch = await mkdtemp(path.join(tmpdir(), "abandoned-missing-transcript-"));
   try {
     const base = {
       id: 1, status: "in-progress", resolved_model: "earlier", resolved_effort: "medium",
@@ -2864,7 +2864,7 @@ test("abandonment leaves settled attempts intact and never links an unreadable l
 });
 
 test("a replacement live attempt clears identity and rejects an earlier attempt's late report", async () => {
-  const scratch = await mkdtemp("/mnt/ai-data/scratch/live-attempt-identity-");
+  const scratch = await mkdtemp(path.join(tmpdir(), "live-attempt-identity-"));
   try {
     const writer = await RunRecordWriter.start({
       storeDir: path.join(scratch, "store"), cwd: scratch, runUuid: "identity-retry",

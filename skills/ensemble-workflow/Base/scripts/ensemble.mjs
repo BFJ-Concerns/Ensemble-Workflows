@@ -16641,14 +16641,14 @@ async function toolVersions() {
   const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
-    commandVersion("claude", ["--version"]),
+    commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
     commandVersion("opencode", ["--version"])
   ]);
   return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
 }
-async function commandVersion(command, args) {
+async function commandVersion(command, args, env) {
   try {
-    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5e3 });
+    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5e3, env });
     return (stdout || stderr).trim() || null;
   } catch {
     return null;
@@ -33056,6 +33056,9 @@ function flushed(stream) {
   });
 }
 if (isMain) {
+  process.stdout.on("error", (error) => {
+    if (error.code !== "EPIPE") throw error;
+  });
   const versionError = nodeVersionError();
   if (versionError !== null) {
     process.stderr.write(`${versionError}

@@ -15919,7 +15919,7 @@ function buildCostRollup(agents) {
   for (const agent of agents) {
     const lastReporter = agent.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.engine ?? agent.engine;
     for (const attempt of agent.attempts) {
-      const borrowed = attempt.engine === lastReporter ? agent.resolvedModel : null;
+      const borrowed = attempt.settled && attempt.engine === lastReporter ? agent.resolvedModel : null;
       const bucket = bucketFor(attempt.engine, attempt.resolvedModel ?? borrowed ?? "unresolved");
       const summary = summariseUsage(attempt.engine, attempt.tokenUsageEvents);
       if (summary !== null) {

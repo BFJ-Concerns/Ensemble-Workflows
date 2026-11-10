@@ -67,6 +67,55 @@ test("an abandoned attempt books under the model it reported and marks what it m
   });
 });
 
+test("a live retry with no served identity leaves earlier measured spend complete", () => {
+  const rollup = buildCostRollup([agent(1, [
+    attempt(1, { failureKind: "empty-output" }),
+    attempt(2, { settled: false, resolvedModel: null, tokenUsageEvents: [] })
+  ])]);
+  assert.deepEqual(rollup.codex?.["gpt-6-luna"], buildCostRollup([agent(1, [attempt(1)])]).codex?.["gpt-6-luna"]);
+  assert.deepEqual(rollup.codex?.unresolved, {
+    tokens: { unavailable: "no-usage-reported" },
+    cost: { unavailable: "no-provider-cost-reported" },
+    complete: false,
+    unobserved: [{ agent: 1, attempt: 2, reason: "record-unsettled", measured: "none" }]
+  });
+});
+
+test("an archived abandoned retry without its own identity books under unresolved", () => {
+  const view = rollupViewOfArchivedRecord(archivedRecord("abandoned", [
+    { ...archivedAttempt("failed"), resolved_model: "gpt-6-luna", token_usage_events: [usage] },
+    { ...archivedAttempt("abandoned"), attempt: 2 }
+  ], { ...sweepAbandonment, resolved_model: "gpt-6-luna" }));
+  assert.notEqual(view, null);
+  const rollup = buildCostRollup([view!]);
+  assert.deepEqual(rollup.codex?.["gpt-6-luna"], buildCostRollup([agent(2, [attempt(1)])]).codex?.["gpt-6-luna"]);
+  assert.deepEqual(rollup.codex?.unresolved?.unobserved, [
+    { agent: 2, attempt: 2, reason: "record-unsettled", measured: "none" }
+  ]);
+});
+
+test("a held turn with an explicit session identity keeps that model while unsettled", () => {
+  const rollup = buildCostRollup([agent(1, [
+    attempt(1, { failureKind: "empty-output" }),
+    attempt(2, { settled: false, tokenUsageEvents: [] })
+  ])]);
+  assert.equal(rollup.codex?.unresolved, undefined);
+  assert.deepEqual(rollup.codex?.["gpt-6-luna"]?.unobserved, [
+    { agent: 1, attempt: 2, reason: "record-unsettled", measured: "none" }
+  ]);
+});
+
+test("a settled same-engine attempt can still use its agent's known model", () => {
+  const rollup = buildCostRollup([agent(1, [
+    attempt(1, { resolvedModel: null }),
+    attempt(2)
+  ])]);
+  assert.equal(rollup.codex?.unresolved, undefined);
+  const leaf = rollup.codex?.["gpt-6-luna"];
+  assert.equal(leaf?.complete, true);
+  assert.equal(leaf?.tokens !== undefined && "totalTokens" in leaf.tokens ? leaf.tokens.totalTokens : null, 28);
+});
+
 test("only the attempt the run's close cut short reads interrupted; a refusal spent nothing", () => {
   const rollup = buildCostRollup([
     agent(1, [

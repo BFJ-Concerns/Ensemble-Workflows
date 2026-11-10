@@ -501,7 +501,8 @@ While an attempt executes, on any engine, the record also has
 - `resolved_model` and `resolved_effort`: the served identity the engine has
   reported for this attempt so far, written as it is reported, and `null`
   until then. A held session's later turn starts with the identity its
-  session already served. A retry or a fallback step starts again at `null`.
+  session already served, including retries of that turn. A fresh session's
+  retry or a fallback step starts again at `null`.
 
 A worker waiting for admission has no `current_attempt`, including while a
 fallback target waits for a slot. The field remains present between retries
@@ -743,6 +744,10 @@ it. The literal `"unresolved"` is used when no served model was ever learned,
 never the requested model; for opencode the served model is the configured
 `provider_model`. A run that dispatched no worker has an empty roll-up.
 Figures are never summed across engines.
+
+A live or abandoned attempt with no served identity of its own books under
+its engine's `"unresolved"` leaf, even when an earlier attempt reported a
+model. A held turn keeps its session's known identity, including on retries.
 
 Each leaf has four fields:
 

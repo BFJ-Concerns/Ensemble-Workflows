@@ -266,14 +266,16 @@ export function buildCostRollup(agents: readonly RollupAgentView[]): CostRollup 
   };
 
   for (const agent of agents) {
-    // An attempt that reported no served model of its own may borrow the
-    // agent-level answer only when that answer came from its own engine:
+    // A settled attempt that reported no served model of its own may borrow
+    // the agent-level answer only when it came from its own engine:
     // the agent-level field is last-write-wins across attempts, and under
     // a cross-engine chain the last writer is the answering engine, whose
-    // model must never label a refused engine's spend.
+    // model must never label a refused engine's spend. An unsettled attempt
+    // uses only its own identity, including a held turn's seeded session
+    // identity; a fresh retry must never borrow its predecessor's model.
     const lastReporter = agent.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.engine ?? agent.engine;
     for (const attempt of agent.attempts) {
-      const borrowed = attempt.engine === lastReporter ? agent.resolvedModel : null;
+      const borrowed = attempt.settled && attempt.engine === lastReporter ? agent.resolvedModel : null;
       const bucket = bucketFor(attempt.engine, attempt.resolvedModel ?? borrowed ?? "unresolved");
       const summary = summariseUsage(attempt.engine, attempt.tokenUsageEvents);
       if (summary !== null) {

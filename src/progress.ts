@@ -1,7 +1,74 @@
 import type { AgentWaitSnapshot, EngineName } from "./types.js";
 
-/** A worker's lifecycle state as the progress model sees it. */
-export type AgentState = "queued" | "running" | "done" | "failed";
+/**
+ * How a worker left the run. The four values partition every worker the run
+ * dispatched, the same partition the completion sentinel's worker tally
+ * draws:
+ *
+ * - `done` — settled on its own account, successfully.
+ * - `failed` — settled on its own account, with a failure.
+ * - `cut-short` — the run's ending tore it down: its record carries the
+ *   `run-<status>` cause naming the run's own shutdown status.
+ * - `unsettled` — the run ended before any outcome was observed; its record
+ *   reads `abandoned`.
+ *
+ * A worker that settles on its own account while the run is shutting down
+ * keeps that account: `done` or `failed`, never `cut-short`.
+ */
+export type WorkerDisposition = "done" | "failed" | "cut-short" | "unsettled";
+
+/** A worker's lifecycle state as the progress model sees it: live, or finished with its disposition. */
+export type AgentState = "queued" | "running" | WorkerDisposition;
+
+/** The run statuses a shutdown settles cut-short workers with. */
+export type ShutdownStatus = "failed" | "timed-out" | "interrupted";
+
+/** What a worker's agent record says, as far as its disposition depends on it. */
+export interface DispositionEvidence {
+  status: "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
+  terminationCause: { kind: string } | null;
+}
+
+/**
+ * The one mapping from a worker's agent record to its disposition, shared by
+ * live settlement and the shutdown tally so the status file, the sentinel and
+ * the archive say the same thing. `shutdownStatus` is the status the run is
+ * closing with, or null while it is not closing: a `run-<status>` cause is
+ * cut short only when it names the run's own ending. Returns null for a
+ * record still in progress, which has no disposition yet.
+ */
+export function workerDisposition(
+  record: DispositionEvidence,
+  shutdownStatus: ShutdownStatus | null
+): WorkerDisposition | null {
+  switch (record.status) {
+    case "in-progress":
+      return null;
+    case "abandoned":
+      return "unsettled";
+    case "complete":
+      return "done";
+    default:
+      return shutdownStatus !== null && record.terminationCause?.kind === `run-${shutdownStatus}`
+        ? "cut-short"
+        : "failed";
+  }
+}
+
+/** Finished-worker counts, one per disposition; used in the totals and per engine. */
+export interface DispositionCounts {
+  done: number;
+  failed: number;
+  cutShort: number;
+  unsettled: number;
+}
+
+const DISPOSITION_COUNTER: Record<WorkerDisposition, keyof DispositionCounts> = {
+  done: "done",
+  failed: "failed",
+  "cut-short": "cutShort",
+  unsettled: "unsettled"
+};
 
 export interface AgentFailure {
   kind: string;
@@ -54,13 +121,11 @@ export interface LiveAgentSnapshot {
   waitingOn: AgentWaitSnapshot | null;
 }
 
-export interface EngineProgressSnapshot {
+export interface EngineProgressSnapshot extends DispositionCounts {
   /** Self-imposed concurrency cap, if the engine registered one. */
   cap: number | null;
   active: number;
   queued: number;
-  done: number;
-  failed: number;
   spent: number;
   /** Per-engine token ceiling, or null when unbounded. */
   ceiling: number | null;
@@ -79,12 +144,13 @@ export interface OpenHoldSnapshot {
 
 export interface ProgressSnapshot {
   /**
-   * Snapshot schema version. 3 retains finished workers and their outcomes.
-   * 2: one file per run in the status directory
+   * Snapshot schema version. 4 finishes every worker with one of the four
+   * dispositions and counts each; 3 retained finished workers as done or
+   * failed only. 2: one file per run in the status directory
    * (`ensemble.<run-uuid>.local.json`), each carrying its writer's owner
    * evidence; 1 was the single-slot `ensemble.local.json`.
    */
-  schema: 3;
+  schema: 4;
   runId: string;
   pid: number;
   archiveDir: string | null;
@@ -94,7 +160,7 @@ export interface ProgressSnapshot {
   updatedAt: number;
   finishedAt: number | null;
   currentPhase: string | null;
-  totals: { active: number; queued: number; done: number; failed: number };
+  totals: { active: number; queued: number } & DispositionCounts;
   engines: Record<string, EngineProgressSnapshot>;
   agents: LiveAgentSnapshot[];
   /** Open holds: present while the run awaits decisions, empty otherwise. */
@@ -133,19 +199,17 @@ interface AgentRecord {
   waitingOn: AgentWaitSnapshot | null;
 }
 
-interface EngineCounters {
+interface EngineCounters extends DispositionCounts {
   cap: number | null;
   active: number;
   queued: number;
-  done: number;
-  failed: number;
 }
 
 export type ProgressListener = () => void;
 
 /**
  * The single in-memory source of truth for what a run is doing right now:
- * current phase, per-engine queue/active/done/failed counts, and the live
+ * current phase, per-engine live and per-disposition counts, and the live
  * worker list — keyed off the same `agent()` invocations the scheduler drives.
  *
  * It is pure state with no I/O. A serialiser (the status-file writer) subscribes
@@ -375,8 +439,13 @@ export class RunProgress {
     this.#touch();
   }
 
-  /** Retires a worker, tallying it as done or failed and freeing its slot. */
-  settleAgent(id: number, outcome: "done" | "failed", failure: AgentFailure | null = null): void {
+  /**
+   * Retires a worker with its disposition, counting it and freeing its slot.
+   * `failure` is the account its record carries — kept for every disposition
+   * but `done`. The first settlement is final: later calls are inert, so a
+   * worker is never reclassified once published.
+   */
+  settleAgent(id: number, disposition: WorkerDisposition, failure: AgentFailure | null = null): void {
     const record = this.#live.get(id);
     if (record === undefined) {
       return;
@@ -388,14 +457,10 @@ export class RunProgress {
     } else {
       counters.queued -= 1;
     }
-    if (outcome === "done") {
-      counters.done += 1;
-    } else {
-      counters.failed += 1;
-    }
-    record.state = outcome;
+    counters[DISPOSITION_COUNTER[disposition]] += 1;
+    record.state = disposition;
     record.finishedAtMs = this.#now();
-    record.failure = outcome === "failed" && failure !== null ? { ...failure } : null;
+    record.failure = disposition !== "done" && failure !== null ? { ...failure } : null;
     record.waitingOn = null;
     this.#finished.set(id, record);
     this.#touch();
@@ -439,7 +504,7 @@ export class RunProgress {
 
   snapshot(): ProgressSnapshot {
     const engines: Record<string, EngineProgressSnapshot> = {};
-    const totals = { active: 0, queued: 0, done: 0, failed: 0 };
+    const totals = { active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 0 };
     for (const engine of this.#engines.keys()) {
       const counters = this.#counters(engine);
       const remaining = this.#budget.remaining(engine);
@@ -449,6 +514,8 @@ export class RunProgress {
         queued: counters.queued,
         done: counters.done,
         failed: counters.failed,
+        cutShort: counters.cutShort,
+        unsettled: counters.unsettled,
         spent: this.#budget.spent(engine),
         ceiling: this.#budget.ceilings[engine] ?? null,
         remaining: Number.isFinite(remaining) ? remaining : null
@@ -457,10 +524,12 @@ export class RunProgress {
       totals.queued += counters.queued;
       totals.done += counters.done;
       totals.failed += counters.failed;
+      totals.cutShort += counters.cutShort;
+      totals.unsettled += counters.unsettled;
     }
 
     return {
-      schema: 3,
+      schema: 4,
       runId: this.runId,
       pid: this.#pid,
       archiveDir: this.#archiveDir,
@@ -507,7 +576,7 @@ export class RunProgress {
   #counters(engine: EngineName): EngineCounters {
     const counters = this.#engines.get(engine);
     if (counters === undefined) {
-      const fresh: EngineCounters = { cap: null, active: 0, queued: 0, done: 0, failed: 0 };
+      const fresh: EngineCounters = { cap: null, active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 0 };
       this.#engines.set(engine, fresh);
       return fresh;
     }

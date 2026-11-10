@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RemovedAgentOptionError, attachAgentIdentity, markRunEnding } from "../../src/errors.js";
+import { BudgetExceededError, RemovedAgentOptionError, attachAgentIdentity, markRunEnding } from "../../src/errors.js";
 import { parallel, pipeline } from "../../src/hooks.js";
 import { NestedWorkflowError, WorkflowResolutionError } from "../../src/workflow-registry.js";
 
@@ -24,6 +24,32 @@ test("parallel returns null for throwing thunks and logs the failure", async () 
   assert.deepEqual(results, ["first", null, "third"]);
   assert.equal(logs.length, 1);
   assert.match(logs[0] ?? "", /parallel thunk 1 failed: Error: boom/);
+});
+
+test("budget refusals propagate unchanged through parallel and pipeline", async () => {
+  for (const spent of [0, 12]) {
+    for (const identified of [false, true]) {
+      const refusal = new BudgetExceededError("codex", spent === 0 ? 0 : 10, spent,
+        spent === 0 ? 'dispatch "blocked"' : 'session turn 2 "follow-up"');
+      if (identified) {
+        attachAgentIdentity(refusal, { label: "blocked", phase: "check" });
+      }
+      const logs: string[] = [];
+      const presentations: unknown[] = [];
+      const log = (message: string): void => { logs.push(message); };
+      const present = (error: unknown): void => { presentations.push(error); };
+      const reject = async (): Promise<never> => { throw refusal; };
+      await assert.rejects(() => parallel([() => "first", reject], log, present), (error) => error === refusal);
+      let laterStageRan = false;
+      await assert.rejects(
+        () => pipeline(["item"], [() => "first", reject, () => { laterStageRan = true; }], log, present),
+        (error) => error === refusal
+      );
+      assert.equal(laterStageRan, false);
+      assert.deepEqual(logs, [], "a budget refusal is not logged as a collapsed leg");
+      assert.deepEqual(presentations, [], "the caller presents the propagated refusal");
+    }
+  }
 });
 
 test("parallel propagates a rejected agent option", async () => {

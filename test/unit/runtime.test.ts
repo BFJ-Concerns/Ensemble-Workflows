@@ -2563,6 +2563,16 @@ test("a close names its occasion on every record it settles: the run ending, or 
     assert.deepEqual(abandoned?.terminationCause, { kind: "run-interrupted", message: wording[occasion].dispatching }, occasion);
     assert.deepEqual(abandoned?.attempts, [], occasion);
     assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 2, unsettled: 1 }, occasion);
+    const snapshot = runtime.progress.snapshot();
+    assert.deepEqual(snapshot.totals, { active: 0, queued: 0, done: 0, failed: 0, cutShort: 2, unsettled: 1 }, occasion);
+    assert.equal(snapshot.engines.codex?.failed, 0, occasion);
+    assert.equal(snapshot.engines.codex?.cutShort, 2, occasion);
+    assert.equal(snapshot.engines.codex?.unsettled, 1, occasion);
+    for (const record of [straggler, queuedRecord, abandoned]) {
+      const worker = snapshot.agents.find((agent) => agent.id === record?.id);
+      assert.equal(worker?.state, record?.status === "abandoned" ? "unsettled" : "cut-short", occasion);
+      assert.deepEqual(worker?.failure, record?.terminationCause, occasion);
+    }
   }
 });
 
@@ -2599,6 +2609,8 @@ test("a leg that settles on its own account during teardown is tallied by its re
 
   assert.equal(await agent, "finished anyway");
   assert.deepEqual(runtime.shutdownTally(), { done: 1, failed: 0, cutShort: 0, unsettled: 0 });
+  assert.deepEqual(runtime.progress.snapshot().totals, { active: 0, queued: 0, done: 1, failed: 0, cutShort: 0, unsettled: 0 });
+  assert.equal(runtime.progress.snapshot().agents[0]?.state, "done");
 });
 
 test("a queued leg the run's end cancels is recorded as queued, and still counts cut short", async () => {
@@ -2648,10 +2660,14 @@ test("a queued leg the run's end cancels is recorded as queued, and still counts
   assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 3, unsettled: 0 });
 
   // close() is latched: a second call joins the first and must not rebuild
-  // the tally from post-teardown progress totals, which count run-caused
-  // settlements as failures.
+  // the tally or reclassify already settled workers under a different
+  // shutdown status.
+  const snapshot = runtime.progress.snapshot();
+  assert.deepEqual(snapshot.totals, { active: 0, queued: 0, done: 0, failed: 0, cutShort: 3, unsettled: 0 });
+  assert.deepEqual(snapshot.agents.map((agent) => agent.state), ["cut-short", "cut-short", "cut-short"]);
   await runtime.close("failed");
   assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 3, unsettled: 0 });
+  assert.deepEqual(runtime.progress.snapshot(), snapshot);
 });
 
 test("a failed engine teardown rejects close() after cleanup completes, never silently", async () => {
@@ -2675,7 +2691,7 @@ test("a failed engine teardown rejects close() after cleanup completes, never si
 
 test("genuine shutdown errors inherit the runtime shutdown status", async () => {
   for (const error of [new EngineShutdownError("codex"), new AppServerExitedError("transport closed")]) {
-    for (const status of ["timed-out", "interrupted"] as const) {
+    for (const status of ["failed", "timed-out", "interrupted"] as const) {
       const records: RuntimeAgentRecord[] = [];
       const transport = new ClosingTransport(error);
       const runtime = new EnsembleRuntime({
@@ -2699,6 +2715,11 @@ test("genuine shutdown errors inherit the runtime shutdown status", async () => 
       assert.equal(records.length, 2);
       assert.equal(records[0]?.status, "in-progress");
       assert.equal(records[1]?.status, status);
+      const snapshot = runtime.progress.snapshot();
+      assert.deepEqual(snapshot.totals, { active: 0, queued: 0, done: 0, failed: 0, cutShort: 1, unsettled: 0 }, status);
+      assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 1, unsettled: 0 }, status);
+      assert.equal(snapshot.agents[0]?.state, "cut-short", status);
+      assert.deepEqual(snapshot.agents[0]?.failure, records[1]?.terminationCause, status);
     }
   }
 });
@@ -2786,8 +2807,13 @@ test("runtime close terminalises an unsettled dispatch record", async () => {
   // no outcome was ever observed for it — and that is what `unsettled`
   // counts, distinct from a leg teardown cut short with a record.
   assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 0, unsettled: 1 });
+  const snapshot = runtime.progress.snapshot();
+  assert.deepEqual(snapshot.totals, { active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 1 });
+  assert.equal(snapshot.agents[0]?.state, "unsettled");
+  assert.deepEqual(snapshot.agents[0]?.failure, recorder.records[1]?.terminationCause);
   recorder.releaseDispatch();
   await assert.rejects(agent, EngineShutdownError);
+  assert.deepEqual(runtime.progress.snapshot(), snapshot);
 });
 
 // The Claude engine is now implemented; it is driven through the runtime with a
@@ -5230,6 +5256,9 @@ test("a worker failure settled before shutdown keeps its account through invocat
         if (closeDuringCleanup) {
           assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 1, cutShort: 0, unsettled: 0 });
         }
+        assert.deepEqual(runtime.progress.snapshot().totals,
+          { active: 0, queued: 0, done: 0, failed: 1, cutShort: 0, unsettled: 0 });
+        assert.equal(runtime.progress.snapshot().agents[0]?.state, "failed");
       } finally {
         releaseClose?.();
         await runtime.close();

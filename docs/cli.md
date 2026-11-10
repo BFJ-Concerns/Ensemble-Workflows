@@ -12,15 +12,19 @@ alias ensemble='node /path/to/Ensemble-Workflows/skills/ensemble-workflow/Base/s
 ## Synopsis
 
 Running the launcher with no arguments prints this usage text on stderr. It
-names the program as you invoked it:
+names the launcher by the absolute path it was invoked through, preserving a
+symlink path. Script paths include `node`; executable shims name themselves.
+Paths containing shell metacharacters are quoted for a POSIX shell. The
+launcher path stays whole even when it exceeds 80 columns; the remaining
+usage wraps to that width. For a launcher at `/opt/ensemble.mjs`:
 
 ```text
-Usage: node ensemble.mjs [run options] <script.js> [args...]
-       node ensemble.mjs agent --engine <engine> [agent options] [prompt]
-       node ensemble.mjs workflows
-       node ensemble.mjs holds [--json] [--scope <scope> | --all]
-       node ensemble.mjs holds answer <hold-id> --verdict <verdict>
-                         [--note <note>]
+Usage: node /opt/ensemble.mjs [run options] <script.js> [args...]
+       node /opt/ensemble.mjs agent --engine <engine> [agent options] [prompt]
+       node /opt/ensemble.mjs workflows
+       node /opt/ensemble.mjs holds [--json] [--scope <scope> | --all]
+       node /opt/ensemble.mjs holds answer <hold-id> --verdict <verdict>
+                        [--note <note>]
 
 Run options (before the script path):
   --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N
@@ -33,7 +37,8 @@ Agent options (after agent, before the prompt):
   --agent-ceiling N|null  --concurrency engine=N  --timeout ms
   --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run
 The prompt is the one positional argument, or stdin when omitted.
-Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.
+Run `node /opt/ensemble.mjs --help` for orientation;
+  each subcommand answers --help.
 ```
 
 `--help` and `--version` print text on stdout, and each subcommand answers its

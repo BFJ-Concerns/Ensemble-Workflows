@@ -662,16 +662,17 @@ export class EnsembleRuntime {
    * `pipeline()` — open from creation to settlement, exactly as `agent()`
    * holds its own, so a run ending that rejects it (the combinators rethrow
    * the run's own ending) is marked handled at close when nothing awaits
-   * it, never raised against a run that ended cleanly. Returns the same
-   * promise.
+   * it, never raised against a run that ended cleanly. Before close, an
+   * unhandled rejection remains visible to the launcher.
    */
   trackCallPromise<T>(promise: Promise<T>): Promise<T> {
-    const call: AgentCall = { outward: promise };
+    const call: AgentCall = { outward: null };
     this.#openCalls.add(call);
-    void promise.finally(() => {
+    const outward = promise.finally(() => {
       this.#openCalls.delete(call);
-    }).catch(() => undefined);
-    return promise;
+    });
+    call.outward = outward;
+    return outward;
   }
 
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */

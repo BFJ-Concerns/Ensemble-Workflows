@@ -17859,12 +17859,11 @@ async function probeSocketBinding(requirement, dir) {
   }
   try {
     await listenOnce(socketPath);
-    return null;
   } catch (error) {
     return denialOf(requirement, dir, error);
-  } finally {
-    await rm4(socketPath, { force: true });
   }
+  await rm4(socketPath, { force: true });
+  return null;
 }
 var MAX_SOCKET_PATH_BYTES = 107;
 async function nearestExistingDirectory(target) {
@@ -17913,11 +17912,13 @@ var EngineResourceGate = class {
     this.#requirementsOf = requirementsOf;
     this.#env = env;
   }
-  async require(engine) {
-    let judged = this.#judged.get(engine);
+  async require(engine, cwd = process.cwd()) {
+    const requirements = this.#requirementsOf(engine, cwd);
+    const key = JSON.stringify([engine, requirements]);
+    let judged = this.#judged.get(key);
     if (judged === void 0) {
-      judged = probeResources(this.#requirementsOf(engine));
-      this.#judged.set(engine, judged);
+      judged = probeResources(requirements);
+      this.#judged.set(key, judged);
     }
     const denials = await judged;
     if (denials.length > 0) {
@@ -17939,7 +17940,7 @@ var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
 function launchEnvironment(engine, declared, inherited = process.env) {
   if (engine === "claude") {
     const env = { ...withoutRunScopedVariables(inherited), ...declared, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
-    if (env.CLAUDE_CONFIG_DIR !== void 0) {
+    if (env.CLAUDE_CONFIG_DIR) {
       env.CLAUDE_CONFIG_DIR = path11.resolve(env.CLAUDE_CONFIG_DIR.normalize("NFC"));
     }
     return env;
@@ -19118,7 +19119,7 @@ import { homedir as homedir3 } from "node:os";
 import path12 from "node:path";
 function codexResources(env) {
   const declared = env.worker.CODEX_HOME;
-  const home = declared !== void 0 && declared.length > 0 ? { path: path12.resolve(env.cwd, declared), from: "CODEX_HOME" } : { path: path12.join(homeOf(env.worker), ".codex"), from: "default: $HOME/.codex" };
+  const home = declared !== void 0 && declared.length > 0 ? { path: path12.resolve(env.cwd, declared), from: "CODEX_HOME" } : { path: path12.resolve(env.cwd, homeOf(env.worker), ".codex"), from: "default: $HOME/.codex" };
   return [{ owner: "codex", role: "Codex home", path: home.path, access: "create-entries", resolvedFrom: home.from }];
 }
 function claudeResources(env) {
@@ -19126,7 +19127,7 @@ function claudeResources(env) {
   const uid = process.getuid?.() ?? 0;
   const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path12.join(env.worker.PREFIX, "tmp") : "/tmp";
   const daemon = path12.join(daemonRoot, `cc-daemon-${uid}`, createHash3("sha256").update(config).digest("hex").slice(0, 8));
-  const configFrom = env.worker.CLAUDE_CONFIG_DIR !== void 0 ? "CLAUDE_CONFIG_DIR" : "default: $HOME/.claude";
+  const configFrom = env.worker.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "default: $HOME/.claude";
   const scratch = temporaryDirectory(env.launcher, process.cwd());
   const valve = claudeValveDirectory(env.launcher);
   const workerScratch = env.worker.CLAUDE_CODE_TMPDIR ? { path: path12.resolve(env.cwd, env.worker.CLAUDE_CODE_TMPDIR), from: "CLAUDE_CODE_TMPDIR" } : temporaryDirectory(env.worker, env.cwd);
@@ -19159,7 +19160,7 @@ function openCodeResources(env) {
   ];
 }
 function claudeConfigDirectory(env, cwd) {
-  return path12.resolve(cwd, (env.CLAUDE_CONFIG_DIR ?? path12.join(homeOf(env), ".claude")).normalize("NFC"));
+  return path12.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path12.join(homeOf(env), ".claude")).normalize("NFC"));
 }
 function claudeValveDirectory(env) {
   return path12.resolve(env.TMUX_TMPDIR || "/tmp");
@@ -22161,11 +22162,11 @@ var EngineRegistry = class {
   #engines = /* @__PURE__ */ new Map();
   /** Resources the engines share and the registry therefore owns, closed after every engine has. */
   #shared;
-  /** What each engine needs from the filesystem, judged before its first attempt (`EngineResourceGate`). */
+  /** What each engine needs at the attempt's resolved placement, judged before dispatch (`EngineResourceGate`). */
   #resources;
   /**
-   * `resources` resolves an engine's filesystem requirements, asked at
-   * that engine's first attempt, so a run resolves only the engines it
+   * `resources` resolves an engine's filesystem requirements at each
+   * attempt's resolved placement, so a run resolves only the engines it
    * uses. Omitted, no engine declares any, which is what a registry of
    * test doubles wants; the default registry declares every engine's
    * (`createDefaultEngineRegistry`).
@@ -22180,8 +22181,8 @@ var EngineRegistry = class {
   get(name) {
     return this.#engines.get(name);
   }
-  resourceRequirements(name) {
-    return this.#resources(name);
+  resourceRequirements(name, cwd) {
+    return this.#resources(name, cwd);
   }
   names() {
     return [...this.#engines.keys()];
@@ -22611,7 +22612,9 @@ async function createDefaultEngineRegistry(options) {
       })
     ],
     ownsScopes ? [workerScopes] : [],
-    (engine) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], options.cwd)
+    // The Codex app-server is shared and starts in the run base; Claude
+    // and opencode launch a process in each invocation's placement.
+    (engine, cwd) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], engine === "codex" ? options.cwd : cwd)
   );
 }
 async function openCodexThread(transport, options, cwd) {
@@ -22856,7 +22859,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       })
     ]);
     const engines = this.#engines;
-    this.#resourceGate = new EngineResourceGate((engine) => engines.resourceRequirements(engine));
+    this.#resourceGate = new EngineResourceGate((engine, cwd) => engines.resourceRequirements(engine, cwd));
     this.#admission = new AdmissionController({
       ceiling: options.agentCeiling ?? null,
       caps: this.#engineCaps()
@@ -23695,7 +23698,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
   }
   /** Bind transcript callbacks to one attempt and drain them before its outcome is recorded. */
-  async #runRecordedAttempt(engine, invocation, context, agentId, startedAt) {
+  async #runRecordedAttempt(engine, invocation, context, agentId, startedAt, cwd) {
     const recorder = this.#runRecorder;
     const record = this.#unsettledAgentRecords.get(agentId)?.record;
     const previousSpend = record?.attempts.flatMap((attempt) => attempt.tokenUsageEvents).reduce((sum, event) => sum + event.last.totalTokens, 0) ?? 0;
@@ -23721,7 +23724,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
     }
     try {
-      await this.#resourceGate.require(engine);
+      await this.#resourceGate.require(engine, cwd);
       result = await invocation.runAttempt({
         ...context,
         onLiveEvidence: () => {
@@ -24134,7 +24137,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
-        }, agentId, startedAt);
+        }, agentId, startedAt, agentRecord.resolvedCwd);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -24198,7 +24201,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
-        }, agentId, startedAt);
+        }, agentId, startedAt, agentRecord.resolvedCwd);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);

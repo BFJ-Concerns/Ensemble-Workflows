@@ -190,12 +190,12 @@ export class EngineRegistry {
   /** Resources the engines share and the registry therefore owns, closed after every engine has. */
   #shared: readonly { close(): Promise<void> }[];
 
-  /** What each engine needs from the filesystem, judged before its first attempt (`EngineResourceGate`). */
-  #resources: (name: EngineName) => readonly ResourceRequirement[];
+  /** What each engine needs at the attempt's resolved placement, judged before dispatch (`EngineResourceGate`). */
+  #resources: (name: EngineName, cwd: string) => readonly ResourceRequirement[];
 
   /**
-   * `resources` resolves an engine's filesystem requirements, asked at
-   * that engine's first attempt, so a run resolves only the engines it
+   * `resources` resolves an engine's filesystem requirements at each
+   * attempt's resolved placement, so a run resolves only the engines it
    * uses. Omitted, no engine declares any, which is what a registry of
    * test doubles wants; the default registry declares every engine's
    * (`createDefaultEngineRegistry`).
@@ -203,7 +203,7 @@ export class EngineRegistry {
   constructor(
     engines: EngineAdapter[],
     shared: readonly { close(): Promise<void> }[] = [],
-    resources: (name: EngineName) => readonly ResourceRequirement[] = () => []
+    resources: (name: EngineName, cwd: string) => readonly ResourceRequirement[] = () => []
   ) {
     for (const engine of engines) {
       this.#engines.set(engine.name, engine);
@@ -216,8 +216,8 @@ export class EngineRegistry {
     return this.#engines.get(name);
   }
 
-  resourceRequirements(name: EngineName): readonly ResourceRequirement[] {
-    return this.#resources(name);
+  resourceRequirements(name: EngineName, cwd: string): readonly ResourceRequirement[] {
+    return this.#resources(name, cwd);
   }
 
   names(): EngineName[] {
@@ -843,7 +843,9 @@ export async function createDefaultEngineRegistry(
       })
     ],
     ownsScopes ? [workerScopes] : [],
-    (engine) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], options.cwd)
+    // The Codex app-server is shared and starts in the run base; Claude
+    // and opencode launch a process in each invocation's placement.
+    (engine, cwd) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], engine === "codex" ? options.cwd : cwd)
   );
 }
 

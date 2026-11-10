@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ENGINE_RESOURCE_RESOLVERS, engineResourceRequirements } from "../../src/engine-resources.js";
-import { EngineRegistry, type EngineAdapter } from "../../src/engines.js";
+import { ENGINE_RESOURCE_RESOLVERS, claudeConfigDirectory, engineResourceRequirements } from "../../src/engine-resources.js";
+import { createDefaultEngineRegistry, EngineRegistry, type EngineAdapter } from "../../src/engines.js";
+import { launchEnvironment } from "../../src/engine-environment.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { classifyAttemptFailure } from "../../src/failure-classification.js";
 import {
@@ -16,6 +17,8 @@ import {
   probeResource,
   type ResourceRequirement
 } from "../../src/resource-preflight.js";
+
+import { NoWorkerScopes } from "../../src/worker-scopes.js";
 
 import type { EngineName } from "../../src/types.js";
 
@@ -114,7 +117,7 @@ test("a caller sandbox is named only by a rule whose evidence matches", () => {
   });
 });
 
-test("the engine gate judges an engine once and refuses each attempt afresh", async () => {
+test("the engine gate reuses a resource verdict and refuses each attempt afresh", async () => {
   await withDirectory(async (dir) => {
     await writeFile(path.join(dir, "file"), "");
     const resolved: EngineName[] = [];
@@ -124,11 +127,12 @@ test("the engine gate judges an engine once and refuses each attempt afresh", as
     }, {});
     await gate.require("claude");
     const first = await gate.require("codex").catch((error: unknown) => error);
+    await rm(path.join(dir, "file"));
     const second = await gate.require("codex").catch((error: unknown) => error);
     assert.ok(first instanceof ResourcePreflightRefusedError);
     assert.ok(second instanceof ResourcePreflightRefusedError);
     assert.notEqual(first, second);
-    assert.deepEqual(resolved, ["claude", "codex"]);
+    assert.deepEqual(resolved, ["claude", "codex", "codex"]);
   });
 });
 
@@ -268,4 +272,93 @@ test("a denied Claude scratch home falls back before its worker runs and does no
 test("relative Claude configuration stays on one home when dispatch and roster commands have different working directories", () => {
   const requirements = engineResourceRequirements("claude", { CLAUDE_CONFIG_DIR: "relative-home" }, "/worker/cwd", {});
   assert.equal(requirements[0]?.path, path.resolve("relative-home"));
+});
+
+test("relative engine homes follow each worker placement without reusing another placement's verdict", async () => {
+  await withDirectory(async (dir) => {
+    const good = path.join(dir, "good");
+    const bad = path.join(dir, "bad");
+    await mkdir(good);
+    await mkdir(bad);
+    await writeFile(path.join(dir, "resources"), "base directory must not be judged");
+    await writeFile(path.join(bad, "resources"), "worker resource is not a directory");
+    for (const name of ["claude", "opencode"] as const) {
+      const ran: string[] = [];
+      const adapter: EngineAdapter = {
+        name, concurrency: 1,
+        schedule: async (run) => run(),
+        createInvocation: (_prompt, options) => ({ runAttempt: async () => {
+          ran.push(options.cwd!);
+          return { text: '"answer"', deltaText: '"answer"', durationMs: 1, firstDeltaMs: 1, items: {}, tokenUsageEvents: [] };
+        } }),
+        close: async () => undefined
+      };
+      const runtime = new EnsembleRuntime({
+        cwd: dir, defaultMaxAttempts: 1,
+        engines: new EngineRegistry([adapter], [], (engine, cwd) =>
+          engineResourceRequirements(engine, name === "claude" ? { CLAUDE_CODE_TMPDIR: "resources" } : { XDG_DATA_HOME: "resources" }, cwd)
+            .filter((r) => r.role === (name === "claude" ? "Claude scratch files" : "opencode data")))
+      });
+      try {
+        // Usable placement must not inherit a denial from the run's base.
+        assert.equal(await runtime.agent("work", { engine: name, cwd: good }), '"answer"');
+        // A second placement must not inherit the first placement's pass.
+        await assert.rejects(runtime.agent("work", { engine: name, cwd: bad, schema: { type: "string" } }), ResourcePreflightRefusedError);
+        assert.deepEqual(ran, [good]);
+      } finally {
+        await runtime.close();
+      }
+    }
+  });
+});
+
+
+test("the default registry uses worker placement for Claude and opencode, but the app-server base for Codex", async () => {
+  const registry = await createDefaultEngineRegistry({
+    cwd: "/run/base", codexBin: "codex", requestTimeoutMs: 1000,
+    startupHandshakeTimeoutMs: 1000, clientName: "test", clientVersion: "test",
+    workerScopes: new NoWorkerScopes(),
+    workerEnvironment: {
+      codex: { CODEX_HOME: "codex-home" },
+      claude: { CLAUDE_CODE_TMPDIR: "claude-scratch" },
+      opencode: { XDG_DATA_HOME: "data" }
+    },
+    onEvent: () => undefined, onClaudeEvent: () => undefined, onOpenCodeEvent: () => undefined
+  });
+  try {
+    assert.equal(registry.resourceRequirements("codex", "/placed/worker")[0]?.path, "/run/base/codex-home");
+    assert.equal(registry.resourceRequirements("claude", "/placed/worker").find((r) => r.role === "Claude scratch files")?.path,
+      `/placed/worker/claude-scratch/claude-${process.getuid?.() ?? 0}`);
+    assert.equal(registry.resourceRequirements("opencode", "/placed/worker")[0]?.path, "/placed/worker/data/opencode");
+  } finally {
+    await registry.close();
+  }
+});
+
+
+test("a socket directory without search permission preserves the resource refusal", { skip: process.getuid?.() === 0 }, async () => {
+  await withDirectory(async (dir) => {
+    await chmod(dir, 0o600);
+    await assert.rejects(judgeResources([requirement({ owner: "claude", path: dir, access: "bind-socket" })], {}), (error: unknown) => {
+      assert.ok(error instanceof ResourcePreflightRefusedError);
+      assert.equal(error.denials[0]?.code, "EACCES");
+      assert.equal(error.denials[0]?.requirement.path, dir);
+      assert.match(error.message, /the claude engine's test store/);
+      return true;
+    });
+  }, "/mnt/ai-data/scratch");
+});
+
+test("an empty Claude config override keeps the default home and daemon identity", () => {
+  const env = launchEnvironment("claude", { CLAUDE_CONFIG_DIR: "" }, { HOME: "/worker" });
+  assert.equal(env.CLAUDE_CONFIG_DIR, "");
+  assert.equal(claudeConfigDirectory(env, "/placed/worker"), "/worker/.claude");
+  const empty = engineResourceRequirements("claude", { CLAUDE_CONFIG_DIR: "" }, "/placed/worker", { HOME: "/worker" });
+  const absent = engineResourceRequirements("claude", undefined, "/placed/worker", { HOME: "/worker" });
+  assert.deepEqual(empty, absent);
+});
+
+test("a relative Codex HOME is resolved against the app-server launch directory", () => {
+  const resources = engineResourceRequirements("codex", { HOME: "relative-home", CODEX_HOME: "" }, "/run/base", {});
+  assert.equal(resources[0]?.path, "/run/base/relative-home/.codex");
 });

@@ -225,12 +225,13 @@ async function probeSocketBinding(requirement: ResourceRequirement, dir: string)
   }
   try {
     await listenOnce(socketPath);
-    return null;
   } catch (error) {
     return denialOf(requirement, dir, error);
-  } finally {
-    await rm(socketPath, { force: true });
   }
+  // A failed bind created no socket. Probing its path again can itself
+  // be denied and must not replace the access verdict.
+  await rm(socketPath, { force: true });
+  return null;
 }
 
 const MAX_SOCKET_PATH_BYTES = 107;
@@ -281,27 +282,29 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * Judges each engine's declared resources once per run, immediately before
- * that engine's first attempt, and refuses every attempt on an engine whose
- * resources were denied. The judgement is kept for the run — a sandbox does
- * not change under a running launcher — but each refusal is a fresh error,
- * because the runtime attaches per-attempt evidence to the error it records.
+ * Resolves resources against each attempt's placement and judges each
+ * distinct resource set once per run. A relative worker home can name a
+ * different path at each placement, so only identical requirements share a
+ * judgement. Each refusal is a fresh error because the runtime attaches
+ * per-attempt evidence to the error it records.
  */
 export class EngineResourceGate {
-  #requirementsOf: (engine: EngineName) => readonly ResourceRequirement[];
+  #requirementsOf: (engine: EngineName, cwd: string) => readonly ResourceRequirement[];
   #env: NodeJS.ProcessEnv;
-  #judged = new Map<EngineName, Promise<ResourceDenial[]>>();
+  #judged = new Map<string, Promise<ResourceDenial[]>>();
 
-  constructor(requirementsOf: (engine: EngineName) => readonly ResourceRequirement[], env: NodeJS.ProcessEnv = process.env) {
+  constructor(requirementsOf: (engine: EngineName, cwd: string) => readonly ResourceRequirement[], env: NodeJS.ProcessEnv = process.env) {
     this.#requirementsOf = requirementsOf;
     this.#env = env;
   }
 
-  async require(engine: EngineName): Promise<void> {
-    let judged = this.#judged.get(engine);
+  async require(engine: EngineName, cwd: string = process.cwd()): Promise<void> {
+    const requirements = this.#requirementsOf(engine, cwd);
+    const key = JSON.stringify([engine, requirements]);
+    let judged = this.#judged.get(key);
     if (judged === undefined) {
-      judged = probeResources(this.#requirementsOf(engine));
-      this.#judged.set(engine, judged);
+      judged = probeResources(requirements);
+      this.#judged.set(key, judged);
     }
     const denials = await judged;
     if (denials.length > 0) {

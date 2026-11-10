@@ -560,7 +560,7 @@ export class EnsembleRuntime {
         })
       ]);
     const engines = this.#engines;
-    this.#resourceGate = new EngineResourceGate((engine) => engines.resourceRequirements(engine));
+    this.#resourceGate = new EngineResourceGate((engine, cwd) => engines.resourceRequirements(engine, cwd));
     this.#admission = new AdmissionController({
       ceiling: options.agentCeiling ?? null,
       caps: this.#engineCaps()
@@ -1670,7 +1670,8 @@ export class EnsembleRuntime {
     invocation: EngineInvocation,
     context: EngineAttemptContext,
     agentId: number,
-    startedAt: number
+    startedAt: number,
+    cwd: string
   ): Promise<EngineAttemptResult> {
     const recorder = this.#runRecorder;
     const record = this.#unsettledAgentRecords.get(agentId)?.record;
@@ -1702,7 +1703,7 @@ export class EnsembleRuntime {
       // The engine's filesystem requirements are judged here, before its
       // substrate first starts: a denial is a substrate refusal, recorded
       // and chained like any other refusal raised from inside the attempt.
-      await this.#resourceGate.require(engine);
+      await this.#resourceGate.require(engine, cwd);
       result = await invocation.runAttempt({
         ...context,
         onLiveEvidence: () => { if (active) context.onLiveEvidence?.(); },
@@ -2206,7 +2207,7 @@ export class EnsembleRuntime {
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...(previousFailure !== undefined ? { previousFailure } : {})
-        }, agentId, startedAt);
+        }, agentId, startedAt, agentRecord.resolvedCwd);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -2290,7 +2291,7 @@ export class EnsembleRuntime {
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...(previousFailure !== undefined ? { previousFailure } : {})
-        }, agentId, startedAt);
+        }, agentId, startedAt, agentRecord.resolvedCwd);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);

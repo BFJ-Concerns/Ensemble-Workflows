@@ -238,6 +238,13 @@ code is recorded in the manifest, `result.json`, and the sentinel; an uncaught
 exception that lands while the archive is being sealed is reflected only in
 the sentinel and the process's exit code.
 
+The launcher checks its own required record store before accepting the run.
+Engine homes and scratch directories are checked just before that engine's
+first attempt, because a script's engines are known only as it runs; a new
+worker placement with different resolved resources is checked separately.
+An engine refusal is a run failure or advances the call's fallback chain,
+with the denied path and its setting named in the diagnostic.
+
 ## How a run ends
 
 The launcher exits once its own work is done — the result or envelope printed,

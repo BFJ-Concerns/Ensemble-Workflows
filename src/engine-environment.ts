@@ -54,7 +54,7 @@ export function launchEnvironment(
     // Dispatch runs in the worker's cwd; roster and stop commands run in
     // the launcher's. Keep a relative config directory on the same daemon
     // and transcript store across all those commands.
-    if (env.CLAUDE_CONFIG_DIR !== undefined) {
+    if (env.CLAUDE_CONFIG_DIR) {
       env.CLAUDE_CONFIG_DIR = path.resolve(env.CLAUDE_CONFIG_DIR.normalize("NFC"));
     }
     return env;

@@ -48,7 +48,7 @@ export function codexResources(env: EngineResourceEnvironment): ResourceRequirem
   const home =
     declared !== undefined && declared.length > 0
       ? { path: path.resolve(env.cwd, declared), from: "CODEX_HOME" }
-      : { path: path.join(homeOf(env.worker), ".codex"), from: "default: $HOME/.codex" };
+      : { path: path.resolve(env.cwd, homeOf(env.worker), ".codex"), from: "default: $HOME/.codex" };
   return [{ owner: "codex", role: "Codex home", path: home.path, access: "create-entries", resolvedFrom: home.from }];
 }
 
@@ -58,7 +58,7 @@ export function claudeResources(env: EngineResourceEnvironment): ResourceRequire
   const uid = process.getuid?.() ?? 0;
   const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path.join(env.worker.PREFIX, "tmp") : "/tmp";
   const daemon = path.join(daemonRoot, `cc-daemon-${uid}`, createHash("sha256").update(config).digest("hex").slice(0, 8));
-  const configFrom = env.worker.CLAUDE_CONFIG_DIR !== undefined ? "CLAUDE_CONFIG_DIR" : "default: $HOME/.claude";
+  const configFrom = env.worker.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "default: $HOME/.claude";
   const scratch = temporaryDirectory(env.launcher, process.cwd());
   const valve = claudeValveDirectory(env.launcher);
   const workerScratch = env.worker.CLAUDE_CODE_TMPDIR
@@ -95,7 +95,7 @@ export function openCodeResources(env: EngineResourceEnvironment): ResourceRequi
 
 /** Shared with the control plane so transcript reads and preflight use the same home. */
 export function claudeConfigDirectory(env: NodeJS.ProcessEnv, cwd: string): string {
-  return path.resolve(cwd, (env.CLAUDE_CONFIG_DIR ?? path.join(homeOf(env), ".claude")).normalize("NFC"));
+  return path.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path.join(homeOf(env), ".claude")).normalize("NFC"));
 }
 
 /** The launcher creates the tmux socket here, independently of the worker environment. */

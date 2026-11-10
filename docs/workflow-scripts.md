@@ -342,8 +342,13 @@ cannot pass silently:
   Relative `CLAUDE_CONFIG_DIR` values resolve from the launcher's working
   directory so dispatch and roster commands share one home.
   Claude's daemon sockets use `/tmp/cc-daemon-<uid>/<config hash>` on Linux,
-  independently of `TMPDIR`. Unused engines are not checked. A denied
-  resource refuses every dispatch on that engine with
+  independently of `TMPDIR`. Other relative worker paths resolve from the
+  worker's actual directory, including a per-agent `cwd` or isolated
+  worktree; Codex homes resolve from the shared app-server's run base.
+  Each distinct resolved resource set is checked once per run, before its
+  first attempt, so a new placement with different relative homes is checked
+  separately. Unused engines are not checked. A denied
+  resource refuses dispatches needing that resource with
   `ResourcePreflightRefusedError`, naming the directory, the setting it came
   from and the error. Evidence identifying a Codex sandbox adds its name and
   the `danger-full-access` mode that lifts it; without such evidence the

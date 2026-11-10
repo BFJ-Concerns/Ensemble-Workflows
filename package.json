@@ -25,6 +25,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run build:skill",
     "build:skill": "node scripts/build-skill.mjs",
+    "version:check": "node scripts/release-version.mjs check",
+    "version:bump": "node scripts/release-version.mjs bump",
     "lint": "eslint src test scripts eslint.config.js",
     "test": "npm run build && node scripts/run-test-suite.mjs",
     "test:live": "npm run build && ENSEMBLE_LIVE=1 node scripts/run-test-suite.mjs \"dist/test/live/**/*.test.js\""

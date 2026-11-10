@@ -20129,6 +20129,7 @@ function usageSince(entries, fromIndex = 0) {
 }
 var BACKGROUND_TASK_STARTS = [
   { pattern: /Command running in background with ID: ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /^Workflow launched in background\. Task ID: ([A-Za-z0-9_-]+)/, from: (call) => call.tool === "Workflow" },
   { pattern: /Monitor started \(task ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
   { pattern: /^Command did not complete within its \S+ timeout and was moved to the background \(ID: ([A-Za-z0-9_-]+)\)/, from: (call) => call.tool === "Bash" }
 ];

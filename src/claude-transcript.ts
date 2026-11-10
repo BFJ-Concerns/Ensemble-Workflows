@@ -420,10 +420,12 @@ export interface BackgroundTask {
  * <id>). … You will be notified when it completes.`) — a task the model
  * never asked for, so it is read from any Bash call, anchored at the start
  * of the result so a Bash `cat` of a file quoting the phrase mid-output
- * starts nothing.
+ * starts nothing. Workflow launches report their task at the head of their
+ * own result, without a run_in_background option.
  */
 const BACKGROUND_TASK_STARTS: ReadonlyArray<{ pattern: RegExp; from: (call: ToolCall) => boolean }> = [
   { pattern: /Command running in background with ID: ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /^Workflow launched in background\. Task ID: ([A-Za-z0-9_-]+)/, from: (call) => call.tool === "Workflow" },
   { pattern: /Monitor started \(task ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
   { pattern: /^Command did not complete within its \S+ timeout and was moved to the background \(ID: ([A-Za-z0-9_-]+)\)/, from: (call) => call.tool === "Bash" }
 ];
@@ -475,8 +477,8 @@ const MONITOR_OWN_NOTICE = /^\s*\[Monitor (?:expired after|timed out|stopped)\b/
  * `end_turn` is an interim message, not the answer.
  *
  * Claude Code backgrounds a long command (`run_in_background`), a Monitor,
- * or — on its own — a foreground command that outlives its tool timeout,
- * and lets the model end its turn; the tool result names the task
+ * a native Workflow, or — on its own — a foreground command that outlives
+ * its tool timeout, and lets the model end its turn; the tool result names the task
  * (`BACKGROUND_TASK_STARTS`), and each start phrase is read only from the
  * calls that can produce it — a worker reading a file that quotes the
  * phrase has started nothing. When the task
@@ -521,9 +523,9 @@ export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex
       continue;
     }
     for (const result of toolResultBlocks(entry.message?.content)) {
-      // Only a call that backgrounds work can start a task: a worker that
-      // reads a file quoting the start phrase (this repository's own tests
-      // do) has started nothing, and its `cat` must not hold the turn open.
+      // A start result must come from a tool that can produce it. A worker
+      // reading a file quoting the phrase has started nothing, and its
+      // `cat` must not hold the turn open.
       const call = toolCalls.get(result.toolUseId);
       if (call === undefined) {
         continue;

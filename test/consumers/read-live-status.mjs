@@ -51,7 +51,15 @@ try {
     snapshot = current;
     assert.equal(current.schema, 3);
     assert.deepEqual(Object.keys(current).sort(), snapshotKeys);
-    assert.equal(current.runId, announcement.run_id);
+    assert.match(announcement.run_id, /^cwd:[0-9a-f]{24}:[0-9a-f-]{36}$/);
+    assert.equal(current.runId, announcement.run_id.split(":")[2]);
+    const archiveLine = stderr.split("\n").find((entry) => entry.startsWith("[run-record-archive] "));
+    if (archiveLine) {
+      const archive = JSON.parse(archiveLine.slice("[run-record-archive] ".length));
+      assert.equal(announcement.run_id, archive.run_id);
+      const manifest = JSON.parse(await readFile(path.join(archive.archive_path, "manifest.json"), "utf8"));
+      assert.equal(announcement.run_id, manifest.run_id);
+    }
     assert.equal(current.pid, child.pid);
     assert.equal(current.owner.pid, child.pid);
     assert.equal(current.agents.length,

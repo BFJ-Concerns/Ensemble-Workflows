@@ -1420,6 +1420,11 @@ export async function resolveRunDirectory(storeDir: string, cwd: string, runUuid
   return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
 }
 
+/** The public run identity, including when archive recording is disabled. */
+export async function resolveRunId(cwd: string, runUuid: string): Promise<string> {
+  return `${(await deriveNamespace(cwd)).id}:${runUuid}`;
+}
+
 export interface ReapAbandonedRunsOptions {
   /** The namespace directory whose run directories are swept. */
   namespaceDir: string;

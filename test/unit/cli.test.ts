@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { access, glob, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, glob, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -73,6 +73,49 @@ function announcedRunRecord(stderr: string): { run_id: string; archive_path: str
   assert.equal(lines.length, 1, `expected exactly one run-record announcement, got:\n${stderr}`);
   return JSON.parse(lines[0]!.slice("[run-record-archive] ".length)) as { run_id: string; archive_path: string };
 }
+
+test("startup run IDs join status to archives for both CLI forms, with recording on or off", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-public-id-"));
+  try {
+    await execFileAsync("git", ["init", "--quiet", directory]);
+    const nested = path.join(directory, "nested");
+    const linked = path.join(directory, "linked");
+    await mkdir(nested);
+    await symlink(nested, linked);
+    const script = path.join(nested, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "public-run-id" }; return "done";');
+    const namespace = createHash("sha256").update(await realpath(directory)).digest("hex").slice(0, 24);
+    for (const recording of [true, false]) {
+      for (const argv of [[script], ["agent", "--engine", "codex", "hello"]]) {
+        const stderr = new CaptureStream();
+        const runtime = fixedEngineRuntime(new FixedResponseEngine("codex", "done"));
+        const code = await runEnsembleCli(argv, {
+          cwd: linked, stdout: new CaptureStream(), stderr,
+          runRecordDir: recording ? path.join(directory, "records") : null,
+          env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
+          createRuntime: async () => runtime
+        });
+        assert.equal(code, 0, stderr.text());
+        const statusLines = stderr.text().split("\n").filter((line) => line.startsWith("[status-file] "));
+        assert.equal(statusLines.length, 1);
+        const status = JSON.parse(statusLines[0]!.slice("[status-file] ".length));
+        const expectedId = `cwd:${namespace}:${runtime.progress.runId}`;
+        assert.equal(status.run_id, expectedId);
+        assert.equal(path.basename(status.status_path), `ensemble.${runtime.progress.runId}.local.json`);
+        if (recording) {
+          const archive = announcedRunRecord(stderr.text());
+          const manifest = JSON.parse(await readFile(path.join(archive.archive_path, "manifest.json"), "utf8"));
+          assert.equal(archive.run_id, expectedId);
+          assert.equal(manifest.run_id, expectedId);
+        } else {
+          assert.doesNotMatch(stderr.text(), /\[run-record-archive\]/);
+        }
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("caller identity links each workflow archive to its invoking session", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-caller-identity-"));
@@ -4000,7 +4043,11 @@ test(`CLI publishes and announces automatic status before execution with .claude
     assert.ok(line);
     assert.ok(stderr.text().indexOf(line) < stderr.text().indexOf("workflow-started"));
     const announcement = JSON.parse(line.slice("[status-file] ".length)) as { run_id: string; status_path: string };
-    assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${announcement.run_id}.local.json`));
+    const publicId = /^cwd:([0-9a-f]{24}):([0-9a-f-]{36})$/.exec(announcement.run_id);
+    assert.ok(publicId, announcement.run_id);
+    const expectedNamespace = createHash("sha256").update(await realpath(directory)).digest("hex").slice(0, 24);
+    assert.equal(publicId[1], expectedNamespace);
+    assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${publicId[2]}.local.json`));
     await assert.rejects(access(announcement.status_path));
     assert.deepEqual(await readdir(path.dirname(announcement.status_path)), [pendingSnapshot]);
   } finally {

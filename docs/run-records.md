@@ -29,7 +29,12 @@ are atomic, so a reader never sees a half-written file.
 After the first successful write and before workflow execution, the CLI prints
 `[status-file] {"run_id":…, "status_path":…}` on stderr. A supervisor can
 follow that path without knowing the working directory's layout or searching
-the archive. Disable publication with `ENSEMBLE_STATUS=off`; directory
+the archive. Its `run_id` is the public `cwd:<namespace-hash>:<run-uuid>`
+identity, identical to the archive announcement and manifest when recording is
+on, and namespaced the same way when recording is off. The snapshot's `runId`
+and the filename use only `<run-uuid>`.
+
+Disable publication with `ENSEMBLE_STATUS=off`; directory
 overrides and machine settings are described in [Configuration](configuration.md).
 
 Each run has its own file, so concurrent runs sharing a status directory are each

@@ -84,7 +84,7 @@ test("a separate status consumer follows queued, retried, failed and held worker
     assert.deepEqual(report.workers.find(([id]: [number]) => id === 2)[1].attempts, [1, 2]);
     const held = report.workers.filter(([id]: [number]) => id === 4 || id === 5);
     assert.notEqual(held[0][1].latest.transcript, held[1][1].latest.transcript);
-    assert.equal(report.announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${report.announcement.run_id}.local.json`));
+    assert.equal(report.announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${report.snapshot.runId}.local.json`));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

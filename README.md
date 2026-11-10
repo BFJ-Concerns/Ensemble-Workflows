@@ -210,6 +210,11 @@ file tells a supervising process when, and how, the run ended. See
 
 ## Building from source
 
+Run these commands from the checkout root, with Node as required above and
+npm on `PATH`. The build needs development dependencies (TypeScript and
+esbuild), npm's executable links, and optional dependencies (esbuild's
+platform binary). Use one install/build at a time per checkout:
+
 ```sh
 npm ci
 npm run build
@@ -217,6 +222,33 @@ npm run build
 
 The build compiles the TypeScript in `src/` to `dist/` and rebuilds the
 launcher at `skills/ensemble-workflow/Base/scripts/ensemble.mjs`.
+
+If `tsc` is missing, let any other install in that checkout finish first:
+[`npm ci`](https://docs.npmjs.com/cli/v11/commands/npm-ci/) removes
+`node_modules` before installing. If your npm settings omit development or
+optional dependencies, or disable executable links, reinstall explicitly:
+
+```sh
+npm ci --include=dev --include=optional --bin-links
+npm run build
+```
+
+Some npm versions warn that esbuild's `postinstall` is not covered by
+`allowScripts`. The build works with that script skipped when the matching
+optional platform package is installed. The script checks the binary version
+and optimises the executable shim; see
+[esbuild's installation notes](https://esbuild.github.io/getting-started/#installing-esbuild).
+No script approval is needed for this build route; `npm ci --ignore-scripts`
+also works with development and optional dependencies installed.
+
+The current lockfile also has unresolved audit advisories: URI-handling
+findings in `fast-uri` (through Ajv, included in the launcher), and denial of
+service findings in the lint toolchain's `minimatch`, `brace-expansion` and
+`js-yaml`. `npm audit` gives the affected versions and advisory links;
+`npm audit --omit=dev` shows the runtime dependency findings separately.
+A successful build does not resolve these advisories. Review dependency
+changes separately rather than applying `npm audit fix --force`, which can
+change the declared tooling versions.
 
 ## Licence
 

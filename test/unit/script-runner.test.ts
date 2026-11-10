@@ -65,6 +65,25 @@ test("pre-spawn validation errors pass through combinators and real agent() call
   );
 });
 
+test("a collected option fault survives a later throwing getter before dispatch", async () => {
+  const validationRuntime = new EnsembleRuntime({ transport: { close: async () => {} } as never, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const source = `export const meta = { name: "getter" };
+    const options = { engine: "codex", cwd: 5 };
+    Object.defineProperty(options, "fallback", { enumerable: true, get() { throw new Error("getter failed"); } });
+    return await agent("go", options);`;
+  await assert.rejects(
+    runWorkflowScript({ filename: "getter.js", runtime: validationRuntime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof InvalidAgentOptionsError);
+      assert.match(error.message, /Invalid agent\(\) option "cwd" value 5/);
+      assert.match(error.message, /Invalid agent\(\) option "fallback": reading its value threw/);
+      return true;
+    }
+  );
+  assert.equal(validationRuntime.lastAgentRecord(), null);
+  await validationRuntime.close();
+});
+
 test("concrete validation classes propagate unchanged through a combinator", async () => {
   const optionError = new InvalidAgentOptionsError([]);
   const cycleError = new CyclicAgentSchemaError("#/self", "#");
@@ -280,6 +299,129 @@ test("workflow(name) resolves saved children from the project registry before th
   });
 
   assert.equal(result.result, "project");
+});
+
+test("a literal missing workflow after an agent call is refused before that call runs", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-missing-workflow-"));
+  let calls = 0;
+  const countingRuntime: WorkflowRuntime = {
+    ...runtime,
+    agent: (async () => {
+      calls += 1;
+      return "paid answer";
+    }) as unknown as WorkflowRuntime["agent"]
+  };
+  const source = `export const meta = { name: "missing-literal" };
+await agent("first", { engine: "codex" });
+return await workflow("there-is-no-such-workflow");`;
+  await assert.rejects(
+    runWorkflowScript({ filename: path.join(directory, "parent.js"), cwd: directory, runtime: countingRuntime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /parent\.js:3:14: workflow\("there-is-no-such-workflow"\) was not found/);
+      return true;
+    }
+  );
+  assert.equal(calls, 0);
+});
+
+test("a literal workflow inside a branch callback is checked before dispatch", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-branch-workflow-"));
+  let calls = 0;
+  const countingRuntime: WorkflowRuntime = {
+    ...runtime,
+    agent: (async () => {
+      calls += 1;
+      return "paid answer";
+    }) as unknown as WorkflowRuntime["agent"]
+  };
+  const source = `export const meta = { name: "branch-literal" };
+await agent("first", { engine: "codex" });
+if (true) return await parallel([() => workflow("there-is-no-such-workflow")]);`;
+  await assert.rejects(
+    runWorkflowScript({ filename: path.join(directory, "branch.js"), cwd: directory, runtime: countingRuntime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /branch\.js:3:40: workflow\("there-is-no-such-workflow"\) was not found/);
+      return true;
+    }
+  );
+  assert.equal(calls, 0);
+});
+
+test("a nested workflow parameter is called as a local function", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-local-workflow-param-"));
+  const source = `export const meta = { name: "local-parameter" };
+const run = (workflow) => workflow("there-is-no-such-workflow");
+return run((name) => ({ local: name }));`;
+  let result: unknown;
+  await assert.doesNotReject(async () => {
+    result = (await runWorkflowScript({ filename: path.join(directory, "parameter.js"), cwd: directory, runtime, log: () => {}, source })).result;
+  });
+  assert.deepEqual(result, { local: "there-is-no-such-workflow" });
+});
+
+test("a block-local workflow binding does not mask the hook outside its block", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-local-workflow-block-"));
+  const localSource = `export const meta = { name: "local-block" };
+{
+  const workflow = (name) => ({ local: name });
+  return workflow("there-is-no-such-workflow");
+}`;
+  let result: unknown;
+  await assert.doesNotReject(async () => {
+    result = (await runWorkflowScript({ filename: path.join(directory, "local.js"), cwd: directory, runtime, log: () => {}, source: localSource })).result;
+  });
+  assert.deepEqual(result, { local: "there-is-no-such-workflow" });
+
+  const hookSource = `export const meta = { name: "outside-block" };
+{ const workflow = (name) => name; workflow("local"); }
+return workflow("there-is-no-such-workflow");`;
+  await assert.rejects(
+    runWorkflowScript({ filename: path.join(directory, "hook.js"), cwd: directory, runtime, log: () => {}, source: hookSource }),
+    /hook\.js:3:8: workflow\("there-is-no-such-workflow"\) was not found/
+  );
+});
+
+test("class static blocks keep their lexical and hoisted workflow bindings local", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-static-workflow-"));
+  for (const declaration of ["const", "var"]) {
+    const source = `export const meta = { name: "static-local" };
+const values = [];
+class Local { static { ${declaration} workflow = name => values.push(name); workflow("local-name"); } }
+return values;`;
+    const result = await runWorkflowScript({ filename: path.join(directory, "local.js"), cwd: directory, runtime, log: () => {}, source });
+    assert.deepEqual(result.result, ["local-name"]);
+  }
+  const source = `export const meta = { name: "static-hoisted" };
+class Local { static { workflow("local-name"); { var workflow; } } }
+return 1;`;
+  await assert.rejects(
+    runWorkflowScript({ filename: path.join(directory, "hoisted.js"), cwd: directory, runtime, log: () => {}, source }),
+    /workflow is not a function/
+  );
+});
+
+test("parameter defaults and switch discriminants resolve workflow in their enclosing scope before dispatch", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-workflow-scope-"));
+  const bodies = [
+    'const run = async (value = workflow("missing-child")) => { var workflow; return value; }; await run();',
+    'switch (await workflow("missing-child")) { default: const workflow = () => {}; }',
+    'class Local { static { var workflow = name => name; } } await workflow("missing-child");'
+  ];
+  for (const body of bodies) {
+    let calls = 0;
+    const countingRuntime: WorkflowRuntime = {
+      ...runtime,
+      agent: (async () => { calls += 1; return "paid answer"; }) as unknown as WorkflowRuntime["agent"]
+    };
+    const source = `export const meta = { name: "scope" };\nawait agent("first", { engine: "codex" });\n${body}`;
+    await assert.rejects(
+      runWorkflowScript({ filename: path.join(directory, "scope.js"), cwd: directory, runtime: countingRuntime, log: () => {}, source }),
+      /scope\.js:3:\d+: workflow\("missing-child"\) was not found/
+    );
+    assert.equal(calls, 0);
+  }
 });
 
 test("child workflows share the parent budget ledger", async () => {
@@ -1687,6 +1829,46 @@ test("a syntax error near the end of a long source line keeps the caret near its
       assert.doesNotMatch(error.message, /ensemble-workflow-body|node:|script-runner/);
       return true;
     }
+  );
+});
+
+test("an extra closing brace followed by body code points at the brace", async () => {
+  const source = 'export const meta = { name: "brace" };\nconst value = 1;\n}\nreturn 2;\n';
+  await assert.rejects(
+    runWorkflowScript({ filename: "brace.js", runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.match(error.message, /brace\.js:3:1: Unexpected closing '\}' in workflow body/);
+      assert.match(error.message, /\n {2}}\n {2}\^/);
+      return true;
+    }
+  );
+});
+
+test("an unfinished CR-separated body reports its own line", async () => {
+  const source = 'export const meta = { name: "carriage-return" };\rconst unfinished = (';
+  await assert.rejects(
+    runWorkflowScript({ filename: "cr.js", runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.match(error.message, /cr\.js:2:\d+: Unexpected end of workflow body/);
+      assert.match(error.message, /const unfinished = \(/);
+      return true;
+    }
+  );
+});
+
+test("early-close diagnostics count template interpolations and ignore braces in literals", async () => {
+  const source = [
+    'export const meta = { name: "template-braces" };',
+    'const value = `outer ${`inner ${({ text: "}" }).text}`}`;',
+    'const pattern = /}/;',
+    '}',
+    'return value;'
+  ].join("\n");
+  await assert.rejects(
+    runWorkflowScript({ filename: "template-braces.js", runtime, log: () => {}, source }),
+    /template-braces\.js:4:1: Unexpected closing '\}' in workflow body/
   );
 });
 

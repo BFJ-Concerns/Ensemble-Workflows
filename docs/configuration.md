@@ -326,7 +326,7 @@ environment variable:
 | `retryPromiseSilenceTimeoutMs` | 15 minutes | Codex only. How long a turn may stay silent after the app-server promises to retry before the turn is ended |
 | `firstOutputTimeoutMs` | 15 minutes | Codex only. How long a started turn may wait for its first output-bearing frame |
 | `requestTimeoutMs` | 30 seconds | Codex app-server transport request timeout |
-| `claudeSessionStaleAfterMs` | 60 minutes, or a cache TTL declared in `worker_environment` | When a held Claude session is marked stale (see [Sessions](workflow-scripts.md#multi-turn-sessions)) |
+| `claudeSessionStaleAfterMs` | 60 minutes | When a held Claude session is marked stale (see [Sessions](workflow-scripts.md#multi-turn-sessions)) |
 | `codexSessionStaleAfterMs` | 60 minutes | When a held Codex session is marked stale |
 | `workerScope` | `worker` | Systemd scope grouping (`worker` or `run`); the library uses the explicit option or its default |
 | `holdScope` | None | Hold scope for the runtime's runs; overrides `ENSEMBLE_HOLD_SCOPE` |

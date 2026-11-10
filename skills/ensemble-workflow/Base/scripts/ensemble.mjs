@@ -17431,1967 +17431,6 @@ function claudeApiErrorOf(diagnostics) {
   };
 }
 
-// src/claude-control-plane.ts
-import { createHash as createHash3 } from "node:crypto";
-import { access, mkdtemp, readFile as readFile7, readdir as readdir5, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
-import { homedir as homedir3, hostname as hostname3, tmpdir } from "node:os";
-import path11 from "node:path";
-
-// src/claude-transcript.ts
-import { readFile as readFile5 } from "node:fs/promises";
-function submittedUserText(entry) {
-  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
-  const content = entry.message?.content;
-  if (typeof content !== "string") return null;
-  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
-  if (command === null) return content;
-  const name = command[1] ?? "";
-  const args = command[2] ?? "";
-  return args === "" ? name : `${name} ${args}`;
-}
-function parseTranscriptText(text) {
-  const entries = [];
-  for (const line of text.split("\n")) {
-    if (line.trim().length === 0) {
-      continue;
-    }
-    const entry = parseLine(line);
-    if (entry !== null) {
-      entries.push(entry);
-    }
-  }
-  return entries;
-}
-async function readTranscriptFile(path16) {
-  let text;
-  try {
-    text = await readFile5(path16, "utf8");
-  } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path16}`, { cause: error });
-  }
-  return { path: path16, text, entries: parseTranscriptText(text) };
-}
-function finalAssistantText(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const text = textFromContent(entry.message?.content);
-    if (text !== null && text.length > 0) {
-      return text;
-    }
-  }
-  return null;
-}
-var SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>";
-function endsInSyntheticReply(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    return entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER;
-  }
-  return false;
-}
-function apiErrorSince(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    if (entry.message?.model !== SYNTHETIC_MODEL_PLACEHOLDER || entry.isApiErrorMessage !== true) {
-      return null;
-    }
-    return {
-      status: typeof entry.apiErrorStatus === "number" ? entry.apiErrorStatus : null,
-      code: typeof entry.error === "string" ? entry.error : null
-    };
-  }
-  return null;
-}
-function resolvedModelSince(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const model = entry.message?.model;
-    if (typeof model === "string" && model.length > 0 && model !== SYNTHETIC_MODEL_PLACEHOLDER) {
-      return model;
-    }
-  }
-  return null;
-}
-function effortSince(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    if (typeof entry.effort === "string" && entry.effort.length > 0) {
-      return entry.effort;
-    }
-  }
-  return null;
-}
-function turnComplete(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const stopReason = entry.message?.stop_reason;
-    return typeof stopReason === "string" && stopReason !== "tool_use" && textFromContent(entry.message?.content) !== null;
-  }
-  return false;
-}
-function usageSince(entries, fromIndex = 0) {
-  const start = Math.max(0, fromIndex);
-  const counted = /* @__PURE__ */ new Set();
-  for (let index = 0; index < Math.min(start, entries.length); index += 1) {
-    const id = entries[index]?.type === "assistant" ? entries[index]?.message?.id : void 0;
-    if (typeof id === "string") {
-      counted.add(id);
-    }
-  }
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheRead = 0;
-  let cacheCreation = 0;
-  let sawUsage = false;
-  for (let index = start; index < entries.length; index += 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const usage2 = asRecord(entry.message?.usage);
-    if (usage2 === null) {
-      continue;
-    }
-    const id = entry.message?.id;
-    if (typeof id === "string") {
-      if (counted.has(id)) {
-        continue;
-      }
-      counted.add(id);
-    }
-    sawUsage = true;
-    inputTokens += numeric(usage2.input_tokens);
-    outputTokens += numeric(usage2.output_tokens);
-    cacheRead += numeric(usage2.cache_read_input_tokens);
-    cacheCreation += numeric(usage2.cache_creation_input_tokens);
-  }
-  if (!sawUsage) {
-    return zeroUsage();
-  }
-  const cachedInputTokens = cacheRead + cacheCreation;
-  return {
-    cachedInputTokens,
-    cacheCreationInputTokens: cacheCreation,
-    inputTokens,
-    outputTokens,
-    totalTokens: inputTokens + cachedInputTokens + outputTokens
-  };
-}
-var BACKGROUND_TASK_STARTS = [
-  { pattern: /Command running in background with ID: ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
-  { pattern: /Monitor started \(task ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
-  { pattern: /^Command did not complete within its \S+ timeout and was moved to the background \(ID: ([A-Za-z0-9_-]+)\)/, from: (call) => call.tool === "Bash" }
-];
-var TASK_STOP_RESULT = /Successfully stopped task: ([A-Za-z0-9_-]+)/;
-var TASK_NOTIFICATION_BLOCK = /<task-notification>([\s\S]*?)<\/task-notification>/g;
-var TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
-var TASK_NOTIFICATION_STATUS = /<status>([^<]+)<\/status>/;
-var TASK_NOTIFICATION_EVENT = /<event>([\s\S]*?)<\/event>/;
-var TASK_ENDED_STATUSES = /* @__PURE__ */ new Set(["completed", "failed", "killed", "stopped"]);
-var MONITOR_OWN_NOTICE = /^\s*\[Monitor (?:expired after|timed out|stopped)\b/;
-function outstandingBackgroundTasks(entries, fromIndex = 0) {
-  const toolCalls = /* @__PURE__ */ new Map();
-  const outstanding = /* @__PURE__ */ new Map();
-  const notified = /* @__PURE__ */ new Set();
-  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
-    const entry = entries[index];
-    if (entry === void 0) {
-      continue;
-    }
-    if (entry.type === "assistant") {
-      for (const id of notified) {
-        outstanding.delete(id);
-      }
-      notified.clear();
-      for (const call of toolUseBlocks(entry.message?.content)) {
-        toolCalls.set(call.id, call);
-      }
-      continue;
-    }
-    for (const result of toolResultBlocks(entry.message?.content)) {
-      const call = toolCalls.get(result.toolUseId);
-      if (call === void 0) {
-        continue;
-      }
-      for (const start of BACKGROUND_TASK_STARTS) {
-        const started = start.from(call) ? start.pattern.exec(result.text)?.[1] : void 0;
-        if (started !== void 0) {
-          outstanding.set(started, { id: started, description: call.description });
-        }
-      }
-      if (call.stops) {
-        const stopped = TASK_STOP_RESULT.exec(result.text)?.[1];
-        if (stopped !== void 0 && outstanding.has(stopped)) {
-          notified.add(stopped);
-        }
-      }
-    }
-    for (const notification of deliveredNotifications(entry)) {
-      if (notification.ended && outstanding.has(notification.id)) {
-        notified.add(notification.id);
-      }
-    }
-  }
-  return [...outstanding.values()];
-}
-var BACKGROUNDING_TOOLS = {
-  Bash: (input) => input?.run_in_background === true,
-  Monitor: () => true
-};
-var STOPPING_TOOL = "TaskStop";
-function toolUseBlocks(content) {
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  const calls = [];
-  for (const block of content) {
-    const record = asRecord(block);
-    if (record?.type !== "tool_use" || typeof record.id !== "string") {
-      continue;
-    }
-    const input = asRecord(record.input);
-    const backgrounds = typeof record.name === "string" && (BACKGROUNDING_TOOLS[record.name]?.(input) ?? false);
-    const stops = record.name === STOPPING_TOOL;
-    const description = typeof input?.description === "string" && input.description.length > 0 ? input.description : typeof input?.command === "string" && input.command.length > 0 ? input.command.slice(0, 200) : typeof record.name === "string" ? record.name : "background task";
-    calls.push({ id: record.id, tool: typeof record.name === "string" ? record.name : null, description, backgrounds, stops });
-  }
-  return calls;
-}
-function toolResultBlocks(content) {
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  const results = [];
-  for (const block of content) {
-    const record = asRecord(block);
-    if (record?.type !== "tool_result" || typeof record.tool_use_id !== "string") {
-      continue;
-    }
-    results.push({ toolUseId: record.tool_use_id, text: blockText(record.content) });
-  }
-  return results;
-}
-function deliveredNotifications(entry) {
-  let texts;
-  if (entry.type === "user") {
-    texts = messageTexts(entry.message?.content);
-  } else if (entry.type === "attachment") {
-    const attachment = asRecord(entry.attachment);
-    texts = attachment?.type === "queued_command" && typeof attachment.prompt === "string" ? [attachment.prompt] : [];
-  } else {
-    return [];
-  }
-  const notifications = [];
-  for (const text of texts) {
-    for (const block of text.matchAll(TASK_NOTIFICATION_BLOCK)) {
-      const body = block[1] ?? "";
-      const id = TASK_NOTIFICATION_ID.exec(body)?.[1];
-      if (id !== void 0) {
-        notifications.push({ id, ended: notificationEnded(body) });
-      }
-    }
-  }
-  return notifications;
-}
-function notificationEnded(body) {
-  const status = TASK_NOTIFICATION_STATUS.exec(body)?.[1]?.trim();
-  if (status !== void 0) {
-    return TASK_ENDED_STATUSES.has(status);
-  }
-  return MONITOR_OWN_NOTICE.test(TASK_NOTIFICATION_EVENT.exec(body)?.[1] ?? "");
-}
-function messageTexts(content) {
-  if (typeof content === "string") {
-    return [content];
-  }
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  const texts = [];
-  for (const block of content) {
-    const record = asRecord(block);
-    if (record?.type === "text" && typeof record.text === "string") {
-      texts.push(record.text);
-    }
-  }
-  return texts;
-}
-function blockText(content) {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return "";
-  }
-  return content.map((block) => {
-    const record = asRecord(block);
-    return record?.type === "text" && typeof record.text === "string" ? record.text : "";
-  }).join("\n");
-}
-function parseLine(line) {
-  try {
-    const parsed = JSON.parse(line);
-    return asRecord(parsed) === null ? null : parsed;
-  } catch {
-    return null;
-  }
-}
-function textFromContent(content) {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return null;
-  }
-  const parts = [];
-  for (const block of content) {
-    const record = asRecord(block);
-    if (record?.type === "text" && typeof record.text === "string") {
-      parts.push(record.text);
-    }
-  }
-  return parts.length > 0 ? parts.join("") : null;
-}
-function asRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-}
-function numeric(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-function zeroUsage() {
-  return {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0
-  };
-}
-
-// src/worker-scopes.ts
-import { execFile as execFile3, spawn } from "node:child_process";
-import { readFile as readFile6, readdir as readdir4 } from "node:fs/promises";
-import path10 from "node:path";
-var RUN_SCOPE_GROUP = "run";
-var SystemdWorkerScopes = class {
-  slice;
-  #label;
-  #busctlBin;
-  #systemdRunBin;
-  #systemctlBin;
-  #env;
-  #procDir;
-  #moveTimeoutMs;
-  /** Units this manager created, by group: the set `close()` stops. */
-  #units = /* @__PURE__ */ new Map();
-  /** One placement at a time per group, so concurrent first placements create one scope rather than race for the name. */
-  #groupTurns = /* @__PURE__ */ new Map();
-  #closed = false;
-  constructor(options = {}) {
-    this.slice = options.slice ?? null;
-    this.#label = options.label ?? String(process.pid);
-    this.#busctlBin = options.busctlBin ?? "busctl";
-    this.#systemdRunBin = options.systemdRunBin ?? "systemd-run";
-    this.#systemctlBin = options.systemctlBin ?? "systemctl";
-    this.#env = options.env ?? process.env;
-    this.#procDir = options.procDir ?? "/proc";
-    this.#moveTimeoutMs = options.moveTimeoutMs ?? 5e3;
-  }
-  /** The unit a group's processes are placed in: `ensemble-<label>-<group>.scope`, the group made unit-name safe. */
-  unitFor(group) {
-    return `ensemble-${unitSafe(this.#label)}-${unitSafe(group)}.scope`;
-  }
-  async place(group, pids) {
-    if (this.#closed) {
-      return { kind: "refused", reason: "the scope manager is closed" };
-    }
-    const turn = (this.#groupTurns.get(group) ?? Promise.resolve()).then(() => this.#placeInTurn(group, pids));
-    this.#groupTurns.set(group, turn.catch(() => void 0));
-    return turn;
-  }
-  async #placeInTurn(group, requested) {
-    if (this.#closed) {
-      return { kind: "refused", reason: "the scope manager is closed" };
-    }
-    const unit = this.unitFor(group);
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const pids = requested.filter(isLive);
-      if (pids.length === 0) {
-        return { kind: "refused", reason: "every process to place had already exited" };
-      }
-      const outcome = this.#units.has(group) ? await this.#attach(unit, pids, true) : await this.#start(unit, pids, true);
-      if (outcome === null) {
-        this.#units.set(group, unit);
-        if (!await this.#moved(unit, pids)) {
-          return { kind: "refused", reason: `the manager accepted ${unit} but its processes had not moved within ${this.#moveTimeoutMs}ms` };
-        }
-        return { kind: "placed", unit, pids };
-      }
-      if (/No such process/.test(outcome)) {
-        continue;
-      }
-      return { kind: "refused", reason: outcome };
-    }
-    return { kind: "refused", reason: "the processes to place exited while being placed" };
-  }
-  /**
-   * Create the group's scope around these processes. A unit of that name
-   * already loaded — a leftover of an earlier launcher with this label, or
-   * a concurrent creation — is joined instead. Null on success; otherwise
-   * the manager's refusal. Each route falls back to the other once: the
-   * unit's state can change between the two calls, and a second flip is
-   * reported rather than chased.
-   */
-  async #start(unit, pids, joinExisting) {
-    const properties = [
-      ["PIDs", "au", String(pids.length), ...pids.map(String)],
-      ["Delegate", "b", "true"],
-      ["CollectMode", "s", "inactive-or-failed"],
-      ...this.slice !== null ? [["Slice", "s", this.slice]] : []
-    ];
-    const started = await this.#manager("StartTransientUnit", "ssa(sv)a(sa(sv))", [
-      unit,
-      "fail",
-      String(properties.length),
-      ...properties.flat(),
-      "0"
-    ]);
-    if (started === null || !joinExisting || !/already loaded/.test(started)) {
-      return started;
-    }
-    return this.#attach(unit, pids, false);
-  }
-  /** Add processes to the group's existing scope; a scope that ended with its last process is created again. */
-  async #attach(unit, pids, recreateGone) {
-    const attached = await this.#manager("AttachProcessesToUnit", "ssau", [unit, "/", String(pids.length), ...pids.map(String)]);
-    if (attached === null || !recreateGone || !/not loaded/.test(attached)) {
-      return attached;
-    }
-    return this.#start(unit, pids, false);
-  }
-  /** Whether every listed process that is still alive sits in the unit, waited for up to the move timeout. */
-  async #moved(unit, pids) {
-    const deadline = Date.now() + this.#moveTimeoutMs;
-    for (; ; ) {
-      const lines = await Promise.all(
-        pids.map((pid) => readFile6(path10.join(this.#procDir, String(pid), "cgroup"), "utf8").catch(() => null))
-      );
-      if (lines.every((line) => line === null || line.trimEnd().endsWith(`/${unit}`))) {
-        return true;
-      }
-      if (Date.now() >= deadline) {
-        return false;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
-  /**
-   * The slice a launched command's scope goes in: the parent of the
-   * launcher's own slice, so the command — and a supervisor it starts —
-   * sits outside the box the launcher's slice draws, whether that box is
-   * the slice itself or a scope inside it. A launcher in `agents-run1.slice`
-   * launches into `agents.slice`; one in `agents.slice` or `app.slice`
-   * launches into the user manager's root slice. A root-slice launcher also
-   * launches into the root slice, in a scope separate from its own. Null
-   * where the launcher's slice is unknown: the manager's default applies.
-   */
-  get launchSlice() {
-    return this.slice === null ? null : parentSlice(this.slice);
-  }
-  async launch(file, args, options) {
-    const slice = this.launchSlice;
-    return spawn(
-      this.#systemdRunBin,
-      [
-        "--user",
-        "--scope",
-        "--quiet",
-        "--collect",
-        ...slice !== null ? [`--slice=${slice}`] : [],
-        `--description=ensemble: ${file} ${args[0] ?? ""}`.trimEnd(),
-        "--",
-        file,
-        ...args
-      ],
-      options
-    );
-  }
-  async close() {
-    this.#closed = true;
-    await Promise.all([...this.#groupTurns.values()]);
-    this.#groupTurns.clear();
-    const units = [...this.#units.values()];
-    this.#units.clear();
-    await Promise.all(
-      units.map(
-        (unit) => new Promise((resolve) => {
-          execFile3(this.#systemctlBin, ["--user", "stop", "--no-block", unit], { env: this.#env }, () => resolve());
-        })
-      )
-    );
-  }
-  /** One call on the manager object. Null when it succeeded; otherwise the bounded text of its refusal. */
-  #manager(method, signature, args) {
-    return new Promise((resolve) => {
-      execFile3(
-        this.#busctlBin,
-        [
-          "--user",
-          "--",
-          "call",
-          "org.freedesktop.systemd1",
-          "/org/freedesktop/systemd1",
-          "org.freedesktop.systemd1.Manager",
-          method,
-          signature,
-          ...args
-        ],
-        { env: this.#env },
-        (error, _stdout, stderr) => {
-          resolve(error === null ? null : boundedEvidence(stderr.trim() || error.message));
-        }
-      );
-    });
-  }
-};
-var NoWorkerScopes = class {
-  slice = null;
-  async place() {
-    return { kind: "unavailable" };
-  }
-  async launch(file, args, options) {
-    return spawn(file, [...args], options);
-  }
-  async close() {
-  }
-};
-async function createWorkerScopes(options = {}) {
-  const { procDir = "/proc", ...systemd } = options;
-  const env = systemd.env ?? process.env;
-  if (!await userManagerAnswers(systemd.busctlBin ?? "busctl", env)) {
-    return new NoWorkerScopes();
-  }
-  const cgroup = await readFile6(path10.join(procDir, "self", "cgroup"), "utf8").catch(() => "");
-  return new SystemdWorkerScopes({ ...systemd, slice: containingSlice(cgroup) });
-}
-function containingSlice(cgroupFile) {
-  const line = cgroupFile.split("\n").find((entry) => entry.startsWith("0::"));
-  if (line === void 0) {
-    return null;
-  }
-  const segments = line.slice("0::".length).split("/").filter((segment) => segment.length > 0);
-  const userManager = segments.findIndex((segment) => /^user@\d+\.service$/.test(segment));
-  if (userManager === -1) {
-    return null;
-  }
-  for (let index = segments.length - 1; index > userManager; index -= 1) {
-    const segment = segments[index];
-    if (segment.endsWith(".slice")) {
-      return segment;
-    }
-  }
-  return "-.slice";
-}
-function parentSlice(slice) {
-  if (slice === "-.slice") return slice;
-  const name = slice.slice(0, -".slice".length);
-  const dash = name.lastIndexOf("-");
-  return dash === -1 ? "-.slice" : `${name.slice(0, dash)}.slice`;
-}
-async function processTree(pid, procDir = "/proc") {
-  const seen = /* @__PURE__ */ new Set([pid]);
-  const queue = [pid];
-  while (queue.length > 0) {
-    const parent = queue.shift();
-    const taskDir = path10.join(procDir, String(parent), "task");
-    const tasks = await readdir4(taskDir).catch(() => []);
-    for (const task of tasks) {
-      const children = await readFile6(path10.join(taskDir, task, "children"), "utf8").catch(() => "");
-      for (const child of children.split(/\s+/).filter((entry) => /^\d+$/.test(entry)).map(Number)) {
-        if (!seen.has(child)) {
-          seen.add(child);
-          queue.push(child);
-        }
-      }
-    }
-  }
-  return [...seen];
-}
-function userManagerAnswers(busctlBin, env) {
-  return new Promise((resolve) => {
-    execFile3(
-      busctlBin,
-      ["--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.DBus.Peer", "Ping"],
-      { env, timeout: 5e3 },
-      (error) => resolve(error === null)
-    );
-  });
-}
-function isLive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function unitSafe(text) {
-  return text.replace(/[^A-Za-z0-9:_.-]/g, "_").slice(0, 64);
-}
-
-// src/claude-control-plane.ts
-var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
-var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
-var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
-var OWNER_FILENAME = "owner.json";
-var CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
-var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
-var ClaudeCliControlPlane = class {
-  #claudeBin;
-  #tmuxBin;
-  #projectsDir;
-  #dispatchTimeoutMs;
-  #reapGraceMs;
-  #procDir;
-  #valveAttachSettleMs;
-  #valveSubmitSettleMs;
-  #valveKillSettleMs;
-  #valveDeliveryTimeoutMs;
-  #scopes;
-  #workerScope;
-  #placementSettleMs;
-  #placementWatchIntervalMs;
-  #onEvent;
-  /** Last placement attempt per session: refused attempts remain eligible at the same pid. */
-  #placements = /* @__PURE__ */ new Map();
-  /** Session ownership lasts through idle gaps, independently of turn polling. */
-  #watchedSessions = /* @__PURE__ */ new Map();
-  #placementTimer = null;
-  #placementSweep = null;
-  #placing = /* @__PURE__ */ new Map();
-  #valveCounter = 0;
-  /**
-   * Where each valve's socket directory is made: where tmux keeps its own
-   * sockets, by the launcher's own TMUX_TMPDIR (else /tmp). Never a
-   * declared worker variable, so no declared value reaches a valve's
-   * `-S` argument.
-   */
-  #valveSocketRoot;
-  #env;
-  #workerEnv;
-  /** The resolved hold scope every dispatched session inherits by its settings file; null for the shared scope. */
-  #holdScope;
-  /** Per-session settings directories, removed when the session stops. */
-  #settingsDirs = /* @__PURE__ */ new Map();
-  /** The one-time sweep of settings directories earlier launchers left behind, run before this control plane's first dispatch. */
-  #orphanSweep = null;
-  constructor(options = {}) {
-    this.#claudeBin = options.claudeBin ?? "claude";
-    this.#tmuxBin = options.tmuxBin ?? "tmux";
-    this.#workerEnv = options.workerEnv ?? {};
-    this.#holdScope = options.holdScope === void 0 ? resolveHoldScope(void 0, process.env) : options.holdScope;
-    this.#env = {
-      ...withoutRunScopedVariables(process.env),
-      ...this.#workerEnv,
-      [SANDBOXED_WORKSPACE_VARIABLE]: "1"
-    };
-    const configDir = this.#env.CLAUDE_CONFIG_DIR || path11.join(homedir3(), ".claude");
-    this.#projectsDir = options.projectsDir ?? path11.join(configDir, "projects");
-    this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
-    this.#reapGraceMs = options.reapGraceMs ?? 5e3;
-    this.#procDir = options.procDir ?? "/proc";
-    this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
-    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 0;
-    this.#valveKillSettleMs = options.valveKillSettleMs ?? 0;
-    this.#valveDeliveryTimeoutMs = options.valveDeliveryTimeoutMs ?? 3e4;
-    this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
-    this.#workerScope = options.workerScope ?? "worker";
-    this.#scopes = options.scopes ?? new NoWorkerScopes();
-    this.#placementSettleMs = options.placementSettleMs ?? 1e4;
-    this.#placementWatchIntervalMs = options.placementWatchIntervalMs ?? 1e3;
-    if (!Number.isInteger(this.#placementWatchIntervalMs) || this.#placementWatchIntervalMs < 1 || this.#placementWatchIntervalMs > 2147483647) {
-      throw new RangeError("placementWatchIntervalMs must be an integer from 1 to 2147483647");
-    }
-    this.#onEvent = options.onEvent;
-  }
-  /** How the session's process was last placed, or null before the roster has named a pid for it. */
-  placementOf(handle) {
-    return this.#placements.get(handle.sessionId)?.outcome ?? null;
-  }
-  async dispatch(options) {
-    const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
-    if (options.model !== void 0) {
-      args.push("--model", options.model);
-    }
-    if (options.effort !== void 0) {
-      args.push("--effort", options.effort);
-    }
-    this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
-    await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
-    args.push("--settings", path11.join(settingsDir, "settings.json"));
-    let registered = null;
-    try {
-      const dispatch = { result: null };
-      void this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd).then(
-        (result) => dispatch.result = result,
-        (error) => dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error) }
-      );
-      let deadline = null;
-      for (; ; ) {
-        const found = await this.#findByName(options.name);
-        if (found !== null) {
-          registered = found.handle;
-          if (this.#scopes instanceof NoWorkerScopes) break;
-          const settled = Date.now() + this.#placementSettleMs;
-          let pid = found.pid;
-          for (; ; ) {
-            if (pid !== null) {
-              const outcome = await this.#place(registered, pid);
-              if (outcome.kind !== "refused") break;
-            }
-            if (Date.now() >= settled) break;
-            await delay(100);
-            pid = (await this.#findByName(options.name))?.pid ?? null;
-          }
-          break;
-        }
-        if (dispatch.result !== null) {
-          if (!dispatch.result.ok) {
-            throw new ClaudeDispatchError(
-              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + boundedEvidence(dispatch.result.stderr.trim() || dispatch.result.stdout.trim() || "claude --bg exited without a message")
-            );
-          }
-          deadline ??= Date.now() + this.#dispatchTimeoutMs;
-          if (Date.now() >= deadline) {
-            throw new ClaudeRegistrationTimeoutError(
-              `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
-            );
-          }
-        }
-        await delay(dispatch.result === null ? 100 : 500);
-      }
-    } finally {
-      if (registered === null) {
-        await this.#removeSettingsDir(settingsDir);
-      } else {
-        this.#settingsDirs.set(registered.sessionId, settingsDir);
-        if (!(this.#scopes instanceof NoWorkerScopes)) {
-          this.#watchedSessions.set(registered.sessionId, registered);
-          this.#schedulePlacementWatch();
-        }
-      }
-    }
-    if (registered === null) {
-      throw new ClaudeRegistrationTimeoutError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
-    }
-    return registered;
-  }
-  /**
-   * Write the per-dispatch settings file carrying the declared worker
-   * environment plus the dispatch's ownership tag (`WORKER_MARKER_VARIABLE`).
-   * Written on every dispatch: the tag is what lets `stop()` reap the
-   * worker's surviving descendants, so an untagged worker would be an
-   * unowned one. (This supersedes the earlier no-declaration-no-flag
-   * behaviour, which predated descendant ownership.) The file can carry
-   * credentials — gateway values among the declared variables — so it lives
-   * in its own mkdtemp directory (0o700 by construction, unguessable name)
-   * and the file itself is 0o600.
-   */
-  async #writeWorkerSettings(dispatchName, permissionDenyRules, cacheTtl) {
-    const env = {
-      ...this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {},
-      ...cacheTtl !== void 0 ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {},
-      ...this.#workerEnv,
-      [WORKER_MARKER_VARIABLE]: dispatchName
-    };
-    const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
-    const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
-`;
-    const dir = await mkdtemp(path11.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
-    try {
-      await writeFile5(path11.join(dir, OWNER_FILENAME), owner, { mode: 384 });
-      await writeFile5(path11.join(dir, "settings.json"), `${JSON.stringify(settings)}
-`, {
-        mode: 384
-      });
-    } catch (error) {
-      await this.#removeSettingsDir(dir);
-      throw error;
-    }
-    return dir;
-  }
-  async #removeSettingsDir(dir) {
-    await rm4(dir, { recursive: true, force: true }).catch(() => void 0);
-  }
-  /**
-   * Remove every per-dispatch settings directory whose recorded owner is
-   * provably gone — a launcher that died by SIGKILL or crashed never reached
-   * `stop()`. Judgement is the run manifest's: same-host, evidence-only,
-   * conservative on every unjudgeable case (a live owner, another host, no
-   * readable proc filesystem). A directory with no readable owner record is
-   * unjudgeable too and is left alone — unlike the manifest, whose owner
-   * block is written atomically inside the artefact judged, a sidecar can
-   * be observed before it lands, and a concurrent launcher between its
-   * mkdtemp and its owner write must never lose a live directory. (The
-   * directories launchers left before owner recording existed are
-   * therefore not swept; they are the operator's to remove.) An
-   * orphaned session the daemon is still serving loses its declared
-   * variables when its file goes — an accepted cost: no launcher will ever
-   * collect that session, and checking the roster here would itself start
-   * the daemon. Best-effort throughout: this is housekeeping, and nothing
-   * here may fail or delay a dispatch on its own account.
-   */
-  async #sweepOrphanedSettingsDirs() {
-    const root = tmpdir();
-    const entries = await readdir5(root, { withFileTypes: true }).catch(() => []);
-    const host = hostname3();
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !entry.name.startsWith(SETTINGS_DIR_PREFIX)) {
-        continue;
-      }
-      const dir = path11.join(root, entry.name);
-      try {
-        const owner = JSON.parse(await readFile7(path11.join(dir, OWNER_FILENAME), "utf8"));
-        if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
-          await this.#removeSettingsDir(dir);
-        }
-      } catch {
-      }
-    }
-  }
-  async poll(handle) {
-    const roster = await this.#roster();
-    if (!roster.ok) {
-      return { status: "unknown", state: "unknown", present: true };
-    }
-    const record = roster.rows.find((row) => matchesHandle(row, handle)) ?? null;
-    if (record === null) {
-      return { status: "absent", state: "unknown", present: false };
-    }
-    const previous = this.#placements.get(handle.sessionId);
-    if (typeof record.pid === "number" && (previous?.pid !== record.pid || previous.outcome.kind === "refused")) {
-      await this.#place(handle, record.pid);
-    }
-    const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : void 0;
-    return {
-      status: typeof record.status === "string" ? record.status : "unknown",
-      state: normaliseState(record.state),
-      present: true,
-      ...waitingFor !== void 0 ? { waitingFor } : {}
-    };
-  }
-  async transcriptPath(handle) {
-    const filename = `${handle.sessionId}.jsonl`;
-    let projectDirs;
-    try {
-      const entries = await readdir5(this.#projectsDir, { withFileTypes: true });
-      projectDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-    } catch {
-      return null;
-    }
-    for (const dir of projectDirs) {
-      const candidate = path11.join(this.#projectsDir, dir, filename);
-      try {
-        await access(candidate);
-        return candidate;
-      } catch {
-      }
-    }
-    return null;
-  }
-  async steer(handle, message) {
-    if ((await this.poll(handle)).present === false) {
-      return { delivered: false, reason: "the session is no longer in the daemon's roster" };
-    }
-    this.#valveCounter += 1;
-    const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
-    let socketDir;
-    try {
-      socketDir = await mkdtemp(path11.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
-    } catch (error) {
-      const said = error instanceof Error ? error.message : String(error);
-      return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
-    }
-    const server = ["-S", path11.join(socketDir, "tmux.sock")];
-    try {
-      const transcriptPath = await this.transcriptPath(handle);
-      if (transcriptPath === null) {
-        return { delivered: false, reason: "follow-up delivery not attempted: no transcript baseline is available" };
-      }
-      const before = parseTranscriptText(await readFile7(transcriptPath, "utf8"));
-      const payload = path11.join(socketDir, "prompt.txt");
-      const editor = path11.join(socketDir, "editor.cjs");
-      const copied = path11.join(socketDir, "copied");
-      await writeFile5(payload, message, { mode: 384 });
-      await writeFile5(editor, `#!${process.execPath}
-        const fs = require("node:fs");
-        fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
-        fs.writeFileSync(${JSON.stringify(copied)}, "complete", { mode: 0o600 });
-      `, { mode: 448 });
-      const editorCommand = editor;
-      const created = await this.#launch(this.#tmuxBin, [
-        ...server,
-        "-f",
-        "/dev/null",
-        "new-session",
-        "-d",
-        "-s",
-        valve,
-        `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
-      ], null, void 0, { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand });
-      if (!created.ok) return refused("tmux new-session", created);
-      await delay(this.#valveAttachSettleMs);
-      const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
-      if (!opened.ok) return refused("tmux send-keys (editor)", opened);
-      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
-      for (; ; ) {
-        try {
-          await access(copied);
-          break;
-        } catch (error) {
-          if (error.code !== "ENOENT") throw error;
-        }
-        if (Date.now() >= copyDeadline) {
-          return { delivered: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
-        }
-        await delay(50);
-      }
-      await delay(this.#valveSubmitSettleMs);
-      const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
-      if (!submitted.ok) return refused("tmux send-keys (submit)", submitted);
-      const receiptDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
-      for (; ; ) {
-        const entries = parseTranscriptText(await readFile7(transcriptPath, "utf8"));
-        for (const entry of entries.slice(before.length)) {
-          const text = submittedUserText(entry);
-          if (text === null) continue;
-          if (text !== message && entry.message?.content !== message) {
-            return { delivered: false, reason: `follow-up delivery mismatch: expected ${textIdentity(message)}; received ${textIdentity(text)}` };
-          }
-          await delay(this.#valveKillSettleMs);
-          return { delivered: true };
-        }
-        if (Date.now() >= receiptDeadline) {
-          return { delivered: false, reason: `follow-up delivery missing: no matching user turn within ${this.#valveDeliveryTimeoutMs}ms (expected ${textIdentity(message)})` };
-        }
-        await delay(50);
-      }
-    } catch (error) {
-      return { delivered: false, reason: `reply valve failed: ${boundedEvidence(error instanceof Error ? error.message : String(error))}` };
-    } finally {
-      await this.#run(this.#tmuxBin, [...server, "kill-server"]);
-      await rm4(socketDir, { recursive: true, force: true }).catch(() => void 0);
-    }
-  }
-  /**
-   * Place the session's process and its live descendants in the scope
-   * chosen by the run's grouping. The tree, not the pid alone: helpers the
-   * session forked before this moment (MCP servers, shells) would
-   * otherwise stay in the supervisor's cgroup. Best-effort — the outcome
-   * is recorded, never thrown.
-   */
-  async #place(handle, pid) {
-    const pending = (this.#placing.get(handle.sessionId) ?? Promise.resolve()).then(() => this.#placeInTurn(handle, pid));
-    this.#placing.set(handle.sessionId, pending);
-    try {
-      return await pending;
-    } finally {
-      if (this.#placing.get(handle.sessionId) === pending) this.#placing.delete(handle.sessionId);
-    }
-  }
-  async #placeInTurn(handle, pid) {
-    const previous = this.#placements.get(handle.sessionId);
-    if (previous?.pid === pid && previous.outcome.kind !== "refused") return previous.outcome;
-    const outcome = await this.#scopes.place(this.#workerScope === "run" ? RUN_SCOPE_GROUP : handle.name, await processTree(pid, this.#procDir));
-    this.#placements.set(handle.sessionId, { pid, outcome });
-    const changedRefusal = outcome.kind === "refused" && (previous?.pid !== pid || previous.outcome.kind !== "refused" || previous.outcome.reason !== outcome.reason);
-    const recovered = outcome.kind === "placed" && previous?.outcome.kind === "refused";
-    if (changedRefusal || recovered) {
-      this.#onEvent?.({
-        method: "claude/workerScopePlacement",
-        params: {
-          sessionId: handle.sessionId,
-          name: handle.name,
-          pid,
-          kind: outcome.kind,
-          ...outcome.kind === "refused" ? { reason: boundedEvidence(outcome.reason) } : {},
-          ...outcome.kind === "placed" ? { unit: outcome.unit } : {}
-        },
-        receivedAt: Date.now()
-      });
-    }
-    return outcome;
-  }
-  /** One roster read serves every owned session, including those between turns. */
-  #schedulePlacementWatch() {
-    if (this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
-    this.#placementTimer = setTimeout(() => {
-      this.#placementTimer = null;
-      this.#placementSweep = this.#refreshPlacements().catch((error) => {
-        this.#onEvent?.({
-          method: "claude/workerScopeWatchError",
-          params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
-          receivedAt: Date.now()
-        });
-      }).finally(() => {
-        this.#placementSweep = null;
-        this.#schedulePlacementWatch();
-      });
-    }, this.#placementWatchIntervalMs);
-    this.#placementTimer.unref();
-  }
-  async #refreshPlacements() {
-    const roster = await this.#roster();
-    if (!roster.ok) return;
-    for (const handle of this.#watchedSessions.values()) {
-      const row = roster.rows.find((entry) => matchesHandle(entry, handle));
-      if (typeof row?.pid === "number") await this.#place(handle, row.pid);
-    }
-  }
-  async stop(handle) {
-    this.#watchedSessions.delete(handle.sessionId);
-    if (this.#watchedSessions.size === 0 && this.#placementTimer !== null) {
-      clearTimeout(this.#placementTimer);
-      this.#placementTimer = null;
-    }
-    await this.#placementSweep;
-    await this.#placing.get(handle.sessionId);
-    await this.#run(this.#claudeBin, ["stop", handle.id]);
-    this.#placements.delete(handle.sessionId);
-    await this.#reapTaggedDescendants(handle.name);
-    await this.#run(this.#claudeBin, ["rm", handle.id]);
-    const settingsDir = this.#settingsDirs.get(handle.sessionId);
-    if (settingsDir !== void 0) {
-      this.#settingsDirs.delete(handle.sessionId);
-      await this.#removeSettingsDir(settingsDir);
-    }
-  }
-  /**
-   * Kill every surviving process tagged with this dispatch's marker:
-   * SIGTERM first, then SIGKILL for anything still alive after the grace
-   * period. Best-effort throughout — reaping is cleanup, and a scan or kill
-   * failure must never mask the turn's real outcome. On a platform without
-   * a readable proc filesystem the scan finds nothing and the reap is a
-   * no-op.
-   */
-  async #reapTaggedDescendants(dispatchName) {
-    const tagged = await this.#findTaggedProcesses(dispatchName);
-    if (tagged.length === 0) {
-      return;
-    }
-    for (const pid of tagged) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-      }
-    }
-    await delay(this.#reapGraceMs);
-    for (const pid of await this.#findTaggedProcesses(dispatchName)) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-      }
-    }
-  }
-  /** Pids (other than our own) whose environment carries this dispatch's tag. */
-  async #findTaggedProcesses(dispatchName) {
-    const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
-    let entries;
-    try {
-      entries = await readdir5(this.#procDir);
-    } catch {
-      return [];
-    }
-    const pids = [];
-    for (const entry of entries) {
-      if (!/^\d+$/.test(entry)) {
-        continue;
-      }
-      const pid = Number(entry);
-      if (pid === process.pid) {
-        continue;
-      }
-      let environ;
-      try {
-        environ = await readFile7(path11.join(this.#procDir, entry, "environ"), "utf8");
-      } catch {
-        continue;
-      }
-      if (environ.split("\0").includes(needle)) {
-        pids.push(pid);
-      }
-    }
-    return pids;
-  }
-  async tmuxAvailable() {
-    return (await this.#run(this.#tmuxBin, ["-V"])).ok;
-  }
-  /** The roster's row for a dispatch, as a handle plus the pid the row names (null until the supervisor reports one). */
-  async #findByName(name) {
-    const { rows } = await this.#roster();
-    const match = rows.find(
-      (row) => row.kind === "background" && row.name === name && typeof row.sessionId === "string"
-    );
-    if (match === void 0 || typeof match.sessionId !== "string") {
-      return null;
-    }
-    const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
-    return {
-      handle: {
-        id,
-        sessionId: match.sessionId,
-        name,
-        cwd: typeof match.cwd === "string" ? match.cwd : ""
-      },
-      pid: typeof match.pid === "number" ? match.pid : null
-    };
-  }
-  // `ok: false` means the query could not be performed (process error, empty or
-  // unparseable output) — distinct from "queried fine, session not listed",
-  // which is `{ ok: true, rows: [...] }` with the session simply absent.
-  async #roster() {
-    const result = await this.#run(this.#claudeBin, ["agents", "--json"]);
-    if (!result.ok || result.stdout.trim().length === 0) {
-      return { ok: false, rows: [] };
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(result.stdout);
-    } catch {
-      return { ok: false, rows: [] };
-    }
-    if (!Array.isArray(parsed)) {
-      return { ok: false, rows: [] };
-    }
-    return { ok: true, rows: parsed.filter((row) => typeof row === "object" && row !== null) };
-  }
-  #run(file, args, cwd) {
-    return this.#launch(file, args, null, cwd);
-  }
-  #runWithInput(file, args, input, cwd) {
-    return this.#launch(file, args, input, cwd);
-  }
-  /**
-   * The one route every control-plane child takes: launched by the scope
-   * manager (outside the launcher's box, where a systemd user manager is
-   * reachable), under the spread `#env`, with its output collected and its
-   * exit status read as the verdict. `input` is streamed to stdin and the
-   * stream then closed; null closes it at once.
-   */
-  async #launch(file, args, input, cwd, env = this.#env) {
-    const child = await this.#scopes.launch(file, args, {
-      ...cwd !== void 0 ? { cwd } : {},
-      env,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    return new Promise((resolve) => {
-      const stdout = [];
-      const stderr = [];
-      let settled = false;
-      const finish = (result) => {
-        if (!settled) {
-          settled = true;
-          resolve(result);
-        }
-      };
-      child.stdout?.on("data", (chunk) => stdout.push(chunk));
-      child.stderr?.on("data", (chunk) => stderr.push(chunk));
-      child.on("error", (error) => {
-        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
-      });
-      child.on("close", (code) => {
-        finish({
-          ok: code === 0,
-          stdout: Buffer.concat(stdout).toString(),
-          stderr: Buffer.concat(stderr).toString()
-        });
-      });
-      child.stdin?.on("error", () => void 0);
-      child.stdin?.end(input ?? void 0);
-    });
-  }
-};
-function matchesHandle(row, handle) {
-  return typeof row.id === "string" && row.id === handle.id || typeof row.sessionId === "string" && row.sessionId === handle.sessionId;
-}
-function normaliseState(state) {
-  if (state === "working" || state === "blocked" || state === "done") {
-    return state;
-  }
-  return "unknown";
-}
-function refused(step, result) {
-  const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
-  return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
-}
-function shellQuote(value) {
-  return "'" + value.replaceAll("'", "'\\''") + "'";
-}
-function textIdentity(text) {
-  return `${Buffer.byteLength(text, "utf8")} UTF-8 bytes, sha256 ${createHash3("sha256").update(text).digest("hex")}`;
-}
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-// src/claude-engine.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
-var CAPABILITY_DENY_RULES = {
-  skills: ["Skill"],
-  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
-};
-function permissionDenyRulesFor(strip) {
-  return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
-}
-var CLAUDE_MULTITURN_CACHE_TTL = "1h";
-function claudeCacheTtlToMs(value) {
-  const match = /^(\d+)([smh]?)$/.exec(value.trim());
-  if (match === null) {
-    return null;
-  }
-  const amount = Number(match[1]);
-  if (!Number.isSafeInteger(amount) || amount <= 0) {
-    return null;
-  }
-  const unit = match[2];
-  return amount * (unit === "h" ? 36e5 : unit === "m" ? 6e4 : 1e3);
-}
-var CLAUDE_NATIVE_EFFORT = {
-  minimal: "low",
-  low: "low",
-  medium: "medium",
-  high: "high",
-  xhigh: "xhigh"
-};
-function claudeNativeEffort(effort) {
-  if (effort === void 0) {
-    return void 0;
-  }
-  const native = CLAUDE_NATIVE_EFFORT[effort];
-  if (native === void 0) {
-    throw new InvalidAgentOptionValueError(
-      "effort",
-      effort,
-      `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")} (the canonical effort vocabulary)`
-    );
-  }
-  return native;
-}
-var dispatchCounter = 0;
-var MAX_CONSECUTIVE_ABSENCES = 3;
-var SETTLED_CONFIRMATION_POLLS = 5;
-var ClaudeEngineInvocation = class {
-  #cwd;
-  #options;
-  #controlPlane;
-  #onEvent;
-  #reportedUsage = null;
-  /** The background tasks this attempt's turn waited on, in the order observed; reset per attempt. */
-  #waits = [];
-  #multiTurn;
-  /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
-  #turnPrompt;
-  /** The current turn's schema — the one thing a session varies per turn. */
-  #turnSchema;
-  /**
-   * Whether the current turn's prompt has reached the worker. A follow-up
-   * turn is delivered by the valve, and a retry after a failed delivery
-   * must re-send the prompt itself — a correction message would ask the
-   * worker to fix an answer it was never asked for.
-   */
-  #turnDelivered = false;
-  #pollIntervalMs;
-  #receiptTimeoutMs;
-  #firstLifeTimeoutMs;
-  #blockedRecoveryBound;
-  #namePrefix;
-  #handle = null;
-  #resolvedModel = null;
-  #resolvedEffort = null;
-  #budgetEventCounter = 0;
-  #abortController = new AbortController();
-  #closed = false;
-  #closePromise = null;
-  #settlement = null;
-  #onClose;
-  constructor(options) {
-    this.#turnPrompt = options.prompt;
-    this.#turnSchema = options.options.schema;
-    this.#multiTurn = options.multiTurn ?? false;
-    this.#cwd = options.cwd;
-    this.#options = options.options;
-    this.#controlPlane = options.controlPlane;
-    this.#onEvent = options.onEvent;
-    this.#onClose = options.onClose;
-    const config = options.config ?? {};
-    this.#pollIntervalMs = config.pollIntervalMs ?? 2e3;
-    this.#receiptTimeoutMs = config.receiptTimeoutMs ?? 3e4;
-    this.#firstLifeTimeoutMs = config.firstLifeTimeoutMs ?? 6e4;
-    this.#blockedRecoveryBound = config.blockedRecoveryBound ?? 2;
-    this.#namePrefix = config.namePrefix ?? "ensemble";
-  }
-  /**
-   * Session mode's turn boundary: the next `runAttempt` delivers this
-   * prompt to the *held* session — by dispatch for the first turn, through
-   * the valve thereafter — with this turn's schema governing validation and
-   * correction. The returned invocation deliberately carries no `close`:
-   * a turn ending must never tear down the session it rode.
-   */
-  beginTurn(prompt, turn) {
-    this.#turnPrompt = prompt;
-    this.#turnSchema = turn.schema;
-    this.#turnDelivered = false;
-    return {
-      runAttempt: (context) => this.runAttempt(context)
-    };
-  }
-  runAttempt(context) {
-    const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
-    this.#settlement = settlement;
-    return settlement.finally(() => {
-      if (this.#settlement === settlement) {
-        this.#settlement = null;
-      }
-    });
-  }
-  #withObservedIdentity(result) {
-    return {
-      ...result,
-      ...result.resolvedModel === void 0 && this.#resolvedModel !== null ? { resolvedModel: this.#resolvedModel } : {},
-      ...result.resolvedEffort === void 0 && this.#resolvedEffort !== null ? { resolvedEffort: this.#resolvedEffort } : {}
-    };
-  }
-  async #runAttempt(context) {
-    this.#assertOpen();
-    this.#reportedUsage = null;
-    this.#waits = [];
-    let fromIndex = 0;
-    try {
-      const previousFailure = context.previousFailure;
-      if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
-        const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
-        this.#requireValve(await this.#controlPlane.tmuxAvailable());
-        return await this.#sendTurnInSession(handle, fromIndex, context);
-      }
-      const correcting = previousFailure !== void 0 && this.#handle !== null;
-      if (correcting && await this.#controlPlane.tmuxAvailable()) {
-        const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
-        return await this.#correctInSession(handle, previousFailure, fromIndex, context);
-      }
-      if (correcting && this.#multiTurn) {
-        this.#requireValve(false);
-      }
-      if (this.#handle !== null) {
-        await this.#teardown();
-      }
-      return await this.#dispatchAndCollect(previousFailure, context);
-    } catch (error) {
-      const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex) : null;
-      if (error instanceof Error && evidence !== null) {
-        this.#attachWorkerText(error, evidence, fromIndex);
-      }
-      if (error instanceof EngineShutdownError && evidence !== null) {
-        attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
-      }
-      if (error instanceof ClaudeWorkerError) {
-        if (!this.#multiTurn) {
-          await this.#teardown();
-        }
-        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
-      }
-      throw error;
-    }
-  }
-  async close() {
-    this.#closePromise ??= (async () => {
-      this.#closed = true;
-      this.#abortController.abort();
-      try {
-        if (this.#handle !== null) {
-          await this.#settlement?.catch(() => void 0);
-          await this.#teardown();
-        }
-      } finally {
-        this.#onClose?.(this);
-      }
-    })();
-    await this.#closePromise;
-  }
-  async #dispatchAndCollect(previousFailure, observers) {
-    this.#resolvedModel = null;
-    this.#resolvedEffort = null;
-    try {
-      observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null });
-    } catch {
-    }
-    const denyRules = permissionDenyRulesFor(this.#options.strip);
-    const handle = await this.#controlPlane.dispatch({
-      prompt: this.#buildDispatchPrompt(previousFailure),
-      name: this.#nextName(),
-      cwd: this.#cwd,
-      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
-      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {},
-      // Loiter pricing: only a session meant to be resumed pays the
-      // 1-hour cache-write premium; one-shot workers keep the 5m default.
-      ...this.#multiTurn ? { cacheTtl: CLAUDE_MULTITURN_CACHE_TTL } : {}
-    });
-    this.#handle = handle;
-    this.#turnDelivered = true;
-    if (this.#closed) {
-      const error = new EngineShutdownError("claude");
-      const evidence = await this.#tryFailureEvidence(0);
-      if (evidence !== null) {
-        this.#attachWorkerText(error, evidence, 0);
-      }
-      attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
-      await this.#teardown();
-      throw error;
-    }
-    const transcript = await this.#runToCompletion(handle, 0, observers);
-    return this.#buildResult(handle, transcript, 0);
-  }
-  /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
-  async #sendTurnInSession(handle, fromIndex, observers) {
-    const delivery = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
-    if (!delivery.delivered) {
-      throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
-    }
-    await this.#awaitReceipt(handle, fromIndex, observers);
-    this.#turnDelivered = true;
-    const transcript = await this.#runToCompletion(handle, fromIndex, observers);
-    return this.#buildResult(handle, transcript, fromIndex);
-  }
-  /**
-   * Session mode has no degraded path: the valve is what keeps a follow-up
-   * (or a correction) inside the created session, so its absence fails the
-   * turn loudly instead of silently substituting a fresh worker.
-   */
-  #requireValve(available) {
-    if (!available) {
-      throw new ClaudeValveError(
-        "multi-turn worker sessions require the tmux reply valve, which is unavailable"
-      );
-    }
-  }
-  async #correctInSession(handle, previousFailure, fromIndex, observers) {
-    const delivery = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
-    if (!delivery.delivered) {
-      throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
-    }
-    await this.#awaitReceipt(handle, fromIndex, observers);
-    const transcript = await this.#runToCompletion(handle, fromIndex, observers);
-    return this.#buildResult(handle, transcript, fromIndex);
-  }
-  /** Confirm the steered worker received the message (started generating, or the transcript grew). */
-  async #awaitReceipt(handle, mark, observers) {
-    const deadline = Date.now() + this.#receiptTimeoutMs;
-    for (; ; ) {
-      this.#assertOpen();
-      const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
-      if (status.status === "busy") {
-        return;
-      }
-      const transcript = await this.#tryReadTranscript(handle, observers);
-      if (transcript !== null && transcript.entries.length > mark) {
-        return;
-      }
-      if (Date.now() >= deadline) {
-        throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
-      }
-      await this.#pollDelay();
-    }
-  }
-  /**
-   * Poll until the worker's turn is complete, returning the transcript at that
-   * point. The transcript is the authoritative completion signal and is
-   * checked on **every** poll, before the roster state is interpreted: the
-   * daemon's `state` is unreliable, and a live process the worker itself
-   * spawned can hold the roster at `busy` long after the answer is on disk —
-   * gating the transcript read on "not busy" left a finished, schema-valid
-   * answer uncollected for 22+ minutes behind a worker-spawned child.
-   *
-   * Two ways out, and no silent third:
-   * - the transcript proves the turn complete (`turnComplete`) → collect;
-   * - the daemon stably reports the session settled while the transcript
-   *   never satisfies `turnComplete` → after `SETTLED_CONFIRMATION_POLLS`,
-   *   throw `ClaudeCollectionError` rather than spin for ever. Deliberately
-   *   *not* a collect-on-best-evidence path: a settled daemon beside an
-   *   unproven transcript is exactly what a killed worker's partial answer
-   *   looks like, and promoting that to a success would hand downstream
-   *   stages a truncated answer as if it were the real one. The partial text
-   *   rides the failure (the shared catch attaches it), and the bounded
-   *   retry re-asks.
-   *
-   * A turn that ends while a background task the session started is still
-   * outstanding (`outstandingBackgroundTasks`) is an interim message, not
-   * the answer: Claude Code backgrounds a long command or a Monitor, lets
-   * the model end its turn, and re-invokes it when the task ends. The wait
-   * continues for the reply that follows the wake, reported through
-   * `onWaiting` and recorded on the result, and it is bounded by the call's
-   * deadline — the daemon's idle roster is expected while the session waits
-   * for its own notification, so the settled window does not count against
-   * it; the session leaving the roster still ends the turn, as it ends any
-   * turn. A task that never wakes the session times the attempt out under
-   * the ordinary retry rule.
-   *
-   * `state: blocked` still drives bounded valve recovery, and a transient
-   * roster-query failure reports `present: false` only after
-   * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
-   * live worker.
-   */
-  async #runToCompletion(handle, fromIndex, observers) {
-    const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
-    const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
-    let sawLife = fromIndex > 0;
-    let nudges = 0;
-    let absences = 0;
-    let settledPolls = 0;
-    let evidenceReported = false;
-    let assistantEvidence = "";
-    let waitingOn = null;
-    let awaitingTask = false;
-    for (; ; ) {
-      this.#assertOpen();
-      const transcript = await this.#tryReadTranscript(handle, observers);
-      if (transcript !== null) {
-        sawLife = true;
-        this.#reportUsage(handle, transcript.entries, fromIndex, observers);
-        try {
-          this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
-          this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
-          observers.onIdentity?.({ resolvedModel: this.#resolvedModel, resolvedEffort: this.#resolvedEffort });
-          const evidence = JSON.stringify(transcript.entries.slice(fromIndex).filter((entry) => entry.type === "assistant"));
-          if (evidence !== assistantEvidence && hasAssistantEntrySince(transcript.entries, fromIndex)) {
-            assistantEvidence = evidence;
-            observers.onOutput?.();
-          }
-        } catch {
-        }
-        if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
-          evidenceReported = true;
-          try {
-            observers.onLiveEvidence?.();
-          } catch {
-          }
-        }
-        const outstanding = outstandingBackgroundTasks(transcript.entries, fromIndex);
-        const current2 = this.#noteWaits(outstanding);
-        awaitingTask = current2 !== null;
-        if ((current2?.taskId ?? null) !== waitingOn) {
-          waitingOn = current2?.taskId ?? null;
-          try {
-            observers.onWaiting?.(current2);
-          } catch {
-          }
-        }
-        if (turnComplete(transcript.entries, fromIndex) && !awaitingTask) {
-          return transcript;
-        }
-      }
-      if (!sawLife && Date.now() >= firstLifeDeadline) {
-        throw new ClaudeFirstLifeTimeoutError(
-          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
-        );
-      }
-      const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
-      if (!status.present) {
-        absences += 1;
-        if (absences >= MAX_CONSECUTIVE_ABSENCES) {
-          throw new ClaudePollTimeoutError("worker left the roster before completing");
-        }
-        await this.#pollDelay();
-        continue;
-      }
-      absences = 0;
-      if (status.state === "blocked") {
-        const canNudge = nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
-        if (!canNudge) {
-          throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
-        }
-        nudges += 1;
-        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
-        const delivery = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
-        if (!delivery.delivered) {
-          throw new ClaudeValveError(`reply valve failed to inject the blocked-worker nudge: ${delivery.reason}`);
-        }
-        await this.#awaitReceipt(handle, mark, observers);
-        continue;
-      }
-      if (sawLife && !awaitingTask && (status.state === "done" || status.status === "idle")) {
-        settledPolls += 1;
-        if (settledPolls >= SETTLED_CONFIRMATION_POLLS) {
-          throw new ClaudeCollectionError(
-            "session settled but its transcript never proved the turn complete"
-          );
-        }
-      } else {
-        settledPolls = 0;
-      }
-      if (Date.now() >= deadline) {
-        throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
-      }
-      await this.#pollDelay();
-    }
-  }
-  /**
-   * Reconciles the attempt's wait ledger with the tasks currently
-   * outstanding: a newly observed task opens a wait, a task no longer
-   * outstanding closes its wait. Returns what the worker is waiting on now
-   * (the earliest still-open wait), or null.
-   */
-  #noteWaits(outstanding) {
-    const now = /* @__PURE__ */ new Date();
-    const open = new Set(outstanding.map((task) => task.id));
-    for (const wait of this.#waits) {
-      if (wait.endedAt === null && !open.has(wait.taskId)) {
-        wait.endedAt = now.toISOString();
-      }
-    }
-    for (const task of outstanding) {
-      if (!this.#waits.some((wait) => wait.taskId === task.id && wait.endedAt === null)) {
-        this.#waits.push({ taskId: task.id, description: task.description, observedAt: now.toISOString(), endedAt: null });
-      }
-    }
-    const current2 = this.#waits.find((wait) => wait.endedAt === null);
-    return current2 === void 0 ? null : { kind: "background-task", taskId: current2.taskId, description: current2.description, sinceMs: Date.parse(current2.observedAt) };
-  }
-  /** A poll gap that ends early — by rejecting — the moment close() aborts. */
-  #pollDelay() {
-    return delay2(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
-  }
-  #assertOpen() {
-    if (this.#closed) {
-      throw new EngineShutdownError("claude");
-    }
-  }
-  #buildResult(handle, transcript, fromIndex) {
-    const entries = transcript.entries;
-    const text = finalAssistantText(entries, fromIndex) ?? "";
-    if (endsInSyntheticReply(entries, fromIndex)) {
-      throw new ClaudeWorkerDiagnosticError(
-        text.length > 0 ? text : "the session produced no model reply"
-      );
-    }
-    const resolvedModel = resolvedModelSince(entries, fromIndex);
-    const resolvedEffort = effortSince(entries, fromIndex);
-    const usage2 = usageSince(entries, fromIndex);
-    this.#reportUsage(handle, entries, fromIndex);
-    const usageEvent = this.#usageEvent(handle, usage2, usage2);
-    return {
-      text,
-      ...resolvedModel !== null ? { resolvedModel } : {},
-      ...resolvedEffort !== null ? { resolvedEffort } : {},
-      ...this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {},
-      deltaText: text,
-      durationMs: null,
-      firstDeltaMs: null,
-      items: {},
-      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-      transcripts: [
-        {
-          filename: "transcript.claude.jsonl",
-          format: "jsonl",
-          source: "claude-session-jsonl",
-          sessionId: handle.sessionId,
-          content: transcript.text
-        }
-      ]
-    };
-  }
-  async #readTranscript(handle, observers) {
-    const path16 = await this.#controlPlane.transcriptPath(handle);
-    if (path16 === null) {
-      throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
-    }
-    const transcript = await readTranscriptFile(path16);
-    try {
-      observers?.onTranscriptPath?.(path16);
-    } catch {
-    }
-    return transcript;
-  }
-  /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
-  async #tryReadTranscript(handle, observers) {
-    try {
-      return await this.#readTranscript(handle, observers);
-    } catch (error) {
-      if (error instanceof ClaudeTranscriptError) {
-        return null;
-      }
-      throw error;
-    }
-  }
-  /**
-   * Everything a dying turn can still learn from the transcript the engine
-   * already has, in one read: the served model, the usage accumulated up to
-   * the failure, and the transcript itself. Best-effort — an unreadable or
-   * absent transcript is `null`, and nothing here polls or retries.
-   */
-  async #tryFailureEvidence(fromIndex) {
-    const handle = this.#handle;
-    if (handle === null) {
-      return null;
-    }
-    const transcript = await this.#tryReadTranscript(handle);
-    if (transcript === null) {
-      return null;
-    }
-    return {
-      handle,
-      transcript,
-      resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
-      resolvedEffort: effortSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex),
-      apiError: apiErrorSince(transcript.entries, fromIndex),
-      backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
-    };
-  }
-  /** The failed turn's spend, as the same event shape the success path emits. */
-  #failureUsageEvent(evidence) {
-    if (evidence === null) {
-      return null;
-    }
-    return this.#usageEvent(evidence.handle, evidence.usage, evidence.usage);
-  }
-  #attachWorkerText(error, evidence, fromIndex) {
-    const transcript = evidence.transcript;
-    if (endsInSyntheticReply(transcript.entries, fromIndex)) {
-      return;
-    }
-    const text = finalAssistantText(transcript.entries, fromIndex);
-    if (text !== null) {
-      attachPartialWorkerText(error, text);
-    }
-  }
-  /**
-   * Feed transcript-derived usage through the same event shape Codex emits.
-   * The adapter registration labels it as Claude before the runtime records
-   * it, so budget accounting never has to infer engine from the payload.
-   *
-   * `usageSince` counts each API call once and sums every figure across the
-   * turn's calls, so the derived total only grows as the transcript grows;
-   * the delta reported here is the plain difference from the last report,
-   * and the archived event's `total` is the same figure the agent record's
-   * usage summarises — budget and archive read one arithmetic.
-   */
-  #reportUsage(handle, entries, fromIndex, observers) {
-    const total = usageSince(entries, fromIndex);
-    const last = subtractUsage(total, this.#reportedUsage);
-    if (last.totalTokens === 0) {
-      return;
-    }
-    this.#reportedUsage = total;
-    const event = this.#usageEvent(handle, last, total);
-    if (event === null) {
-      return;
-    }
-    try {
-      observers?.onUsage?.(event);
-    } catch {
-    }
-    this.#onEvent?.({
-      method: "thread/tokenUsage/updated",
-      params: event.raw,
-      receivedAt: Date.now()
-    });
-  }
-  #usageEvent(handle, last, total) {
-    if (total.totalTokens === 0) {
-      return null;
-    }
-    this.#budgetEventCounter += 1;
-    const event = {
-      threadId: handle.sessionId,
-      turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-      last,
-      total,
-      raw: {
-        threadId: handle.sessionId,
-        turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-        tokenUsage: { last, total }
-      }
-    };
-    return event;
-  }
-  async #teardown() {
-    const handle = this.#handle;
-    this.#handle = null;
-    if (handle === null) {
-      return;
-    }
-    try {
-      await this.#controlPlane.stop(handle);
-    } catch {
-    }
-  }
-  #buildDispatchPrompt(previousFailure) {
-    const lines = [
-      "You are an automated worker dispatched by the Ensemble orchestration harness.",
-      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
-    ];
-    if (this.#turnSchema !== void 0) {
-      lines.push(
-        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema)
-      );
-    }
-    if (previousFailure !== void 0) {
-      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
-    }
-    lines.push("", "Task:", this.#turnPrompt);
-    return lines.join("\n");
-  }
-  /**
-   * A follow-up turn's valve message: the session already holds the
-   * autonomy preamble from its dispatch, so the message carries only what
-   * this turn adds — its schema contract, when it has one, and its task.
-   */
-  #buildTurnMessage() {
-    const lines = [];
-    if (this.#turnSchema !== void 0) {
-      lines.push(
-        "For this reply, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema),
-        ""
-      );
-    }
-    lines.push(this.#turnPrompt);
-    return lines.join("\n");
-  }
-  #correctionMessage(previousFailure) {
-    switch (previousFailure.kind) {
-      case "schema-validation":
-        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
-      case "invalid-json":
-        return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
-      case "empty-output":
-        return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
-      default:
-        return `Your last turn did not complete (${previousFailure.kind}: ${previousFailure.message}). Please complete the task and output your final answer now.`;
-    }
-  }
-  #blockedNudge(waitingFor) {
-    const context = waitingFor !== void 0 ? ` (waiting for: ${waitingFor})` : "";
-    return `You appear to be waiting for input${context}. Proceed autonomously without asking \u2014 make a reasonable decision, complete the task, and output your final answer.`;
-  }
-  #nextName() {
-    dispatchCounter += 1;
-    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID3().slice(0, 8)}`;
-  }
-};
-function failedTurnResult(error, evidence, usageEvent) {
-  const text = partialWorkerTextOf(error) ?? "";
-  const resolvedModel = evidence?.resolvedModel ?? null;
-  const resolvedEffort = evidence?.resolvedEffort ?? null;
-  const backgroundWaits = evidence?.backgroundWaits ?? [];
-  return {
-    text,
-    ...resolvedModel !== null ? { resolvedModel } : {},
-    ...resolvedEffort !== null ? { resolvedEffort } : {},
-    ...backgroundWaits.length > 0 ? { backgroundWaits } : {},
-    attemptFailure: claudeAttemptFailure(error),
-    deltaText: text,
-    durationMs: null,
-    firstDeltaMs: null,
-    items: {},
-    tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-    // The refusal's structured account rides the attempt as diagnostics,
-    // where the failure classifier reads it: a 429's status and code are
-    // the engine's own word, which the diagnostic prose is not.
-    ...evidence !== null && evidence.apiError !== null ? { diagnostics: { apiError: evidence.apiError } } : {},
-    ...evidence === null ? {} : {
-      transcripts: [
-        {
-          filename: "transcript.claude.jsonl",
-          format: "jsonl",
-          source: "claude-session-jsonl",
-          sessionId: evidence.handle.sessionId,
-          content: evidence.transcript.text,
-          partial: true
-        }
-      ]
-    }
-  };
-}
-function claudeAttemptFailure(error) {
-  if (error instanceof ClaudeFirstLifeTimeoutError) {
-    return { kind: "claude-first-life-timeout", message: error.message };
-  }
-  if (error instanceof ClaudeRegistrationTimeoutError) {
-    return { kind: "claude-registration-timeout", message: error.message };
-  }
-  if (error instanceof ClaudeBlockedError) {
-    return { kind: "claude-blocked", message: error.message };
-  }
-  if (error instanceof ClaudeValveError) {
-    return { kind: "claude-valve-error", message: error.message };
-  }
-  if (error instanceof ClaudePollTimeoutError) {
-    return { kind: "claude-poll-timeout", message: error.message };
-  }
-  if (error instanceof ClaudeTranscriptError) {
-    return { kind: "claude-transcript-error", message: error.message };
-  }
-  if (error instanceof ClaudeCollectionError) {
-    return { kind: "claude-collection-error", message: error.message };
-  }
-  if (error instanceof ClaudeWorkerDiagnosticError) {
-    return { kind: "claude-worker-diagnostic", message: error.message };
-  }
-  return { kind: "claude-worker-error", message: error.message };
-}
-function hasAssistantEntrySince(entries, fromIndex) {
-  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
-    if (entries[index]?.type === "assistant") {
-      return true;
-    }
-  }
-  return false;
-}
-function delay2(ms, signal, abortError) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timeout);
-      reject(abortError());
-    };
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
 // src/progress.ts
 var RunProgress = class {
   runId;
@@ -19738,7 +17777,7 @@ function rank(state) {
 import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/app-server.ts
-import { spawn as spawn2 } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
@@ -19835,7 +17874,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
     this.#skillDiscoveryDeadlineMs = options.skillDiscoveryDeadlineMs ?? SKILL_DISCOVERY_DEADLINE_MS;
     this.#onEvent = options.onEvent;
-    this.#process = spawn2(options.codexBin, ["app-server"], {
+    this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       // Declared variables sit above inherited ones; everything undeclared
@@ -20899,6 +18938,1949 @@ function itemTypeFromItem(item) {
   }
   const itemType = item.itemType ?? item.type;
   return typeof itemType === "string" ? itemType : "?";
+}
+
+// src/claude-control-plane.ts
+import { createHash as createHash3 } from "node:crypto";
+import { access, mkdtemp, readFile as readFile7, readdir as readdir5, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
+import { homedir as homedir3, hostname as hostname3, tmpdir } from "node:os";
+import path11 from "node:path";
+
+// src/claude-transcript.ts
+import { readFile as readFile5 } from "node:fs/promises";
+function submittedUserText(entry) {
+  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
+  const content = entry.message?.content;
+  if (typeof content !== "string") return null;
+  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
+  if (command === null) return content;
+  const name = command[1] ?? "";
+  const args = command[2] ?? "";
+  return args === "" ? name : `${name} ${args}`;
+}
+function parseTranscriptText(text) {
+  const entries = [];
+  for (const line of text.split("\n")) {
+    if (line.trim().length === 0) {
+      continue;
+    }
+    const entry = parseLine(line);
+    if (entry !== null) {
+      entries.push(entry);
+    }
+  }
+  return entries;
+}
+async function readTranscriptFile(path16) {
+  let text;
+  try {
+    text = await readFile5(path16, "utf8");
+  } catch (error) {
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path16}`, { cause: error });
+  }
+  return { path: path16, text, entries: parseTranscriptText(text) };
+}
+function finalAssistantText(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const text = textFromContent(entry.message?.content);
+    if (text !== null && text.length > 0) {
+      return text;
+    }
+  }
+  return null;
+}
+var SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>";
+function endsInSyntheticReply(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    return entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER;
+  }
+  return false;
+}
+function apiErrorSince(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    if (entry.message?.model !== SYNTHETIC_MODEL_PLACEHOLDER || entry.isApiErrorMessage !== true) {
+      return null;
+    }
+    return {
+      status: typeof entry.apiErrorStatus === "number" ? entry.apiErrorStatus : null,
+      code: typeof entry.error === "string" ? entry.error : null
+    };
+  }
+  return null;
+}
+function resolvedModelSince(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const model = entry.message?.model;
+    if (typeof model === "string" && model.length > 0 && model !== SYNTHETIC_MODEL_PLACEHOLDER) {
+      return model;
+    }
+  }
+  return null;
+}
+function effortSince(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    if (typeof entry.effort === "string" && entry.effort.length > 0) {
+      return entry.effort;
+    }
+  }
+  return null;
+}
+function turnComplete(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const stopReason = entry.message?.stop_reason;
+    return typeof stopReason === "string" && stopReason !== "tool_use" && textFromContent(entry.message?.content) !== null;
+  }
+  return false;
+}
+function usageSince(entries, fromIndex = 0) {
+  const start = Math.max(0, fromIndex);
+  const counted = /* @__PURE__ */ new Set();
+  for (let index = 0; index < Math.min(start, entries.length); index += 1) {
+    const id = entries[index]?.type === "assistant" ? entries[index]?.message?.id : void 0;
+    if (typeof id === "string") {
+      counted.add(id);
+    }
+  }
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheRead = 0;
+  let cacheCreation = 0;
+  let sawUsage = false;
+  for (let index = start; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const usage2 = asRecord(entry.message?.usage);
+    if (usage2 === null) {
+      continue;
+    }
+    const id = entry.message?.id;
+    if (typeof id === "string") {
+      if (counted.has(id)) {
+        continue;
+      }
+      counted.add(id);
+    }
+    sawUsage = true;
+    inputTokens += numeric(usage2.input_tokens);
+    outputTokens += numeric(usage2.output_tokens);
+    cacheRead += numeric(usage2.cache_read_input_tokens);
+    cacheCreation += numeric(usage2.cache_creation_input_tokens);
+  }
+  if (!sawUsage) {
+    return zeroUsage();
+  }
+  const cachedInputTokens = cacheRead + cacheCreation;
+  return {
+    cachedInputTokens,
+    cacheCreationInputTokens: cacheCreation,
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + cachedInputTokens + outputTokens
+  };
+}
+var BACKGROUND_TASK_STARTS = [
+  { pattern: /Command running in background with ID: ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /Monitor started \(task ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /^Command did not complete within its \S+ timeout and was moved to the background \(ID: ([A-Za-z0-9_-]+)\)/, from: (call) => call.tool === "Bash" }
+];
+var TASK_STOP_RESULT = /Successfully stopped task: ([A-Za-z0-9_-]+)/;
+var TASK_NOTIFICATION_BLOCK = /<task-notification>([\s\S]*?)<\/task-notification>/g;
+var TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
+var TASK_NOTIFICATION_STATUS = /<status>([^<]+)<\/status>/;
+var TASK_NOTIFICATION_EVENT = /<event>([\s\S]*?)<\/event>/;
+var TASK_ENDED_STATUSES = /* @__PURE__ */ new Set(["completed", "failed", "killed", "stopped"]);
+var MONITOR_OWN_NOTICE = /^\s*\[Monitor (?:expired after|timed out|stopped)\b/;
+function outstandingBackgroundTasks(entries, fromIndex = 0) {
+  const toolCalls = /* @__PURE__ */ new Map();
+  const outstanding = /* @__PURE__ */ new Map();
+  const notified = /* @__PURE__ */ new Set();
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === void 0) {
+      continue;
+    }
+    if (entry.type === "assistant") {
+      for (const id of notified) {
+        outstanding.delete(id);
+      }
+      notified.clear();
+      for (const call of toolUseBlocks(entry.message?.content)) {
+        toolCalls.set(call.id, call);
+      }
+      continue;
+    }
+    for (const result of toolResultBlocks(entry.message?.content)) {
+      const call = toolCalls.get(result.toolUseId);
+      if (call === void 0) {
+        continue;
+      }
+      for (const start of BACKGROUND_TASK_STARTS) {
+        const started = start.from(call) ? start.pattern.exec(result.text)?.[1] : void 0;
+        if (started !== void 0) {
+          outstanding.set(started, { id: started, description: call.description });
+        }
+      }
+      if (call.stops) {
+        const stopped = TASK_STOP_RESULT.exec(result.text)?.[1];
+        if (stopped !== void 0 && outstanding.has(stopped)) {
+          notified.add(stopped);
+        }
+      }
+    }
+    for (const notification of deliveredNotifications(entry)) {
+      if (notification.ended && outstanding.has(notification.id)) {
+        notified.add(notification.id);
+      }
+    }
+  }
+  return [...outstanding.values()];
+}
+var BACKGROUNDING_TOOLS = {
+  Bash: (input) => input?.run_in_background === true,
+  Monitor: () => true
+};
+var STOPPING_TOOL = "TaskStop";
+function toolUseBlocks(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const calls = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type !== "tool_use" || typeof record.id !== "string") {
+      continue;
+    }
+    const input = asRecord(record.input);
+    const backgrounds = typeof record.name === "string" && (BACKGROUNDING_TOOLS[record.name]?.(input) ?? false);
+    const stops = record.name === STOPPING_TOOL;
+    const description = typeof input?.description === "string" && input.description.length > 0 ? input.description : typeof input?.command === "string" && input.command.length > 0 ? input.command.slice(0, 200) : typeof record.name === "string" ? record.name : "background task";
+    calls.push({ id: record.id, tool: typeof record.name === "string" ? record.name : null, description, backgrounds, stops });
+  }
+  return calls;
+}
+function toolResultBlocks(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const results = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type !== "tool_result" || typeof record.tool_use_id !== "string") {
+      continue;
+    }
+    results.push({ toolUseId: record.tool_use_id, text: blockText(record.content) });
+  }
+  return results;
+}
+function deliveredNotifications(entry) {
+  let texts;
+  if (entry.type === "user") {
+    texts = messageTexts(entry.message?.content);
+  } else if (entry.type === "attachment") {
+    const attachment = asRecord(entry.attachment);
+    texts = attachment?.type === "queued_command" && typeof attachment.prompt === "string" ? [attachment.prompt] : [];
+  } else {
+    return [];
+  }
+  const notifications = [];
+  for (const text of texts) {
+    for (const block of text.matchAll(TASK_NOTIFICATION_BLOCK)) {
+      const body = block[1] ?? "";
+      const id = TASK_NOTIFICATION_ID.exec(body)?.[1];
+      if (id !== void 0) {
+        notifications.push({ id, ended: notificationEnded(body) });
+      }
+    }
+  }
+  return notifications;
+}
+function notificationEnded(body) {
+  const status = TASK_NOTIFICATION_STATUS.exec(body)?.[1]?.trim();
+  if (status !== void 0) {
+    return TASK_ENDED_STATUSES.has(status);
+  }
+  return MONITOR_OWN_NOTICE.test(TASK_NOTIFICATION_EVENT.exec(body)?.[1] ?? "");
+}
+function messageTexts(content) {
+  if (typeof content === "string") {
+    return [content];
+  }
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const texts = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type === "text" && typeof record.text === "string") {
+      texts.push(record.text);
+    }
+  }
+  return texts;
+}
+function blockText(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content.map((block) => {
+    const record = asRecord(block);
+    return record?.type === "text" && typeof record.text === "string" ? record.text : "";
+  }).join("\n");
+}
+function parseLine(line) {
+  try {
+    const parsed = JSON.parse(line);
+    return asRecord(parsed) === null ? null : parsed;
+  } catch {
+    return null;
+  }
+}
+function textFromContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const parts = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type === "text" && typeof record.text === "string") {
+      parts.push(record.text);
+    }
+  }
+  return parts.length > 0 ? parts.join("") : null;
+}
+function asRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function numeric(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+function zeroUsage() {
+  return {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0
+  };
+}
+
+// src/worker-scopes.ts
+import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
+import { readFile as readFile6, readdir as readdir4 } from "node:fs/promises";
+import path10 from "node:path";
+var RUN_SCOPE_GROUP = "run";
+var SystemdWorkerScopes = class {
+  slice;
+  #label;
+  #busctlBin;
+  #systemdRunBin;
+  #systemctlBin;
+  #env;
+  #procDir;
+  #moveTimeoutMs;
+  /** Units this manager created, by group: the set `close()` stops. */
+  #units = /* @__PURE__ */ new Map();
+  /** One placement at a time per group, so concurrent first placements create one scope rather than race for the name. */
+  #groupTurns = /* @__PURE__ */ new Map();
+  #closed = false;
+  constructor(options = {}) {
+    this.slice = options.slice ?? null;
+    this.#label = options.label ?? String(process.pid);
+    this.#busctlBin = options.busctlBin ?? "busctl";
+    this.#systemdRunBin = options.systemdRunBin ?? "systemd-run";
+    this.#systemctlBin = options.systemctlBin ?? "systemctl";
+    this.#env = options.env ?? process.env;
+    this.#procDir = options.procDir ?? "/proc";
+    this.#moveTimeoutMs = options.moveTimeoutMs ?? 5e3;
+  }
+  /** The unit a group's processes are placed in: `ensemble-<label>-<group>.scope`, the group made unit-name safe. */
+  unitFor(group) {
+    return `ensemble-${unitSafe(this.#label)}-${unitSafe(group)}.scope`;
+  }
+  async place(group, pids) {
+    if (this.#closed) {
+      return { kind: "refused", reason: "the scope manager is closed" };
+    }
+    const turn = (this.#groupTurns.get(group) ?? Promise.resolve()).then(() => this.#placeInTurn(group, pids));
+    this.#groupTurns.set(group, turn.catch(() => void 0));
+    return turn;
+  }
+  async #placeInTurn(group, requested) {
+    if (this.#closed) {
+      return { kind: "refused", reason: "the scope manager is closed" };
+    }
+    const unit = this.unitFor(group);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const pids = requested.filter(isLive);
+      if (pids.length === 0) {
+        return { kind: "refused", reason: "every process to place had already exited" };
+      }
+      const outcome = this.#units.has(group) ? await this.#attach(unit, pids, true) : await this.#start(unit, pids, true);
+      if (outcome === null) {
+        this.#units.set(group, unit);
+        if (!await this.#moved(unit, pids)) {
+          return { kind: "refused", reason: `the manager accepted ${unit} but its processes had not moved within ${this.#moveTimeoutMs}ms` };
+        }
+        return { kind: "placed", unit, pids };
+      }
+      if (/No such process/.test(outcome)) {
+        continue;
+      }
+      return { kind: "refused", reason: outcome };
+    }
+    return { kind: "refused", reason: "the processes to place exited while being placed" };
+  }
+  /**
+   * Create the group's scope around these processes. A unit of that name
+   * already loaded — a leftover of an earlier launcher with this label, or
+   * a concurrent creation — is joined instead. Null on success; otherwise
+   * the manager's refusal. Each route falls back to the other once: the
+   * unit's state can change between the two calls, and a second flip is
+   * reported rather than chased.
+   */
+  async #start(unit, pids, joinExisting) {
+    const properties = [
+      ["PIDs", "au", String(pids.length), ...pids.map(String)],
+      ["Delegate", "b", "true"],
+      ["CollectMode", "s", "inactive-or-failed"],
+      ...this.slice !== null ? [["Slice", "s", this.slice]] : []
+    ];
+    const started = await this.#manager("StartTransientUnit", "ssa(sv)a(sa(sv))", [
+      unit,
+      "fail",
+      String(properties.length),
+      ...properties.flat(),
+      "0"
+    ]);
+    if (started === null || !joinExisting || !/already loaded/.test(started)) {
+      return started;
+    }
+    return this.#attach(unit, pids, false);
+  }
+  /** Add processes to the group's existing scope; a scope that ended with its last process is created again. */
+  async #attach(unit, pids, recreateGone) {
+    const attached = await this.#manager("AttachProcessesToUnit", "ssau", [unit, "/", String(pids.length), ...pids.map(String)]);
+    if (attached === null || !recreateGone || !/not loaded/.test(attached)) {
+      return attached;
+    }
+    return this.#start(unit, pids, false);
+  }
+  /** Whether every listed process that is still alive sits in the unit, waited for up to the move timeout. */
+  async #moved(unit, pids) {
+    const deadline = Date.now() + this.#moveTimeoutMs;
+    for (; ; ) {
+      const lines = await Promise.all(
+        pids.map((pid) => readFile6(path10.join(this.#procDir, String(pid), "cgroup"), "utf8").catch(() => null))
+      );
+      if (lines.every((line) => line === null || line.trimEnd().endsWith(`/${unit}`))) {
+        return true;
+      }
+      if (Date.now() >= deadline) {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  /**
+   * The slice a launched command's scope goes in: the parent of the
+   * launcher's own slice, so the command — and a supervisor it starts —
+   * sits outside the box the launcher's slice draws, whether that box is
+   * the slice itself or a scope inside it. A launcher in `agents-run1.slice`
+   * launches into `agents.slice`; one in `agents.slice` or `app.slice`
+   * launches into the user manager's root slice. A root-slice launcher also
+   * launches into the root slice, in a scope separate from its own. Null
+   * where the launcher's slice is unknown: the manager's default applies.
+   */
+  get launchSlice() {
+    return this.slice === null ? null : parentSlice(this.slice);
+  }
+  async launch(file, args, options) {
+    const slice = this.launchSlice;
+    return spawn2(
+      this.#systemdRunBin,
+      [
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        ...slice !== null ? [`--slice=${slice}`] : [],
+        `--description=ensemble: ${file} ${args[0] ?? ""}`.trimEnd(),
+        "--",
+        file,
+        ...args
+      ],
+      options
+    );
+  }
+  async close() {
+    this.#closed = true;
+    await Promise.all([...this.#groupTurns.values()]);
+    this.#groupTurns.clear();
+    const units = [...this.#units.values()];
+    this.#units.clear();
+    await Promise.all(
+      units.map(
+        (unit) => new Promise((resolve) => {
+          execFile3(this.#systemctlBin, ["--user", "stop", "--no-block", unit], { env: this.#env }, () => resolve());
+        })
+      )
+    );
+  }
+  /** One call on the manager object. Null when it succeeded; otherwise the bounded text of its refusal. */
+  #manager(method, signature, args) {
+    return new Promise((resolve) => {
+      execFile3(
+        this.#busctlBin,
+        [
+          "--user",
+          "--",
+          "call",
+          "org.freedesktop.systemd1",
+          "/org/freedesktop/systemd1",
+          "org.freedesktop.systemd1.Manager",
+          method,
+          signature,
+          ...args
+        ],
+        { env: this.#env },
+        (error, _stdout, stderr) => {
+          resolve(error === null ? null : boundedEvidence(stderr.trim() || error.message));
+        }
+      );
+    });
+  }
+};
+var NoWorkerScopes = class {
+  slice = null;
+  async place() {
+    return { kind: "unavailable" };
+  }
+  async launch(file, args, options) {
+    return spawn2(file, [...args], options);
+  }
+  async close() {
+  }
+};
+async function createWorkerScopes(options = {}) {
+  const { procDir = "/proc", ...systemd } = options;
+  const env = systemd.env ?? process.env;
+  if (!await userManagerAnswers(systemd.busctlBin ?? "busctl", env)) {
+    return new NoWorkerScopes();
+  }
+  const cgroup = await readFile6(path10.join(procDir, "self", "cgroup"), "utf8").catch(() => "");
+  return new SystemdWorkerScopes({ ...systemd, slice: containingSlice(cgroup) });
+}
+function containingSlice(cgroupFile) {
+  const line = cgroupFile.split("\n").find((entry) => entry.startsWith("0::"));
+  if (line === void 0) {
+    return null;
+  }
+  const segments = line.slice("0::".length).split("/").filter((segment) => segment.length > 0);
+  const userManager = segments.findIndex((segment) => /^user@\d+\.service$/.test(segment));
+  if (userManager === -1) {
+    return null;
+  }
+  for (let index = segments.length - 1; index > userManager; index -= 1) {
+    const segment = segments[index];
+    if (segment.endsWith(".slice")) {
+      return segment;
+    }
+  }
+  return "-.slice";
+}
+function parentSlice(slice) {
+  if (slice === "-.slice") return slice;
+  const name = slice.slice(0, -".slice".length);
+  const dash = name.lastIndexOf("-");
+  return dash === -1 ? "-.slice" : `${name.slice(0, dash)}.slice`;
+}
+async function processTree(pid, procDir = "/proc") {
+  const seen = /* @__PURE__ */ new Set([pid]);
+  const queue = [pid];
+  while (queue.length > 0) {
+    const parent = queue.shift();
+    const taskDir = path10.join(procDir, String(parent), "task");
+    const tasks = await readdir4(taskDir).catch(() => []);
+    for (const task of tasks) {
+      const children = await readFile6(path10.join(taskDir, task, "children"), "utf8").catch(() => "");
+      for (const child of children.split(/\s+/).filter((entry) => /^\d+$/.test(entry)).map(Number)) {
+        if (!seen.has(child)) {
+          seen.add(child);
+          queue.push(child);
+        }
+      }
+    }
+  }
+  return [...seen];
+}
+function userManagerAnswers(busctlBin, env) {
+  return new Promise((resolve) => {
+    execFile3(
+      busctlBin,
+      ["--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.DBus.Peer", "Ping"],
+      { env, timeout: 5e3 },
+      (error) => resolve(error === null)
+    );
+  });
+}
+function isLive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function unitSafe(text) {
+  return text.replace(/[^A-Za-z0-9:_.-]/g, "_").slice(0, 64);
+}
+
+// src/claude-control-plane.ts
+var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
+var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
+var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
+var OWNER_FILENAME = "owner.json";
+var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
+var ClaudeCliControlPlane = class {
+  #claudeBin;
+  #tmuxBin;
+  #projectsDir;
+  #dispatchTimeoutMs;
+  #reapGraceMs;
+  #procDir;
+  #valveAttachSettleMs;
+  #valveSubmitSettleMs;
+  #valveKillSettleMs;
+  #valveDeliveryTimeoutMs;
+  #scopes;
+  #workerScope;
+  #placementSettleMs;
+  #placementWatchIntervalMs;
+  #onEvent;
+  /** Last placement attempt per session: refused attempts remain eligible at the same pid. */
+  #placements = /* @__PURE__ */ new Map();
+  /** Session ownership lasts through idle gaps, independently of turn polling. */
+  #watchedSessions = /* @__PURE__ */ new Map();
+  #placementTimer = null;
+  #placementSweep = null;
+  #placing = /* @__PURE__ */ new Map();
+  #valveCounter = 0;
+  /**
+   * Where each valve's socket directory is made: where tmux keeps its own
+   * sockets, by the launcher's own TMUX_TMPDIR (else /tmp). Never a
+   * declared worker variable, so no declared value reaches a valve's
+   * `-S` argument.
+   */
+  #valveSocketRoot;
+  #env;
+  #workerEnv;
+  /** The resolved hold scope every dispatched session inherits by its settings file; null for the shared scope. */
+  #holdScope;
+  /** Per-session settings directories, removed when the session stops. */
+  #settingsDirs = /* @__PURE__ */ new Map();
+  /** The one-time sweep of settings directories earlier launchers left behind, run before this control plane's first dispatch. */
+  #orphanSweep = null;
+  constructor(options = {}) {
+    this.#claudeBin = options.claudeBin ?? "claude";
+    this.#tmuxBin = options.tmuxBin ?? "tmux";
+    this.#workerEnv = options.workerEnv ?? {};
+    this.#holdScope = options.holdScope === void 0 ? resolveHoldScope(void 0, process.env) : options.holdScope;
+    this.#env = {
+      ...withoutRunScopedVariables(process.env),
+      ...this.#workerEnv,
+      [SANDBOXED_WORKSPACE_VARIABLE]: "1"
+    };
+    const configDir = this.#env.CLAUDE_CONFIG_DIR || path11.join(homedir3(), ".claude");
+    this.#projectsDir = options.projectsDir ?? path11.join(configDir, "projects");
+    this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
+    this.#reapGraceMs = options.reapGraceMs ?? 5e3;
+    this.#procDir = options.procDir ?? "/proc";
+    this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
+    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 0;
+    this.#valveKillSettleMs = options.valveKillSettleMs ?? 0;
+    this.#valveDeliveryTimeoutMs = options.valveDeliveryTimeoutMs ?? 3e4;
+    this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
+    this.#workerScope = options.workerScope ?? "worker";
+    this.#scopes = options.scopes ?? new NoWorkerScopes();
+    this.#placementSettleMs = options.placementSettleMs ?? 1e4;
+    this.#placementWatchIntervalMs = options.placementWatchIntervalMs ?? 1e3;
+    if (!Number.isInteger(this.#placementWatchIntervalMs) || this.#placementWatchIntervalMs < 1 || this.#placementWatchIntervalMs > 2147483647) {
+      throw new RangeError("placementWatchIntervalMs must be an integer from 1 to 2147483647");
+    }
+    this.#onEvent = options.onEvent;
+  }
+  /** How the session's process was last placed, or null before the roster has named a pid for it. */
+  placementOf(handle) {
+    return this.#placements.get(handle.sessionId)?.outcome ?? null;
+  }
+  async dispatch(options) {
+    const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
+    if (options.model !== void 0) {
+      args.push("--model", options.model);
+    }
+    if (options.effort !== void 0) {
+      args.push("--effort", options.effort);
+    }
+    this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
+    await this.#orphanSweep;
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
+    args.push("--settings", path11.join(settingsDir, "settings.json"));
+    let registered = null;
+    try {
+      const dispatch = { result: null };
+      void this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd).then(
+        (result) => dispatch.result = result,
+        (error) => dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error) }
+      );
+      let deadline = null;
+      for (; ; ) {
+        const found = await this.#findByName(options.name);
+        if (found !== null) {
+          registered = found.handle;
+          if (this.#scopes instanceof NoWorkerScopes) break;
+          const settled = Date.now() + this.#placementSettleMs;
+          let pid = found.pid;
+          for (; ; ) {
+            if (pid !== null) {
+              const outcome = await this.#place(registered, pid);
+              if (outcome.kind !== "refused") break;
+            }
+            if (Date.now() >= settled) break;
+            await delay(100);
+            pid = (await this.#findByName(options.name))?.pid ?? null;
+          }
+          break;
+        }
+        if (dispatch.result !== null) {
+          if (!dispatch.result.ok) {
+            throw new ClaudeDispatchError(
+              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + boundedEvidence(dispatch.result.stderr.trim() || dispatch.result.stdout.trim() || "claude --bg exited without a message")
+            );
+          }
+          deadline ??= Date.now() + this.#dispatchTimeoutMs;
+          if (Date.now() >= deadline) {
+            throw new ClaudeRegistrationTimeoutError(
+              `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
+            );
+          }
+        }
+        await delay(dispatch.result === null ? 100 : 500);
+      }
+    } finally {
+      if (registered === null) {
+        await this.#removeSettingsDir(settingsDir);
+      } else {
+        this.#settingsDirs.set(registered.sessionId, settingsDir);
+        if (!(this.#scopes instanceof NoWorkerScopes)) {
+          this.#watchedSessions.set(registered.sessionId, registered);
+          this.#schedulePlacementWatch();
+        }
+      }
+    }
+    if (registered === null) {
+      throw new ClaudeRegistrationTimeoutError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
+    }
+    return registered;
+  }
+  /**
+   * Write the per-dispatch settings file carrying the declared worker
+   * environment plus the dispatch's ownership tag (`WORKER_MARKER_VARIABLE`).
+   * Written on every dispatch: the tag is what lets `stop()` reap the
+   * worker's surviving descendants, so an untagged worker would be an
+   * unowned one. (This supersedes the earlier no-declaration-no-flag
+   * behaviour, which predated descendant ownership.) The file can carry
+   * credentials — gateway values among the declared variables — so it lives
+   * in its own mkdtemp directory (0o700 by construction, unguessable name)
+   * and the file itself is 0o600.
+   */
+  async #writeWorkerSettings(dispatchName, permissionDenyRules) {
+    const env = {
+      ...this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {},
+      ...this.#workerEnv,
+      [WORKER_MARKER_VARIABLE]: dispatchName
+    };
+    const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
+    const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
+`;
+    const dir = await mkdtemp(path11.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
+    try {
+      await writeFile5(path11.join(dir, OWNER_FILENAME), owner, { mode: 384 });
+      await writeFile5(path11.join(dir, "settings.json"), `${JSON.stringify(settings)}
+`, {
+        mode: 384
+      });
+    } catch (error) {
+      await this.#removeSettingsDir(dir);
+      throw error;
+    }
+    return dir;
+  }
+  async #removeSettingsDir(dir) {
+    await rm4(dir, { recursive: true, force: true }).catch(() => void 0);
+  }
+  /**
+   * Remove every per-dispatch settings directory whose recorded owner is
+   * provably gone — a launcher that died by SIGKILL or crashed never reached
+   * `stop()`. Judgement is the run manifest's: same-host, evidence-only,
+   * conservative on every unjudgeable case (a live owner, another host, no
+   * readable proc filesystem). A directory with no readable owner record is
+   * unjudgeable too and is left alone — unlike the manifest, whose owner
+   * block is written atomically inside the artefact judged, a sidecar can
+   * be observed before it lands, and a concurrent launcher between its
+   * mkdtemp and its owner write must never lose a live directory. (The
+   * directories launchers left before owner recording existed are
+   * therefore not swept; they are the operator's to remove.) An
+   * orphaned session the daemon is still serving loses its declared
+   * variables when its file goes — an accepted cost: no launcher will ever
+   * collect that session, and checking the roster here would itself start
+   * the daemon. Best-effort throughout: this is housekeeping, and nothing
+   * here may fail or delay a dispatch on its own account.
+   */
+  async #sweepOrphanedSettingsDirs() {
+    const root = tmpdir();
+    const entries = await readdir5(root, { withFileTypes: true }).catch(() => []);
+    const host = hostname3();
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(SETTINGS_DIR_PREFIX)) {
+        continue;
+      }
+      const dir = path11.join(root, entry.name);
+      try {
+        const owner = JSON.parse(await readFile7(path11.join(dir, OWNER_FILENAME), "utf8"));
+        if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
+          await this.#removeSettingsDir(dir);
+        }
+      } catch {
+      }
+    }
+  }
+  async poll(handle) {
+    const roster = await this.#roster();
+    if (!roster.ok) {
+      return { status: "unknown", state: "unknown", present: true };
+    }
+    const record = roster.rows.find((row) => matchesHandle(row, handle)) ?? null;
+    if (record === null) {
+      return { status: "absent", state: "unknown", present: false };
+    }
+    const previous = this.#placements.get(handle.sessionId);
+    if (typeof record.pid === "number" && (previous?.pid !== record.pid || previous.outcome.kind === "refused")) {
+      await this.#place(handle, record.pid);
+    }
+    const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : void 0;
+    return {
+      status: typeof record.status === "string" ? record.status : "unknown",
+      state: normaliseState(record.state),
+      present: true,
+      ...waitingFor !== void 0 ? { waitingFor } : {}
+    };
+  }
+  async transcriptPath(handle) {
+    const filename = `${handle.sessionId}.jsonl`;
+    let projectDirs;
+    try {
+      const entries = await readdir5(this.#projectsDir, { withFileTypes: true });
+      projectDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    } catch {
+      return null;
+    }
+    for (const dir of projectDirs) {
+      const candidate = path11.join(this.#projectsDir, dir, filename);
+      try {
+        await access(candidate);
+        return candidate;
+      } catch {
+      }
+    }
+    return null;
+  }
+  async steer(handle, message) {
+    if ((await this.poll(handle)).present === false) {
+      return { delivered: false, reason: "the session is no longer in the daemon's roster" };
+    }
+    this.#valveCounter += 1;
+    const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
+    let socketDir;
+    try {
+      socketDir = await mkdtemp(path11.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+    } catch (error) {
+      const said = error instanceof Error ? error.message : String(error);
+      return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
+    }
+    const server = ["-S", path11.join(socketDir, "tmux.sock")];
+    try {
+      const transcriptPath = await this.transcriptPath(handle);
+      if (transcriptPath === null) {
+        return { delivered: false, reason: "follow-up delivery not attempted: no transcript baseline is available" };
+      }
+      const before = parseTranscriptText(await readFile7(transcriptPath, "utf8"));
+      const payload = path11.join(socketDir, "prompt.txt");
+      const editor = path11.join(socketDir, "editor.cjs");
+      const copied = path11.join(socketDir, "copied");
+      await writeFile5(payload, message, { mode: 384 });
+      await writeFile5(editor, `#!${process.execPath}
+        const fs = require("node:fs");
+        fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
+        fs.writeFileSync(${JSON.stringify(copied)}, "complete", { mode: 0o600 });
+      `, { mode: 448 });
+      const editorCommand = editor;
+      const created = await this.#launch(this.#tmuxBin, [
+        ...server,
+        "-f",
+        "/dev/null",
+        "new-session",
+        "-d",
+        "-s",
+        valve,
+        `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
+      ], null, void 0, { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand });
+      if (!created.ok) return refused("tmux new-session", created);
+      await delay(this.#valveAttachSettleMs);
+      const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
+      if (!opened.ok) return refused("tmux send-keys (editor)", opened);
+      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
+      for (; ; ) {
+        try {
+          await access(copied);
+          break;
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+        if (Date.now() >= copyDeadline) {
+          return { delivered: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
+        }
+        await delay(50);
+      }
+      await delay(this.#valveSubmitSettleMs);
+      const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
+      if (!submitted.ok) return refused("tmux send-keys (submit)", submitted);
+      const receiptDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
+      for (; ; ) {
+        const entries = parseTranscriptText(await readFile7(transcriptPath, "utf8"));
+        for (const entry of entries.slice(before.length)) {
+          const text = submittedUserText(entry);
+          if (text === null) continue;
+          if (text !== message && entry.message?.content !== message) {
+            return { delivered: false, reason: `follow-up delivery mismatch: expected ${textIdentity(message)}; received ${textIdentity(text)}` };
+          }
+          await delay(this.#valveKillSettleMs);
+          return { delivered: true };
+        }
+        if (Date.now() >= receiptDeadline) {
+          return { delivered: false, reason: `follow-up delivery missing: no matching user turn within ${this.#valveDeliveryTimeoutMs}ms (expected ${textIdentity(message)})` };
+        }
+        await delay(50);
+      }
+    } catch (error) {
+      return { delivered: false, reason: `reply valve failed: ${boundedEvidence(error instanceof Error ? error.message : String(error))}` };
+    } finally {
+      await this.#run(this.#tmuxBin, [...server, "kill-server"]);
+      await rm4(socketDir, { recursive: true, force: true }).catch(() => void 0);
+    }
+  }
+  /**
+   * Place the session's process and its live descendants in the scope
+   * chosen by the run's grouping. The tree, not the pid alone: helpers the
+   * session forked before this moment (MCP servers, shells) would
+   * otherwise stay in the supervisor's cgroup. Best-effort — the outcome
+   * is recorded, never thrown.
+   */
+  async #place(handle, pid) {
+    const pending = (this.#placing.get(handle.sessionId) ?? Promise.resolve()).then(() => this.#placeInTurn(handle, pid));
+    this.#placing.set(handle.sessionId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.#placing.get(handle.sessionId) === pending) this.#placing.delete(handle.sessionId);
+    }
+  }
+  async #placeInTurn(handle, pid) {
+    const previous = this.#placements.get(handle.sessionId);
+    if (previous?.pid === pid && previous.outcome.kind !== "refused") return previous.outcome;
+    const outcome = await this.#scopes.place(this.#workerScope === "run" ? RUN_SCOPE_GROUP : handle.name, await processTree(pid, this.#procDir));
+    this.#placements.set(handle.sessionId, { pid, outcome });
+    const changedRefusal = outcome.kind === "refused" && (previous?.pid !== pid || previous.outcome.kind !== "refused" || previous.outcome.reason !== outcome.reason);
+    const recovered = outcome.kind === "placed" && previous?.outcome.kind === "refused";
+    if (changedRefusal || recovered) {
+      this.#onEvent?.({
+        method: "claude/workerScopePlacement",
+        params: {
+          sessionId: handle.sessionId,
+          name: handle.name,
+          pid,
+          kind: outcome.kind,
+          ...outcome.kind === "refused" ? { reason: boundedEvidence(outcome.reason) } : {},
+          ...outcome.kind === "placed" ? { unit: outcome.unit } : {}
+        },
+        receivedAt: Date.now()
+      });
+    }
+    return outcome;
+  }
+  /** One roster read serves every owned session, including those between turns. */
+  #schedulePlacementWatch() {
+    if (this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
+    this.#placementTimer = setTimeout(() => {
+      this.#placementTimer = null;
+      this.#placementSweep = this.#refreshPlacements().catch((error) => {
+        this.#onEvent?.({
+          method: "claude/workerScopeWatchError",
+          params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
+          receivedAt: Date.now()
+        });
+      }).finally(() => {
+        this.#placementSweep = null;
+        this.#schedulePlacementWatch();
+      });
+    }, this.#placementWatchIntervalMs);
+    this.#placementTimer.unref();
+  }
+  async #refreshPlacements() {
+    const roster = await this.#roster();
+    if (!roster.ok) return;
+    for (const handle of this.#watchedSessions.values()) {
+      const row = roster.rows.find((entry) => matchesHandle(entry, handle));
+      if (typeof row?.pid === "number") await this.#place(handle, row.pid);
+    }
+  }
+  async stop(handle) {
+    this.#watchedSessions.delete(handle.sessionId);
+    if (this.#watchedSessions.size === 0 && this.#placementTimer !== null) {
+      clearTimeout(this.#placementTimer);
+      this.#placementTimer = null;
+    }
+    await this.#placementSweep;
+    await this.#placing.get(handle.sessionId);
+    await this.#run(this.#claudeBin, ["stop", handle.id]);
+    this.#placements.delete(handle.sessionId);
+    await this.#reapTaggedDescendants(handle.name);
+    await this.#run(this.#claudeBin, ["rm", handle.id]);
+    const settingsDir = this.#settingsDirs.get(handle.sessionId);
+    if (settingsDir !== void 0) {
+      this.#settingsDirs.delete(handle.sessionId);
+      await this.#removeSettingsDir(settingsDir);
+    }
+  }
+  /**
+   * Kill every surviving process tagged with this dispatch's marker:
+   * SIGTERM first, then SIGKILL for anything still alive after the grace
+   * period. Best-effort throughout — reaping is cleanup, and a scan or kill
+   * failure must never mask the turn's real outcome. On a platform without
+   * a readable proc filesystem the scan finds nothing and the reap is a
+   * no-op.
+   */
+  async #reapTaggedDescendants(dispatchName) {
+    const tagged = await this.#findTaggedProcesses(dispatchName);
+    if (tagged.length === 0) {
+      return;
+    }
+    for (const pid of tagged) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+      }
+    }
+    await delay(this.#reapGraceMs);
+    for (const pid of await this.#findTaggedProcesses(dispatchName)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+      }
+    }
+  }
+  /** Pids (other than our own) whose environment carries this dispatch's tag. */
+  async #findTaggedProcesses(dispatchName) {
+    const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
+    let entries;
+    try {
+      entries = await readdir5(this.#procDir);
+    } catch {
+      return [];
+    }
+    const pids = [];
+    for (const entry of entries) {
+      if (!/^\d+$/.test(entry)) {
+        continue;
+      }
+      const pid = Number(entry);
+      if (pid === process.pid) {
+        continue;
+      }
+      let environ;
+      try {
+        environ = await readFile7(path11.join(this.#procDir, entry, "environ"), "utf8");
+      } catch {
+        continue;
+      }
+      if (environ.split("\0").includes(needle)) {
+        pids.push(pid);
+      }
+    }
+    return pids;
+  }
+  async tmuxAvailable() {
+    return (await this.#run(this.#tmuxBin, ["-V"])).ok;
+  }
+  /** The roster's row for a dispatch, as a handle plus the pid the row names (null until the supervisor reports one). */
+  async #findByName(name) {
+    const { rows } = await this.#roster();
+    const match = rows.find(
+      (row) => row.kind === "background" && row.name === name && typeof row.sessionId === "string"
+    );
+    if (match === void 0 || typeof match.sessionId !== "string") {
+      return null;
+    }
+    const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
+    return {
+      handle: {
+        id,
+        sessionId: match.sessionId,
+        name,
+        cwd: typeof match.cwd === "string" ? match.cwd : ""
+      },
+      pid: typeof match.pid === "number" ? match.pid : null
+    };
+  }
+  // `ok: false` means the query could not be performed (process error, empty or
+  // unparseable output) — distinct from "queried fine, session not listed",
+  // which is `{ ok: true, rows: [...] }` with the session simply absent.
+  async #roster() {
+    const result = await this.#run(this.#claudeBin, ["agents", "--json"]);
+    if (!result.ok || result.stdout.trim().length === 0) {
+      return { ok: false, rows: [] };
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      return { ok: false, rows: [] };
+    }
+    if (!Array.isArray(parsed)) {
+      return { ok: false, rows: [] };
+    }
+    return { ok: true, rows: parsed.filter((row) => typeof row === "object" && row !== null) };
+  }
+  #run(file, args, cwd) {
+    return this.#launch(file, args, null, cwd);
+  }
+  #runWithInput(file, args, input, cwd) {
+    return this.#launch(file, args, input, cwd);
+  }
+  /**
+   * The one route every control-plane child takes: launched by the scope
+   * manager (outside the launcher's box, where a systemd user manager is
+   * reachable), under the spread `#env`, with its output collected and its
+   * exit status read as the verdict. `input` is streamed to stdin and the
+   * stream then closed; null closes it at once.
+   */
+  async #launch(file, args, input, cwd, env = this.#env) {
+    const child = await this.#scopes.launch(file, args, {
+      ...cwd !== void 0 ? { cwd } : {},
+      env,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    return new Promise((resolve) => {
+      const stdout = [];
+      const stderr = [];
+      let settled = false;
+      const finish = (result) => {
+        if (!settled) {
+          settled = true;
+          resolve(result);
+        }
+      };
+      child.stdout?.on("data", (chunk) => stdout.push(chunk));
+      child.stderr?.on("data", (chunk) => stderr.push(chunk));
+      child.on("error", (error) => {
+        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
+      });
+      child.on("close", (code) => {
+        finish({
+          ok: code === 0,
+          stdout: Buffer.concat(stdout).toString(),
+          stderr: Buffer.concat(stderr).toString()
+        });
+      });
+      child.stdin?.on("error", () => void 0);
+      child.stdin?.end(input ?? void 0);
+    });
+  }
+};
+function matchesHandle(row, handle) {
+  return typeof row.id === "string" && row.id === handle.id || typeof row.sessionId === "string" && row.sessionId === handle.sessionId;
+}
+function normaliseState(state) {
+  if (state === "working" || state === "blocked" || state === "done") {
+    return state;
+  }
+  return "unknown";
+}
+function refused(step, result) {
+  const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
+  return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
+}
+function shellQuote(value) {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
+}
+function textIdentity(text) {
+  return `${Buffer.byteLength(text, "utf8")} UTF-8 bytes, sha256 ${createHash3("sha256").update(text).digest("hex")}`;
+}
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+// src/claude-engine.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+var CAPABILITY_DENY_RULES = {
+  skills: ["Skill"],
+  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
+};
+function permissionDenyRulesFor(strip) {
+  return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
+}
+var CLAUDE_NATIVE_EFFORT = {
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh"
+};
+function claudeNativeEffort(effort) {
+  if (effort === void 0) {
+    return void 0;
+  }
+  const native = CLAUDE_NATIVE_EFFORT[effort];
+  if (native === void 0) {
+    throw new InvalidAgentOptionValueError(
+      "effort",
+      effort,
+      `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")} (the canonical effort vocabulary)`
+    );
+  }
+  return native;
+}
+var dispatchCounter = 0;
+var MAX_CONSECUTIVE_ABSENCES = 3;
+var SETTLED_CONFIRMATION_POLLS = 5;
+var ClaudeEngineInvocation = class {
+  #cwd;
+  #options;
+  #controlPlane;
+  #onEvent;
+  #reportedUsage = null;
+  /** The background tasks this attempt's turn waited on, in the order observed; reset per attempt. */
+  #waits = [];
+  #multiTurn;
+  /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
+  #turnPrompt;
+  /** The current turn's schema — the one thing a session varies per turn. */
+  #turnSchema;
+  /**
+   * Whether the current turn's prompt has reached the worker. A follow-up
+   * turn is delivered by the valve, and a retry after a failed delivery
+   * must re-send the prompt itself — a correction message would ask the
+   * worker to fix an answer it was never asked for.
+   */
+  #turnDelivered = false;
+  #pollIntervalMs;
+  #receiptTimeoutMs;
+  #firstLifeTimeoutMs;
+  #blockedRecoveryBound;
+  #namePrefix;
+  #handle = null;
+  #resolvedModel = null;
+  #resolvedEffort = null;
+  #budgetEventCounter = 0;
+  #abortController = new AbortController();
+  #closed = false;
+  #closePromise = null;
+  #settlement = null;
+  #onClose;
+  constructor(options) {
+    this.#turnPrompt = options.prompt;
+    this.#turnSchema = options.options.schema;
+    this.#multiTurn = options.multiTurn ?? false;
+    this.#cwd = options.cwd;
+    this.#options = options.options;
+    this.#controlPlane = options.controlPlane;
+    this.#onEvent = options.onEvent;
+    this.#onClose = options.onClose;
+    const config = options.config ?? {};
+    this.#pollIntervalMs = config.pollIntervalMs ?? 2e3;
+    this.#receiptTimeoutMs = config.receiptTimeoutMs ?? 3e4;
+    this.#firstLifeTimeoutMs = config.firstLifeTimeoutMs ?? 6e4;
+    this.#blockedRecoveryBound = config.blockedRecoveryBound ?? 2;
+    this.#namePrefix = config.namePrefix ?? "ensemble";
+  }
+  /**
+   * Session mode's turn boundary: the next `runAttempt` delivers this
+   * prompt to the *held* session — by dispatch for the first turn, through
+   * the valve thereafter — with this turn's schema governing validation and
+   * correction. The returned invocation deliberately carries no `close`:
+   * a turn ending must never tear down the session it rode.
+   */
+  beginTurn(prompt, turn) {
+    this.#turnPrompt = prompt;
+    this.#turnSchema = turn.schema;
+    this.#turnDelivered = false;
+    return {
+      runAttempt: (context) => this.runAttempt(context)
+    };
+  }
+  runAttempt(context) {
+    const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
+    this.#settlement = settlement;
+    return settlement.finally(() => {
+      if (this.#settlement === settlement) {
+        this.#settlement = null;
+      }
+    });
+  }
+  #withObservedIdentity(result) {
+    return {
+      ...result,
+      ...result.resolvedModel === void 0 && this.#resolvedModel !== null ? { resolvedModel: this.#resolvedModel } : {},
+      ...result.resolvedEffort === void 0 && this.#resolvedEffort !== null ? { resolvedEffort: this.#resolvedEffort } : {}
+    };
+  }
+  async #runAttempt(context) {
+    this.#assertOpen();
+    this.#reportedUsage = null;
+    this.#waits = [];
+    let fromIndex = 0;
+    try {
+      const previousFailure = context.previousFailure;
+      if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
+        const handle = this.#handle;
+        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
+        this.#requireValve(await this.#controlPlane.tmuxAvailable());
+        return await this.#sendTurnInSession(handle, fromIndex, context);
+      }
+      const correcting = previousFailure !== void 0 && this.#handle !== null;
+      if (correcting && await this.#controlPlane.tmuxAvailable()) {
+        const handle = this.#handle;
+        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
+        return await this.#correctInSession(handle, previousFailure, fromIndex, context);
+      }
+      if (correcting && this.#multiTurn) {
+        this.#requireValve(false);
+      }
+      if (this.#handle !== null) {
+        await this.#teardown();
+      }
+      return await this.#dispatchAndCollect(previousFailure, context);
+    } catch (error) {
+      const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
+      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex) : null;
+      if (error instanceof Error && evidence !== null) {
+        this.#attachWorkerText(error, evidence, fromIndex);
+      }
+      if (error instanceof EngineShutdownError && evidence !== null) {
+        attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
+      }
+      if (error instanceof ClaudeWorkerError) {
+        if (!this.#multiTurn) {
+          await this.#teardown();
+        }
+        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
+      }
+      throw error;
+    }
+  }
+  async close() {
+    this.#closePromise ??= (async () => {
+      this.#closed = true;
+      this.#abortController.abort();
+      try {
+        if (this.#handle !== null) {
+          await this.#settlement?.catch(() => void 0);
+          await this.#teardown();
+        }
+      } finally {
+        this.#onClose?.(this);
+      }
+    })();
+    await this.#closePromise;
+  }
+  async #dispatchAndCollect(previousFailure, observers) {
+    this.#resolvedModel = null;
+    this.#resolvedEffort = null;
+    try {
+      observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null });
+    } catch {
+    }
+    const denyRules = permissionDenyRulesFor(this.#options.strip);
+    const handle = await this.#controlPlane.dispatch({
+      prompt: this.#buildDispatchPrompt(previousFailure),
+      name: this.#nextName(),
+      cwd: this.#cwd,
+      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
+      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
+      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {}
+    });
+    this.#handle = handle;
+    this.#turnDelivered = true;
+    if (this.#closed) {
+      const error = new EngineShutdownError("claude");
+      const evidence = await this.#tryFailureEvidence(0);
+      if (evidence !== null) {
+        this.#attachWorkerText(error, evidence, 0);
+      }
+      attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
+      await this.#teardown();
+      throw error;
+    }
+    const transcript = await this.#runToCompletion(handle, 0, observers);
+    return this.#buildResult(handle, transcript, 0);
+  }
+  /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
+  async #sendTurnInSession(handle, fromIndex, observers) {
+    const delivery = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
+    if (!delivery.delivered) {
+      throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
+    }
+    await this.#awaitReceipt(handle, fromIndex, observers);
+    this.#turnDelivered = true;
+    const transcript = await this.#runToCompletion(handle, fromIndex, observers);
+    return this.#buildResult(handle, transcript, fromIndex);
+  }
+  /**
+   * Session mode has no degraded path: the valve is what keeps a follow-up
+   * (or a correction) inside the created session, so its absence fails the
+   * turn loudly instead of silently substituting a fresh worker.
+   */
+  #requireValve(available) {
+    if (!available) {
+      throw new ClaudeValveError(
+        "multi-turn worker sessions require the tmux reply valve, which is unavailable"
+      );
+    }
+  }
+  async #correctInSession(handle, previousFailure, fromIndex, observers) {
+    const delivery = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
+    if (!delivery.delivered) {
+      throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
+    }
+    await this.#awaitReceipt(handle, fromIndex, observers);
+    const transcript = await this.#runToCompletion(handle, fromIndex, observers);
+    return this.#buildResult(handle, transcript, fromIndex);
+  }
+  /** Confirm the steered worker received the message (started generating, or the transcript grew). */
+  async #awaitReceipt(handle, mark, observers) {
+    const deadline = Date.now() + this.#receiptTimeoutMs;
+    for (; ; ) {
+      this.#assertOpen();
+      const status = await this.#controlPlane.poll(handle);
+      this.#assertOpen();
+      if (status.status === "busy") {
+        return;
+      }
+      const transcript = await this.#tryReadTranscript(handle, observers);
+      if (transcript !== null && transcript.entries.length > mark) {
+        return;
+      }
+      if (Date.now() >= deadline) {
+        throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
+      }
+      await this.#pollDelay();
+    }
+  }
+  /**
+   * Poll until the worker's turn is complete, returning the transcript at that
+   * point. The transcript is the authoritative completion signal and is
+   * checked on **every** poll, before the roster state is interpreted: the
+   * daemon's `state` is unreliable, and a live process the worker itself
+   * spawned can hold the roster at `busy` long after the answer is on disk —
+   * gating the transcript read on "not busy" left a finished, schema-valid
+   * answer uncollected for 22+ minutes behind a worker-spawned child.
+   *
+   * Two ways out, and no silent third:
+   * - the transcript proves the turn complete (`turnComplete`) → collect;
+   * - the daemon stably reports the session settled while the transcript
+   *   never satisfies `turnComplete` → after `SETTLED_CONFIRMATION_POLLS`,
+   *   throw `ClaudeCollectionError` rather than spin for ever. Deliberately
+   *   *not* a collect-on-best-evidence path: a settled daemon beside an
+   *   unproven transcript is exactly what a killed worker's partial answer
+   *   looks like, and promoting that to a success would hand downstream
+   *   stages a truncated answer as if it were the real one. The partial text
+   *   rides the failure (the shared catch attaches it), and the bounded
+   *   retry re-asks.
+   *
+   * A turn that ends while a background task the session started is still
+   * outstanding (`outstandingBackgroundTasks`) is an interim message, not
+   * the answer: Claude Code backgrounds a long command or a Monitor, lets
+   * the model end its turn, and re-invokes it when the task ends. The wait
+   * continues for the reply that follows the wake, reported through
+   * `onWaiting` and recorded on the result, and it is bounded by the call's
+   * deadline — the daemon's idle roster is expected while the session waits
+   * for its own notification, so the settled window does not count against
+   * it; the session leaving the roster still ends the turn, as it ends any
+   * turn. A task that never wakes the session times the attempt out under
+   * the ordinary retry rule.
+   *
+   * `state: blocked` still drives bounded valve recovery, and a transient
+   * roster-query failure reports `present: false` only after
+   * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
+   * live worker.
+   */
+  async #runToCompletion(handle, fromIndex, observers) {
+    const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
+    const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
+    let sawLife = fromIndex > 0;
+    let nudges = 0;
+    let absences = 0;
+    let settledPolls = 0;
+    let evidenceReported = false;
+    let assistantEvidence = "";
+    let waitingOn = null;
+    let awaitingTask = false;
+    for (; ; ) {
+      this.#assertOpen();
+      const transcript = await this.#tryReadTranscript(handle, observers);
+      if (transcript !== null) {
+        sawLife = true;
+        this.#reportUsage(handle, transcript.entries, fromIndex, observers);
+        try {
+          this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
+          this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
+          observers.onIdentity?.({ resolvedModel: this.#resolvedModel, resolvedEffort: this.#resolvedEffort });
+          const evidence = JSON.stringify(transcript.entries.slice(fromIndex).filter((entry) => entry.type === "assistant"));
+          if (evidence !== assistantEvidence && hasAssistantEntrySince(transcript.entries, fromIndex)) {
+            assistantEvidence = evidence;
+            observers.onOutput?.();
+          }
+        } catch {
+        }
+        if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
+          evidenceReported = true;
+          try {
+            observers.onLiveEvidence?.();
+          } catch {
+          }
+        }
+        const outstanding = outstandingBackgroundTasks(transcript.entries, fromIndex);
+        const current2 = this.#noteWaits(outstanding);
+        awaitingTask = current2 !== null;
+        if ((current2?.taskId ?? null) !== waitingOn) {
+          waitingOn = current2?.taskId ?? null;
+          try {
+            observers.onWaiting?.(current2);
+          } catch {
+          }
+        }
+        if (turnComplete(transcript.entries, fromIndex) && !awaitingTask) {
+          return transcript;
+        }
+      }
+      if (!sawLife && Date.now() >= firstLifeDeadline) {
+        throw new ClaudeFirstLifeTimeoutError(
+          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
+        );
+      }
+      const status = await this.#controlPlane.poll(handle);
+      this.#assertOpen();
+      if (!status.present) {
+        absences += 1;
+        if (absences >= MAX_CONSECUTIVE_ABSENCES) {
+          throw new ClaudePollTimeoutError("worker left the roster before completing");
+        }
+        await this.#pollDelay();
+        continue;
+      }
+      absences = 0;
+      if (status.state === "blocked") {
+        const canNudge = nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
+        if (!canNudge) {
+          throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
+        }
+        nudges += 1;
+        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
+        const delivery = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
+        if (!delivery.delivered) {
+          throw new ClaudeValveError(`reply valve failed to inject the blocked-worker nudge: ${delivery.reason}`);
+        }
+        await this.#awaitReceipt(handle, mark, observers);
+        continue;
+      }
+      if (sawLife && !awaitingTask && (status.state === "done" || status.status === "idle")) {
+        settledPolls += 1;
+        if (settledPolls >= SETTLED_CONFIRMATION_POLLS) {
+          throw new ClaudeCollectionError(
+            "session settled but its transcript never proved the turn complete"
+          );
+        }
+      } else {
+        settledPolls = 0;
+      }
+      if (Date.now() >= deadline) {
+        throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
+      }
+      await this.#pollDelay();
+    }
+  }
+  /**
+   * Reconciles the attempt's wait ledger with the tasks currently
+   * outstanding: a newly observed task opens a wait, a task no longer
+   * outstanding closes its wait. Returns what the worker is waiting on now
+   * (the earliest still-open wait), or null.
+   */
+  #noteWaits(outstanding) {
+    const now = /* @__PURE__ */ new Date();
+    const open = new Set(outstanding.map((task) => task.id));
+    for (const wait of this.#waits) {
+      if (wait.endedAt === null && !open.has(wait.taskId)) {
+        wait.endedAt = now.toISOString();
+      }
+    }
+    for (const task of outstanding) {
+      if (!this.#waits.some((wait) => wait.taskId === task.id && wait.endedAt === null)) {
+        this.#waits.push({ taskId: task.id, description: task.description, observedAt: now.toISOString(), endedAt: null });
+      }
+    }
+    const current2 = this.#waits.find((wait) => wait.endedAt === null);
+    return current2 === void 0 ? null : { kind: "background-task", taskId: current2.taskId, description: current2.description, sinceMs: Date.parse(current2.observedAt) };
+  }
+  /** A poll gap that ends early — by rejecting — the moment close() aborts. */
+  #pollDelay() {
+    return delay2(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
+  }
+  #assertOpen() {
+    if (this.#closed) {
+      throw new EngineShutdownError("claude");
+    }
+  }
+  #buildResult(handle, transcript, fromIndex) {
+    const entries = transcript.entries;
+    const text = finalAssistantText(entries, fromIndex) ?? "";
+    if (endsInSyntheticReply(entries, fromIndex)) {
+      throw new ClaudeWorkerDiagnosticError(
+        text.length > 0 ? text : "the session produced no model reply"
+      );
+    }
+    const resolvedModel = resolvedModelSince(entries, fromIndex);
+    const resolvedEffort = effortSince(entries, fromIndex);
+    const usage2 = usageSince(entries, fromIndex);
+    this.#reportUsage(handle, entries, fromIndex);
+    const usageEvent = this.#usageEvent(handle, usage2, usage2);
+    return {
+      text,
+      ...resolvedModel !== null ? { resolvedModel } : {},
+      ...resolvedEffort !== null ? { resolvedEffort } : {},
+      ...this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {},
+      deltaText: text,
+      durationMs: null,
+      firstDeltaMs: null,
+      items: {},
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts: [
+        {
+          filename: "transcript.claude.jsonl",
+          format: "jsonl",
+          source: "claude-session-jsonl",
+          sessionId: handle.sessionId,
+          content: transcript.text
+        }
+      ]
+    };
+  }
+  async #readTranscript(handle, observers) {
+    const path16 = await this.#controlPlane.transcriptPath(handle);
+    if (path16 === null) {
+      throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
+    }
+    const transcript = await readTranscriptFile(path16);
+    try {
+      observers?.onTranscriptPath?.(path16);
+    } catch {
+    }
+    return transcript;
+  }
+  /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
+  async #tryReadTranscript(handle, observers) {
+    try {
+      return await this.#readTranscript(handle, observers);
+    } catch (error) {
+      if (error instanceof ClaudeTranscriptError) {
+        return null;
+      }
+      throw error;
+    }
+  }
+  /**
+   * Everything a dying turn can still learn from the transcript the engine
+   * already has, in one read: the served model, the usage accumulated up to
+   * the failure, and the transcript itself. Best-effort — an unreadable or
+   * absent transcript is `null`, and nothing here polls or retries.
+   */
+  async #tryFailureEvidence(fromIndex) {
+    const handle = this.#handle;
+    if (handle === null) {
+      return null;
+    }
+    const transcript = await this.#tryReadTranscript(handle);
+    if (transcript === null) {
+      return null;
+    }
+    return {
+      handle,
+      transcript,
+      resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
+      resolvedEffort: effortSince(transcript.entries, fromIndex),
+      usage: usageSince(transcript.entries, fromIndex),
+      apiError: apiErrorSince(transcript.entries, fromIndex),
+      backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
+    };
+  }
+  /** The failed turn's spend, as the same event shape the success path emits. */
+  #failureUsageEvent(evidence) {
+    if (evidence === null) {
+      return null;
+    }
+    return this.#usageEvent(evidence.handle, evidence.usage, evidence.usage);
+  }
+  #attachWorkerText(error, evidence, fromIndex) {
+    const transcript = evidence.transcript;
+    if (endsInSyntheticReply(transcript.entries, fromIndex)) {
+      return;
+    }
+    const text = finalAssistantText(transcript.entries, fromIndex);
+    if (text !== null) {
+      attachPartialWorkerText(error, text);
+    }
+  }
+  /**
+   * Feed transcript-derived usage through the same event shape Codex emits.
+   * The adapter registration labels it as Claude before the runtime records
+   * it, so budget accounting never has to infer engine from the payload.
+   *
+   * `usageSince` counts each API call once and sums every figure across the
+   * turn's calls, so the derived total only grows as the transcript grows;
+   * the delta reported here is the plain difference from the last report,
+   * and the archived event's `total` is the same figure the agent record's
+   * usage summarises — budget and archive read one arithmetic.
+   */
+  #reportUsage(handle, entries, fromIndex, observers) {
+    const total = usageSince(entries, fromIndex);
+    const last = subtractUsage(total, this.#reportedUsage);
+    if (last.totalTokens === 0) {
+      return;
+    }
+    this.#reportedUsage = total;
+    const event = this.#usageEvent(handle, last, total);
+    if (event === null) {
+      return;
+    }
+    try {
+      observers?.onUsage?.(event);
+    } catch {
+    }
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+  }
+  #usageEvent(handle, last, total) {
+    if (total.totalTokens === 0) {
+      return null;
+    }
+    this.#budgetEventCounter += 1;
+    const event = {
+      threadId: handle.sessionId,
+      turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
+      last,
+      total,
+      raw: {
+        threadId: handle.sessionId,
+        turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
+        tokenUsage: { last, total }
+      }
+    };
+    return event;
+  }
+  async #teardown() {
+    const handle = this.#handle;
+    this.#handle = null;
+    if (handle === null) {
+      return;
+    }
+    try {
+      await this.#controlPlane.stop(handle);
+    } catch {
+    }
+  }
+  #buildDispatchPrompt(previousFailure) {
+    const lines = [
+      "You are an automated worker dispatched by the Ensemble orchestration harness.",
+      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
+    ];
+    if (this.#turnSchema !== void 0) {
+      lines.push(
+        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
+        JSON.stringify(this.#turnSchema)
+      );
+    }
+    if (previousFailure !== void 0) {
+      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
+    }
+    lines.push("", "Task:", this.#turnPrompt);
+    return lines.join("\n");
+  }
+  /**
+   * A follow-up turn's valve message: the session already holds the
+   * autonomy preamble from its dispatch, so the message carries only what
+   * this turn adds — its schema contract, when it has one, and its task.
+   */
+  #buildTurnMessage() {
+    const lines = [];
+    if (this.#turnSchema !== void 0) {
+      lines.push(
+        "For this reply, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
+        JSON.stringify(this.#turnSchema),
+        ""
+      );
+    }
+    lines.push(this.#turnPrompt);
+    return lines.join("\n");
+  }
+  #correctionMessage(previousFailure) {
+    switch (previousFailure.kind) {
+      case "schema-validation":
+        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
+      case "invalid-json":
+        return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
+      case "empty-output":
+        return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
+      default:
+        return `Your last turn did not complete (${previousFailure.kind}: ${previousFailure.message}). Please complete the task and output your final answer now.`;
+    }
+  }
+  #blockedNudge(waitingFor) {
+    const context = waitingFor !== void 0 ? ` (waiting for: ${waitingFor})` : "";
+    return `You appear to be waiting for input${context}. Proceed autonomously without asking \u2014 make a reasonable decision, complete the task, and output your final answer.`;
+  }
+  #nextName() {
+    dispatchCounter += 1;
+    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID3().slice(0, 8)}`;
+  }
+};
+function failedTurnResult(error, evidence, usageEvent) {
+  const text = partialWorkerTextOf(error) ?? "";
+  const resolvedModel = evidence?.resolvedModel ?? null;
+  const resolvedEffort = evidence?.resolvedEffort ?? null;
+  const backgroundWaits = evidence?.backgroundWaits ?? [];
+  return {
+    text,
+    ...resolvedModel !== null ? { resolvedModel } : {},
+    ...resolvedEffort !== null ? { resolvedEffort } : {},
+    ...backgroundWaits.length > 0 ? { backgroundWaits } : {},
+    attemptFailure: claudeAttemptFailure(error),
+    deltaText: text,
+    durationMs: null,
+    firstDeltaMs: null,
+    items: {},
+    tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+    // The refusal's structured account rides the attempt as diagnostics,
+    // where the failure classifier reads it: a 429's status and code are
+    // the engine's own word, which the diagnostic prose is not.
+    ...evidence !== null && evidence.apiError !== null ? { diagnostics: { apiError: evidence.apiError } } : {},
+    ...evidence === null ? {} : {
+      transcripts: [
+        {
+          filename: "transcript.claude.jsonl",
+          format: "jsonl",
+          source: "claude-session-jsonl",
+          sessionId: evidence.handle.sessionId,
+          content: evidence.transcript.text,
+          partial: true
+        }
+      ]
+    }
+  };
+}
+function claudeAttemptFailure(error) {
+  if (error instanceof ClaudeFirstLifeTimeoutError) {
+    return { kind: "claude-first-life-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeRegistrationTimeoutError) {
+    return { kind: "claude-registration-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeBlockedError) {
+    return { kind: "claude-blocked", message: error.message };
+  }
+  if (error instanceof ClaudeValveError) {
+    return { kind: "claude-valve-error", message: error.message };
+  }
+  if (error instanceof ClaudePollTimeoutError) {
+    return { kind: "claude-poll-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeTranscriptError) {
+    return { kind: "claude-transcript-error", message: error.message };
+  }
+  if (error instanceof ClaudeCollectionError) {
+    return { kind: "claude-collection-error", message: error.message };
+  }
+  if (error instanceof ClaudeWorkerDiagnosticError) {
+    return { kind: "claude-worker-diagnostic", message: error.message };
+  }
+  return { kind: "claude-worker-error", message: error.message };
+}
+function hasAssistantEntrySince(entries, fromIndex) {
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    if (entries[index]?.type === "assistant") {
+      return true;
+    }
+  }
+  return false;
+}
+function delay2(ms, signal, abortError) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(abortError());
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 // src/opencode-engine.ts
@@ -22528,9 +22510,7 @@ var WorkerSession = class {
   }
   /**
    * The idle gap at which this session reads stale: the resolved runtime
-   * option, or — on Claude — the machine-declared cache TTL when one
-   * overrides the injected default, so the mark and the cache expire on
-   * one clock.
+   * option, or the engine's default advisory threshold.
    */
   get staleAfterMs() {
     return this.#state.stalenessThresholdMs;
@@ -22538,7 +22518,7 @@ var WorkerSession = class {
   /**
    * The advisory staleness mark: true once the idle gap since the
    * last settled turn has outlived the session's cache economics — the
-   * configured TTL cliff on Claude, the measured idle threshold on Codex.
+   * subscription cache TTL on Claude, the measured idle threshold on Codex.
    * Always false while marking is disabled, before the first turn, and
    * mid-turn. Advisory only: the runtime never blocks or reroutes a send
    * on it — a fresh session cannot inherit the old transcript, so only the
@@ -22714,11 +22694,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {},
       ...options.holdPollIntervalMs !== void 0 ? { holdPollIntervalMs: options.holdPollIntervalMs } : {},
       ...options.strip !== void 0 ? { strip: options.strip } : {},
-      // The staleness cliff tracks the *effective* TTL: an explicit option
-      // wins, else a machine-declared TTL for the Claude workers (which
-      // outranks the injected 1h in the settings file) sets the cliff, else
-      // the injected default's hour — never two silently different clocks.
-      ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : declaredClaudeTtlMs(options.workerEnvironment) !== null ? { claudeSessionStaleAfterMs: declaredClaudeTtlMs(options.workerEnvironment) } : {},
+      ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : {},
       ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {}
     });
     return runtime;
@@ -22939,7 +22915,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       resolvedEffort: null,
       stripRoutes,
       // The mark's threshold is per engine shape: Claude's is the cliff at
-      // its configured (injected) cache TTL, Codex's the measured coin-flip
+      // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
       stalenessThresholdMs: engine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs,
       markStaleness: sessionOptions.stalenessMark ?? true,
@@ -24322,10 +24298,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
 };
 async function createRuntime(options = {}) {
   return EnsembleRuntime.create(options);
-}
-function declaredClaudeTtlMs(workerEnvironment) {
-  const declared = workerEnvironment?.claude?.[CLAUDE_CACHE_TTL_VARIABLE];
-  return declared === void 0 ? null : claudeCacheTtlToMs(declared);
 }
 function requireTransport(transport) {
   if (transport === void 0) {

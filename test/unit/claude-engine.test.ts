@@ -5,7 +5,6 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { claudeCacheTtlToMs } from "../../src/claude-engine.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import {
   ClaudeDispatchError,
@@ -315,15 +314,6 @@ test("a statically declared out-of-domain effort fails before the body runs", ()
   assert.doesNotThrow(() => validateEngineDefaults("claude", { effort: "xhigh" }));
   assert.doesNotThrow(() => validateEngineDefaults("codex", { effort: "xhigh" }));
   assert.doesNotThrow(() => validateEngineDefaults("claude", {}));
-});
-
-test("claudeCacheTtlToMs parses the settings value formats and refuses the rest", () => {
-  assert.equal(claudeCacheTtlToMs("1h"), 3_600_000);
-  assert.equal(claudeCacheTtlToMs("5m"), 300_000);
-  assert.equal(claudeCacheTtlToMs("30s"), 30_000);
-  assert.equal(claudeCacheTtlToMs("90"), 90_000);
-  assert.equal(claudeCacheTtlToMs("soon"), null);
-  assert.equal(claudeCacheTtlToMs("0m"), null);
 });
 
 test("Claude rejects an out-of-domain effort before any worker spawns", async () => {

@@ -76,20 +76,7 @@ export interface ClaudeDispatchOptions {
    * until a live test observes it at a real worker.
    */
   permissionDenyRules?: string[];
-  /**
-   * Prompt-cache TTL for the worker session, in Claude Code's
-   * settings value format ("1h"). Rides the same settings-file `env` block
-   * as the declared worker environment, as
-   * `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` — and a machine-declared value
-   * for that variable wins over this one (the operator's word outranks the
-   * harness default; see the spread order in the writer). Absent means the
-   * engine's own default TTL.
-   */
-  cacheTtl?: string;
 }
-
-/** The settings-file variable Claude Code reads a background worker's prompt-cache TTL from. */
-export const CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 
 /**
  * Declares the workspace sandboxed to every `claude` process this control
@@ -358,7 +345,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // share the first one's sweep.
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
     args.push("--settings", path.join(settingsDir, "settings.json"));
     let registered: ClaudeSessionHandle | null = null;
     try {
@@ -470,11 +457,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[], cacheTtl?: string): Promise<string> {
-    // Spread order is the precedence: the TTL is a harness default the
-    // dispatch asks for, so a machine-declared worker_environment value for
-    // the same variable (spread after it) wins, and the ownership tag —
-    // harness bookkeeping, not configuration — always lands last.
+  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[]): Promise<string> {
+    // The ownership tag is harness bookkeeping and always lands last.
     // The hold scope is per-lead coordination state whose contract is
     // inheritance by every nested invocation (`HOLD_SCOPE_ENV`). It is
     // withheld from control-plane children like every run-level setting —
@@ -485,7 +469,6 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // launcher took from `--hold-scope` exists nowhere in the environment.
     const env = {
       ...(this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {}),
-      ...(cacheTtl !== undefined ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {}),
       ...this.#workerEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };

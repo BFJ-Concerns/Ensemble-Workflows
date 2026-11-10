@@ -53,7 +53,10 @@ level. `meta` is bound read-only.
 A free identifier that is neither a Node global, a hook, nor a binding in the
 script fails at load, before any worker spawns, and the error names it. A
 `typeof X` probe is fine. Syntax errors name the script's own line and column
-with a source excerpt and a caret.
+with a source excerpt and a caret. Line positions recognise LF, CRLF, CR
+and the JavaScript Unicode line separators. An extra closing brace points to
+the brace even when more body code follows; an unfinished body points to its
+end after its last non-whitespace character.
 
 The script is a trusted program run by the user who launched it. Ensemble
 dispatches and records workers only through `agent()` and `session()`; prompts

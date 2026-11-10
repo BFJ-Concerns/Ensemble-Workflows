@@ -630,14 +630,10 @@ function positionAt(source: string, offset: number): { line: number; column: num
   let lineStart = 0;
   const end = Math.min(offset, source.length);
   for (let index = 0; index < end; index += 1) {
-    if (source[index] === "\r") {
-      line += 1;
-      lineStart = index + 1;
-      if (source[index + 1] === "\n" && index + 1 < end) {
+    if (/[\r\n\u2028\u2029]/.test(source[index]!)) {
+      if (source[index] === "\r" && source[index + 1] === "\n" && index + 1 < end) {
         index += 1;
-        lineStart = index + 1;
       }
-    } else if (source[index] === "\n") {
       line += 1;
       lineStart = index + 1;
     }
@@ -794,7 +790,7 @@ function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, fi
   const pointsPastBody =
     wrappedPosition !== null &&
     (wrappedPosition.line > bodyEnd.line ||
-      (wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column));
+      (wrappedPosition.line === bodyEnd.line && wrappedPosition.column >= bodyEnd.column));
   const earlyClose = prematureWrapperClose(wrappedSource, bodyEndOffset, origin);
   const authorPosition =
     earlyClose ??
@@ -807,7 +803,7 @@ function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, fi
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
 
-  const sourceLine = workflow.source.split(/\r\n|\r|\n/)[authorPosition.line - 1] ?? "";
+  const sourceLine = workflow.source.split(/\r\n|[\r\n\u2028\u2029]/)[authorPosition.line - 1] ?? "";
   const start = Math.max(0, authorPosition.column - 1 - 72);
   const end = Math.min(sourceLine.length, start + 96);
   const prefix = start > 0 ? "…" : "";
@@ -833,45 +829,21 @@ function prematureWrapperClose(
   origin: WorkflowModuleOrigin
 ): { line: number; column: number } | null {
   try {
-    const tokens = acorn.tokenizer(wrappedSource.slice(0, bodyEndOffset), {
+    // Parse only the wrapper expression: trailing author code can itself be
+    // invalid at module scope after an extra brace closes the function.
+    const expression = acorn.parseExpressionAt(wrappedSource, "export default ".length, {
       ecmaVersion: "latest",
       sourceType: "module"
     });
-    let braceDepth = 0;
-    while (true) {
-      const token = tokens.getToken();
-      if (token.type.label === "eof") {
-        break;
-      }
-      if (token.type.label === "{" || token.type.label === "${") {
-        braceDepth += 1;
-        continue;
-      }
-      if (token.type.label !== "}") {
-        continue;
-      }
-      braceDepth -= 1;
-      if (braceDepth !== 0) {
-        continue;
-      }
-      try {
-        const program = acorn.parse(wrappedSource.slice(0, token.end), { ecmaVersion: "latest", sourceType: "module" });
-        const declaration = program.body[0];
-        if (
-          declaration?.type === "ExportDefaultDeclaration" &&
-          declaration.declaration.type === "ArrowFunctionExpression" &&
-          declaration.declaration.body.type === "BlockStatement" &&
-          declaration.declaration.body.end === token.end
-        ) {
-          const closingBrace = positionAt(wrappedSource, token.start);
-          return authorPositionOf(origin, closingBrace.line, closingBrace.column);
-        }
-      } catch {
-        // An earlier syntax fault can prevent identifying the wrapper close.
-      }
-      // Only the first outer close can terminate the exported body.
+    if (
+      expression.type !== "ArrowFunctionExpression" ||
+      expression.body.type !== "BlockStatement" ||
+      expression.body.end > bodyEndOffset
+    ) {
       return null;
     }
+    const closingBrace = positionAt(wrappedSource, expression.body.end - 1);
+    return authorPositionOf(origin, closingBrace.line, closingBrace.column);
   } catch {
     // Acorn is only helping describe a rejection V8 has already made.
   }

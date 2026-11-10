@@ -26,6 +26,7 @@ if (process.argv.includes("generate-json-schema")) {
 const { codexFixtureSchemaIncludesDefinitionProperty, validateCodexFixturePayload } = await import("./protocol-schema-validator.mjs");
 
 const capturePath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE;
+const captureTimingPath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE_TIMING;
 const responseText = process.env.ENSEMBLE_FAKE_CODEX_RESPONSE ?? "worker-ok";
 const responseTexts = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_RESPONSES ?? "[]");
 const servedModel = process.env.ENSEMBLE_FAKE_CODEX_SERVED_MODEL ?? "gpt-estate-recorder";
@@ -205,6 +206,9 @@ const handleLine = (line) => {
   }
 
   const message = JSON.parse(line);
+  if (captureTimingPath !== undefined && ["turn/interrupt", "thread/start"].includes(message.method)) {
+    appendFileSync(captureTimingPath, `${JSON.stringify({ method: message.method, atMs: Number(process.hrtime.bigint() / 1_000_000n) })}\n`);
+  }
   if (message.method === "initialize") {
     const result = {
       codexHome: process.cwd(),

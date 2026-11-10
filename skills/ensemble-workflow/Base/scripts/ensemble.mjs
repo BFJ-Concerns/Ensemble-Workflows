@@ -14034,6 +14034,13 @@ function agentIdentityOf(error) {
   }
   return null;
 }
+function markRunEnding(error) {
+  error.ensembleRunEnding = true;
+  return error;
+}
+function isRunEnding(error) {
+  return error instanceof Error && error.ensembleRunEnding === true;
+}
 var AppServerExitedError = class extends EnsembleError {
 };
 var AppServerRequestError = class extends EnsembleError {
@@ -14132,6 +14139,8 @@ var ClaudeRegistrationTimeoutError = class extends ClaudeWorkerError {
 var ClaudeBlockedError = class extends ClaudeWorkerError {
 };
 var ClaudeValveError = class extends ClaudeWorkerError {
+};
+var ClaudeDeliveryError = class extends ClaudeWorkerError {
 };
 var ClaudeTranscriptError = class extends ClaudeWorkerError {
 };
@@ -16632,14 +16641,14 @@ async function toolVersions() {
   const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
-    commandVersion("claude", ["--version"]),
+    commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
     commandVersion("opencode", ["--version"])
   ]);
   return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
 }
-async function commandVersion(command, args) {
+async function commandVersion(command, args, env) {
   try {
-    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5e3 });
+    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5e3, env });
     return (stdout || stderr).trim() || null;
   } catch {
     return null;
@@ -17370,6 +17379,9 @@ var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],
   ["claude-blocked", { class: "unclassified", rule: "claude.blocked" }],
   ["claude-valve-error", { class: "unclassified", rule: "claude.valve" }],
+  // Submitted, but the transcript never showed the session holding the text
+  // as sent: evidence about the delivery, not about the engine's availability.
+  ["claude-delivery-error", { class: "unclassified", rule: "claude.delivery" }],
   ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);
@@ -19232,6 +19244,7 @@ var ClaudeCliControlPlane = class {
   #valveAttachSettleMs;
   #valveSubmitSettleMs;
   #valveKillSettleMs;
+  #valveDeliveryTimeoutMs;
   #scopes;
   #workerScope;
   #placementSettleMs;
@@ -19276,8 +19289,9 @@ var ClaudeCliControlPlane = class {
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
-    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
-    this.#valveKillSettleMs = options.valveKillSettleMs ?? 2e3;
+    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 0;
+    this.#valveKillSettleMs = options.valveKillSettleMs ?? 0;
+    this.#valveDeliveryTimeoutMs = options.valveDeliveryTimeoutMs ?? 3e4;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
     this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
@@ -19305,61 +19319,118 @@ var ClaudeCliControlPlane = class {
     const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
     args.push("--settings", path11.join(settingsDir, "settings.json"));
     let registered = null;
+    let candidate = null;
+    const dispatch = { result: null };
+    let accepted = false;
+    let discarded = false;
+    let lastSeen = null;
     try {
-      const dispatch = { result: null };
-      void this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd).then(
+      void this.#runWithInput(this.#claudeBin, args, "", options.cwd).then(
         (result) => dispatch.result = result,
-        (error) => dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error) }
+        (error) => dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error), exitCode: null, signal: null }
       );
       let deadline = null;
+      let placementDeadline = null;
+      let placed = false;
+      let placementPid = null;
       for (; ; ) {
-        const found = await this.#findByName(options.name);
-        if (found !== null) {
-          registered = found.handle;
-          if (this.#scopes instanceof NoWorkerScopes) break;
-          const settled = Date.now() + this.#placementSettleMs;
-          let pid = found.pid;
-          for (; ; ) {
-            if (pid !== null) {
-              const outcome = await this.#place(registered, pid);
-              if (outcome.kind !== "refused") break;
-            }
-            if (Date.now() >= settled) break;
-            await delay(100);
-            pid = (await this.#findByName(options.name))?.pid ?? null;
+        candidate = await this.#findByName(options.name);
+        if (candidate !== null) {
+          registered = candidate.handle;
+          lastSeen = candidate;
+          if (candidate.pid !== placementPid) {
+            placed = false;
+            placementDeadline = null;
+            placementPid = candidate.pid;
           }
-          break;
+          if (candidate.pid !== null && !placed) {
+            placementDeadline ??= Date.now() + this.#placementSettleMs;
+            const outcome = await this.#place(registered, candidate.pid);
+            placed = outcome.kind !== "refused" || Date.now() >= placementDeadline;
+          }
         }
         if (dispatch.result !== null) {
           if (!dispatch.result.ok) {
             throw new ClaudeDispatchError(
-              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + boundedEvidence(dispatch.result.stderr.trim() || dispatch.result.stdout.trim() || "claude --bg exited without a message")
+              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + launchAccount(dispatch.result)
             );
           }
           deadline ??= Date.now() + this.#dispatchTimeoutMs;
+          if (candidate !== null && candidate.pid !== null && placed) break;
           if (Date.now() >= deadline) {
             throw new ClaudeRegistrationTimeoutError(
-              `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
+              `dispatched session '${options.name}' in ${options.cwd} did not start within ${this.#dispatchTimeoutMs}ms; ` + launchAccount(dispatch.result) + `; roster: ${boundedEvidence(JSON.stringify(lastSeen))}`
             );
           }
         }
-        await delay(dispatch.result === null ? 100 : 500);
+        await delay(100);
       }
-    } finally {
-      if (registered === null) {
-        await this.#removeSettingsDir(settingsDir);
-      } else {
-        this.#settingsDirs.set(registered.sessionId, settingsDir);
-        if (!(this.#scopes instanceof NoWorkerScopes)) {
-          this.#watchedSessions.set(registered.sessionId, registered);
-          this.#schedulePlacementWatch();
+      if (registered === null || dispatch.result === null) throw new Error("Claude dispatch lost its ready session");
+      const handle = registered;
+      this.#settingsDirs.set(handle.sessionId, settingsDir);
+      const delivery = await this.steer(handle, options.prompt);
+      if (!delivery.submitted) {
+        throw new ClaudeRegistrationTimeoutError(
+          `Claude opening submission failed for worker '${options.name}' in ${options.cwd}: ${delivery.reason}; ` + launchAccount(dispatch.result)
+        );
+      }
+      accepted = true;
+      if (!(this.#scopes instanceof NoWorkerScopes)) {
+        this.#watchedSessions.set(handle.sessionId, handle);
+        this.#schedulePlacementWatch();
+      }
+      return handle;
+    } catch (error) {
+      if (error instanceof Error) {
+        const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id]).catch(() => null);
+        const file = registered === null ? null : await this.transcriptPath(registered).catch(() => null);
+        const transcript = file === null ? null : await readFile6(file, "utf8").catch(() => null);
+        const diagnostics = { claudeLaunch: {
+          failure: error.message,
+          cleanupConfirmed: registered === null,
+          command: dispatch.result === null ? null : { ...dispatch.result },
+          roster: lastSeen === null ? null : JSON.parse(JSON.stringify(lastSeen.row)),
+          logs: logs === null ? null : { ...logs }
+        } };
+        if (registered !== null) {
+          discarded = await this.#stopSession(registered, true).catch(() => false);
+          diagnostics.claudeLaunch.cleanupConfirmed = discarded;
+          if (!discarded) {
+            registered.launchFailure = { message: error.message, diagnostics };
+            accepted = true;
+            this.#settingsDirs.set(registered.sessionId, settingsDir);
+            if (!(this.#scopes instanceof NoWorkerScopes)) {
+              this.#watchedSessions.set(registered.sessionId, registered);
+              this.#schedulePlacementWatch();
+            }
+            return registered;
+          }
         }
+        attachFailedTurnResult(error, {
+          text: "",
+          deltaText: "",
+          durationMs: null,
+          firstDeltaMs: null,
+          items: {},
+          tokenUsageEvents: [],
+          diagnostics,
+          ...transcript === null ? {} : { transcripts: [{
+            filename: "transcript.claude.jsonl",
+            format: "jsonl",
+            source: "claude-session-jsonl",
+            sessionId: registered.sessionId,
+            content: transcript,
+            partial: true
+          }] }
+        });
+      }
+      throw error;
+    } finally {
+      if (!accepted) {
+        if (registered !== null && !discarded) await this.stop(registered);
+        await this.#removeSettingsDir(settingsDir);
       }
     }
-    if (registered === null) {
-      throw new ClaudeRegistrationTimeoutError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
-    }
-    return registered;
   }
   /**
    * Write the per-dispatch settings file carrying the declared worker
@@ -19475,7 +19546,7 @@ var ClaudeCliControlPlane = class {
   }
   async steer(handle, message) {
     if ((await this.poll(handle)).present === false) {
-      return { delivered: false, reason: "the session is no longer in the daemon's roster" };
+      return { submitted: false, reason: "the session is no longer in the daemon's roster" };
     }
     this.#valveCounter += 1;
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
@@ -19484,11 +19555,22 @@ var ClaudeCliControlPlane = class {
       socketDir = await mkdtemp(path11.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
-      return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
+      return { submitted: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
     }
     const server = ["-S", path11.join(socketDir, "tmux.sock")];
+    let submitAttempted = false;
     try {
-      const created = await this.#run(this.#tmuxBin, [
+      const payload = path11.join(socketDir, "prompt.txt");
+      const editor = path11.join(socketDir, "editor.cjs");
+      const copied = path11.join(socketDir, "copied");
+      await writeFile5(payload, message, { mode: 384 });
+      await writeFile5(editor, `#!${process.execPath}
+        const fs = require("node:fs");
+        fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
+        fs.writeFileSync(${JSON.stringify(copied)}, "complete", { mode: 0o600 });
+      `, { mode: 448 });
+      const editorCommand = editor;
+      const created = await this.#launch(this.#tmuxBin, [
         ...server,
         "-f",
         "/dev/null",
@@ -19496,26 +19578,36 @@ var ClaudeCliControlPlane = class {
         "-d",
         "-s",
         valve,
-        `${this.#claudeBin} attach ${handle.id}`
-      ]);
-      if (!created.ok) {
-        return refused("tmux new-session", created);
-      }
+        `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
+      ], null, void 0, { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand });
+      if (!created.ok) return refused("tmux new-session", created);
       await delay(this.#valveAttachSettleMs);
-      const slices = valveSlices(message);
-      for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", "--", slice]);
-        if (!typed.ok) {
-          return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
+      const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
+      if (!opened.ok) return refused("tmux send-keys (editor)", opened);
+      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
+      for (; ; ) {
+        try {
+          await access(copied);
+          break;
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
         }
+        if (Date.now() >= copyDeadline) {
+          return { submitted: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
+        }
+        await delay(50);
       }
       await delay(this.#valveSubmitSettleMs);
+      submitAttempted = true;
       const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
-      if (!submitted.ok) {
-        return refused("tmux send-keys (submit)", submitted);
-      }
+      if (!submitted.ok) return refused("tmux send-keys (submit)", submitted);
       await delay(this.#valveKillSettleMs);
-      return { delivered: true };
+      return { submitted: true };
+    } catch (error) {
+      return submitAttempted ? { submitted: true } : {
+        submitted: false,
+        reason: `reply valve failed before submission: ${boundedEvidence(error instanceof Error ? error.message : String(error))}`
+      };
     } finally {
       await this.#run(this.#tmuxBin, [...server, "kill-server"]);
       await rm4(socketDir, { recursive: true, force: true }).catch(() => void 0);
@@ -19587,6 +19679,9 @@ var ClaudeCliControlPlane = class {
     }
   }
   async stop(handle) {
+    await this.#stopSession(handle).catch(() => false);
+  }
+  async #stopSession(handle, requireClean = false) {
     this.#watchedSessions.delete(handle.sessionId);
     if (this.#watchedSessions.size === 0 && this.#placementTimer !== null) {
       clearTimeout(this.#placementTimer);
@@ -19594,15 +19689,18 @@ var ClaudeCliControlPlane = class {
     }
     await this.#placementSweep;
     await this.#placing.get(handle.sessionId);
-    await this.#run(this.#claudeBin, ["stop", handle.id]);
+    const stopped = await this.#run(this.#claudeBin, ["stop", handle.id]);
     this.#placements.delete(handle.sessionId);
     await this.#reapTaggedDescendants(handle.name);
-    await this.#run(this.#claudeBin, ["rm", handle.id]);
+    const removed = await this.#run(this.#claudeBin, ["rm", handle.id]);
+    const roster = await this.#roster();
+    const clean = stopped.ok && removed.ok && roster.ok && !roster.rows.some((row) => matchesHandle(row, handle)) && (await this.#findTaggedProcesses(handle.name)).length === 0;
     const settingsDir = this.#settingsDirs.get(handle.sessionId);
-    if (settingsDir !== void 0) {
+    if (settingsDir !== void 0 && (clean || !requireClean)) {
       this.#settingsDirs.delete(handle.sessionId);
       await this.#removeSettingsDir(settingsDir);
     }
+    return clean;
   }
   /**
    * Kill every surviving process tagged with this dispatch's marker:
@@ -19681,7 +19779,8 @@ var ClaudeCliControlPlane = class {
         name,
         cwd: typeof match.cwd === "string" ? match.cwd : ""
       },
-      pid: typeof match.pid === "number" ? match.pid : null
+      pid: typeof match.pid === "number" && match.pid > 0 ? match.pid : null,
+      row: match
     };
   }
   // `ok: false` means the query could not be performed (process error, empty or
@@ -19716,10 +19815,10 @@ var ClaudeCliControlPlane = class {
    * exit status read as the verdict. `input` is streamed to stdin and the
    * stream then closed; null closes it at once.
    */
-  async #launch(file, args, input, cwd) {
+  async #launch(file, args, input, cwd, env = this.#env) {
     const child = await this.#scopes.launch(file, args, {
       ...cwd !== void 0 ? { cwd } : {},
-      env: this.#env,
+      env,
       stdio: ["pipe", "pipe", "pipe"]
     });
     return new Promise((resolve) => {
@@ -19735,11 +19834,13 @@ var ClaudeCliControlPlane = class {
       child.stdout?.on("data", (chunk) => stdout.push(chunk));
       child.stderr?.on("data", (chunk) => stderr.push(chunk));
       child.on("error", (error) => {
-        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
+        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message, exitCode: null, signal: null });
       });
-      child.on("close", (code) => {
+      child.on("close", (code, signal) => {
         finish({
           ok: code === 0,
+          exitCode: code,
+          signal,
           stdout: Buffer.concat(stdout).toString(),
           stderr: Buffer.concat(stderr).toString()
         });
@@ -19758,31 +19859,15 @@ function normaliseState(state) {
   }
   return "unknown";
 }
-var VALVE_SLICE_BYTES = 8 * 1024;
 function refused(step, result) {
   const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
-  return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
+  return { submitted: false, reason: `${step} failed: ${boundedEvidence(said)}` };
 }
-function valveSlices(message) {
-  message = message.replace(/\r\n?/g, "\n").replaceAll("	", "    ");
-  const slices = [];
-  let current2 = "";
-  let currentBytes = 0;
-  for (let index = 0; index < message.length; index += 1) {
-    const character = `\x1B[0;0;${message.charCodeAt(index)};1;0;1_`;
-    const characterBytes = character.length;
-    if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
-      slices.push(current2);
-      current2 = "";
-      currentBytes = 0;
-    }
-    current2 += character;
-    currentBytes += characterBytes;
-  }
-  if (current2 !== "") {
-    slices.push(current2);
-  }
-  return slices;
+function launchAccount(result) {
+  return `dispatch exit ${result.exitCode ?? "unknown"}, signal ${result.signal ?? "none"}; stdout: ${boundedEvidence(result.stdout.trim() || "(empty)")}; stderr: ${boundedEvidence(result.stderr.trim() || "(empty)")}`;
+}
+function shellQuote(value) {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
 }
 function delay(ms) {
   return new Promise((resolve) => {
@@ -19791,10 +19876,31 @@ function delay(ms) {
 }
 
 // src/claude-engine.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
 
 // src/claude-transcript.ts
 import { readFile as readFile7 } from "node:fs/promises";
+function submittedUserText(entry) {
+  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
+  const content = entry.message?.content;
+  if (typeof content !== "string") return null;
+  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
+  if (command === null) return content;
+  const name = command[1] ?? "";
+  const args = command[2] ?? "";
+  return args === "" ? name : `${name} ${args}`;
+}
+function submissionReceipt(entries, mark, message) {
+  for (let index = Math.max(0, mark); index < entries.length; index += 1) {
+    const entry = entries[index];
+    const received = entry === void 0 ? null : submittedUserText(entry);
+    if (received === null) {
+      continue;
+    }
+    return received === message || entry?.message?.content === message ? { state: "verified" } : { state: "differing", received };
+  }
+  return { state: "missing" };
+}
 function parseTranscriptText(text) {
   const entries = [];
   for (const line of text.split("\n")) {
@@ -20169,20 +20275,37 @@ var ClaudeEngineInvocation = class {
   #controlPlane;
   #onEvent;
   #reportedUsage = null;
+  /** Cumulative native usage already covered by settled attempts in each session. */
+  #settledUsage = /* @__PURE__ */ new Map();
+  #usageAtSettlement = null;
   /** The background tasks this attempt's turn waited on, in the order observed; reset per attempt. */
   #waits = [];
+  /**
+   * Blocked-worker nudges sent this attempt; reset per attempt. One count
+   * for the attempt, however many turns it follows, so recovery stays
+   * bounded when a nudge's own delivery fails and its turn is followed.
+   */
+  #nudges = 0;
   #multiTurn;
   /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
   #turnPrompt;
   /** The current turn's schema — the one thing a session varies per turn. */
   #turnSchema;
+  /** How far the current turn's prompt has got into the session; it decides what a retry sends. */
+  #turn = "unsent";
   /**
-   * Whether the current turn's prompt has reached the worker. A follow-up
-   * turn is delivered by the valve, and a retry after a failed delivery
-   * must re-send the prompt itself — a correction message would ask the
-   * worker to fix an answer it was never asked for.
+   * The turn's prompt as the session first accepted it: the opening prompt
+   * its launch carried, preamble included, or the turn message the valve
+   * carried. A redelivery repeats this copy. Read only while `#turn` is
+   * `accepted`.
    */
-  #turnDelivered = false;
+  #acceptedTurnCopy = "";
+  /** The submission the session accepted whose receipt has not verified, if any. Outlives the turn that made it. */
+  #pending = null;
+  /** A differing receipt survives nudges until a fresh answer is requested. */
+  #deliveryFailure = null;
+  /** Start of the current answer's work; recovery-nudge receipts never move it. */
+  #collectionMark = 0;
   #pollIntervalMs;
   #receiptTimeoutMs;
   #firstLifeTimeoutMs;
@@ -20223,7 +20346,11 @@ var ClaudeEngineInvocation = class {
   beginTurn(prompt, turn) {
     this.#turnPrompt = prompt;
     this.#turnSchema = turn.schema;
-    this.#turnDelivered = false;
+    this.#turn = "unsent";
+    this.#deliveryFailure = null;
+    if (this.#pending !== null) {
+      this.#pending = { ...this.#pending, answersTurn: false };
+    }
     return {
       runAttempt: (context) => this.runAttempt(context)
     };
@@ -20232,6 +20359,10 @@ var ClaudeEngineInvocation = class {
     const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
     this.#settlement = settlement;
     return settlement.finally(() => {
+      if (this.#usageAtSettlement !== null) {
+        this.#settledUsage.set(this.#usageAtSettlement.sessionId, this.#usageAtSettlement.total);
+        this.#usageAtSettlement = null;
+      }
       if (this.#settlement === settlement) {
         this.#settlement = null;
       }
@@ -20247,15 +20378,27 @@ var ClaudeEngineInvocation = class {
   async #runAttempt(context) {
     this.#assertOpen();
     this.#reportedUsage = null;
+    this.#usageAtSettlement = null;
     this.#waits = [];
+    this.#nudges = 0;
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
-      if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
-        const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
-        this.#requireValve(await this.#controlPlane.tmuxAvailable());
-        return await this.#sendTurnInSession(handle, fromIndex, context);
+      const held = this.#multiTurn ? this.#handle : null;
+      if (held !== null) {
+        const pending = this.#pending;
+        if (pending !== null) {
+          fromIndex = this.#collectionMark;
+          const answered = await this.#accountForPending(held, pending, context);
+          if (answered !== null) {
+            return answered;
+          }
+        }
+        if (this.#turn !== "verified") {
+          fromIndex = (await this.#readTranscript(held, context)).entries.length;
+          this.#requireValve(await this.#controlPlane.tmuxAvailable());
+          return await this.#sendTurnInSession(held, fromIndex, context);
+        }
       }
       const correcting = previousFailure !== void 0 && this.#handle !== null;
       if (correcting && await this.#controlPlane.tmuxAvailable()) {
@@ -20271,8 +20414,19 @@ var ClaudeEngineInvocation = class {
       }
       return await this.#dispatchAndCollect(previousFailure, context);
     } catch (error) {
+      if (error instanceof Error && this.#handle?.launchFailure !== void 0) {
+        attachFailedTurnResult(error, {
+          text: "",
+          deltaText: "",
+          durationMs: null,
+          firstDeltaMs: null,
+          items: {},
+          tokenUsageEvents: [],
+          diagnostics: this.#handle.launchFailure.diagnostics
+        });
+      }
       const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex) : null;
+      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex, error) : null;
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
@@ -20311,8 +20465,9 @@ var ClaudeEngineInvocation = class {
     } catch {
     }
     const denyRules = permissionDenyRulesFor(this.#options.strip);
+    const prompt = this.#buildDispatchPrompt(previousFailure);
     const handle = await this.#controlPlane.dispatch({
-      prompt: this.#buildDispatchPrompt(previousFailure),
+      prompt,
       name: this.#nextName(),
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
@@ -20320,7 +20475,8 @@ var ClaudeEngineInvocation = class {
       ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {}
     });
     this.#handle = handle;
-    this.#turnDelivered = true;
+    const opening = { message: prompt, mark: 0, what: "the opening prompt", carriesTurn: true };
+    this.#accept(opening);
     if (this.#closed) {
       const error = new EngineShutdownError("claude");
       const evidence = await this.#tryFailureEvidence(0);
@@ -20331,17 +20487,17 @@ var ClaudeEngineInvocation = class {
       await this.#teardown();
       throw error;
     }
-    const transcript = await this.#runToCompletion(handle, 0, observers);
+    const transcript = await this.#runToCompletion(handle, 0, observers, opening);
     return this.#buildResult(handle, transcript, 0);
   }
-  /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
+  /**
+   * Put the turn's prompt into the held session and collect its reply. The
+   * first submission is the prompt itself; once a submission of it has been
+   * accepted without a verified receipt, what goes is the redelivery.
+   */
   async #sendTurnInSession(handle, fromIndex, observers) {
-    const delivery = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
-    if (!delivery.delivered) {
-      throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
-    }
-    await this.#awaitReceipt(handle, fromIndex, observers);
-    this.#turnDelivered = true;
+    const message = this.#turn === "accepted" ? this.#redeliveryMessage() : this.#buildTurnMessage();
+    await this.#deliver(handle, { message, mark: fromIndex, what: "the follow-up turn", carriesTurn: true }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
@@ -20358,33 +20514,136 @@ var ClaudeEngineInvocation = class {
     }
   }
   async #correctInSession(handle, previousFailure, fromIndex, observers) {
-    const delivery = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
-    if (!delivery.delivered) {
-      throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
-    }
-    await this.#awaitReceipt(handle, fromIndex, observers);
+    this.#collectionMark = fromIndex;
+    this.#deliveryFailure = null;
+    const message = this.#correctionMessage(previousFailure);
+    await this.#deliver(handle, { message, mark: fromIndex, what: "the correction", carriesTurn: false }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
-  /** Confirm the steered worker received the message (started generating, or the transcript grew). */
-  async #awaitReceipt(handle, mark, observers) {
+  /**
+   * The one way a message enters a live session: submit it through the
+   * valve, then require its receipt. Returns only when the transcript shows
+   * the session holding the message exactly as sent. The valve did not
+   * submit → `ClaudeValveError`: nothing reached the session and nothing is
+   * pending.
+   */
+  async #deliver(handle, submission, observers) {
+    const outcome = await this.#controlPlane.steer(handle, submission.message);
+    if (!outcome.submitted) {
+      throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
+    }
+    this.#accept(submission);
+    await this.#requireReceipt(handle, submission, observers);
+  }
+  /**
+   * Record that the session accepted a submission, the moment the launch or
+   * the valve says so and before anything can fail: from here the session
+   * may be running a turn on it, and nothing else is sent until its receipt
+   * has been judged.
+   */
+  #accept(submission) {
+    this.#pending = { ...submission, answersTurn: true };
+    if (submission.carriesTurn) {
+      if (this.#turn === "unsent") {
+        this.#acceptedTurnCopy = submission.message;
+      }
+      this.#turn = "accepted";
+      this.#deliveryFailure = null;
+      this.#collectionMark = submission.mark;
+    }
+  }
+  /**
+   * Require an accepted submission's receipt, whichever of the launch and
+   * the valve submitted it. Returns only when the transcript shows the
+   * session holding the message exactly as sent.
+   *
+   * - The receipt differs → `ClaudeDeliveryError`. The session took a turn
+   *   on text nobody sent. In a held session that turn is followed to its
+   *   end before the failure is raised: the session must be at a turn
+   *   boundary before anything else is sent, and the turn's text and spend
+   *   belong on the attempt that started it. A one-shot call is torn down
+   *   by its failure, which ends the turn with it.
+   * - The receipt is missing at the deadline → `ClaudeDeliveryError`, with
+   *   the submission left pending: it may yet land, so the next attempt
+   *   reads its receipt again before sending (`#accountForPending`).
+   */
+  async #requireReceipt(handle, submission, observers) {
+    const receipt = await this.#awaitReceipt(handle, submission, observers);
+    if (receipt.state === "verified") {
+      this.#pending = null;
+      if (submission.carriesTurn) {
+        this.#turn = "verified";
+        this.#deliveryFailure = null;
+      }
+      return;
+    }
+    const failure = new ClaudeDeliveryError(
+      receipt.state === "differing" ? `${submission.what} was submitted, but the session received different text: ${differenceAccount(submission.message, receipt.received)}` : `${submission.what} was submitted, but no receipt for it appeared in the transcript within ${this.#receiptTimeoutMs}ms: sent ${textIdentity(submission.message)}`
+    );
+    if (receipt.state === "differing" && this.#deliveryFailure === null) this.#deliveryFailure = failure;
+    if (receipt.state === "differing" && this.#multiTurn) {
+      await this.#runToCompletion(handle, this.#collectionMark, observers);
+      this.#pending = null;
+    }
+    throw failure;
+  }
+  /** Read the submission's receipt until the transcript shows one, or the receipt deadline passes with it still missing. */
+  async #awaitReceipt(handle, submission, observers) {
     const deadline = Date.now() + this.#receiptTimeoutMs;
     for (; ; ) {
       this.#assertOpen();
-      const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
-      if (status.status === "busy") {
-        return;
-      }
       const transcript = await this.#tryReadTranscript(handle, observers);
-      if (transcript !== null && transcript.entries.length > mark) {
-        return;
-      }
-      if (Date.now() >= deadline) {
-        throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
+      const receipt = transcript === null ? { state: "missing" } : submissionReceipt(transcript.entries, submission.mark, submission.message);
+      if (receipt.state !== "missing" || Date.now() >= deadline) {
+        return receipt;
       }
       await this.#pollDelay();
     }
+  }
+  /**
+   * Account for a submission an earlier attempt left pending, before this
+   * attempt sends anything: read its receipt again from its own mark.
+   *
+   * - Still missing → the session took no turn on it. It is dropped, and
+   *   the attempt goes on to send (returns null).
+   * - Verified, and it answers the turn in progress → it was delivered
+   *   after all, only late. Its reply is this attempt's result, and nothing
+   *   is sent.
+   * - Anything else — it arrived as different text, or it belongs to a turn
+   *   that has already settled — is a turn nobody is waiting on. It is
+   *   followed to its end and the attempt fails with its text and spend, so
+   *   that one attempt covers one stretch of the transcript.
+   *
+   * The submission stays pending if following its turn fails, so the next
+   * attempt accounts for it again instead of sending on top of it.
+   */
+  async #accountForPending(handle, pending, observers) {
+    const seen = await this.#readTranscript(handle, observers);
+    const receipt = submissionReceipt(seen.entries, pending.mark, pending.message);
+    if (receipt.state === "missing") {
+      this.#pending = null;
+      return null;
+    }
+    if (pending.answersTurn) {
+      if (pending.carriesTurn && receipt.state === "verified") {
+        this.#turn = "verified";
+        this.#deliveryFailure = null;
+      } else if (receipt.state === "differing" && this.#deliveryFailure === null) {
+        this.#deliveryFailure = new ClaudeDeliveryError(
+          `${pending.what} was submitted, but the session received different text: ${differenceAccount(pending.message, receipt.received)}`
+        );
+      }
+    }
+    const transcript = await this.#runToCompletion(handle, this.#collectionMark, observers);
+    this.#pending = null;
+    if (receipt.state === "verified" && pending.answersTurn && this.#turn === "verified" && this.#deliveryFailure === null) {
+      return this.#buildResult(handle, transcript, this.#collectionMark);
+    }
+    if (pending.answersTurn && this.#deliveryFailure !== null) throw this.#deliveryFailure;
+    throw new ClaudeDeliveryError(
+      receipt.state === "differing" ? `${pending.what} submitted earlier reached the session late and as different text: ${differenceAccount(pending.message, receipt.received)}` : `${pending.what} submitted for an earlier turn reached the session after that turn had settled, so its reply answers no turn`
+    );
   }
   /**
    * Poll until the worker's turn is complete, returning the transcript at that
@@ -20424,11 +20683,10 @@ var ClaudeEngineInvocation = class {
    * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
    * live worker.
    */
-  async #runToCompletion(handle, fromIndex, observers) {
+  async #runToCompletion(handle, fromIndex, observers, opening) {
     const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
     const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
     let sawLife = fromIndex > 0;
-    let nudges = 0;
     let absences = 0;
     let settledPolls = 0;
     let evidenceReported = false;
@@ -20439,8 +20697,11 @@ var ClaudeEngineInvocation = class {
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null) {
+        if (!sawLife && opening !== void 0) {
+          await this.#requireReceipt(handle, opening, observers);
+        }
         sawLife = true;
-        this.#reportUsage(handle, transcript.entries, fromIndex, observers);
+        this.#reportUsage(handle, transcript.entries, observers);
         try {
           this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
           this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
@@ -20474,7 +20735,8 @@ var ClaudeEngineInvocation = class {
         }
       }
       if (!sawLife && Date.now() >= firstLifeDeadline) {
-        throw new ClaudeFirstLifeTimeoutError(
+        throw this.#firstLifeFailure(
+          handle,
           `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
         );
       }
@@ -20483,6 +20745,9 @@ var ClaudeEngineInvocation = class {
       if (!status.present) {
         absences += 1;
         if (absences >= MAX_CONSECUTIVE_ABSENCES) {
+          if (!sawLife && opening !== void 0) {
+            throw this.#firstLifeFailure(handle, "worker left the roster before writing an opening transcript");
+          }
           throw new ClaudePollTimeoutError("worker left the roster before completing");
         }
         await this.#pollDelay();
@@ -20490,17 +20755,14 @@ var ClaudeEngineInvocation = class {
       }
       absences = 0;
       if (status.state === "blocked") {
-        const canNudge = nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
+        const canNudge = this.#nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
         if (!canNudge) {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
-        nudges += 1;
+        this.#nudges += 1;
         const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
-        const delivery = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
-        if (!delivery.delivered) {
-          throw new ClaudeValveError(`reply valve failed to inject the blocked-worker nudge: ${delivery.reason}`);
-        }
-        await this.#awaitReceipt(handle, mark, observers);
+        const message = this.#blockedNudge(status.waitingFor);
+        await this.#deliver(handle, { message, mark, what: "the blocked-worker nudge", carriesTurn: false }, observers);
         continue;
       }
       if (sawLife && !awaitingTask && (status.state === "done" || status.status === "idle")) {
@@ -20550,6 +20812,9 @@ var ClaudeEngineInvocation = class {
       throw new EngineShutdownError("claude");
     }
   }
+  #firstLifeFailure(handle, message) {
+    return handle.launchFailure === void 0 ? new ClaudeFirstLifeTimeoutError(message) : new ClaudeDeliveryError(`${message}; launch cleanup remains unconfirmed: ${handle.launchFailure.message}`);
+  }
   #buildResult(handle, transcript, fromIndex) {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
@@ -20560,11 +20825,12 @@ var ClaudeEngineInvocation = class {
     }
     const resolvedModel = resolvedModelSince(entries, fromIndex);
     const resolvedEffort = effortSince(entries, fromIndex);
-    const usage2 = usageSince(entries, fromIndex);
-    this.#reportUsage(handle, entries, fromIndex);
+    const usage2 = this.#unaccountedUsage(handle, entries);
+    this.#reportUsage(handle, entries);
     const usageEvent = this.#usageEvent(handle, usage2, usage2);
     return {
       text,
+      ...handle.launchFailure === void 0 ? {} : { diagnostics: handle.launchFailure.diagnostics },
       ...resolvedModel !== null ? { resolvedModel } : {},
       ...resolvedEffort !== null ? { resolvedEffort } : {},
       ...this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {},
@@ -20613,21 +20879,24 @@ var ClaudeEngineInvocation = class {
    * the failure, and the transcript itself. Best-effort — an unreadable or
    * absent transcript is `null`, and nothing here polls or retries.
    */
-  async #tryFailureEvidence(fromIndex) {
-    const handle = this.#handle;
-    if (handle === null) {
-      return null;
+  async #tryFailureEvidence(fromIndex, error) {
+    let handle = this.#handle;
+    let transcript;
+    if (this.#handle === null) {
+      const retained = failedTurnResultOf(error)?.transcripts?.find((item) => item.source === "claude-session-jsonl");
+      if (retained?.sessionId === void 0) return null;
+      handle = { sessionId: retained.sessionId };
+      transcript = { text: retained.content, entries: parseTranscriptText(retained.content) };
+    } else {
+      transcript = await this.#tryReadTranscript(this.#handle);
     }
-    const transcript = await this.#tryReadTranscript(handle);
-    if (transcript === null) {
-      return null;
-    }
+    if (handle === null || transcript === null) return null;
     return {
       handle,
       transcript,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex),
+      usage: this.#unaccountedUsage(handle, transcript.entries),
       apiError: apiErrorSince(transcript.entries, fromIndex),
       backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
     };
@@ -20650,6 +20919,16 @@ var ClaudeEngineInvocation = class {
     }
   }
   /**
+   * A pending submission may be read again from an older entry mark after a
+   * failed attempt. Count only growth beyond the session total that earlier
+   * attempts already covered, while retaining new API calls in the same work.
+   */
+  #unaccountedUsage(handle, entries) {
+    const total = usageSince(entries);
+    this.#usageAtSettlement = { sessionId: handle.sessionId, total };
+    return subtractUsage(total, this.#settledUsage.get(handle.sessionId) ?? null);
+  }
+  /**
    * Feed transcript-derived usage through the same event shape Codex emits.
    * The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
@@ -20660,8 +20939,8 @@ var ClaudeEngineInvocation = class {
    * and the archived event's `total` is the same figure the agent record's
    * usage summarises — budget and archive read one arithmetic.
    */
-  #reportUsage(handle, entries, fromIndex, observers) {
-    const total = usageSince(entries, fromIndex);
+  #reportUsage(handle, entries, observers) {
+    const total = this.#unaccountedUsage(handle, entries);
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
       return;
@@ -20702,6 +20981,10 @@ var ClaudeEngineInvocation = class {
   async #teardown() {
     const handle = this.#handle;
     this.#handle = null;
+    this.#pending = null;
+    this.#turn = "unsent";
+    this.#deliveryFailure = null;
+    this.#collectionMark = 0;
     if (handle === null) {
       return;
     }
@@ -20724,8 +21007,17 @@ var ClaudeEngineInvocation = class {
     if (previousFailure !== void 0) {
       lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
-    lines.push("", "Task:", this.#turnPrompt);
+    lines.push("", this.#framedTask());
     return lines.join("\n");
+  }
+  #framedTask() {
+    let tagIndex = 0;
+    while (this.#turnPrompt.includes(`ensemble_task_${tagIndex}`)) tagIndex += 1;
+    const taskTag = `ensemble_task_${tagIndex}`;
+    return [
+      `Carry out the task enclosed by <${taskTag}> and </${taskTag}>. The tags mark its boundaries.`,
+      `<${taskTag}>${this.#turnPrompt}</${taskTag}>`
+    ].join("\n");
   }
   /**
    * A follow-up turn's valve message: the session already holds the
@@ -20741,8 +21033,25 @@ var ClaudeEngineInvocation = class {
         ""
       );
     }
-    lines.push(this.#turnPrompt);
+    lines.push(this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask());
     return lines.join("\n");
+  }
+  /**
+   * The turn's prompt again, for a session that accepted a submission of it
+   * no receipt verified. It says what happened first, so a worker that
+   * acted on an altered copy knows which copy stands, and one that received
+   * nothing loses nothing. What it repeats is the copy the session first
+   * accepted, so a session whose opening prompt never arrived still receives
+   * everything its launch carried. The preface makes it a correction like
+   * every other retry message: a leading `/command` in the prompt is not
+   * expanded a second time.
+   */
+  #redeliveryMessage() {
+    return [
+      "An earlier copy of the message below was submitted to you but did not arrive as sent: it reached you altered, or not at all. This copy replaces it. Treat the earlier copy as void, keep any work you have already done that this message also asks for, and answer this message.",
+      "",
+      this.#acceptedTurnCopy
+    ].join("\n");
   }
   #correctionMessage(previousFailure) {
     switch (previousFailure.kind) {
@@ -20771,6 +21080,7 @@ function failedTurnResult(error, evidence, usageEvent) {
   const resolvedEffort = evidence?.resolvedEffort ?? null;
   const backgroundWaits = evidence?.backgroundWaits ?? [];
   return {
+    ...failedTurnResultOf(error),
     text,
     ...resolvedModel !== null ? { resolvedModel } : {},
     ...resolvedEffort !== null ? { resolvedEffort } : {},
@@ -20784,7 +21094,7 @@ function failedTurnResult(error, evidence, usageEvent) {
     // The refusal's structured account rides the attempt as diagnostics,
     // where the failure classifier reads it: a 429's status and code are
     // the engine's own word, which the diagnostic prose is not.
-    ...evidence !== null && evidence.apiError !== null ? { diagnostics: { apiError: evidence.apiError } } : {},
+    ...evidence !== null && evidence.apiError !== null ? { diagnostics: { ...failedTurnResultOf(error)?.diagnostics, apiError: evidence.apiError } } : {},
     ...evidence === null ? {} : {
       transcripts: [
         {
@@ -20812,6 +21122,9 @@ function claudeAttemptFailure(error) {
   if (error instanceof ClaudeValveError) {
     return { kind: "claude-valve-error", message: error.message };
   }
+  if (error instanceof ClaudeDeliveryError) {
+    return { kind: "claude-delivery-error", message: error.message };
+  }
   if (error instanceof ClaudePollTimeoutError) {
     return { kind: "claude-poll-timeout", message: error.message };
   }
@@ -20825,6 +21138,12 @@ function claudeAttemptFailure(error) {
     return { kind: "claude-worker-diagnostic", message: error.message };
   }
   return { kind: "claude-worker-error", message: error.message };
+}
+function textIdentity(text) {
+  return `${Buffer.byteLength(text, "utf8")} UTF-8 bytes, sha256 ${createHash3("sha256").update(text).digest("hex")}`;
+}
+function differenceAccount(sent, received) {
+  return `sent ${textIdentity(sent)}; received ${textIdentity(received)}`;
 }
 function hasAssistantEntrySince(entries, fromIndex) {
   for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
@@ -22678,6 +22997,23 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#runRecorder = recorder;
     this.progress.setArchiveDir(recorder?.archiveDir ?? null);
   }
+  /**
+   * Holds a promise the script receives from a combinator — `parallel()`,
+   * `pipeline()` — open from creation to settlement, exactly as `agent()`
+   * holds its own, so a run ending that rejects it (the combinators rethrow
+   * the run's own ending) is marked handled at close when nothing awaits
+   * it, never raised against a run that ended cleanly. Before close, an
+   * unhandled rejection remains visible to the launcher.
+   */
+  trackCallPromise(promise) {
+    const call = { outward: null };
+    this.#openCalls.add(call);
+    const outward = promise.finally(() => {
+      this.#openCalls.delete(call);
+    });
+    call.outward = outward;
+    return outward;
+  }
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
   notePhase(title) {
     this.progress.setPhase(title);
@@ -22738,7 +23074,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   async #agentCall(prompt, options) {
     if (this.#closed) {
-      throw new Error("EnsembleRuntime is closed");
+      throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
     options = snapshotAgentCwd(options);
@@ -22916,7 +23252,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return session;
   }
   async #runSessionTurn(state, prompt, turn) {
-    if (this.#closed || state.closed) {
+    if (this.#closed) {
+      throw markRunEnding(new SessionClosedError());
+    }
+    if (state.closed) {
       throw new SessionClosedError();
     }
     if (state.inFlight) {
@@ -23015,7 +23354,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const placement = state.placement;
       state.placement = null;
       await this.#placement.close(placement).catch(() => void 0);
-      throw new SessionClosedError();
+      throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
     agentRecord.resolvedCwd = state.placement.cwd;
     this.progress.noteAgentWorktree(agentId, state.placement.worktree?.path ?? null);
@@ -23234,6 +23573,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
         this.#settleTerminalStatus(agentRecord, error, "queued");
         agentRecord.queuedMs += Math.max(0, Date.now() - queuedAt);
         await this.#recordSettlementSafely(agentId, agentRecord);
+        if (error instanceof Error && this.#runSettlementCause(error, "queued") !== null) {
+          markRunEnding(error);
+        }
       }
       throw error;
     }
@@ -23288,6 +23630,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (this.#crossesSpawnBoundary(error) || agentRecord.attempts.length === 0) {
         if (agentRecord.attempts.at(-1)?.chainDecision === "exhausted") {
           this.#announceFailure(engineName, identity, agentId, agentRecord, error);
+        }
+        if (error instanceof Error && this.#runSettlementCause(error) !== null) {
+          markRunEnding(error);
         }
         throw error;
       }
@@ -24418,6 +24763,7 @@ function createWorkflowHooks(options) {
     options.log(message);
   };
   const defaults = options.defaults ?? {};
+  const track = (promise) => options.runtime.trackCallPromise !== void 0 ? options.runtime.trackCallPromise(promise) : promise;
   function agentWithDefaults(prompt, agentOptions) {
     return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions));
   }
@@ -24438,8 +24784,8 @@ function createWorkflowHooks(options) {
       return raiseHold.call(options.runtime, holdOptions);
     },
     workflow: options.workflow,
-    parallel: (thunks) => parallel(thunks, writeLog, options.presentError),
-    pipeline: (items, ...stages) => pipeline(items, stages, writeLog, options.presentError),
+    parallel: (thunks) => track(parallel(thunks, writeLog, options.presentError)),
+    pipeline: (items, ...stages) => track(pipeline(items, stages, writeLog, options.presentError)),
     phase: (title) => {
       options.runtime.notePhase(title);
       writeLog(`[phase] ${title}`);
@@ -24470,7 +24816,7 @@ async function parallel(thunks, log, presentError) {
       try {
         return await thunk();
       } catch (error) {
-        if (error instanceof PreSpawnAuthorError) {
+        if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
           throw error;
         }
         presentError?.(error);
@@ -24501,7 +24847,7 @@ async function pipeline(items, stages, log, presentError) {
         try {
           previous = await stage(previous, item, index);
         } catch (error) {
-          if (error instanceof PreSpawnAuthorError) {
+          if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
             throw error;
           }
           presentError?.(error);
@@ -24563,7 +24909,7 @@ function describeWorkerFailure(error) {
 
 // src/script-runner.ts
 import vm from "node:vm";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { readFile as readFile9 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path13 from "node:path";
@@ -30801,7 +31147,7 @@ function ensureWorkflowModuleLoader() {
 }
 async function importWrappedModule(wrappedSource, filename, workflow) {
   ensureWorkflowModuleLoader();
-  const digest = createHash3("sha256").update(wrappedSource).digest("hex");
+  const digest = createHash4("sha256").update(wrappedSource).digest("hex");
   const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
   registeredWorkflowModules.set(url, wrappedSource);
   const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
@@ -32714,6 +33060,9 @@ function flushed(stream) {
   });
 }
 if (isMain) {
+  process.stdout.on("error", (error) => {
+    if (error.code !== "EPIPE") throw error;
+  });
   const versionError = nodeVersionError();
   if (versionError !== null) {
     process.stderr.write(`${versionError}

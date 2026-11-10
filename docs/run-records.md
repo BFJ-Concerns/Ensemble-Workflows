@@ -608,8 +608,28 @@ The fields present throughout a record's lifetime are:
   and `null` when the engine reported none, never an echo of the request.
   opencode reports no served identity, so its `resolved_model` is the
   configured `provider_model` the worker was launched with.
-- `fallback`: the declared fallback chain (`[{ engine, model, effort? }]`, as
-  the call or its engine defaults declared it), or `null`.
+- `fallback`: the fallback chain in force for this record
+  (`[{ engine, model, effort? }]`), or `null` when none applies.
+- `fallback_source`: where `fallback` came from, as an object whose `kind`
+  names the source:
+  - `{ "kind": "call" }`: the call's own `fallback` option.
+  - `{ "kind": "defaults", "engine": "<engine>" }`: the script's `defaults`
+    block for that engine, which the call left to supply the chain.
+  - `{ "kind": "none" }`: neither the call nor its `defaults` block declared
+    a chain. A direct library call has no `defaults`, so its chain reads
+    `call` or `none`.
+  - `{ "kind": "later-turn" }`: the second or later turn of a multi-turn
+    session. A session's chain applies to its creating turn alone, so
+    `fallback` is `null` here; the creating turn's record (the same
+    `session.id`, `turn` 1) carries the session's chain and its source.
+
+  `none` and `later-turn` both pair with a `null` chain and are not
+  interchangeable: one says nothing was declared, the other that the
+  session's chain no longer applies. A reader that meets an unknown `kind`
+  should treat the chain's source as unrecorded. The field joined the agent
+  record within its schema version, so an agent record from an older
+  Ensemble checkout can lack it; read a missing `fallback_source` as
+  unrecorded, never as `none`.
 - `answered_by`: which target answered — `{ entry, engine, model }`, where
   `entry` is `-1` for the call's own target and the chain index after that,
   and `model` is the answering attempt's served model (`null` if unreported) —

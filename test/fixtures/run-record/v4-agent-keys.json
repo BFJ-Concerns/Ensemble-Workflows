@@ -8,6 +8,7 @@
   "engine",
   "execution_ms",
   "fallback",
+  "fallback_source",
   "header_identity",
   "id",
   "isolation",

@@ -27,6 +27,7 @@ import type { OwnerGoneReason, ProcessOwnerRecord } from "./process-owner-eviden
 import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
 import type { AppServerDiagnostic } from "./errors.js";
 import type { FailureClassification } from "./failure-classification.js";
+import type { FallbackSource } from "./fallback-source.js";
 import type { UsageSummary } from "./usage-summary.js";
 
 const execFileAsync = promisify(execFile);
@@ -218,8 +219,13 @@ export interface RuntimeAgentRecord {
   };
   model: string | null;
   effort: string | null;
-  /** The declared fallback chain, as the call or its engine defaults declared it; null when none. */
+  /** The fallback chain in force for this record; null when none applies. */
   fallback: FallbackTarget[] | null;
+  /**
+   * Where `fallback` came from, so the record says why a chain applied or
+   * why none did; see {@link FallbackSource}. Written on every record.
+   */
+  fallbackSource: FallbackSource;
   /**
    * Which target answered: `entry` is -1 for the call's own target and
    * the chain index thereafter, beside that target's engine and model. Null
@@ -1023,6 +1029,7 @@ export class RunRecordWriter {
       model: record.model,
       effort: record.effort,
       fallback: record.fallback,
+      fallback_source: { ...record.fallbackSource },
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,

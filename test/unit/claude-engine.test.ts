@@ -961,6 +961,37 @@ test("a persistently refused blocked nudge exhausts maxAttempts and stops its se
   }, { steerSucceeds: false });
 });
 
+for (const unavailable of ["session", "valve"] as const) {
+  for (const held of [false, true]) {
+    test(`a refused nudge with unavailable ${unavailable} redispatches only a one-shot call, held ${held}`, async () => {
+      await withControlPlane([{ outcome: "blocked" }, { assistant: { text: "recovered" } }], async (controlPlane) => {
+        let refused = false;
+        const poll = controlPlane.poll.bind(controlPlane);
+        controlPlane.poll = async () => refused && unavailable === "session" && controlPlane.dispatchCount === 1
+          ? { status: "absent", state: "unknown", present: false } : poll();
+        controlPlane.tmuxAvailable = async () => !(refused && unavailable === "valve");
+        controlPlane.steer = async (_handle, message) => {
+          refused = true;
+          controlPlane.steerCount += 1;
+          controlPlane.steered.push(message);
+          return { submitted: false, reason: unavailable === "session" ? "the session is no longer in the daemon's roster" : "tmux is unavailable" };
+        };
+        const runtime = makeRuntime(controlPlane, { maxAttempts: 2 });
+        try {
+          const session = held ? runtime.createWorkerSession({ engine: "claude" }) : null;
+          const result = session === null ? await runtime.agent("decide", { engine: "claude" }) : await session.send("decide");
+          assert.equal(result, held ? null : "recovered");
+          assert.equal(controlPlane.dispatchCount, held ? 1 : 2);
+          assert.equal(controlPlane.steerCount, held ? 2 : 1);
+          if (!held) assert.match(controlPlane.dispatched[1]?.prompt ?? "", /previous attempt failed \(claude-valve-error\)/);
+          await session?.close();
+          assert.equal(controlPlane.stopCount, held ? 1 : 2);
+        } finally { await runtime.close(); }
+      });
+    });
+  }
+}
+
 test("a refused schema correction retries that correction without collecting the earlier invalid answer", async () => {
   await withControlPlane([{ assistant: { text: "nope" } }, { assistant: { text: '{"ok":true}' } }], async (controlPlane) => {
     const steer = controlPlane.steer.bind(controlPlane);

@@ -392,14 +392,23 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 
       if (this.#refused !== null && this.#handle !== null) {
         const handle = this.#handle;
+        const pending = this.#pending;
         // A refusal can span native input cancellation. Judge the retry's
         // receipt after those rows while retaining the task's earlier work.
         const submission = { ...this.#refused, mark: (await this.#readTranscript(handle, context)).entries.length };
         fromIndex = submission.carriesTurn ? submission.mark : this.#collectionMark;
         await this.#deliver(handle, submission, context);
-        const transcript = await this.#runToCompletion(handle, fromIndex, context);
-        if (this.#deliveryFailure !== null) throw this.#deliveryFailure;
-        return this.#buildResult(handle, transcript, fromIndex);
+        if (pending !== null) {
+          // The nudge's receipt says nothing about the submission whose work
+          // it resumed, particularly one belonging to an earlier held turn.
+          this.#pending = pending;
+          const answered = await this.#accountForPending(handle, pending, context);
+          if (answered !== null) return answered;
+        } else {
+          const transcript = await this.#runToCompletion(handle, fromIndex, context);
+          if (this.#deliveryFailure !== null) throw this.#deliveryFailure;
+          if (this.#turn === "verified") return this.#buildResult(handle, transcript, fromIndex);
+        }
       }
 
       const held = this.#multiTurn ? this.#handle : null;
@@ -478,11 +487,14 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // too, and so is the usage it recorded: a result-less failure must
         // not un-learn spend the run has already paid for (failures carry
         // their evidence).
-        // An explicitly refused message keeps its session for an exact retry.
+        // A refused message can retry unchanged while its session and valve
+        // remain available.
         // Other one-shot operational failures end their session. Held-session
         // teardown belongs to close(): redispatch would lose continuity.
-        if (!this.#multiTurn && !(error instanceof ClaudeValveError && this.#refused !== null)) {
-          await this.#teardown();
+        if (!this.#multiTurn) {
+          const keepSession = error instanceof ClaudeValveError && this.#refused !== null && this.#handle !== null &&
+            (await this.#controlPlane.poll(this.#handle)).present && await this.#controlPlane.tmuxAvailable();
+          if (!keepSession) await this.#teardown();
         }
         return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
       }

@@ -21650,12 +21650,19 @@ var ClaudeEngineInvocation = class {
       const previousFailure = context.previousFailure;
       if (this.#refused !== null && this.#handle !== null) {
         const handle = this.#handle;
+        const pending = this.#pending;
         const submission = { ...this.#refused, mark: (await this.#readTranscript(handle, context)).entries.length };
         fromIndex = submission.carriesTurn ? submission.mark : this.#collectionMark;
         await this.#deliver(handle, submission, context);
-        const transcript = await this.#runToCompletion(handle, fromIndex, context);
-        if (this.#deliveryFailure !== null) throw this.#deliveryFailure;
-        return this.#buildResult(handle, transcript, fromIndex);
+        if (pending !== null) {
+          this.#pending = pending;
+          const answered = await this.#accountForPending(handle, pending, context);
+          if (answered !== null) return answered;
+        } else {
+          const transcript = await this.#runToCompletion(handle, fromIndex, context);
+          if (this.#deliveryFailure !== null) throw this.#deliveryFailure;
+          if (this.#turn === "verified") return this.#buildResult(handle, transcript, fromIndex);
+        }
       }
       const held = this.#multiTurn ? this.#handle : null;
       if (held !== null) {
@@ -21707,8 +21714,9 @@ var ClaudeEngineInvocation = class {
         attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       }
       if (error instanceof ClaudeWorkerError) {
-        if (!this.#multiTurn && !(error instanceof ClaudeValveError && this.#refused !== null)) {
-          await this.#teardown();
+        if (!this.#multiTurn) {
+          const keepSession = error instanceof ClaudeValveError && this.#refused !== null && this.#handle !== null && (await this.#controlPlane.poll(this.#handle)).present && await this.#controlPlane.tmuxAvailable();
+          if (!keepSession) await this.#teardown();
         }
         return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
       }

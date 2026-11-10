@@ -1946,6 +1946,44 @@ test("CLI emits completed worker outputs when interrupted by SIGINT", async () =
   assert.match(stderr.text(), /Interrupted \(SIGINT\) — partial result on stdout/);
 });
 
+test("run endings stop the script after an awaited parallel or pipeline", async () => {
+  for (const combinator of ["parallel", "pipeline"]) {
+    for (const ending of ["interrupted", "timed-out"]) {
+      const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-combinator-ending-"));
+      const script = path.join(directory, "workflow.js");
+      const call = 'agent("hang", { engine: "codex" })';
+      await writeFile(script, `
+        export const meta = { name: "combinator-ending" };
+        await ${combinator === "parallel" ? `parallel([() => ${call}])` : `pipeline(["item"], () => ${call})`};
+        log("post-combinator side effect");
+        return "must not resume";
+      `);
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const engine = new HangOnPromptEngine("codex", 1, () => {
+        if (ending === "interrupted") process.emit("SIGINT");
+      });
+      const exitCode = await runEnsembleCli(
+        ending === "timed-out" ? ["--timeout=120", script] : [script],
+        {
+          cwd: directory,
+          stdout,
+          stderr,
+          runRecordDir: null,
+          createRuntime: async () => new EnsembleRuntime({
+            engines: new EngineRegistry([engine]),
+            defaultMaxAttempts: 1
+          })
+        }
+      );
+      assert.equal(exitCode, ending === "interrupted" ? 130 : 1);
+      assert.equal(engine.cancelCount, 1);
+      assert.equal(JSON.parse(stdout.text()).reason, ending);
+      assert.doesNotMatch(stderr.text(), /post-combinator side effect/);
+    }
+  }
+});
+
 test("a SIGTERM-stopped run exits 143 and records 143 on every durable surface", async () => {
   // The other interrupt signal takes the same convention (128 + 15): the
   // envelope names the signal, and the sentinel and result carry the code

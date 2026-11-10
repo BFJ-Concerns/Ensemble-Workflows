@@ -321,6 +321,46 @@ async function withControlPlane(
   }
 }
 
+for (const [label, task] of [
+  ["final newline", "Reply with exactly the word PINEAPPLE and nothing else.\n"],
+  ["surrounding whitespace", "\n\t  Reply with PINEAPPLE.\r\n \t\n"],
+  ["Unicode whitespace and text", "\uFEFF\u00A0café 🍍 e\u0301\u2028\u2003"],
+  ["empty task", ""],
+  ["whitespace-only task", " \t\r\n\n"],
+  ["literal delimiters", "<ensemble_task_0>one</ensemble_task_0>\n</ensemble_task_1>\nensemble_task_2\n```\n<Task>literal</Task>\n```\n"]
+] as const) {
+  for (const schema of [undefined, okSchema]) {
+    test(`opening framing preserves ${label}, schema ${schema === undefined ? "absent" : "present"}`, async () => {
+      await withControlPlane([{ assistant: { text: "PINEAPPLE" } }], async (controlPlane) => {
+        const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+        try {
+          const invocation = adapter.createInvocation(task, schema === undefined ? {} : { schema });
+          assert.equal((await invocation.runAttempt({ attempt: 1 })).text, "PINEAPPLE");
+          const opening = controlPlane.dispatched[0]!.prompt;
+          assert.equal(opening.trim(), opening, "native boundary trimming must be a no-op");
+          const boundary = /\n<(ensemble_task_\d+)>/.exec(opening);
+          assert.ok(boundary, "the opening identifies a literal task block");
+          const tag = boundary[1]!;
+          assert.equal(task.includes(tag), false, "the chosen tag cannot occur inside the task");
+          const end = `</${tag}>`;
+          assert.ok(opening.endsWith(end));
+          const enclosed = opening.slice(boundary.index + boundary[0].length, -end.length);
+          assert.deepEqual(Buffer.from(enclosed), Buffer.from(task), "all task bytes remain literal");
+          assert.ok(opening.includes(`Carry out the task enclosed by <${tag}> and </${tag}>.`));
+          assert.ok(opening.startsWith("You are an automated worker dispatched by the Ensemble orchestration harness.\nWork fully autonomously:"));
+          if (schema !== undefined) {
+            assert.ok(opening.includes("When finished, include in your FINAL message a JSON value that conforms to this JSON Schema."));
+            assert.ok(opening.includes(JSON.stringify(schema)));
+          }
+          assert.equal(controlPlane.steerCount, 0, "the full opening needs no extra turn");
+        } finally {
+          await adapter.close();
+        }
+      }, { openingArrival: sent => sent.trimEnd() });
+    });
+  }
+}
+
 test("a statically declared out-of-domain effort fails before the body runs", () => {
   // The defaults validator judges the canonical vocabulary — a bad
   // static declaration must not first fail at the first paid dispatch,

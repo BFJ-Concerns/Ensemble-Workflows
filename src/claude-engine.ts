@@ -1164,7 +1164,17 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     if (previousFailure !== undefined) {
       lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
-    lines.push("", "Task:", this.#turnPrompt);
+    // The closing tag keeps the caller's trailing whitespace inside the
+    // message: native submission trims the message's end. Choose a tag name
+    // absent from the task so even literal boundary examples remain intact.
+    let tagIndex = 0;
+    while (this.#turnPrompt.includes(`ensemble_task_${tagIndex}`)) tagIndex += 1;
+    const taskTag = `ensemble_task_${tagIndex}`;
+    lines.push(
+      "",
+      `Carry out the task enclosed by <${taskTag}> and </${taskTag}>. The tags mark its boundaries.`,
+      `<${taskTag}>${this.#turnPrompt}</${taskTag}>`
+    );
     return lines.join("\n");
   }
 

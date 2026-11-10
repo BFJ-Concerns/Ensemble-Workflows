@@ -2544,7 +2544,8 @@ test("--help, -h, and --version answer a cold arrival at exit 0", async () => {
 });
 
 test("ensemble holds serves the two listing contracts: one scope's view, and machine-wide", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-holds-"));
+  // Answer paths contain the other hold's id; only listing rows name holds.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-hold-s-"));
   const dataHome = path.join(directory, "data-home");
   const holdsRoot = path.join(dataHome, "ensemble", "holds");
   const record = (holdId: string, scope: string | null, scopeSegment: string): Record<string, unknown> => ({
@@ -2582,8 +2583,8 @@ test("ensemble holds serves the two listing contracts: one scope's view, and mac
     }),
     0
   );
-  assert.match(scoped.text(), /hold-a/);
-  assert.doesNotMatch(scoped.text(), /hold-s/);
+  assert.match(scoped.text(), /^hold-a\t/m);
+  assert.doesNotMatch(scoped.text(), /^hold-s\t/m);
 
   // The inherited variable scopes the default view the same way.
   const inherited = new CaptureStream();
@@ -2595,8 +2596,8 @@ test("ensemble holds serves the two listing contracts: one scope's view, and mac
     }),
     0
   );
-  assert.match(inherited.text(), /hold-a/);
-  assert.doesNotMatch(inherited.text(), /hold-s/);
+  assert.match(inherited.text(), /^hold-a\t/m);
+  assert.doesNotMatch(inherited.text(), /^hold-s\t/m);
 
   // Machine-wide (--all, or keyless): every scope, shared included.
   const machineWide = new CaptureStream();

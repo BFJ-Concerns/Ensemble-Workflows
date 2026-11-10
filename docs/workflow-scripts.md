@@ -329,8 +329,10 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   `CLAUDE_CODE_DISABLE_ADVISOR_TOOL`, over any value the machine declares
   for workers. A second probe under the derived settings must show none of
   the denied tools, no unclassified tool, and every unrelated one. If either
-  probe fails, or the check does not hold within 90 seconds, the call fails
-  before the worker spawns. This includes a provider-side tool that remains
+  probe fails, or the check does not hold within the preparation deadline,
+  the call fails before the worker spawns. The deadline defaults to 90
+  seconds; a manually constructed Claude adapter can change
+  [`config.stripPreparationTimeoutMs`](configuration.md#claude-adapter-configuration). This includes a provider-side tool that remains
   available under its removal settings: the call refuses rather than
   dispatching with that tool. The result is reused for the rest of the run, for each working directory,
   model and strip, until a worker reports serving a different Claude Code

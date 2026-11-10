@@ -337,3 +337,19 @@ environment variable:
 `firstOutputTimeoutMs` is satisfied by any output-bearing turn frame, not only
 an agent-message delta; the run record's `first_delta_ms` still measures the
 time to the first agent-message delta.
+
+
+### Claude adapter configuration
+
+For a manually constructed `ClaudeEngineAdapter`,
+`config.stripPreparationTimeoutMs` sets the deadline in milliseconds for
+preparing a requested capability strip. It defaults to `90_000` and covers
+both the inventory probe and the confirming probe. Unstripped workers do
+not run these probes.
+
+For example, `new ClaudeEngineAdapter({ config: {
+stripPreparationTimeoutMs: 120_000 } })` gives that adapter a two-minute
+preparation deadline. Use the configured adapter in the `EngineRegistry`
+passed to `new EnsembleRuntime({ engines })`. This is an adapter option,
+not a `createRuntime()` option; it has no CLI flag, environment variable
+or machine-configuration key.

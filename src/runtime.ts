@@ -633,6 +633,7 @@ export class EnsembleRuntime {
       ...(options.firstOutputTimeoutMs !== undefined ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {}),
       ...(options.workerEnvironment !== undefined ? { workerEnvironment: options.workerEnvironment } : {}),
       ...(options.openCodeModels !== undefined ? { openCodeModels: options.openCodeModels } : {}),
+      ...(options.openCodeModelSource !== undefined ? { openCodeModelSource: options.openCodeModelSource } : {}),
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 120_000,
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? harnessVersion(),
@@ -835,7 +836,7 @@ export class EnsembleRuntime {
     }
     if (engine instanceof OpenCodeEngineAdapter) {
       if (options.model === undefined) {
-        throw new OpenCodeModelRequiredError(engine.modelRegistry.names());
+        throw new OpenCodeModelRequiredError(engine.modelRegistry);
       }
       validateEngineDefaults(engine.name, options, engine.modelRegistry);
     }

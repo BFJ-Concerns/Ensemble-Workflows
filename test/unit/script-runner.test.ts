@@ -14,6 +14,7 @@ import {
 import { TokenBudget } from "../../src/budget.js";
 import { CyclicAgentSchemaError, FallbackTargetRejectedError, InvalidAgentOptionsError, OpenCodeModelNotRegisteredError, TallyRejectedError } from "../../src/errors.js";
 import { EngineRegistry } from "../../src/engines.js";
+import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type { RunRecordWriter } from "../../src/run-record.js";
@@ -1559,7 +1560,7 @@ test("an unregistered opencode model in defaults fails before the body runs", as
     ...runtime,
     agent: (async () => {
       agentCalls += 1;
-      throw new OpenCodeModelNotRegisteredError("glm-later", ["glm-5.2"]);
+      throw new OpenCodeModelNotRegisteredError("glm-later", createOpenCodeModelRegistry([]));
     }) as unknown as WorkflowRuntime["agent"]
   };
 
@@ -1599,7 +1600,8 @@ test("load-time defaults validation consults the runtime's own opencode registry
             variants: []
           }
         : undefined,
-    names: () => ["custom-model"]
+    names: () => ["custom-model"],
+    source: { kind: "caller" } as const
   };
   const agentPrompts: string[] = [];
   const registryAwareRuntime = {
@@ -1646,7 +1648,8 @@ test("EnsembleRuntime surfaces its opencode adapter's own registry", async () =>
   const { EngineRegistry, OpenCodeEngineAdapter } = await import("../../src/engines.js");
   const injectedRegistry = {
     get: () => undefined,
-    names: () => ["injected-only"]
+    names: () => ["injected-only"],
+    source: { kind: "caller" } as const
   };
   const runtime = new EnsembleRuntime({
     engines: new EngineRegistry([new OpenCodeEngineAdapter({ modelRegistry: injectedRegistry })]),

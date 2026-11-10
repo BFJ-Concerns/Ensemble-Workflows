@@ -692,7 +692,8 @@ test("opencode rejects an effort outside the registry entry's declared variants 
             variants: ["fast", "thorough"]
           }
         : undefined,
-    names: () => ["variant-model"]
+    names: () => ["variant-model"],
+    source: { kind: "caller" } as const
   };
   const variantAdapter = new OpenCodeEngineAdapter({ runner, modelRegistry: registry });
   assert.doesNotThrow(() => variantAdapter.createInvocation("ok", { model: "variant-model", effort: "thorough" }));
@@ -770,7 +771,8 @@ test("opencode run parses final text, usage, transcript, and effort variant", as
             variants: ["minimal"]
           }
         : undefined,
-    names: () => ["glm-5.2"]
+    names: () => ["glm-5.2"],
+    source: { kind: "caller" } as const
   };
   const adapter = new OpenCodeEngineAdapter({
     runner,

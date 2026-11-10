@@ -1,6 +1,6 @@
 import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { StrippableCapability } from "./capability-stripping.js";
-import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
+import type { OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode-model-registry.js";
 
 export type JsonObject = Record<string, unknown>;
 export type JsonSchema = JsonObject;
@@ -217,6 +217,13 @@ export interface RuntimeOptions {
    * before its worker spawns.
    */
   openCodeModels?: readonly OpenCodeModelRegistryEntry[];
+  /**
+   * Where `openCodeModels` were declared, carried on the registry so an
+   * opencode refusal can name it. The CLI passes the machine configuration
+   * file it resolved, even when that file declares no models. Omitted, the
+   * source is `caller`.
+   */
+  openCodeModelSource?: OpenCodeModelSource;
   /**
    * Run-wide capability strip: united with every call's own `strip`
    * list before enforcement, so a run can restrict all its workers without

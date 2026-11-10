@@ -335,6 +335,8 @@ environment variable:
 | `codexSessionStaleAfterMs` | 60 minutes | When a held Codex session is marked stale |
 | `workerScope` | `worker` | Systemd scope grouping (`worker` or `run`); the library uses the explicit option or its default |
 | `holdScope` | None | Hold scope for the runtime's runs; overrides `ENSEMBLE_HOLD_SCOPE` |
+| `openCodeModels` | None | The models opencode workers may name, in the registry entry shape; the library reads no machine configuration, so without this option every opencode call is refused |
+| `openCodeModelSource` | `{ kind: "caller" }` | Where `openCodeModels` were declared: `{ kind: "machine-config", file }` for models taken from a machine configuration file, `{ kind: "caller" }` otherwise. An opencode refusal draws on it to say where models are declared |
 
 `firstOutputTimeoutMs` is satisfied by any output-bearing turn frame, not only
 an agent-message delta; the run record's `first_delta_ms` still measures the

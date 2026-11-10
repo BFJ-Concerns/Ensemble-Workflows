@@ -25,16 +25,38 @@ export interface OpenCodeModelRegistryEntry {
   variants: readonly string[];
 }
 
+/**
+ * Where a registry's models were declared — what a refusal points the
+ * operator at when the model a call names is not there. It travels with
+ * the registry because every refusal site (script-default validation, the
+ * runtime's pre-admission check, the adapter's dispatch) already holds the
+ * registry and nothing else: a site that resolved the location for itself
+ * would read its own process environment, which is not the run's when a
+ * caller hands `runEnsembleCli` a different one.
+ *
+ * - `machine-config`: the machine configuration's `opencode_models`
+ *   section; `file` is the path as resolved for the run, whether or not
+ *   it exists.
+ * - `caller`: a library caller's own list, or none at all. No file was
+ *   read, so there is no file to name.
+ */
+export type OpenCodeModelSource =
+  | { kind: "machine-config"; file: string }
+  | { kind: "caller" };
+
 export interface OpenCodeModelRegistry {
   get(model: string): OpenCodeModelRegistryEntry | undefined;
   names(): string[];
+  readonly source: OpenCodeModelSource;
 }
 
 class StaticOpenCodeModelRegistry implements OpenCodeModelRegistry {
   #models = new Map<string, OpenCodeModelRegistryEntry>();
   #names: string[];
+  readonly source: OpenCodeModelSource;
 
-  constructor(models: readonly OpenCodeModelRegistryEntry[]) {
+  constructor(models: readonly OpenCodeModelRegistryEntry[], source: OpenCodeModelSource) {
+    this.source = source;
     for (const model of models) {
       // Callers that carry provenance know models by the provider id the run
       // record reports, so it resolves as well as the key. Either name
@@ -66,14 +88,20 @@ class StaticOpenCodeModelRegistry implements OpenCodeModelRegistry {
  * `opencode_models` section, resolved by `resolveAmbientSettings`, or a
  * library caller's own list. Lookup accepts an entry's key or its
  * `providerModel`; a name that would resolve to two entries throws.
+ * `source` defaults to `caller`: only a caller holding the resolved
+ * machine configuration path can say the models came from that file.
  */
-export function createOpenCodeModelRegistry(models: readonly OpenCodeModelRegistryEntry[]): OpenCodeModelRegistry {
-  return new StaticOpenCodeModelRegistry(models);
+export function createOpenCodeModelRegistry(
+  models: readonly OpenCodeModelRegistryEntry[],
+  source: OpenCodeModelSource = { kind: "caller" }
+): OpenCodeModelRegistry {
+  return new StaticOpenCodeModelRegistry(models, source);
 }
 
 /**
  * The registry an adapter dispatches against when none is configured. It is
  * empty: the harness ships no model catalogue, so every opencode model is
- * one the operator declared.
+ * one the operator declared. Its source is `caller`: an adapter built
+ * without a registry was handed no models and read no file.
  */
 export const defaultOpenCodeModelRegistry: OpenCodeModelRegistry = createOpenCodeModelRegistry([]);

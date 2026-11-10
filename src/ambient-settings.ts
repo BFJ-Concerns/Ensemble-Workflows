@@ -14,6 +14,9 @@ import { createOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type { EngineConcurrencyCaps, EngineName, EngineWorkerEnvironment } from "./types.js";
 
+import type { WorkerScopeGrouping } from "./worker-scopes.js";
+
+export const WORKER_SCOPE_ENV = "ENSEMBLE_WORKER_SCOPE";
 export const CONFIG_SCHEMA_VERSION = 1;
 export const AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
 export const RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
@@ -38,6 +41,7 @@ export type SettingLayer = "flag" | "env" | "config-file" | "default";
  * setting joins this list in the same change.
  */
 const RUN_SCOPED_ENVIRONMENT_VARIABLES: ReadonlySet<string> = new Set([
+  WORKER_SCOPE_ENV,
   AGENT_CEILING_ENV,
   RUN_RECORD_ENV,
   RUN_RECORD_DIR_ENV,
@@ -70,6 +74,7 @@ export interface Resolved<T> {
 
 export interface AmbientSettings {
   configFile: string;
+  workerScope: Resolved<WorkerScopeGrouping>;
   agentCeiling: Resolved<number | null>;
   concurrencyCaps: Record<EngineName, Resolved<number>>;
   runRecordDir: Resolved<string | null>;
@@ -98,6 +103,7 @@ export interface AmbientSettings {
 }
 
 export interface AmbientSettingFlags {
+  workerScope?: WorkerScopeGrouping;
   agentCeiling?: number | null;
   concurrencyCaps?: EngineConcurrencyCaps;
 }
@@ -111,6 +117,7 @@ export class AmbientConfigError extends Error {
 
 interface MachineConfig {
   schema_version: 1;
+  worker_scope?: WorkerScopeGrouping;
   agent_ceiling?: number;
   concurrency?: Partial<Record<EngineName, number>>;
   run_record?: {
@@ -158,6 +165,13 @@ export function resolveAmbientSettings(input: {
 
   return {
     configFile,
+    workerScope: input.flags?.workerScope !== undefined
+      ? { value: parseWorkerScopeGrouping(input.flags.workerScope, "--worker-scope"), layer: "flag" }
+      : input.env[WORKER_SCOPE_ENV] !== undefined
+        ? { value: parseWorkerScopeGrouping(input.env[WORKER_SCOPE_ENV], WORKER_SCOPE_ENV), layer: "env" }
+        : config?.worker_scope !== undefined
+          ? { value: config.worker_scope, layer: "config-file" }
+          : { value: "worker", layer: "default" },
     agentCeiling: resolveAgentCeiling({
       flag: input.flags?.agentCeiling,
       env: input.env[AGENT_CEILING_ENV],
@@ -180,7 +194,7 @@ export function resolveAmbientSettings(input: {
     ) as Record<EngineName, Resolved<number>>,
     runRecordDir: resolveRunRecord(config, input.env),
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd),
+    statusDir: resolveStatus(config, input.env),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
@@ -227,13 +241,16 @@ function readMachineConfig(configFile: string): MachineConfig | null {
 
   assertKnownKeys(
     parsed,
-    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+    ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
     configFile
   );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
     throw new AmbientConfigError(
       `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
     );
+  }
+  if (parsed.worker_scope !== undefined) {
+    parseWorkerScopeGrouping(parsed.worker_scope, `worker_scope in ${configFile}`);
   }
   validateOptionalPositiveInteger(parsed, "agent_ceiling", configFile);
   validateSection(parsed, "concurrency", ENGINES, configFile, validateOptionalPositiveInteger);
@@ -504,8 +521,7 @@ function resolveRunRecordStoreDir(
 
 function resolveStatus(
   config: MachineConfig | null,
-  env: NodeJS.ProcessEnv,
-  cwd: string
+  env: NodeJS.ProcessEnv
 ): Resolved<string | null> {
   const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
   if (!enabled.value) {
@@ -515,23 +531,18 @@ function resolveStatus(
     env.ENSEMBLE_STATUS_DIR,
     "ENSEMBLE_STATUS_DIR",
     config?.status?.dir,
-    path.join(cwd, ".claude")
+    path.join(dataHome(env), "ensemble", "status")
   );
   if (isDirectory(directory.value)) {
     return directory;
   }
   if (directory.layer !== "default") {
-    // An explicitly configured layer fails loud on malformation. A
-    // named directory that does not exist would otherwise publish nothing
-    // at exit 0 — the operator asked for observability and silently got
-    // none. Only the *default* location (`<cwd>/.claude`) opts out by
-    // absence: its existence is the publication opt-in.
     throw new AmbientConfigError(
       `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} ` +
         `(from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
     );
   }
-  return { value: null, layer: directory.layer };
+  return directory;
 }
 
 function resolveEnabled(
@@ -622,4 +633,12 @@ function isNodeError(error: unknown, code: string): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The closed grouping vocabulary shared by configuration, CLI and library options. */
+export function parseWorkerScopeGrouping(value: unknown, source: string): WorkerScopeGrouping {
+  if (value !== "worker" && value !== "run") {
+    throw new AmbientConfigError(`Invalid value for ${source}: expected worker or run; got ${JSON.stringify(value)}`);
+  }
+  return value;
 }

@@ -255,6 +255,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #namePrefix: string;
 
   #handle: ClaudeSessionHandle | null = null;
+  #resolvedModel: string | null = null;
+  #resolvedEffort: string | null = null;
   #budgetEventCounter = 0;
   #abortController = new AbortController();
   #closed = false;
@@ -299,13 +301,21 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     // close() must be able to await a live attempt so cancellation is not
     // "torn down under a caller still running": track the settlement.
-    const settlement = this.#runAttempt(context);
+    const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#settlement === settlement) {
         this.#settlement = null;
       }
     });
+  }
+
+  #withObservedIdentity(result: EngineAttemptResult): EngineAttemptResult {
+    return {
+      ...result,
+      ...(result.resolvedModel === undefined && this.#resolvedModel !== null ? { resolvedModel: this.#resolvedModel } : {}),
+      ...(result.resolvedEffort === undefined && this.#resolvedEffort !== null ? { resolvedEffort: this.#resolvedEffort } : {})
+    };
   }
 
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
@@ -323,7 +333,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // The high-water mark is read first so a failure past this point
         // attaches only *this* turn's text, never the previous turn's.
         const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
         this.#requireValve(await this.#controlPlane.tmuxAvailable());
         return await this.#sendTurnInSession(handle, fromIndex, context);
       }
@@ -331,7 +341,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       const correcting = previousFailure !== undefined && this.#handle !== null;
       if (correcting && (await this.#controlPlane.tmuxAvailable())) {
         const handle = this.#handle as ClaudeSessionHandle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
         return await this.#correctInSession(handle, previousFailure, fromIndex, context);
       }
       if (correcting && this.#multiTurn) {
@@ -364,7 +374,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // Interruption remains a rejection — it must neither settle as an
         // operational failure nor enter the retry loop — but its record must
         // retain the same fields an already-built failed result would carry.
-        attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+        attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       }
       if (error instanceof ClaudeWorkerError) {
         // Preserve the operational cause and current-turn text on the failed
@@ -406,6 +416,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     previousFailure: PreviousAttemptFailure | undefined,
     observers: AttemptObservers
   ): Promise<TurnResult> {
+    this.#resolvedModel = null;
+    this.#resolvedEffort = null;
+    try { observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null }); }
+    catch { /* Observability cannot fail dispatch. */ }
     const denyRules = permissionDenyRulesFor(this.#options.strip);
     const handle = await this.#controlPlane.dispatch({
       prompt: this.#buildDispatchPrompt(previousFailure),
@@ -432,7 +446,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       if (evidence !== null) {
         this.#attachWorkerText(error, evidence, 0);
       }
-      attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+      attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       await this.#teardown();
       throw error;
     }
@@ -452,7 +466,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
     }
 
-    await this.#awaitReceipt(handle, fromIndex);
+    await this.#awaitReceipt(handle, fromIndex, observers);
     this.#turnDelivered = true;
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
@@ -482,13 +496,13 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
     }
 
-    await this.#awaitReceipt(handle, fromIndex);
+    await this.#awaitReceipt(handle, fromIndex, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
 
   /** Confirm the steered worker received the message (started generating, or the transcript grew). */
-  async #awaitReceipt(handle: ClaudeSessionHandle, mark: number): Promise<void> {
+  async #awaitReceipt(handle: ClaudeSessionHandle, mark: number, observers: AttemptObservers): Promise<void> {
     const deadline = Date.now() + this.#receiptTimeoutMs;
     for (;;) {
       this.#assertOpen();
@@ -497,7 +511,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       if (status.status === "busy") {
         return;
       }
-      const transcript = await this.#tryReadTranscript(handle);
+      const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null && transcript.entries.length > mark) {
         return;
       }
@@ -561,6 +575,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     let absences = 0;
     let settledPolls = 0;
     let evidenceReported = false;
+    let assistantEvidence = "";
     let waitingOn: string | null = null;
     // Read from the transcript, and held across a poll whose read failed: a
     // transiently unreadable transcript must not turn a waiting session
@@ -569,10 +584,22 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 
     for (;;) {
       this.#assertOpen();
-      const transcript = await this.#tryReadTranscript(handle);
+      const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null) {
         sawLife = true;
-        this.#reportUsage(handle, transcript.entries, fromIndex);
+        this.#reportUsage(handle, transcript.entries, fromIndex, observers);
+        try {
+          this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
+          this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
+          observers.onIdentity?.({ resolvedModel: this.#resolvedModel, resolvedEffort: this.#resolvedEffort });
+          // Compare assistant rows only: polling an unchanged transcript or a
+          // newly persisted user prompt is not continuing worker output.
+          const evidence = JSON.stringify(transcript.entries.slice(fromIndex).filter((entry) => entry.type === "assistant"));
+          if (evidence !== assistantEvidence && hasAssistantEntrySince(transcript.entries, fromIndex)) {
+            assistantEvidence = evidence;
+            observers.onOutput?.();
+          }
+        } catch { /* Observability cannot fail a turn. */ }
         // Evidence means output *the worker produced this turn*: only an
         // assistant entry beyond the high-water mark counts. The transcript's
         // first entry is routinely the persisted user prompt (and a steer
@@ -630,12 +657,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // Re-read at nudge time: entries written between the loop-top read
         // and the blocked observation would otherwise satisfy the receipt's
         // growth test immediately, acknowledging a nudge never received.
-        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
+        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
         const delivery = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
         if (!delivery.delivered) {
           throw new ClaudeValveError(`reply valve failed to inject the blocked-worker nudge: ${delivery.reason}`);
         }
-        await this.#awaitReceipt(handle, mark);
+        await this.#awaitReceipt(handle, mark, observers);
         continue;
       }
 
@@ -741,18 +768,24 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     };
   }
 
-  async #readTranscript(handle: ClaudeSessionHandle): Promise<TranscriptFile> {
+  async #readTranscript(handle: ClaudeSessionHandle, observers?: AttemptObservers): Promise<TranscriptFile> {
     const path = await this.#controlPlane.transcriptPath(handle);
     if (path === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscriptFile(path);
+    const transcript = await readTranscriptFile(path);
+    try {
+      observers?.onTranscriptPath?.(path);
+    } catch {
+      // Observability must never change the turn's outcome.
+    }
+    return transcript;
   }
 
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
-  async #tryReadTranscript(handle: ClaudeSessionHandle): Promise<TranscriptFile | null> {
+  async #tryReadTranscript(handle: ClaudeSessionHandle, observers?: AttemptObservers): Promise<TranscriptFile | null> {
     try {
-      return await this.#readTranscript(handle);
+      return await this.#readTranscript(handle, observers);
     } catch (error) {
       if (error instanceof ClaudeTranscriptError) {
         return null;
@@ -821,7 +854,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * and the archived event's `total` is the same figure the agent record's
    * usage summarises — budget and archive read one arithmetic.
    */
-  #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): void {
+  #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number, observers?: AttemptObservers): void {
     const total = usageSince(entries, fromIndex);
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
@@ -832,6 +865,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     if (event === null) {
       return;
     }
+    try { observers?.onUsage?.(event); } catch { /* Observability cannot fail a turn. */ }
     this.#onEvent?.({
       method: "thread/tokenUsage/updated",
       params: event.raw,
@@ -1012,7 +1046,7 @@ interface FailureEvidence {
 }
 
 /** The per-attempt observers the runtime hands an attempt (`EngineAttemptContext`'s callbacks). */
-type AttemptObservers = Pick<EngineAttemptContext, "onLiveEvidence" | "onWaiting">;
+type AttemptObservers = Pick<EngineAttemptContext, "onLiveEvidence" | "onWaiting" | "onTranscriptPath" | "onOutput" | "onIdentity" | "onUsage">;
 
 
 function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {

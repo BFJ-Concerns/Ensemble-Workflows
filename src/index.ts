@@ -99,6 +99,7 @@ export {
   CONFIG_SCHEMA_VERSION,
   AGENT_CEILING_ENV,
   CALLER_IDENTITY_ENV,
+  WORKER_SCOPE_ENV,
   RUN_RECORD_ENV,
   RUN_RECORD_DIR_ENV,
   resolveAmbientSettings,
@@ -178,6 +179,8 @@ export type { AttemptFailureEvidence, FailureClass, FailureClassification } from
 export { summariseUsage } from "./usage-summary.js";
 export type { UsageSummary } from "./usage-summary.js";
 export type { IsolatedWorktree, IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
+export { NoWorkerScopes, SystemdWorkerScopes, containingSlice, createWorkerScopes, parentSlice, processTree } from "./worker-scopes.js";
+export type { LaunchOptions, ScopePlacement, WorkerScopeGrouping, WorkerScopes } from "./worker-scopes.js";
 export type {
   SavedWorkflowEntry,
   SavedWorkflowMeta,

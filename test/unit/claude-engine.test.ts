@@ -202,6 +202,8 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#present = false;
   }
 
+  async close(): Promise<void> {}
+
   async tmuxAvailable(): Promise<boolean> {
     return this.#tmux;
   }
@@ -1209,6 +1211,8 @@ class MissingTranscriptControlPlane implements ClaudeControlPlane {
     this.#present = false;
   }
 
+  async close(): Promise<void> {}
+
   async tmuxAvailable(): Promise<boolean> {
     return true;
   }
@@ -1252,6 +1256,8 @@ class SlowAliveControlPlane implements ClaudeControlPlane {
   async stop(): Promise<void> {
     this.#present = false;
   }
+
+  async close(): Promise<void> {}
 
   async tmuxAvailable(): Promise<boolean> {
     return true;
@@ -1619,6 +1625,8 @@ class SplitRowsControlPlane implements ClaudeControlPlane {
     this.#present = false;
   }
 
+  async close(): Promise<void> {}
+
   async tmuxAvailable(): Promise<boolean> {
     return true;
   }
@@ -1818,6 +1826,8 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
   async stop(): Promise<void> {
     this.#present = false;
   }
+
+  async close(): Promise<void> {}
 
   async tmuxAvailable(): Promise<boolean> {
     return true;

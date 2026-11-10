@@ -473,6 +473,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
         return;
       }
+      if (event.method === "claude/launchUnreclaimed") {
+        const name = boundedEvidence(String(event.params.name ?? "unknown"));
+        stderr.write(
+          `[claude] cancelled launch ${name} not reclaimed: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}; ` +
+          "a session registering under that name is left for the operator\n"
+        );
+        return;
+      }
       if (event.method === "codex/workerScopePlacement") {
         if (event.params.kind === "refused") {
           const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
@@ -1429,7 +1437,10 @@ async function parseAgentInvocation(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliUsageError(message);
+    const unknown = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+      ? unknownAgentOption(argv)
+      : undefined;
+    throw new CliUsageError(unknown === undefined ? message : unknownAgentOptionMessage(unknown));
   }
 
   if (parsed.positionals.length > 1) {
@@ -1486,6 +1497,54 @@ async function parseAgentInvocation(
     ...(workerScope !== undefined ? { workerScope } : {}),
     ...(holdScope !== undefined ? { holdScope } : {})
   };
+}
+
+/** Read the option from tokens: diagnostic punctuation can occur inside the argument itself. */
+function unknownAgentOption(argv: string[]): string | undefined {
+  try {
+    const { tokens } = parseArgs({
+      args: argv,
+      options: AGENT_INVOCATION_OPTIONS,
+      strict: false,
+      allowPositionals: true,
+      tokens: true
+    });
+    const unknown = tokens.find((token) => token.kind === "option" && !Object.hasOwn(AGENT_INVOCATION_OPTIONS, token.name));
+    return unknown?.kind === "option" ? argv[unknown.index] : undefined;
+  } catch {
+    // A later malformed option must not replace the original diagnostic.
+    return undefined;
+  }
+}
+
+/** Keep option hints stable across Node versions and quote the positional example completely. */
+function unknownAgentOptionMessage(option: string): string {
+  const name = option.split("=", 1)[0]!;
+  const candidates = Object.keys(AGENT_INVOCATION_OPTIONS)
+    .map((key) => ({ flag: `--${key}`, distance: optionDistance(name, `--${key}`) }))
+    .filter(({ distance }) => distance <= 2)
+    .sort((left, right) => left.distance - right.distance || left.flag.localeCompare(right.flag));
+  const best = candidates[0];
+  if (best !== undefined && (candidates[1] === undefined || best.distance < candidates[1].distance)) {
+    return `Unknown option ${JSON.stringify(option)}. Did you mean ${JSON.stringify(best.flag)}?`;
+  }
+  return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${quoteShellArgument(option)}`;
+}
+
+function optionDistance(left: string, right: string): number {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = [row];
+    for (let column = 1; column <= right.length; column += 1) {
+      current[column] = Math.min(
+        current[column - 1]! + 1,
+        previous[column]! + 1,
+        previous[column - 1]! + (left[row - 1] === right[column - 1] ? 0 : 1)
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length]!;
 }
 
 async function readPrompt(stdin: Readable): Promise<string> {
@@ -2010,8 +2069,13 @@ export function programNameFor(scriptPath: string | undefined): string {
   const absolutePath = path.resolve(scriptPath);
   const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath)
     ? absolutePath
-    : `'${absolutePath.replaceAll("'", "'\"'\"'")}'`;
+    : quoteShellArgument(absolutePath);
   return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
+}
+
+/** A single literal argument in a POSIX shell, including embedded apostrophes. */
+function quoteShellArgument(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 /** Usage wraps at tokens; the absolute launcher path may exceed the width. */

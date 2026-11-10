@@ -16,7 +16,7 @@ import {
   UnrecognisedAgentOptionError
 } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
-import { parallel, pipeline } from "../../src/hooks.js";
+import { createWorkflowHooks, parallel, pipeline } from "../../src/hooks.js";
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 
 import type {
@@ -30,7 +30,7 @@ import { RunRecordWriter } from "../../src/run-record.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import type { EngineAdapter, EngineAttemptResult } from "../../src/engines.js";
 import type { OpenCodeRunner } from "../../src/opencode-engine.js";
-import type { RuntimeTransport, ThreadStartOptions, TurnResult, TurnStartOptions } from "../../src/types.js";
+import type { FallbackTarget, RuntimeTransport, ThreadStartOptions, TurnResult, TurnStartOptions } from "../../src/types.js";
 
 const ignoreAttemptStart: RunRecordWriter["recordAttemptStart"] = async () => undefined;
 const ignoreAttemptEnd: RunRecordWriter["recordAttemptEnd"] = async () => undefined;
@@ -845,6 +845,8 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
     this.#present = false;
   }
 
+  async close(): Promise<void> {}
+
   async tmuxAvailable(): Promise<boolean> {
     return this.#tmux;
   }
@@ -1255,6 +1257,46 @@ test("the run's end closes every held session, and later sends throw", async () 
   });
 });
 
+test("session records retain fallback precedence and distinguish later turns from absent chains", async () => {
+  const defaultsChain: FallbackTarget[] = [{ engine: "codex", model: "defaults-fallback" }];
+  const callChain: FallbackTarget[] = [{ engine: "codex", model: "call-fallback" }];
+  for (const scenario of [
+    { name: "defaults", defaults: { codex: { fallback: defaultsChain } }, call: {}, chain: defaultsChain, source: { kind: "defaults", engine: "codex" } },
+    { name: "undefined preserves defaults", defaults: { codex: { fallback: defaultsChain } }, call: {}, undefinedFallback: true, chain: defaultsChain, source: { kind: "defaults", engine: "codex" } },
+    { name: "call overrides defaults", defaults: { codex: { fallback: defaultsChain } }, call: { fallback: callChain }, chain: callChain, source: { kind: "call" } },
+    { name: "unrelated defaults", defaults: { claude: { fallback: defaultsChain } }, call: {}, chain: null, source: { kind: "none" } },
+    { name: "direct call", defaults: {}, call: { fallback: callChain }, chain: callChain, source: { kind: "call" }, direct: true },
+    { name: "direct without a chain", defaults: {}, call: {}, chain: null, source: { kind: "none" }, direct: true }
+  ]) {
+    const transport = new ScriptedTransport([turnResult("first"), turnResult("second")]);
+    const runtime = codexRuntime(transport);
+    const records = captureRecords(runtime);
+    const hooks = createWorkflowHooks({
+      runtime, args: [], log: () => {}, workflow: async () => null, defaults: scenario.defaults
+    });
+    const options = { engine: "codex" as const, ...scenario.call };
+    // JavaScript workflows can supply an explicit undefined even though the
+    // TypeScript options use exact optional properties.
+    if (scenario.undefinedFallback) Object.assign(options, { fallback: undefined });
+    const session = scenario.direct ? runtime.createWorkerSession(options) : hooks.session(options);
+    try {
+      assert.equal(await session.send("first"), "first", scenario.name);
+      const first = records.at(-1)!;
+      assert.deepEqual(first.fallback, scenario.chain, scenario.name);
+      assert.deepEqual(first.fallbackSource, scenario.source, scenario.name);
+      assert.equal(await session.send("second"), "second", scenario.name);
+      const second = records.at(-1)!;
+      assert.equal(second.fallback, null, scenario.name);
+      assert.deepEqual(second.fallbackSource, { kind: "later-turn" }, scenario.name);
+      assert.deepEqual(first.session, { id: second.session!.id, turn: 1 }, scenario.name);
+      assert.equal(second.session!.turn, 2, scenario.name);
+      assert.equal(transport.openedThreads.length, 1, scenario.name);
+    } finally {
+      await runtime.close();
+    }
+  }
+});
+
 test("a session's chain applies to the creating turn alone, and the answering target fixes the session's engine", async () => {
   // Turn one: Codex refuses for availability, the chain advances to Claude,
   // which answers and becomes the session's engine for its life. Turn two:
@@ -1321,6 +1363,8 @@ test("a session's chain applies to the creating turn alone, and the answering ta
       assert.equal(controlPlane.dispatched[0]?.effort, "low");
       assert.equal(codexSessionClosed, 1, "the refused Codex session was closed on the advance");
       const turnOne = records.at(-1)!;
+      assert.deepEqual(turnOne.fallbackSource, { kind: "call" });
+      assert.deepEqual(turnOne.fallback, [{ engine: "claude", model: "opus", effort: "low" }]);
       // The entry that answered is named by `entry`; `model` is the served
       // model the engine reported, and this scripted Claude turn reports none,
       // so the record makes no claim from the target's requested pin.
@@ -1340,6 +1384,9 @@ test("a session's chain applies to the creating turn alone, and the answering ta
       assert.equal(controlPlane.dispatchCount, 1);
       const turnTwo = records.at(-1)!;
       assert.equal(turnTwo.fallback, null);
+      assert.deepEqual(turnTwo.fallbackSource, { kind: "later-turn" });
+      assert.deepEqual(turnOne.session, { id: turnTwo.session!.id, turn: 1 });
+      assert.equal(turnTwo.session!.turn, 2);
       assert.equal(turnTwo.status, "failed");
       assert.deepEqual(turnTwo.attempts[0]?.classification, { class: "availability", rule: "claude.rate-limit" });
       await runtime.close();

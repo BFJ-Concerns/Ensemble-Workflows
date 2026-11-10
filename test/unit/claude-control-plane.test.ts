@@ -1771,7 +1771,7 @@ test("a probe refuses provider switches before launching a session and honours a
   await assert.rejects(switched.probeToolSurface({ ...request, signal: AbortSignal.abort(new Error("stopped")) }), /stopped/);
 });
 
-test("cancelling a probe during native launch waits for its handle and removes the late session", async () => {
+test("a cancelled probe retains ownership of a session registering after the native command ends", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-probe-cancel-"));
   const stub = path.join(dir, "claude.mjs");
   const started = path.join(dir, "started");
@@ -1781,9 +1781,8 @@ test("cancelling a probe during native launch waits for its handle and removes t
     import { readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
     const args = process.argv.slice(2);
     if (args[0] === "--bg") {
-      writeFileSync(${JSON.stringify(started)}, "");
-      await new Promise(resolve => setTimeout(resolve, 150));
-      writeFileSync(${JSON.stringify(registered)}, JSON.stringify(args));
+      writeFileSync(${JSON.stringify(started)}, JSON.stringify(args));
+      setInterval(() => undefined, 1000);
     }
     if (args[0] === "agents") {
       let launch; try { launch = JSON.parse(readFileSync(${JSON.stringify(registered)}, "utf8")); } catch {}
@@ -1802,6 +1801,10 @@ test("cancelling a probe during native launch waits for its handle and removes t
     await waitForCondition(async () => access(started).then(() => true, () => false), "the probe launch to start", 5_000);
     abort.abort(new Error("probe cancelled"));
     await rejected;
+    // The supervisor can register an already accepted request after the
+    // command and its caller have both ended. The control plane owns it.
+    await writeFile(registered, await readFile(started, "utf8"));
+    await plane.close();
     assert.match(await readFile(actions, "utf8"), /stop\nrm\n/);
     await assert.rejects(access(registered), { code: "ENOENT" });
   } finally { await rm(dir, { recursive: true, force: true }); }

@@ -15353,14 +15353,17 @@ function readMachineConfig(configFile) {
   if (!isObject(parsed) || Array.isArray(parsed)) {
     throw fileValueError(configFile, "<root>", "must be a JSON object");
   }
-  assertKnownKeys(
-    parsed,
-    ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
-    configFile
-  );
+  const newer = typeof parsed.schema_version === "number" && parsed.schema_version > CONFIG_SCHEMA_VERSION;
+  if (!newer) {
+    assertKnownKeys(
+      parsed,
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+      configFile
+    );
+  }
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
     throw new AmbientConfigError(
-      `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
+      `Unsupported schema_version ${JSON.stringify(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}` + (newer ? "; this file was written for a newer Ensemble. Upgrade Ensemble to read it." : "")
     );
   }
   if (parsed.worker_scope !== void 0) {
@@ -16254,6 +16257,7 @@ var RunRecordWriter = class _RunRecordWriter {
       model: record.model,
       effort: record.effort,
       fallback: record.fallback,
+      fallback_source: { ...record.fallbackSource },
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
@@ -17545,6 +17549,25 @@ function claudeApiErrorOf(diagnostics) {
     status: typeof record.status === "number" ? record.status : null,
     code: typeof record.code === "string" ? record.code : null
   };
+}
+
+// src/fallback-source.ts
+var handedOff = /* @__PURE__ */ new WeakMap();
+function handOffFallbackSource(options, source) {
+  handedOff.set(options, source);
+  return options;
+}
+function fallbackSourceOf(passed, validated) {
+  return handedOff.get(passed) ?? (validated.fallback === void 0 ? { kind: "none" } : { kind: "call" });
+}
+function attributeMergedChain(merged, callFallback, engine) {
+  if (callFallback !== void 0) {
+    return handOffFallbackSource(merged, { kind: "call" });
+  }
+  if (merged.fallback !== void 0) {
+    return handOffFallbackSource(merged, { kind: "defaults", engine });
+  }
+  return handOffFallbackSource(merged, { kind: "none" });
 }
 
 // src/progress.ts
@@ -19555,6 +19578,89 @@ async function startCaptureProvider() {
   };
 }
 
+// src/owned-command.ts
+var DEFAULT_COMMAND_BOUNDS = { stopGraceMs: 2e3, drainMs: 1e3 };
+async function runOwnedCommand(scopes, file, args, options) {
+  const { input, signal, bounds = DEFAULT_COMMAND_BOUNDS, ...launch } = options;
+  if (signal?.aborted) {
+    return { ok: false, stdout: "", stderr: abortAccount(signal), exitCode: null, signal: null, ending: "cancelled" };
+  }
+  let child;
+  try {
+    child = await scopes.launch(file, args, { ...launch, stdio: ["pipe", "pipe", "pipe"] });
+  } catch (error) {
+    return { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error), exitCode: null, signal: null, ending: "completed" };
+  }
+  return new Promise((resolve) => {
+    const stdout = [];
+    const stderr = [];
+    let cancelled = false;
+    let exited = null;
+    let spawnError = null;
+    let settled = false;
+    const timers = /* @__PURE__ */ new Set();
+    const after = (ms, run) => {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        run();
+      }, ms);
+      timers.add(timer);
+    };
+    const settle = (ending) => {
+      if (settled) return;
+      settled = true;
+      for (const timer of timers) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.stdin?.destroy();
+      const said = spawnError?.message ?? Buffer.concat(stderr).toString();
+      resolve({
+        ok: ending === "completed" && spawnError === null && exited?.code === 0,
+        stdout: Buffer.concat(stdout).toString(),
+        // A cancelled command's own stderr is kept, with the cancellation's
+        // reason after it, so an account names both.
+        stderr: ending === "completed" || signal === void 0 ? said : [said, abortAccount(signal)].filter((part) => part.length > 0).join("\n"),
+        exitCode: exited?.code ?? null,
+        signal: exited?.signal ?? null,
+        ending
+      });
+    };
+    const endingNow = () => cancelled ? "cancelled" : "completed";
+    const onAbort = () => {
+      if (exited !== null || settled) return;
+      cancelled = true;
+      child.kill("SIGTERM");
+      after(bounds.stopGraceMs, () => {
+        if (exited !== null) return;
+        child.kill("SIGKILL");
+        after(bounds.drainMs, () => settle("unconfirmed"));
+      });
+    };
+    child.stdout?.on("data", (chunk) => stdout.push(chunk));
+    child.stderr?.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", (error) => {
+      if (child.pid === void 0) {
+        spawnError = error;
+        settle(endingNow());
+      }
+    });
+    child.on("exit", (code, exitSignal) => {
+      exited = { code, signal: exitSignal };
+      after(bounds.drainMs, () => settle(endingNow()));
+    });
+    child.on("close", () => settle(endingNow()));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    child.stdin?.on("error", () => void 0);
+    child.stdin?.end(input ?? void 0);
+  });
+}
+function abortAccount(signal) {
+  const reason = signal.reason;
+  return `cancelled: ${reason instanceof Error ? reason.message : String(reason)}`;
+}
+
 // src/worker-scopes.ts
 import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
 import { readFile as readFile5, readdir as readdir4 } from "node:fs/promises";
@@ -19870,6 +19976,15 @@ var ClaudeCliControlPlane = class {
   #settingsDirs = /* @__PURE__ */ new Map();
   /** The one-time sweep of settings directories earlier launchers left behind, run before this control plane's first dispatch. */
   #orphanSweep = null;
+  #commandBounds;
+  #reclaimTimeoutMs;
+  /** Cancelled launches this control plane still owns, by dispatch name; `close()` ends them. */
+  #unclaimed = /* @__PURE__ */ new Map();
+  /** Dispatches still waiting for their session: `close()` cancels them and waits for each to settle. */
+  #inFlight = /* @__PURE__ */ new Set();
+  /** Aborted by `close()`; every dispatch listens to it beside its caller's own signal. */
+  #closeController = new AbortController();
+  #closing = null;
   constructor(options = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
     this.#tmuxBin = options.tmuxBin ?? "tmux";
@@ -19879,6 +19994,8 @@ var ClaudeCliControlPlane = class {
     const configDir = claudeConfigDirectory(this.#env, process.cwd());
     this.#projectsDir = options.projectsDir ?? path14.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
+    this.#commandBounds = options.commandBounds ?? DEFAULT_COMMAND_BOUNDS;
+    this.#reclaimTimeoutMs = options.reclaimTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
@@ -19911,14 +20028,15 @@ var ClaudeCliControlPlane = class {
     const nonce = randomUUID3();
     let handle;
     try {
-      handle = await this.#dispatch({
+      handle = await this.dispatch({
         prompt: claudeToolSurfaceProbePrompt(nonce),
         name: `ensemble-tool-surface-${nonce}`,
         cwd: request.cwd,
         ...request.model !== void 0 ? { model: request.model } : {},
         permissionDenyRules: [...request.permissionDenyRules],
-        settingsEnv: request.settingsEnv
-      }, { ANTHROPIC_BASE_URL: provider.origin }, request.signal);
+        settingsEnv: { ...request.settingsEnv, ANTHROPIC_BASE_URL: provider.origin },
+        signal: request.signal
+      });
       if (handle.launchFailure !== void 0) throw new Error(handle.launchFailure.message);
       let count = 0;
       let lastCapture = Date.now();
@@ -19948,10 +20066,18 @@ var ClaudeCliControlPlane = class {
     }
   }
   async dispatch(options) {
-    return this.#dispatch(options);
+    const signal = options.signal === void 0 ? this.#closeController.signal : AbortSignal.any([options.signal, this.#closeController.signal]);
+    signal.throwIfAborted();
+    const settled = Promise.withResolvers();
+    this.#inFlight.add(settled.promise);
+    try {
+      return await this.#dispatch(options, signal);
+    } finally {
+      this.#inFlight.delete(settled.promise);
+      settled.resolve();
+    }
   }
-  async #dispatch(options, probeEnv, signal) {
-    signal?.throwIfAborted();
+  async #dispatch(options, signal) {
     const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
     if (options.model !== void 0) {
       args.push("--model", options.model);
@@ -19961,30 +20087,36 @@ var ClaudeCliControlPlane = class {
     }
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.settingsEnv, probeEnv);
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.settingsEnv);
     args.push("--settings", path14.join(settingsDir, "settings.json"));
     let registered = null;
     let candidate = null;
     const dispatch = { result: null };
     let accepted = false;
     let discarded = false;
+    let unclaimed = false;
     let lastSeen = null;
     try {
       signal?.throwIfAborted();
-      void this.#runWithInput(this.#claudeBin, args, "", options.cwd).then(
-        (result) => dispatch.result = result,
-        (error) => dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error), exitCode: null, signal: null }
-      );
+      const launch = this.#launch(this.#claudeBin, args, { input: "", cwd: options.cwd, signal });
+      void launch.then((result) => dispatch.result = result);
+      const releaseIfCancelled = () => {
+        if (!signal.aborted) return;
+        this.#unclaimed.set(options.name, { name: options.name, settingsDir, command: launch });
+        unclaimed = true;
+        signal.throwIfAborted();
+      };
       let deadline = null;
       let placementDeadline = null;
       let placed = false;
       let placementPid = null;
       for (; ; ) {
-        candidate = await this.#findByName(options.name);
+        releaseIfCancelled();
+        candidate = await this.#findByName(options.name, signal);
+        releaseIfCancelled();
         if (candidate !== null) {
           registered = candidate.handle;
           lastSeen = candidate;
-          signal?.throwIfAborted();
           if (candidate.pid !== placementPid) {
             placed = false;
             placementDeadline = null;
@@ -20010,9 +20142,10 @@ var ClaudeCliControlPlane = class {
             );
           }
         }
-        await delay(100);
+        await delay(100, signal);
       }
       if (registered === null || dispatch.result === null) throw new Error("Claude dispatch lost its ready session");
+      releaseIfCancelled();
       const handle = registered;
       this.#settingsDirs.set(handle.sessionId, settingsDir);
       signal?.throwIfAborted();
@@ -20029,6 +20162,7 @@ var ClaudeCliControlPlane = class {
       }
       return handle;
     } catch (error) {
+      if (unclaimed) throw error;
       if (error instanceof Error) {
         const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id]).catch(() => null);
         const file = registered === null ? null : await this.transcriptPath(registered).catch(() => null);
@@ -20074,7 +20208,7 @@ var ClaudeCliControlPlane = class {
       }
       throw error;
     } finally {
-      if (!accepted) {
+      if (!accepted && !unclaimed) {
         if (registered !== null && !discarded) await this.stop(registered);
         await this.#removeSettingsDir(settingsDir);
       }
@@ -20092,12 +20226,11 @@ var ClaudeCliControlPlane = class {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName, permissionDenyRules, stripEnv, probeEnv) {
+  async #writeWorkerSettings(dispatchName, permissionDenyRules, stripEnv) {
     const env = {
       ...this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {},
       ...this.#workerEnv,
       ...stripEnv,
-      ...probeEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
     const settings = {
@@ -20239,7 +20372,7 @@ var ClaudeCliControlPlane = class {
         "-s",
         valve,
         `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
-      ], null, void 0, { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand });
+      ], { input: null, env: { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand } });
       if (!created.ok) return refused("tmux new-session", created);
       await delay(this.#valveAttachSettleMs);
       const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
@@ -20341,7 +20474,63 @@ var ClaudeCliControlPlane = class {
   async stop(handle) {
     await this.#stopSession(handle).catch(() => false);
   }
-  async #stopSession(handle, requireClean = false) {
+  /**
+   * Cancel every dispatch still waiting for its session, then end what
+   * every cancelled launch left behind, all within `reclaimTimeoutMs`:
+   *
+   * 1. In-flight dispatches are cancelled and awaited, so a dispatch the
+   *    close itself cancelled is among those reclaimed. One already past
+   *    cancellation — submitting its opening — returns its session to its
+   *    caller, which owns it from there.
+   * 2. Each cancelled launch's command is awaited; each settles within the
+   *    command bounds of its cancellation.
+   * 3. One roster read. A session registered under a cancelled launch's
+   *    name is stopped and removed as `stop` does, its settings with it.
+   *
+   * Unconfirmed, the launch is reported (`claude/launchUnreclaimed`, with
+   * the reason) and no longer owned: the roster could not be read, a
+   * session's teardown was not confirmed, the launch command's own exit
+   * was never observed, or no session had registered by the read. The
+   * settings directory is then left where it is, because a launch that is
+   * still being served reads it; the next launcher's sweep removes it once
+   * this launcher has ended. A session that registers later holds no
+   * prompt — the opening is only ever submitted after registration — and
+   * carries the dispatch's name in the roster and in its processes'
+   * environment.
+   */
+  close() {
+    this.#closing ??= this.#reclaimUnclaimed();
+    return this.#closing;
+  }
+  async #reclaimUnclaimed() {
+    const signal = AbortSignal.timeout(this.#reclaimTimeoutMs);
+    const expired = new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    this.#closeController.abort(new EngineShutdownError("claude"));
+    await Promise.race([Promise.all(this.#inFlight), expired]);
+    if (this.#unclaimed.size === 0) return;
+    const launches = [...this.#unclaimed.values()];
+    this.#unclaimed.clear();
+    const endings = await Promise.race([Promise.all(launches.map((launch) => launch.command)), expired.then(() => null)]);
+    const roster = await this.#roster(signal);
+    for (const [index, launch] of launches.entries()) {
+      const found = roster.ok ? backgroundSessionNamed(roster.rows, launch.name) : null;
+      let reason;
+      if (found !== null) {
+        this.#settingsDirs.set(found.handle.sessionId, launch.settingsDir);
+        reason = await this.#stopSession(found.handle, true, signal).catch(() => false) ? null : "the registered session's teardown was not confirmed";
+      } else if (!roster.ok) {
+        reason = signal.aborted ? "the roster read did not finish within the reclamation bound" : "the roster could not be read";
+      } else if (endings === null || endings[index].ending === "unconfirmed") {
+        reason = "the launch command's exit was not observed";
+      } else {
+        reason = "no session had registered under the name when the roster was read";
+      }
+      if (reason !== null) {
+        this.#onEvent?.({ method: "claude/launchUnreclaimed", params: { name: launch.name, reason }, receivedAt: Date.now() });
+      }
+    }
+  }
+  async #stopSession(handle, requireClean = false, signal) {
     this.#watchedSessions.delete(handle.sessionId);
     if (this.#watchedSessions.size === 0 && this.#placementTimer !== null) {
       clearTimeout(this.#placementTimer);
@@ -20349,11 +20538,11 @@ var ClaudeCliControlPlane = class {
     }
     await this.#placementSweep;
     await this.#placing.get(handle.sessionId);
-    const stopped = await this.#run(this.#claudeBin, ["stop", handle.id]);
+    const stopped = await this.#run(this.#claudeBin, ["stop", handle.id], signal);
     this.#placements.delete(handle.sessionId);
     await this.#reapTaggedDescendants(handle.name);
-    const removed = await this.#run(this.#claudeBin, ["rm", handle.id]);
-    const roster = await this.#roster();
+    const removed = await this.#run(this.#claudeBin, ["rm", handle.id], signal);
+    const roster = await this.#roster(signal);
     const clean = stopped.ok && removed.ok && roster.ok && !roster.rows.some((row) => matchesHandle(row, handle)) && (await this.#findTaggedProcesses(handle.name)).length === 0;
     const settingsDir = this.#settingsDirs.get(handle.sessionId);
     if (settingsDir !== void 0 && (clean || !requireClean)) {
@@ -20423,31 +20612,15 @@ var ClaudeCliControlPlane = class {
     return (await this.#run(this.#tmuxBin, ["-V"])).ok;
   }
   /** The roster's row for a dispatch, as a handle plus the pid the row names (null until the supervisor reports one). */
-  async #findByName(name) {
-    const { rows } = await this.#roster();
-    const match = rows.find(
-      (row) => row.kind === "background" && row.name === name && typeof row.sessionId === "string"
-    );
-    if (match === void 0 || typeof match.sessionId !== "string") {
-      return null;
-    }
-    const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
-    return {
-      handle: {
-        id,
-        sessionId: match.sessionId,
-        name,
-        cwd: typeof match.cwd === "string" ? match.cwd : ""
-      },
-      pid: typeof match.pid === "number" && match.pid > 0 ? match.pid : null,
-      row: match
-    };
+  async #findByName(name, signal) {
+    return backgroundSessionNamed((await this.#roster(signal)).rows, name);
   }
   // `ok: false` means the query could not be performed (process error, empty or
-  // unparseable output) — distinct from "queried fine, session not listed",
-  // which is `{ ok: true, rows: [...] }` with the session simply absent.
-  async #roster() {
-    const result = await this.#run(this.#claudeBin, ["agents", "--json"]);
+  // unparseable output, or cancelled by the signal) — distinct from "queried
+  // fine, session not listed", which is `{ ok: true, rows: [...] }` with the
+  // session simply absent.
+  async #roster(signal) {
+    const result = await this.#run(this.#claudeBin, ["agents", "--json"], signal);
     if (!result.ok || result.stdout.trim().length === 0) {
       return { ok: false, rows: [] };
     }
@@ -20462,54 +20635,42 @@ var ClaudeCliControlPlane = class {
     }
     return { ok: true, rows: parsed.filter((row) => typeof row === "object" && row !== null) };
   }
-  #run(file, args, cwd) {
-    return this.#launch(file, args, null, cwd);
-  }
-  #runWithInput(file, args, input, cwd) {
-    return this.#launch(file, args, input, cwd);
+  #run(file, args, signal) {
+    return this.#launch(file, args, { input: null, ...signal !== void 0 ? { signal } : {} });
   }
   /**
    * The one route every control-plane child takes: launched by the scope
    * manager (outside the launcher's box, where a systemd user manager is
-   * reachable), under the spread `#env`, with its output collected and its
-   * exit status read as the verdict. `input` is streamed to stdin and the
-   * stream then closed; null closes it at once.
+   * reachable), under the spread `#env` unless the caller names another,
+   * with its output collected and its exit status read as the verdict.
+   * `input` is streamed to stdin and the stream then closed; null closes it
+   * at once. A command given a signal is the caller's to cancel, and ends
+   * within the command bounds (`runOwnedCommand`); one without runs to its
+   * own end.
    */
-  async #launch(file, args, input, cwd, env = this.#env) {
-    const child = await this.#scopes.launch(file, args, {
-      ...cwd !== void 0 ? { cwd } : {},
-      env,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    return new Promise((resolve) => {
-      const stdout = [];
-      const stderr = [];
-      let settled = false;
-      const finish = (result) => {
-        if (!settled) {
-          settled = true;
-          resolve(result);
-        }
-      };
-      child.stdout?.on("data", (chunk) => stdout.push(chunk));
-      child.stderr?.on("data", (chunk) => stderr.push(chunk));
-      child.on("error", (error) => {
-        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message, exitCode: null, signal: null });
-      });
-      child.on("close", (code, signal) => {
-        finish({
-          ok: code === 0,
-          exitCode: code,
-          signal,
-          stdout: Buffer.concat(stdout).toString(),
-          stderr: Buffer.concat(stderr).toString()
-        });
-      });
-      child.stdin?.on("error", () => void 0);
-      child.stdin?.end(input ?? void 0);
-    });
+  #launch(file, args, options) {
+    return runOwnedCommand(this.#scopes, file, args, { env: this.#env, ...options, bounds: this.#commandBounds });
   }
 };
+function backgroundSessionNamed(rows, name) {
+  const match = rows.find(
+    (row) => row.kind === "background" && row.name === name && typeof row.sessionId === "string"
+  );
+  if (match === void 0 || typeof match.sessionId !== "string") {
+    return null;
+  }
+  const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
+  return {
+    handle: {
+      id,
+      sessionId: match.sessionId,
+      name,
+      cwd: typeof match.cwd === "string" ? match.cwd : ""
+    },
+    pid: typeof match.pid === "number" && match.pid > 0 ? match.pid : null,
+    row: match
+  };
+}
 function matchesHandle(row, handle) {
   return typeof row.id === "string" && row.id === handle.id || typeof row.sessionId === "string" && row.sessionId === handle.sessionId;
 }
@@ -20529,9 +20690,15 @@ function launchAccount(result) {
 function shellQuote(value) {
   return "'" + value.replaceAll("'", "'\\''") + "'";
 }
-function delay(ms) {
+function delay(ms, signal) {
   return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
   });
 }
 
@@ -23379,7 +23546,10 @@ var ClaudeEngineAdapter = class {
     this.#closed = true;
     this.#scheduler.close(new EngineShutdownError(this.name));
     this.#strips.close();
-    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
+    await Promise.allSettled([
+      ...[...this.#activeInvocations].map((invocation) => invocation.close()),
+      this.#controlPlane.close()
+    ]);
   }
 };
 var OpenCodeEngineAdapter = class {
@@ -23935,8 +24105,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
+    const passedOptions = options;
     options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
+    const fallbackSource = fallbackSourceOf(passedOptions, options);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
     }
@@ -23951,6 +24123,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
+    }
+    if (engine instanceof OpenCodeEngineAdapter) {
+      if (options.model === void 0) {
+        throw new OpenCodeModelRequiredError(engine.modelRegistry.names());
+      }
+      validateEngineDefaults(engine.name, options, engine.modelRegistry);
     }
     const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
     this.budget.assertCanStart(engine.name);
@@ -23973,6 +24151,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       engine.name,
       prompt,
       { ...dispatchOptions, ...phase !== null ? { phase } : {} },
+      fallbackSource,
       stripRoutes
     );
     const unsettled = { record: agentRecord, stage: "dispatching" };
@@ -24047,6 +24226,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
+    const fallbackSource = fallbackSourceOf(options, options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === void 0) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -24071,6 +24251,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       resolvedModel: null,
       resolvedEffort: null,
       stripRoutes,
+      fallbackSource,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
@@ -24154,7 +24335,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...turn.schema !== void 0 ? { schema: turn.schema } : {},
         ...options.strip !== void 0 ? { strip: options.strip } : {}
       };
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
+      const fallbackSource = state.turnCount === 0 ? state.fallbackSource : { kind: "later-turn" };
+      const agentRecord = this.#newAgentRecord(
+        agentId,
+        engine.name,
+        prompt,
+        recordOptions,
+        fallbackSource,
+        state.stripRoutes
+      );
       agentRecord.resolvedModel = state.resolvedModel;
       agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
@@ -25474,7 +25663,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd
     };
   }
-  #newAgentRecord(id, engine, prompt, options, stripRoutes = null) {
+  #newAgentRecord(id, engine, prompt, options, fallbackSource, stripRoutes = null) {
     return {
       id,
       engine,
@@ -25487,6 +25676,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
       fallback: options.fallback === void 0 ? null : options.fallback.map((target) => ({ ...target })),
+      fallbackSource,
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
@@ -25784,7 +25974,7 @@ function mergeAgentDefaults(defaults, agentOptions) {
   assertValidAgentOptions(agentOptions ?? {});
   const engine = agentOptions?.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
-  if (engineDefaults === void 0) {
+  if (engine === void 0 || engineDefaults === void 0) {
     return agentOptions ?? {};
   }
   const merged = { ...engineDefaults };
@@ -25793,7 +25983,7 @@ function mergeAgentDefaults(defaults, agentOptions) {
       merged[key] = value;
     }
   }
-  return merged;
+  return attributeMergedChain(merged, agentOptions?.fallback, engine);
 }
 function mergeSessionDefaults(defaults, sessionOptions) {
   const engineDefaults = typeof sessionOptions.engine === "string" ? defaults[sessionOptions.engine] : void 0;
@@ -25806,7 +25996,7 @@ function mergeSessionDefaults(defaults, sessionOptions) {
       merged[key] = value;
     }
   }
-  return merged;
+  return attributeMergedChain(merged, sessionOptions.fallback, sessionOptions.engine);
 }
 function describeWorkerFailure(error) {
   const presented = presentOperationalError(error);
@@ -32956,6 +33146,14 @@ async function runEnsembleCli(argv, options = {}) {
 `);
         return;
       }
+      if (event.method === "claude/launchUnreclaimed") {
+        const name = boundedEvidence(String(event.params.name ?? "unknown"));
+        stderr.write(
+          `[claude] cancelled launch ${name} not reclaimed: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}; a session registering under that name is left for the operator
+`
+        );
+        return;
+      }
       if (event.method === "codex/workerScopePlacement") {
         if (event.params.kind === "refused") {
           const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
@@ -33583,7 +33781,8 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliUsageError(message);
+    const unknown = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ? unknownAgentOption(argv) : void 0;
+    throw new CliUsageError(unknown === void 0 ? message : unknownAgentOptionMessage(unknown));
   }
   if (parsed.positionals.length > 1) {
     throw new CliUsageError(`${program} agent accepts exactly one prompt argument, or reads the prompt from stdin`);
@@ -33634,6 +33833,45 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...workerScope !== void 0 ? { workerScope } : {},
     ...holdScope !== void 0 ? { holdScope } : {}
   };
+}
+function unknownAgentOption(argv) {
+  try {
+    const { tokens } = parseArgs({
+      args: argv,
+      options: AGENT_INVOCATION_OPTIONS,
+      strict: false,
+      allowPositionals: true,
+      tokens: true
+    });
+    const unknown = tokens.find((token) => token.kind === "option" && !Object.hasOwn(AGENT_INVOCATION_OPTIONS, token.name));
+    return unknown?.kind === "option" ? argv[unknown.index] : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function unknownAgentOptionMessage(option) {
+  const name = option.split("=", 1)[0];
+  const candidates = Object.keys(AGENT_INVOCATION_OPTIONS).map((key) => ({ flag: `--${key}`, distance: optionDistance(name, `--${key}`) })).filter(({ distance }) => distance <= 2).sort((left, right) => left.distance - right.distance || left.flag.localeCompare(right.flag));
+  const best = candidates[0];
+  if (best !== void 0 && (candidates[1] === void 0 || best.distance < candidates[1].distance)) {
+    return `Unknown option ${JSON.stringify(option)}. Did you mean ${JSON.stringify(best.flag)}?`;
+  }
+  return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${quoteShellArgument(option)}`;
+}
+function optionDistance(left, right) {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current2 = [row];
+    for (let column = 1; column <= right.length; column += 1) {
+      current2[column] = Math.min(
+        current2[column - 1] + 1,
+        previous[column] + 1,
+        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1)
+      );
+    }
+    previous = current2;
+  }
+  return previous[right.length];
 }
 async function readPrompt(stdin) {
   const chunks = [];
@@ -34036,8 +34274,11 @@ function programNameFor(scriptPath) {
     return DEFAULT_PROGRAM_NAME;
   }
   const absolutePath = path17.resolve(scriptPath);
-  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : `'${absolutePath.replaceAll("'", `'"'"'`)}'`;
+  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : quoteShellArgument(absolutePath);
   return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
+}
+function quoteShellArgument(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 var USAGE_WIDTH = 80;
 var USAGE_LEAD = "Usage: ";

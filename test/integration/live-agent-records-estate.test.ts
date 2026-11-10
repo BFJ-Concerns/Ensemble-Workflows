@@ -79,9 +79,10 @@ test("an independent reader follows queued, retried and held workers through the
     assert.equal(running.current_attempt.attempt, 1);
     await appendFile(acknowledgements, "parent-read-start\n");
     const [run, read] = await Promise.all([runProcess, readProcess]);
-    assert.equal(run.code, 0, run.stderr);
+    const childResults = JSON.stringify({ run, reader: read });
+    assert.equal(run.code, 0, childResults);
     assert.equal(JSON.parse(run.stdout), "complete");
-    assert.equal(read.code, 0, read.stderr);
+    assert.equal(read.code, 0, childResults);
     const observations = JSON.parse(read.stdout) as Array<{
       id: number; label: string; queued: boolean; session: { id: number; turn: number } | null;
       attempts: Array<{ attempt: number; transcript: string; sizes: number[]; readable: boolean }>;

@@ -599,6 +599,33 @@ test("opencode requires a registered model before spawning", () => {
   assert.equal(runner.runs.length, 0);
 });
 
+test("opencode option refusals leave no progress or archive worker", async () => {
+  const runner = new FakeOpenCodeRunner();
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry })]),
+    defaultMaxAttempts: 1
+  });
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+  } as unknown as RunRecordWriter);
+  try {
+    for (const [options, ErrorClass] of [
+      [{}, OpenCodeModelRequiredError],
+      [{ model: "glm-later" }, OpenCodeModelNotRegisteredError],
+      [{ model: "glm-5.2", effort: "not-a-variant" }, InvalidAgentOptionValueError]
+    ] as const) {
+      await assert.rejects(runtime.agent("never spawn", { engine: "opencode", ...options }), ErrorClass);
+      assert.equal(records.length, 0);
+      assert.equal(runtime.progress.snapshot().agents.length, 0);
+      assert.deepEqual(runtime.progress.snapshot().totals, { active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 0 });
+    }
+    assert.equal(runner.runs.length, 0);
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("a created runtime dispatches opencode against the models it was given", async () => {
   const declared = await EnsembleRuntime.create({ cwd: tmpdir(), openCodeModels: testOpenCodeModels });
   const undeclared = await EnsembleRuntime.create({ cwd: tmpdir() });

@@ -549,7 +549,11 @@ export interface ClaudeEngineAdapterOptions {
   concurrency?: number;
   /** Base working directory workers are dispatched from. Defaults to `process.cwd()`. */
   cwd?: string;
-  /** Injectable for tests; defaults to the real `claude`/`tmux` control plane. */
+  /**
+   * Injectable for tests; defaults to the real `claude`/`tmux` control
+   * plane. The adapter owns the control plane it is given and closes it
+   * when the adapter closes.
+   */
   controlPlane?: ClaudeControlPlane;
   /** Routes best-effort transcript-derived token usage into the runtime budget recorder. */
   onEvent?: (event: RuntimeEvent) => void;
@@ -657,7 +661,13 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     this.#closed = true;
     this.#scheduler.close(new EngineShutdownError(this.name));
     this.#strips.close();
-    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
+    // Beside the workers' own teardown, not after it: an invocation's close
+    // can wait on an attempt that is itself waiting on a dispatch, and only
+    // the control plane's close cancels that dispatch.
+    await Promise.allSettled([
+      ...[...this.#activeInvocations].map((invocation) => invocation.close()),
+      this.#controlPlane.close()
+    ]);
   }
 }
 

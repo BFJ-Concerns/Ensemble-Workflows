@@ -133,5 +133,5 @@ test("a built-in agent tool nobody has classified is denied while unrelated tool
       assert.deepEqual(skills.settingsEnv, {});
       assert.ok(surfaces[3]?.tools.some(tool => tool.name === "advisor"), "skills-only strip removed advisor");
       assert.ok(!surfaces[3]?.tools.some(tool => tool.name === "Skill"));
-    } finally { t.diagnostic(JSON.stringify({ surfaces })); preparer.close(); await f.close(); }
+    } finally { t.diagnostic(JSON.stringify({ surfaces })); preparer.close(); await plane.close(); await f.close(); }
   });

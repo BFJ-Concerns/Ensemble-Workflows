@@ -671,10 +671,13 @@ test("a Claude strip denies what the live tool surface classifies, unknown built
       // Every classified member is denied whether or not the surface shows
       // it; the unclassified built-in is denied too; unrelated and operator
       // tools are not.
-      const denied = ["Agent", "ListAgents", "SendMessage", "Skill", "SpawnTeammate", "Task", "Workflow"];
+      const denied = ["Agent", "ListAgents", "SendMessage", "Skill", "SpawnTeammate", "Task", "Workflow", "advisor"];
+      const removal = { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" };
       assert.deepEqual(controlPlane.dispatched[0]?.permissionDenyRules, denied);
-      // One inventory probe, then one confirming probe under the dispatched rules.
+      assert.deepEqual(controlPlane.dispatched[0]?.settingsEnv, removal);
+      // One inventory probe, then one confirming probe under the dispatched settings.
       assert.deepEqual(controlPlane.probed.map((probe) => probe.permissionDenyRules), [[], denied]);
+      assert.deepEqual(controlPlane.probed.map((probe) => probe.settingsEnv), [{}, removal]);
       const enforcement = runtime.lastAgentRecord()?.strip?.enforcement;
       for (const capability of ["skills", "agents"] as const) {
         assert.equal(enforcement?.[capability]?.route, "config");
@@ -693,6 +696,7 @@ test("an unstripped Claude dispatch carries no permission deny rules", async () 
     try {
       await runtime.agent("unrestricted", { engine: "claude" });
       assert.equal(controlPlane.dispatched[0]?.permissionDenyRules, undefined);
+      assert.equal(controlPlane.dispatched[0]?.settingsEnv, undefined);
       assert.equal(controlPlane.probed.length, 0, "an unstripped worker paid for a tool-surface probe");
     } finally {
       await runtime.close();

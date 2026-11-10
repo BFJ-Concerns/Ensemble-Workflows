@@ -82,7 +82,8 @@ export interface ClaudeControlPlane {
    * The CLI control plane launches the probe exactly as `dispatch` launches
    * a worker: the same executable, daemon, `cwd`, model pin, launch
    * environment, and per-dispatch settings file with the declared worker
-   * variables and these deny rules. The probe has no effort pin, since
+   * variables and these deny rules and `env` variables, written as
+   * `dispatch` writes a strip's. The probe has no effort pin, since
    * effort does not change the tool surface. One variable is added to the
    * settings `env` block: `ANTHROPIC_BASE_URL`, set to the `origin` of a
    * capture provider (`startCaptureProvider`) that this probe owns. A
@@ -106,6 +107,8 @@ export interface ClaudeToolSurfaceProbeRequest {
   model?: string;
   /** Empty for the inventory probe; the derived rules for the confirming one. */
   permissionDenyRules: readonly string[];
+  /** Empty for the inventory probe; the derived strip's removal variables for the confirming one. */
+  settingsEnv: Readonly<Record<string, string>>;
   signal: AbortSignal;
 }
 
@@ -146,6 +149,13 @@ export interface ClaudeDispatchOptions {
    * the denied tools.
    */
   permissionDenyRules?: readonly string[];
+  /**
+   * Settings `env` variables that remove tools the deny rules do not reach
+   * (capability stripping; `CLAUDE_TOOL_REMOVAL_ENV`). Written to the same
+   * settings file's `env` block after the declared worker variables, so no
+   * declaration can give a stripped worker the tool back.
+   */
+  settingsEnv?: Readonly<Record<string, string>>;
 }
 
 
@@ -393,7 +403,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // share the first one's sweep.
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.settingsEnv);
     args.push("--settings", path.join(settingsDir, "settings.json"));
     let registered: ClaudeSessionHandle | null = null;
     let candidate: { handle: ClaudeSessionHandle; pid: number | null; row: RosterRow } | null = null;
@@ -517,7 +527,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
   /**
    * Write the per-dispatch settings file carrying the declared worker
-   * environment plus the dispatch's ownership tag (`WORKER_MARKER_VARIABLE`).
+   * environment, a strip's removal variables over it, and the dispatch's
+   * ownership tag (`WORKER_MARKER_VARIABLE`).
    * Written on every dispatch: the tag is what lets `stop()` reap the
    * worker's surviving descendants, so an untagged worker would be an
    * unowned one. (This supersedes the earlier no-declaration-no-flag
@@ -526,7 +537,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: readonly string[]): Promise<string> {
+  async #writeWorkerSettings(
+    dispatchName: string,
+    permissionDenyRules?: readonly string[],
+    stripEnv?: Readonly<Record<string, string>>
+  ): Promise<string> {
     // The ownership tag is harness bookkeeping and always lands last.
     // The hold scope is per-lead coordination state whose contract is
     // inheritance by every nested invocation (`HOLD_SCOPE_ENV`). It is
@@ -539,6 +554,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     const env = {
       ...(this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {}),
       ...this.#workerEnv,
+      ...stripEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
     // The deny block joins the same single-purpose file rather than a second

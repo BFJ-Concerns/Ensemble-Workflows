@@ -586,11 +586,13 @@ test("an undeclared worker environment still dispatches with the ownership tag a
   }
 });
 
-test("permission deny rules join the per-dispatch settings file beside the env block", async () => {
+test("a strip's deny rules and removal variables join the per-dispatch settings file", async () => {
   // Capability stripping rides the same single-purpose file as the
   // worker environment: deny rules union additively across settings layers
   // and beat every allow, so carrying only this dispatch's rules never
-  // touches the operator's own permission configuration.
+  // touches the operator's own permission configuration. A removal
+  // variable lands over the declared worker environment, so a declaration
+  // cannot give a stripped worker the tool back.
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-deny-rules-"));
   try {
     const argvPath = path.join(dir, "dispatch-argv.json");
@@ -626,13 +628,15 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     const controlPlane = new DeliveryStubControlPlane({
       claudeBin: stubPath,
       projectsDir: dir,
-      dispatchTimeoutMs: 1_000
+      dispatchTimeoutMs: 1_000,
+      workerEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "" }
     });
     await controlPlane.dispatch({
       prompt: "hello",
       name,
       cwd: dir,
-      permissionDenyRules: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow"]
+      permissionDenyRules: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow", "advisor"],
+      settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" }
     });
 
     const dispatchArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
@@ -640,8 +644,8 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     assert.notEqual(flagIndex, -1);
     assert.deepEqual(JSON.parse(await readFile(dispatchArgv[flagIndex + 1]!, "utf8")), {
       worktree: { bgIsolation: "none" },
-      env: { [WORKER_MARKER_VARIABLE]: name },
-      permissions: { deny: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow"] }
+      env: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", [WORKER_MARKER_VARIABLE]: name },
+      permissions: { deny: ["Skill", "Task", "Agent", "ListAgents", "SendMessage", "Workflow", "advisor"] }
     });
   } finally {
     await rm(dir, { recursive: true, force: true });

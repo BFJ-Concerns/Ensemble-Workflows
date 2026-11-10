@@ -523,7 +523,10 @@ The fields present throughout a record's lifetime are:
 - `resolved_cwd`, `isolation` (`null` when unused).
 - `worktree`: the isolated worktree's `branch`, `base_commit`, `tip_commit`,
   `changed`, and `removed` — or `null`.
-- `label`, `phase`, and `status`. Status is `"in-progress"`, `"complete"`,
+- `phase`: the explicit agent/session option, or the current run phase set by
+  `phase(title)` when the agent or session turn queues; `null` if neither is
+  set. Later phase changes do not alter an existing agent record.
+- `label` and `status`. Status is `"in-progress"`, `"complete"`,
   `"failed"`, `"timed-out"`, `"interrupted"`, or `"abandoned"`. `"abandoned"`
   means no outcome was observed: either the run's own close ended while the
   dispatch record was still being written, or another run's sweep found the

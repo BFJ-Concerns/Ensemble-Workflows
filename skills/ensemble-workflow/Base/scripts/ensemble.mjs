@@ -31237,17 +31237,23 @@ async function assertKnownWorkflowReferences(workflow, filename, cwd, env) {
     const expression = asNode(node);
     if (expression === null) return;
     let localShadow = shadowed;
-    if (expression.type === "BlockStatement") {
-      localShadow ||= bodyBindsWorkflow(expression.body, false);
+    if (expression.type === "BlockStatement" || expression.type === "StaticBlock") {
+      localShadow ||= bodyBindsWorkflow(expression.body, false) || expression.type === "StaticBlock" && hasHoistedVar(expression);
     } else if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(expression.type)) {
-      localShadow ||= bindsWorkflow(expression.id) || Array.isArray(expression.params) && expression.params.some(bindsWorkflow) || hasHoistedVar(expression.body);
+      localShadow ||= bindsWorkflow(expression.id) || Array.isArray(expression.params) && expression.params.some(bindsWorkflow);
+      inspectNode(expression.params, localShadow);
+      inspectNode(expression.body, localShadow || hasHoistedVar(expression.body));
+      return;
     } else if (expression.type === "CatchClause") {
       localShadow ||= bindsWorkflow(expression.param);
     } else if (["ForStatement", "ForInStatement", "ForOfStatement"].includes(expression.type)) {
       const binding = asNode(expression.init ?? expression.left);
       localShadow ||= binding !== null && declarationBindsWorkflow(binding, false);
     } else if (expression.type === "SwitchStatement") {
+      inspectNode(expression.discriminant, shadowed);
       localShadow ||= Array.isArray(expression.cases) && expression.cases.some((entry) => bodyBindsWorkflow(asNode(entry)?.consequent, false));
+      inspectNode(expression.cases, localShadow);
+      return;
     } else if (expression.type === "ClassExpression") {
       localShadow ||= bindsWorkflow(expression.id);
     }

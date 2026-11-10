@@ -383,6 +383,47 @@ return workflow("there-is-no-such-workflow");`;
   );
 });
 
+test("class static blocks keep their lexical and hoisted workflow bindings local", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-static-workflow-"));
+  for (const declaration of ["const", "var"]) {
+    const source = `export const meta = { name: "static-local" };
+const values = [];
+class Local { static { ${declaration} workflow = name => values.push(name); workflow("local-name"); } }
+return values;`;
+    const result = await runWorkflowScript({ filename: path.join(directory, "local.js"), cwd: directory, runtime, log: () => {}, source });
+    assert.deepEqual(result.result, ["local-name"]);
+  }
+  const source = `export const meta = { name: "static-hoisted" };
+class Local { static { workflow("local-name"); { var workflow; } } }
+return 1;`;
+  await assert.rejects(
+    runWorkflowScript({ filename: path.join(directory, "hoisted.js"), cwd: directory, runtime, log: () => {}, source }),
+    /workflow is not a function/
+  );
+});
+
+test("parameter defaults and switch discriminants resolve workflow in their enclosing scope before dispatch", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-workflow-scope-"));
+  const bodies = [
+    'const run = async (value = workflow("missing-child")) => { var workflow; return value; }; await run();',
+    'switch (await workflow("missing-child")) { default: const workflow = () => {}; }',
+    'class Local { static { var workflow = name => name; } } await workflow("missing-child");'
+  ];
+  for (const body of bodies) {
+    let calls = 0;
+    const countingRuntime: WorkflowRuntime = {
+      ...runtime,
+      agent: (async () => { calls += 1; return "paid answer"; }) as unknown as WorkflowRuntime["agent"]
+    };
+    const source = `export const meta = { name: "scope" };\nawait agent("first", { engine: "codex" });\n${body}`;
+    await assert.rejects(
+      runWorkflowScript({ filename: path.join(directory, "scope.js"), cwd: directory, runtime: countingRuntime, log: () => {}, source }),
+      /scope\.js:3:\d+: workflow\("missing-child"\) was not found/
+    );
+    assert.equal(calls, 0);
+  }
+});
+
 test("child workflows share the parent budget ledger", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-workflow-budget-"));
   await writeFile(

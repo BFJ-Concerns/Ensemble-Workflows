@@ -20,6 +20,13 @@ import { RunRecordStartError } from "./errors.js";
 import { harnessVersion } from "./harness-version.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
+import {
+  REFUSED_BEFORE_WORKER_KINDS,
+  buildCostRollup,
+  type CostRollup,
+  type RollupAgentView,
+  type RollupAttemptView
+} from "./cost-rollup.js";
 
 import { withoutRunScopedVariables, type Resolved } from "./ambient-settings.js";
 import type { WorkerScopeGrouping } from "./worker-scopes.js";
@@ -31,13 +38,16 @@ import type { UsageSummary } from "./usage-summary.js";
 
 const execFileAsync = promisify(execFile);
 /**
- * 4 (2026-09-04): the agent record's `fallback_model` is replaced by the
- * declared `fallback` chain and the `answered_by` target; every attempt
- * carries its `target` and, when failed, its `classification`; the
- * manifest gains script-recorded `tallies`. A breaking shape change on
- * the agent record, so the version moves.
+ * 5: an agent record's `attempts` lists every attempt that demonstrably
+ * ran, so an abandoned record carries the attempt its writer died with as
+ * an entry with status `abandoned` and null outcome fields, where version 4
+ * listed settled attempts only and promised a non-null duration on each;
+ * and every `cost_rollup` leaf is one object carrying `complete` and
+ * `unobserved` beside its figures, where version 4 published either a
+ * summary or a bare absence. A version-4 reader would read the abandoned
+ * entry as settled and a lower bound as a total, so the version moves.
  */
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const MANIFEST_PATH = "manifest.json";
 
 /**
@@ -196,6 +206,101 @@ export interface RuntimeAgentAttemptRecord {
    * own ending cut short — the task never woke the session in time.
    */
   backgroundWaits: BackgroundTaskWait[];
+}
+
+/** A served identity as an engine reports it, either half null where it reported none. */
+export interface LiveAttemptIdentity {
+  resolvedModel: string | null;
+  resolvedEffort: string | null;
+}
+
+/** What the runtime knows as an attempt's execution begins. */
+export interface LiveAttemptStart {
+  attempt: number;
+  startedAt: string;
+  /** The target dispatched to: the requested pin, null when unpinned — as the settled attempt's `target`. */
+  target: { engine: EngineName; model: string | null };
+  /**
+   * The served identity the attempt starts with: null on both halves for a
+   * fresh thread or session (a first attempt, a retry, a fallback step),
+   * whose engine has yet to report; a held session's later turn starts
+   * with the identity its session already served, since that engine does
+   * not report it again for the turn.
+   */
+  identity: LiveAttemptIdentity;
+}
+
+/**
+ * The agent record's `current_attempt`, persisted while an attempt
+ * executes and kept, field for field, as the evidence an abandoned
+ * record's `attempts` entry is built from (`abandonedAttemptEntry`).
+ * Snake-case because it is stored and published exactly as held.
+ */
+export interface LiveAttemptRecord {
+  attempt: number;
+  started_at: string;
+  /** Codex: the archive-relative live file; Claude: the session's own absolute JSONL path; null until readable. */
+  transcript: string | null;
+  target: { engine: EngineName; model: string | null };
+  resolved_model: string | null;
+  resolved_effort: string | null;
+}
+
+/**
+ * An `attempts` entry for the attempt an abandoned record's writer died
+ * with: the evidence the live record held, and null wherever an outcome
+ * would stand. No outcome was observed, so a null here means unobserved —
+ * not "no output", "no failure" or "no time taken" as it would on a settled
+ * entry — and usage reads empty because live usage is not persisted. Same
+ * keys as a settled entry, so a reader handles one shape and branches on
+ * `status`.
+ */
+export interface AbandonedAttemptEntry {
+  attempt: number;
+  status: "abandoned";
+  target: { engine: EngineName; model: string | null };
+  failure: null;
+  classification: null;
+  chain_decision: null;
+  observed_failure: null;
+  worker_exit: null;
+  app_server_diagnostic: null;
+  background_waits: [];
+  raw_output: null;
+  validated_output: null;
+  resolved_model: string | null;
+  resolved_effort: string | null;
+  started_at: string;
+  ended_at: null;
+  duration_ms: null;
+  first_delta_ms: null;
+  token_usage_events: [];
+  diagnostics: Record<string, never>;
+}
+
+export function abandonedAttemptEntry(live: LiveAttemptRecord): AbandonedAttemptEntry {
+  return {
+    attempt: live.attempt,
+    status: "abandoned",
+    target: { engine: live.target.engine, model: live.target.model },
+    failure: null,
+    classification: null,
+    chain_decision: null,
+    observed_failure: null,
+    worker_exit: null,
+    app_server_diagnostic: null,
+    background_waits: [],
+    raw_output: null,
+    validated_output: null,
+    resolved_model: live.resolved_model,
+    resolved_effort: live.resolved_effort,
+    started_at: live.started_at,
+    ended_at: null,
+    duration_ms: null,
+    first_delta_ms: null,
+    token_usage_events: [],
+    diagnostics: {}
+  };
 }
 
 /** Bounded evidence emitted when the Codex transport cannot decode an inbound frame. */
@@ -411,7 +516,7 @@ interface AbandonmentRecord {
 }
 
 interface Manifest {
-  schema_version: 4;
+  schema_version: 5;
   kind: "run_manifest";
   run_id: string;
   run_uuid: string;
@@ -503,7 +608,7 @@ interface Manifest {
    */
   tallies: Record<string, number>;
   tallies_unavailable: "none-recorded" | null;
-  cost_rollup: Record<string, Record<string, UsageRollup | { unavailable: "no-usage-reported" }>>;
+  cost_rollup: CostRollup;
   files: FileEntry[];
   integrity: ManifestIntegrity;
 }
@@ -563,32 +668,6 @@ export interface WorkflowInvocationRecord {
   parentOrdinal: number;
 }
 
-interface UsageRollup {
-  /** Summary usage in the declared vocabulary — see `src/usage-summary.ts`. */
-  tokens: UsageSummary;
-  /**
-   * Money, in the absence-with-a-reason idiom the summary vocabulary uses:
-   * the reported form only where an engine actually reported cost
-   * with its usage, and otherwise the reason there is no figure. The
-   * harness prices nothing itself, so the old shape — `amount: null` under
-   * `source: "estimated"` — asserted an estimate that never existed and a
-   * consumer could not tell from "this run cost nothing".
-   */
-  cost: ReportedCost | { unavailable: "no-provider-cost-reported" | "unlike-currencies" };
-}
-
-/** Provider-reported spend, summed across the bucket's own usage events. */
-interface ReportedCost {
-  amount: number;
-  currency: string | null;
-  /**
-   * Always `provider-reported`: the harness has no pricing table, so the
-   * only figure it can publish is one an engine handed it. The field stays
-   * so a consumer reading a cost knows where it came from.
-   */
-  source: "provider-reported";
-}
-
 export class RunRecordWriter {
   readonly archiveDir: string;
   readonly manifest: Manifest;
@@ -599,7 +678,7 @@ export class RunRecordWriter {
   #tmpSeq = 0;
   #writeChain: Promise<unknown> = Promise.resolve();
   #sealed = false;
-  #currentAttempts = new Map<number, { attempt: number; started_at: string; transcript: string | null }>();
+  #currentAttempts = new Map<number, LiveAttemptRecord>();
   #liveCodex = new Map<string, string>();
   #liveCodexHashes = new Map<string, { hash: Hash; size: number }>();
 
@@ -877,13 +956,47 @@ export class RunRecordWriter {
     });
   }
 
-  /** Publish execution start separately from dispatch and settlement. */
-  async recordAttemptStart(id: number, attempt: number, startedAt: string): Promise<void> {
+  /**
+   * Publish execution start separately from dispatch and settlement. The
+   * new attempt replaces any earlier one whole, so identity observed on a
+   * refused or retried attempt never carries onto the next.
+   */
+  async recordAttemptStart(id: number, start: LiveAttemptStart): Promise<void> {
     await this.#serialise(async () => {
       if (this.#sealed) return;
       const record = this.#agents.get(id);
       if (record === undefined || record.status !== "in-progress") return;
-      this.#currentAttempts.set(id, { attempt, started_at: startedAt, transcript: null });
+      this.#currentAttempts.set(id, {
+        attempt: start.attempt,
+        started_at: start.startedAt,
+        transcript: null,
+        target: { engine: start.target.engine, model: start.target.model },
+        resolved_model: start.identity.resolvedModel,
+        resolved_effort: start.identity.resolvedEffort
+      });
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+
+  /**
+   * Persist a served identity the engine reported for the running attempt,
+   * before it settles, so a writer that dies mid-attempt leaves the model
+   * and effort that were serving it. Each value replaces the live
+   * attempt's own — a null clears it, since an engine reporting none for
+   * this attempt has unsaid the earlier report — and the manifest's
+   * roll-up is recomputed in the same write, so the running attempt books
+   * under the model now serving it. Ignored unless `attempt` is the live
+   * attempt, so a late callback from an attempt already replaced never
+   * relabels its successor.
+   */
+  async recordAttemptIdentity(id: number, attempt: number, identity: LiveAttemptIdentity): Promise<void> {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const current = this.#currentAttempts.get(id);
+      if (current?.attempt !== attempt) return;
+      if (current.resolved_model === identity.resolvedModel && current.resolved_effort === identity.resolvedEffort) return;
+      current.resolved_model = identity.resolvedModel;
+      current.resolved_effort = identity.resolvedEffort;
       await this.#publishCurrentAttempt(id);
     });
   }
@@ -945,10 +1058,42 @@ export class RunRecordWriter {
     if (current === undefined) {
       delete record.current_attempt;
     } else {
-      record.current_attempt = { ...current };
+      record.current_attempt = structuredClone(current);
     }
     await this.#writeJson(relativePath, record);
+    this.manifest.cost_rollup = buildCostRollup(this.#rollupViews());
     await this.#writeManifest();
+  }
+
+  /**
+   * The roll-up's view of every recorded agent: its settled attempts, then
+   * its live attempt where one runs that is not already settled — the live
+   * entry outlasts its own settlement until the next attempt or the
+   * settled record replaces it, and must not book the attempt twice.
+   */
+  #rollupViews(): RollupAgentView[] {
+    return [...this.#agents.values()].map((record) => {
+      const attempts: RollupAttemptView[] = record.attempts.map((attempt) => ({
+        attempt: attempt.attempt,
+        engine: attempt.target.engine,
+        resolvedModel: attempt.resolvedModel,
+        settled: true,
+        failureKind: attempt.failure?.kind ?? null,
+        tokenUsageEvents: attempt.tokenUsageEvents
+      }));
+      const live = this.#currentAttempts.get(record.id);
+      if (live !== undefined && !attempts.some((attempt) => attempt.attempt === live.attempt)) {
+        attempts.push({
+          attempt: live.attempt,
+          engine: live.target.engine,
+          resolvedModel: live.resolved_model,
+          settled: false,
+          failureKind: null,
+          tokenUsageEvents: []
+        });
+      }
+      return { id: record.id, engine: record.engine, status: record.status, resolvedModel: record.resolvedModel, attempts };
+    });
   }
 
   async recordAgent(record: RuntimeAgentRecord): Promise<void> {
@@ -1009,7 +1154,7 @@ export class RunRecordWriter {
     const agentJsonPath = `${agentDir}/agent.json`;
     const unsettledTiming = record.status === "in-progress" || record.status === "abandoned";
     await this.#writeJson(agentJsonPath, {
-      ...(this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id)! } } : {}),
+      ...(this.#currentAttempts.has(record.id) ? { current_attempt: structuredClone(this.#currentAttempts.get(record.id)!) } : {}),
       schema_version: SCHEMA_VERSION,
       kind: "agent_record",
       id: record.id,
@@ -1110,7 +1255,7 @@ export class RunRecordWriter {
       transcripts: transcriptRefs,
       transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
     });
-    this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
+    this.manifest.cost_rollup = buildCostRollup(this.#rollupViews());
     await this.#writeManifest();
   }
 
@@ -1281,8 +1426,8 @@ function transcriptAbsenceReason(
  * is written: the dispatch-time write (`in-progress`) has not settled an
  * attempt, so it says `record-unsettled` — the attempt in flight and its
  * spend are unobserved, not absent. That wording survives an unclean death
- * unchanged: the reaper resolves the status to `abandoned` and rewrites no
- * content, so a killed run's record never denies the attempt its live
+ * unchanged: the reaper resolves the status to `abandoned` and leaves
+ * `usage` as written, so a killed run's record never denies the attempt its live
  * status snapshot showed running. Only a settled record with no attempts
  * says `no-attempt-ran`.
  */
@@ -1327,107 +1472,8 @@ function agentUsage(
 /** Every recorded attempt was refused before a worker existed. */
 function substratesNeverStarted(record: RuntimeAgentRecord): boolean {
   return record.attempts.length > 0 && record.attempts.every((attempt) =>
-    attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
+    attempt.failure !== null && REFUSED_BEFORE_WORKER_KINDS.has(attempt.failure.kind)
   );
-}
-
-function buildCostRollup(
-  records: RuntimeAgentRecord[]
-): Record<string, Record<string, UsageRollup | { unavailable: "no-usage-reported" }>> {
-  const rollup: Record<string, Record<string, UsageRollup | { unavailable: "no-usage-reported" }>> = {};
-  // Cost is accumulated separately from the published shape because the
-  // published shape is a statement, not a running total: a bucket that never
-  // sees a provider-reported figure must publish the reason rather than a
-  // zero, and one that sees unlike currencies must publish that reason
-  // rather than a cross-currency sum.
-  const accumulators = new Map<string, CostAccumulator>();
-  const noteAbsentUsage = (engine: EngineName, model: string): void => {
-    rollup[engine] ??= {};
-    rollup[engine][model] ??= { unavailable: "no-usage-reported" };
-  };
-  for (const record of records) {
-    if (record.attempts.length === 0) {
-      noteAbsentUsage(record.engine, "unresolved");
-    }
-    // Spend is keyed under the engine and model that actually served each
-    // attempt's turns — attempts can resolve different served models (a
-    // retry opens a fresh thread) and, under a fallback chain,
-    // different engines — so attribution is per attempt, falling back to
-    // the agent-level answer and then to the literal "unresolved". Never
-    // the requested pin: a rollup label is a claim about what ran, not
-    // about what was asked for. A no-event attempt adds no bucket —
-    // an unavailable bucket states that no usage was observed; a zero token
-    // summary would claim a measurement that never happened.
-    // An attempt that reported no served model of its own may borrow the
-    // agent-level answer only when that answer came from its own engine:
-    // the agent-level field is last-write-wins across attempts, and under
-    // a cross-engine chain the last writer is the answering engine, whose
-    // model must never label a refused engine's spend.
-    const lastReporter = record.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.target.engine ?? record.engine;
-    for (const attempt of record.attempts) {
-      const engine = attempt.target.engine;
-      const summary = summariseUsage(engine, attempt.tokenUsageEvents);
-      const borrowed = engine === lastReporter ? record.resolvedModel : null;
-      const model = attempt.resolvedModel ?? borrowed ?? "unresolved";
-      if (summary === null) {
-        noteAbsentUsage(engine, model);
-        continue;
-      }
-      rollup[engine] ??= {};
-      const existing = rollup[engine][model];
-      const key = `${engine}\u0000${model}`;
-      const accumulator = accumulators.get(key) ?? { amount: 0, currency: null, reported: false, unlike: false };
-      accumulators.set(key, accumulator);
-      for (const event of attempt.tokenUsageEvents) {
-        addProviderCost(accumulator, event);
-      }
-      rollup[engine][model] = {
-        tokens: existing === undefined || "unavailable" in existing ? summary : addUsageSummary(existing.tokens, summary),
-        cost: publishedCost(accumulator)
-      };
-    }
-  }
-  return rollup;
-}
-
-interface CostAccumulator {
-  amount: number;
-  currency: string | null;
-  reported: boolean;
-  /** Latched once two events disagree on currency; never unlatched. */
-  unlike: boolean;
-}
-
-function publishedCost(accumulator: CostAccumulator): UsageRollup["cost"] {
-  if (accumulator.unlike) {
-    return { unavailable: "unlike-currencies" };
-  }
-  if (!accumulator.reported) {
-    return { unavailable: "no-provider-cost-reported" };
-  }
-  return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
-}
-
-function addProviderCost(target: CostAccumulator, event: TokenUsageEvent): void {
-  if (target.unlike) {
-    return;
-  }
-  const cost = event.raw.cost;
-  if (typeof cost !== "number" || !Number.isFinite(cost)) {
-    return;
-  }
-  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
-  // Unlike currencies cannot be summed; an explicit unknown beats a silent
-  // cross-currency total, so the bucket degrades to token-only accounting.
-  if (target.currency !== null && currency !== null && currency !== target.currency) {
-    target.unlike = true;
-    return;
-  }
-  target.amount += cost;
-  target.reported = true;
-  if (currency !== null && target.currency === null) {
-    target.currency = currency;
-  }
 }
 
 /**
@@ -1468,18 +1514,22 @@ export interface ReapAbandonedRunsOptions {
  * there no ordering argument exists, so a residual fresh-read-to-rename
  * window remains — confined to a pre-owner writer still running
  * mid-upgrade, and accepted as transition-era cost rather than claimed
- * away. The reaper resolves *statuses*, never content: beside the manifest
- * flip it rewrites the run's own still-`in-progress` agent records to
- * `abandoned` with the same abandonment provenance, because a dispatch-time
- * agent record frozen at `in-progress` would otherwise read to a consumer
- * as a run still going. `abandoned` marks the recording as truncated:
- * whatever attempts and usage the record carries are what was recorded
- * before the death — `attempts` lists settled attempts only, and the
- * writer-side `record-unsettled` absence reason survives the flip — so
- * their absence is unobserved, never zero and never "no attempt ran". Each rewritten record's
- * entry in the manifest's files table is refreshed in the same manifest
- * write as the status flip, so a reaped archive still verifies. The
- * reaper still never deletes, never invents usage or attempts, and never
+ * away. Beside the manifest flip the reaper rewrites the run's own
+ * still-`in-progress` agent records to `abandoned` with the same
+ * abandonment provenance, because a dispatch-time agent record frozen at
+ * `in-progress` would otherwise read to a consumer as a run still going.
+ * For records of this writer's schema version it also reconciles each one
+ * from the evidence its writer persisted (`reconcileAbandonedAgentRecord`)
+ * and recomputes the manifest's `cost_rollup` from the reconciled records
+ * (`rollupViewOfArchivedRecord`), so the attempt that demonstrably ran is
+ * listed and booked. Older records keep the status flip alone.
+ * `abandoned` marks the recording as truncated: the record carries what was
+ * recorded before the death, and the writer-side `record-unsettled`
+ * absence reason survives the flip, so missing usage reads as unobserved,
+ * never zero and never "no attempt ran". Every file the sweep rewrites,
+ * re-measures or adds has its files-table entry refreshed in the same
+ * manifest write as the status flip, so a reaped archive still verifies. The
+ * reaper never deletes, never invents an outcome, usage or timing, and never
  * touches a record whose own terminal status landed.
  * Never-fail throughout — a sweep failure must never fail the run that
  * triggered it (it is awaited, so its cost is bounded by the namespace's
@@ -1621,6 +1671,99 @@ async function resolveAbandonedAgentRecords(
     }
   }
   return rewritten;
+}
+
+/**
+ * Reconcile one abandoned agent record that a writer of this schema
+ * version left `in-progress`, from the evidence that writer persisted.
+ * The sweep calls it in place of the bare status flip for records whose
+ * `schema_version` is this writer's own; a record of an older version
+ * keeps the flip alone, since its live entry carries no target or
+ * identity to promote. It returns the reconciled record, and the
+ * files-table entries that the sweep's one manifest write must carry for
+ * every file it rewrote, re-measured or added.
+ *
+ * Must hold of the returned record:
+ * - `status` is `abandoned`, `abandonment` is the sweep's block, and
+ *   `current_attempt` is gone.
+ * - A `current_attempt` whose number no settled entry carries is appended
+ *   to `attempts` as `abandonedAttemptEntry(current_attempt)`. A live entry
+ *   already settled under its number adds nothing.
+ * - The agent-level `resolved_model` and `resolved_effort` take the
+ *   appended entry's values where they are non-null: last write wins, as
+ *   across settled attempts.
+ * - The entry's live transcript, where one exists, is linked in
+ *   `transcripts` as `{ attempt, path, format: "jsonl", source, partial:
+ *   true, thread_id: null, session_id: null }`, with `source` as the
+ *   engine's settled capture names it, and `transcripts_unavailable`
+ *   then reads null. A Codex path is already in the archive: its size and
+ *   digest are measured from disk, because a writer killed between an
+ *   append and its manifest rewrite leaves the table's entry stale. A
+ *   Claude path lies outside the archive: its file is copied in under the
+ *   name the settled writer uses (`attempt-NN-1-transcript.claude.jsonl`)
+ *   and the copy is linked; an unreadable one is not linked, and nothing
+ *   claims a transcript the archive does not hold.
+ * - `usage`, `termination_cause`, `queued_ms` and `execution_ms` stand as
+ *   the dead writer left them; nothing is inferred for them.
+ */
+export async function reconcileAbandonedAgentRecord(
+  runDir: string,
+  record: Record<string, unknown>,
+  abandonment: AbandonmentRecord
+): Promise<{ record: Record<string, unknown>; files: FileEntry[] }> {
+  void runDir;
+  void record;
+  void abandonment;
+  throw new Error("reconcileAbandonedAgentRecord is not built");
+}
+
+/**
+ * A persisted agent record as the roll-up reads it — the archive-side
+ * twin of the writer's own projection, so the sweep recomputes a dead
+ * run's `cost_rollup` from the same judgements its writer would have
+ * made. The sweep recomputes the roll-up only for a run whose records are
+ * all of this writer's schema version, after reconciling them; null for
+ * anything else, and the sweep then leaves the roll-up as written.
+ */
+export function rollupViewOfArchivedRecord(value: unknown): RollupAgentView | null {
+  if (!isObject(value) || value.schema_version !== SCHEMA_VERSION || value.kind !== "agent_record") {
+    return null;
+  }
+  const { id, engine, status, resolved_model: resolvedModel, attempts } = value;
+  if (typeof id !== "number" || !isEngineName(engine) || !isAgentStatus(status) ||
+    !(typeof resolvedModel === "string" || resolvedModel === null) || !Array.isArray(attempts)) {
+    return null;
+  }
+  const views: RollupAttemptView[] = [];
+  for (const attempt of attempts) {
+    if (!isObject(attempt) || typeof attempt.attempt !== "number" || !isObject(attempt.target) ||
+      !isEngineName(attempt.target.engine) || !Array.isArray(attempt.token_usage_events)) {
+      return null;
+    }
+    const failure = attempt.failure;
+    views.push({
+      attempt: attempt.attempt,
+      engine: attempt.target.engine,
+      resolvedModel: typeof attempt.resolved_model === "string" ? attempt.resolved_model : null,
+      settled: attempt.status !== "abandoned",
+      failureKind: isObject(failure) && typeof failure.kind === "string" ? failure.kind : null,
+      tokenUsageEvents: attempt.token_usage_events as TokenUsageEvent[]
+    });
+  }
+  return { id, engine, status, resolvedModel, attempts: views };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isEngineName(value: unknown): value is EngineName {
+  return value === "codex" || value === "claude" || value === "opencode";
+}
+
+function isAgentStatus(value: unknown): value is AgentStatus {
+  return value === "in-progress" || value === "complete" || value === "failed" ||
+    value === "timed-out" || value === "interrupted" || value === "abandoned";
 }
 
 function runDirectoryFor(storeDir: string, namespace: NamespaceRecord, runUuid: string): string {

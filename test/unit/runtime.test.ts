@@ -37,7 +37,7 @@ import {
   WorktreePlacementRejectedError
 } from "../../src/errors.js";
 
-import { RunRecordWriter, type RuntimeAgentRecord } from "../../src/run-record.js";
+import { RunRecordWriter, type LiveAttemptStart, type RuntimeAgentRecord } from "../../src/run-record.js";
 import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
 import type {
@@ -4682,7 +4682,7 @@ for (const structured of [false, true]) {
     runtime.setRunRecorder({
       recordAgent: async (record: RuntimeAgentRecord) => { snapshots.push(structuredClone(record)); },
       recordAttemptEnd: ignoreAttemptEnd,
-      recordAttemptStart: async (id: number, attempt: number, at: string) => { starts.push({ id, attempt, at }); },
+      recordAttemptStart: async (id: number, { attempt, startedAt: at }: LiveAttemptStart) => { starts.push({ id, attempt, at }); },
       appendCodexTranscript: async (id: number, attempt: number, event: unknown) => {
         await new Promise<void>((resolve) => setImmediate(resolve));
         writes.push({ id, attempt, event });
@@ -4798,7 +4798,7 @@ test("fallback targets publish their own transcript and reject callbacks from th
   runtime.setRunRecorder({
     recordAgent: async () => undefined,
     recordAttemptEnd: ignoreAttemptEnd,
-    recordAttemptStart: async (id: number, attempt: number) => { starts.push([id, attempt]); },
+    recordAttemptStart: async (id: number, { attempt }: LiveAttemptStart) => { starts.push([id, attempt]); },
     appendCodexTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); },
     recordClaudeTranscript: async (id: number, attempt: number, file: string) => { writes.push([id, attempt, file]); }
   } as unknown as RunRecordWriter);
@@ -4867,12 +4867,12 @@ for (const boundary of ["retry", "settlement"] as const) {
     const reachedBoundary = new Promise<void>((resolve) => { entered = resolve; });
     const publication = new Promise<void>((resolve) => { release = resolve; });
     const recordStart = writer.recordAttemptStart.bind(writer);
-    writer.recordAttemptStart = async (id, attempt, at) => {
-      if (boundary === "retry" && attempt === 2) {
+    writer.recordAttemptStart = async (id, start) => {
+      if (boundary === "retry" && start.attempt === 2) {
         entered();
         await publication;
       }
-      await recordStart(id, attempt, at);
+      await recordStart(id, start);
     };
     const recordAgent = writer.recordAgent.bind(writer);
     writer.recordAgent = async (record) => {

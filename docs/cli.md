@@ -64,7 +64,7 @@ a script argument spelled like a run option, put `--` before the script path:
 | Option | Description |
 |---|---|
 | `--json-args '<json>'`, `--json-args @file` | Replace the positional arguments with a parsed JSON value, inline or read from a file. At most 256 levels of nested arrays or objects |
-| `--budget engine=N` | Token-spend ceiling for one engine, checked when each worker is dispatched. Repeatable, one engine each |
+| `--budget engine=N` | Token-spend ceiling for one engine, checked before queueing each call or session turn. Already-admitted calls still run and can overshoot the ceiling (see [Budgets](workflow-scripts.md#budgets)). Repeatable, one engine each |
 | `--concurrency engine=N` | Maximum parallel workers on one engine. Repeatable, one engine each |
 | `--agent-ceiling N` | Maximum parallel workers across every engine. `--agent-ceiling null` lifts a ceiling set in the environment or configuration file for this run |
 | `--timeout ms` | Whole-run deadline, at most 2147483647. Distinct from an `agent()` call's own `timeoutMs` |
@@ -164,7 +164,7 @@ answered by hand.
 Workflow and single-agent runs print their result as JSON on stdout, whatever
 its type. A schema agent's object prints as a JSON object. A plain-text answer
 prints as a JSON string with enclosing double quotes, so `jq -r .` recovers the
-original text:
+original text. Illustrative output:
 
 ```sh
 $ ensemble agent --engine codex --model gpt-6-luna 'Say hello in one sentence.'

@@ -89,8 +89,8 @@ non-empty string.
 - Without a schema, it returns the worker's final text (trimmed, non-empty),
   or `null` on the same terms.
 
-A failed call returns `null` rather than throwing; see
-[Failures](#failures). A Claude call with no `model` is flagged on stderr.
+A worker failure returns `null`; pre-spawn rejections and run endings throw.
+See [Failures](#failures). A Claude call with no `model` is flagged on stderr.
 
 ### Fallback chains
 
@@ -552,10 +552,18 @@ says so.
 
 ### Claude dispatch
 
+Claude workers use `--dangerously-skip-permissions`. Before the first
+dispatch, run `claude --dangerously-skip-permissions` interactively and accept
+the bypass-permissions disclaimer in the Claude configuration home the
+workers will use. This is a one-time prerequisite for that home; a fresh or
+isolated Claude configuration home needs its own acceptance. Ensemble does
+not accept the disclaimer on your behalf.
+
 Every Claude worker is launched with `CLAUDE_CODE_SANDBOXED` set, which tells
-Claude Code to skip its per-directory trust prompt. Workers placed in a fresh
-directory, a sibling checkout, or a new worktree therefore start without any
-prompt and without changes to your Claude configuration.
+Claude Code to skip its per-directory trust prompt. Once the bypass disclaimer
+is accepted, workers placed in a fresh directory, a sibling checkout, or a
+new worktree need no further directory-trust prompt or configuration change.
+The variable does not bypass the one-time disclaimer.
 
 If Claude Code still refuses a dispatch before the session exists — a daemon
 that will not start, a directory it cannot resolve, a version that ignores the
@@ -603,18 +611,23 @@ closely, and otherwise says that none was supplied.
 
 ### Budgets
 
-A call checks its engine's token ceiling (`--budget`) when it is dispatched,
-before it joins the concurrency queue, and again when a fallback step moves it
-to another engine. Once spend reaches the
-ceiling, a call that has not yet been dispatched throws a budget-exhausted
-error; a ceiling of 0 admits no dispatch and says so. The refusal names the
-dispatch, fallback dispatch (with its agent id), or numbered session turn it
-blocked. A session's first `send()` is `session turn 1`, even when admission
-refuses it before the worker opens; a refused send does not advance the turn
-number. Earlier targets or session turns may already have run and caused
-side effects. A call that started under
-the ceiling runs its full retry bound even if concurrent spend crosses the
-ceiling, so turns already running can together overshoot it.
+A call checks its engine's token ceiling (`--budget`) before it joins the
+concurrency queue, and again when a fallback step moves it to another engine.
+A session turn checks the ceiling at each `send()`, before queueing. Once
+spend reaches the ceiling, admission throws a budget-exhausted error; a
+ceiling of 0 admits no dispatch and says so.
+
+The refusal names the dispatch, fallback dispatch (with its agent id), or
+numbered session turn it blocked. A session's first `send()` is `session
+turn 1`, even when admission refuses it before the worker opens; a refused
+send does not advance the turn number. Earlier targets or session turns may
+already have run and caused side effects.
+
+Every call admitted below the ceiling still runs, including calls waiting
+in the concurrency queue when spend reaches the ceiling. Admission is not
+checked again when a queued call starts or retries on the same engine, so
+the whole admitted backlog can overshoot the ceiling, with each call
+running up to its retry bound.
 
 ### Whole-run timeout and interrupts
 

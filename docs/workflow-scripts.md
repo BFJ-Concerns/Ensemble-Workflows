@@ -495,10 +495,10 @@ rejects, such as for an unknown model, is the attempt's own failure.
 ### Claude background tasks
 
 A Claude worker's answer is its final reply, never an interim one. Claude Code
-can move a long command or a Monitor into the background and let the model
-end its turn with a "waiting" message, then wake the session when the task
-ends. Ensemble does not collect that interim reply: it waits for the reply
-that follows the task's delivered notification. A Monitor stays outstanding
+can run a long command, a Monitor or a native `Workflow` task in the
+background and let the model end its turn with a "waiting" message, then wake
+the session when the task ends. Ensemble does not collect that interim reply:
+it waits for the reply that follows the task's delivered notification. A Monitor stays outstanding
 until its own ending (expired, timed out, or stopped) or the end of its
 watched source is delivered and answered. For a task the model stops with
 `TaskStop`, the successful `TaskStop` result stands in for the notification.

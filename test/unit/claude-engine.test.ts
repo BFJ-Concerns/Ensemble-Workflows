@@ -1617,7 +1617,7 @@ const backgroundTaskRows = {
 
 /**
  * A session that backgrounds work and ends its turn on an interim message,
- * in the three shapes measured live. `slow`: the task ends long after the
+ * in the supported shapes. `slow`: the task ends long after the
  * interim turn, its notification enqueued and delivered together at
  * `wakeAtPoll`. `short`: the task ends within the interim turn, so its
  * notification is *enqueued before the interim reply* and delivered only at
@@ -1627,7 +1627,9 @@ const backgroundTaskRows = {
  * replies with the nonce;
  * the Monitor's expiry notice is delivered three polls later and answered
  * two after that. In every shape the model's reply lands two polls after a
- * delivery, never in the same write, as it does live.
+ * delivery, never in the same write, as it does live. `workflow` and
+ * `workflow-short` follow the slow and short orderings with native Workflow
+ * launch results and completion notifications.
  */
 class BackgroundTaskControlPlane implements ClaudeControlPlane {
   pollCount = 0;
@@ -1635,10 +1637,10 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
   #path: string;
   #present = false;
   #wakeAtPoll: number | null;
-  #shape: "slow" | "short" | "monitor";
+  #shape: "slow" | "short" | "monitor" | "workflow" | "workflow-short";
   #observe: (() => unknown) | undefined;
 
-  constructor(dir: string, options: { wakeAtPoll: number | null; shape?: "slow" | "short" | "monitor"; observe?: () => unknown }) {
+  constructor(dir: string, options: { wakeAtPoll: number | null; shape?: "slow" | "short" | "monitor" | "workflow" | "workflow-short"; observe?: () => unknown }) {
     this.#path = path.join(dir, "background-task.jsonl");
     this.#wakeAtPoll = options.wakeAtPoll;
     this.#shape = options.shape ?? "slow";
@@ -1647,14 +1649,19 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
     this.#present = true;
-    const call = { type: "tool_use", id: "toolu_bg", name: "Bash", input: { command: "sleep 45", description: "Wait 45 seconds in background", run_in_background: true } };
+    const workflow = this.#shape === "workflow" || this.#shape === "workflow-short";
+    const call = workflow
+      ? { type: "tool_use", id: "toolu_bg", name: "Workflow", input: { script: "return { ok: true }" } }
+      : { type: "tool_use", id: "toolu_bg", name: "Bash", input: { command: "sleep 45", description: "Wait 45 seconds in background", run_in_background: true } };
     const rows = [
       submissionRow(options.prompt),
       JSON.stringify({ type: "assistant", message: { role: "assistant", content: [call], stop_reason: "tool_use" } }),
-      JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bg", content: "Command running in background with ID: bya9z1l44. You will be notified when it completes." }] } })
+      JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bg", content: workflow
+        ? "Workflow launched in background. Task ID: bya9z1l44\nSummary: Harmless probe\nRun ID: wf_example\nYou will be notified when it completes."
+        : "Command running in background with ID: bya9z1l44. You will be notified when it completes." }] } })
     ];
-    if (this.#shape === "short") {
-      rows.push(backgroundTaskRows.enqueued(this.#commandBlock()));
+    if (this.#shape === "short" || this.#shape === "workflow-short") {
+      rows.push(backgroundTaskRows.enqueued(this.#taskBlock()));
     }
     if (this.#shape === "monitor") {
       const monitor = { type: "tool_use", id: "toolu_mon", name: "Monitor", input: { command: "tail -f /tmp/bya9z1l44.output", description: "background task completion" } };
@@ -1668,7 +1675,10 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
     return { id: "background-1", sessionId: "background", name: options.name, cwd: options.cwd };
   }
 
-  #commandBlock(): string {
+  #taskBlock(): string {
+    if (this.#shape === "workflow" || this.#shape === "workflow-short") {
+      return '<task-notification>\n<task-id>bya9z1l44</task-id>\n<tool-use-id>toolu_bg</tool-use-id>\n<status>completed</status>\n<summary>Dynamic workflow "Harmless probe" completed</summary>\n<result>{"ok":true}</result>\n</task-notification>';
+    }
     return backgroundTaskRows.commandNotification("bya9z1l44", "toolu_bg", "Wait 45 seconds in background");
   }
 
@@ -1679,10 +1689,10 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
     if (wake !== null) {
       const rows: string[] = [];
       if (this.pollCount === wake) {
-        if (this.#shape === "slow") {
-          rows.push(backgroundTaskRows.enqueued(this.#commandBlock()));
+        if (this.#shape === "slow" || this.#shape === "workflow") {
+          rows.push(backgroundTaskRows.enqueued(this.#taskBlock()));
         }
-        rows.push(...backgroundTaskRows.deliveredIdle(this.#commandBlock()));
+        rows.push(...backgroundTaskRows.deliveredIdle(this.#taskBlock()));
         if (this.#shape === "monitor") {
           // The measured order: the model's turn after the command's wake
           // reads the output file, and the Monitor's event is absorbed into
@@ -1778,6 +1788,52 @@ test("a turn ending while a background task is outstanding is not collected; the
   }
 });
 
+for (const shape of ["workflow", "workflow-short"] as const) {
+  test(`native ${shape} waits for the reply after delivery and archives background_waits`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-workflow-task-"));
+    let runtime: EnsembleRuntime | null = null;
+    try {
+      const plane = new BackgroundTaskControlPlane(dir, {
+        shape,
+        wakeAtPoll: 12,
+        observe: () => runtime?.progress.snapshot().agents[0]?.waitingOn
+      });
+      runtime = makeRuntime(plane, { maxAttempts: 1 });
+      const writer = await RunRecordWriter.start({
+        storeDir: path.join(dir, "records"),
+        cwd: dir,
+        runUuid: "run-workflow-wait",
+        workflowPath: path.join(dir, "workflow.js"),
+        workflowSource: "export const meta = { name: 'workflow-wait' };\nreturn true;\n",
+        args: [],
+        cliFlags: { jsonArgs: false }
+      });
+      runtime.setRunRecorder(writer);
+      // No schema: the interim text is otherwise a valid successful answer.
+      assert.equal(await runtime.agent("run workflow then answer", { engine: "claude" }), '{"ok":true}');
+      assert.ok(plane.pollCount >= 14, "collected before the reply following delivery");
+      const waiting = plane.snapshots.find((snapshot) => snapshot.poll === 13)?.waitingOn as { taskId: string; description: string };
+      assert.equal(waiting.taskId, "bya9z1l44");
+      assert.equal(waiting.description, "Workflow");
+      const attempt = runtime.lastAgentRecord()?.attempts[0];
+      assert.equal(attempt?.backgroundWaits.length, 1);
+      assert.equal(attempt?.backgroundWaits[0]?.description, "Workflow");
+      assert.ok(attempt?.backgroundWaits[0]?.endedAt);
+      assert.equal(attempt?.rawOutput, '{"ok":true}');
+      await writer.finish({ status: "complete", exitCode: 0, result: { ok: true } });
+      const archived = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+      assert.equal(archived.raw_output, '{"ok":true}');
+      assert.equal(archived.attempts[0].background_waits.length, 1);
+      assert.equal(archived.attempts[0].background_waits[0].task_id, "bya9z1l44");
+      assert.equal(archived.attempts[0].background_waits[0].description, "Workflow");
+      assert.ok(archived.attempts[0].background_waits[0].ended_at);
+    } finally {
+      await runtime?.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
 test("a task that ends within the interim turn is still held for the reply after its delivery, never collected on the enqueue row", async () => {
   // The short-task shape (measured 2026-09-29: 3 of 24 short tasks answered
   // with interim text at the previous landing): the ending is enqueued
@@ -1850,30 +1906,32 @@ test("a Monitor's event keeps its wait open; its own expiry notice closes it, an
   }
 });
 
-test("a background task that never wakes the session times the attempt out, with the open wait recorded and the interim text never the answer", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-background-task-timeout-"));
-  try {
-    const controlPlane = new BackgroundTaskControlPlane(dir, { wakeAtPoll: null });
-    const runtime = makeRuntime(controlPlane, { maxAttempts: 1, turnTimeoutMs: 150 });
+for (const shape of ["slow", "workflow"] as const) {
+  test(`a ${shape} task that never wakes times out with an open wait and no interim answer`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-background-task-timeout-"));
     try {
-      assert.equal(await runtime.agent("sleep then answer", { engine: "claude", schema: okSchema }), null);
-      const record = runtime.lastAgentRecord();
-      assert.equal(record?.status, "timed-out");
-      const attempt = record?.attempts[0];
-      assert.equal(attempt?.failure?.kind, "claude-poll-timeout");
-      assert.equal(attempt?.validatedOutput, null, "the interim message is never promoted to the answer");
-      assert.equal(attempt?.backgroundWaits.length, 1);
-      assert.equal(attempt?.backgroundWaits[0]?.taskId, "bya9z1l44");
-      assert.equal(attempt?.backgroundWaits[0]?.endedAt, null, "an open wait names the task that never woke the session");
-      assert.equal(attempt?.transcripts[0]?.partial, true,
-        "an interim reply does not complete the transcript while its background task is outstanding");
+      const controlPlane = new BackgroundTaskControlPlane(dir, { wakeAtPoll: null, shape });
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1, turnTimeoutMs: 150 });
+      try {
+        assert.equal(await runtime.agent("sleep then answer", { engine: "claude" }), null);
+        const record = runtime.lastAgentRecord();
+        assert.equal(record?.status, "timed-out");
+        const attempt = record?.attempts[0];
+        assert.equal(attempt?.failure?.kind, "claude-poll-timeout");
+        assert.equal(attempt?.validatedOutput, null, "the interim message is never promoted to the answer");
+        assert.equal(attempt?.backgroundWaits.length, 1);
+        assert.equal(attempt?.backgroundWaits[0]?.taskId, "bya9z1l44");
+        assert.equal(attempt?.backgroundWaits[0]?.endedAt, null, "an open wait names the task that never woke the session");
+        assert.equal(attempt?.transcripts[0]?.partial, true,
+          "an interim reply does not complete the transcript while its background task is outstanding");
+      } finally {
+        await runtime.close();
+      }
     } finally {
-      await runtime.close();
+      await rm(dir, { recursive: true, force: true });
     }
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
+  });
+}
 
 /** The archived transcript's own entries, as a cold consumer would parse them. */
 function parseTranscript(content: string): TranscriptEntry[] {

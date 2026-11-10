@@ -607,7 +607,8 @@ The fields present throughout a record's lifetime are:
   - `worker_exit`: `{ exit_code, signal }` when the worker process died
     rather than returned; `null` otherwise.
   - `background_waits`: the background tasks the worker started and Ensemble
-    waited on, each `{ task_id, description, observed_at, ended_at }`
+    waited on (including Claude native `Workflow` tasks), each
+    `{ task_id, description, observed_at, ended_at }`
     (`ended_at` is `null` where the attempt ended before the task woke the
     session); empty for engines without background tasks.
 - `classification` on a failed attempt: `{ class, rule }`. `class` is

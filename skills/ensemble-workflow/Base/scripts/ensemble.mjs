@@ -33257,6 +33257,9 @@ function flushed(stream) {
   });
 }
 if (isMain) {
+  process.stdout.on("error", (error) => {
+    if (error.code !== "EPIPE") throw error;
+  });
   const versionError = nodeVersionError();
   if (versionError !== null) {
     process.stderr.write(`${versionError}

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -10,7 +11,7 @@ import { runNode } from "./estate-process.js";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 test("real Codex provider request rejections retain a named rule and retry without advancing a chain", async () => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-codex-provider-rejection-");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-provider-rejection-"));
   const provider = await startCaptureProvider();
   try {
     const seeded = await seedCodexHome(directory, provider.baseUrl);

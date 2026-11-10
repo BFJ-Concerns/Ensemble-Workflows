@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+import { launchEnvironment } from "./engine-environment.js";
 import { EngineShutdownError, attachPartialWorkerText, attachWorkerExitStatus } from "./errors.js";
 import { subtractUsage } from "./usage-summary.js";
 
@@ -109,9 +110,7 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
   constructor(bin = "opencode", options: { killGraceMs?: number; workerEnv?: Record<string, string> } = {}) {
     this.#bin = bin;
     this.#killGraceMs = options.killGraceMs ?? 5_000;
-    // Declared variables sit above inherited ones; everything undeclared
-    // still inherits, so a configured parent keeps working unchanged.
-    this.#env = { ...process.env, ...options.workerEnv };
+    this.#env = launchEnvironment("opencode", options.workerEnv);
   }
 
   async run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult> {

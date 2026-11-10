@@ -17779,6 +17779,17 @@ import { randomUUID as randomUUID5 } from "node:crypto";
 // src/app-server.ts
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+
+// src/engine-environment.ts
+var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
+function launchEnvironment(engine, declared, inherited = process.env) {
+  if (engine === "claude") {
+    return { ...withoutRunScopedVariables(inherited), ...declared, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
+  }
+  return { ...inherited, ...declared };
+}
+
+// src/app-server.ts
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
@@ -17877,9 +17888,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      // Declared variables sit above inherited ones; everything undeclared
-      // still inherits, so a configured parent keeps working unchanged.
-      env: { ...process.env, ...options.workerEnv }
+      env: launchEnvironment("codex", options.workerEnv)
     });
     this.#wireReader();
     this.#wireStderr();
@@ -19221,7 +19230,6 @@ var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
 var OWNER_FILENAME = "owner.json";
-var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
 var ClaudeCliControlPlane = class {
   #claudeBin;
   #tmuxBin;
@@ -19265,11 +19273,7 @@ var ClaudeCliControlPlane = class {
     this.#tmuxBin = options.tmuxBin ?? "tmux";
     this.#workerEnv = options.workerEnv ?? {};
     this.#holdScope = options.holdScope === void 0 ? resolveHoldScope(void 0, process.env) : options.holdScope;
-    this.#env = {
-      ...withoutRunScopedVariables(process.env),
-      ...this.#workerEnv,
-      [SANDBOXED_WORKSPACE_VARIABLE]: "1"
-    };
+    this.#env = launchEnvironment("claude", this.#workerEnv);
     const configDir = this.#env.CLAUDE_CONFIG_DIR || path11.join(homedir3(), ".claude");
     this.#projectsDir = options.projectsDir ?? path11.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
@@ -20862,7 +20866,7 @@ var OpenCodeCliRunner = class {
   constructor(bin = "opencode", options = {}) {
     this.#bin = bin;
     this.#killGraceMs = options.killGraceMs ?? 5e3;
-    this.#env = { ...process.env, ...options.workerEnv };
+    this.#env = launchEnvironment("opencode", options.workerEnv);
   }
   async run(options) {
     const args = [

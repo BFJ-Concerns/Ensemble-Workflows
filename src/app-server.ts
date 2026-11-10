@@ -31,6 +31,7 @@ import type {
   TurnStartOptions
 } from "./types.js";
 import { tokenUsageEventFromParams } from "./budget.js";
+import { launchEnvironment } from "./engine-environment.js";
 
 interface PendingRequest {
   method: string;
@@ -286,9 +287,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      // Declared variables sit above inherited ones; everything undeclared
-      // still inherits, so a configured parent keeps working unchanged.
-      env: { ...process.env, ...options.workerEnv }
+      env: launchEnvironment("codex", options.workerEnv)
     });
 
     this.#wireReader();

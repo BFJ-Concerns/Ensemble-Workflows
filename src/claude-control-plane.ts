@@ -2,7 +2,7 @@ import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promi
 import { homedir, hostname, tmpdir } from "node:os";
 import path from "node:path";
 
-import { withoutRunScopedVariables } from "./ambient-settings.js";
+import { launchEnvironment, SANDBOXED_WORKSPACE_VARIABLE } from "./engine-environment.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js";
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
@@ -76,24 +76,6 @@ export interface ClaudeDispatchOptions {
   permissionDenyRules?: string[];
 }
 
-/**
- * Declares the workspace sandboxed to every `claude` process this control
- * plane launches. Claude Code (2.1.281 and later) gates background
- * dispatch on the directory's trust — accepted once, interactively, per
- * project directory, inherited by children but never by siblings — so a
- * scratch directory, a sibling checkout, or a generated worktree starts
- * untrusted.
- * With this variable set on the dispatching process the trust check answers
- * *sandboxed* for any resolvable directory and no dialog is owed; its only
- * other effect in the binary — project-declared permission rules no longer
- * gated on a person being present — is moot under the permission bypass
- * every worker already runs with. It is harness bookkeeping, not
- * configuration: it lands after the machine-declared worker environment,
- * like the ownership tag, and is never written to the operator's own Claude
- * configuration. A refusal that survives it is a substrate refusal
- * (`ClaudeDispatchError`), which the runtime treats as pre-spawn.
- */
-export const SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
 
 export interface ClaudeSessionHandle {
   /** Short daemon id — used to attach/steer/stop. */
@@ -276,23 +258,15 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   constructor(options: ClaudeCliControlPlaneOptions = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
     this.#tmuxBin = options.tmuxBin ?? "tmux";
-    // Declared variables sit above inherited ones; everything undeclared
-    // still inherits, so a configured parent keeps working unchanged. The
-    // declared map is also kept separately: the per-dispatch settings file
-    // carries it to the worker session (see #writeWorkerSettings()).
+    // The declared map is kept beside the launch environment: the
+    // per-dispatch settings file carries it to the worker session (see
+    // #writeWorkerSettings()).
     this.#workerEnv = options.workerEnv ?? {};
     this.#holdScope = options.holdScope === undefined ? resolveHoldScope(undefined, process.env) : options.holdScope;
-    // Inherit the operator's environment minus the run's own settings: a
-    // child here can start the per-user daemon, and the daemon must not be
-    // homed on this run's record or status directories (see `workerEnv`).
-    // The sandboxed-workspace declaration is harness bookkeeping and lands
-    // last, above any machine declaration of the same name: every `claude`
-    // this control plane launches must see it, or dispatch fails on trust.
-    this.#env = {
-      ...withoutRunScopedVariables(process.env),
-      ...this.#workerEnv,
-      [SANDBOXED_WORKSPACE_VARIABLE]: "1"
-    };
+    // The operator's environment minus the run's own settings, the
+    // declared variables above it, the sandboxed-workspace declaration last
+    // (see `launchEnvironment`).
+    this.#env = launchEnvironment("claude", this.#workerEnv);
     const configDir = this.#env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude");
     this.#projectsDir = options.projectsDir ?? path.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;

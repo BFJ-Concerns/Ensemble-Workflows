@@ -1737,6 +1737,7 @@ export class EnsembleRuntime {
   /** Bind transcript callbacks to one attempt and drain them before its outcome is recorded. */
   async #runRecordedAttempt(
     engine: EngineName,
+    target: ChainTarget,
     invocation: EngineInvocation,
     context: EngineAttemptContext,
     agentId: number,
@@ -1763,7 +1764,14 @@ export class EnsembleRuntime {
     };
     if (recorder !== null && engine !== "opencode") {
       await this.#recordArchiveWriteSafely(agentId, () =>
-        recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
+        recorder.recordAttemptStart(agentId, {
+          attempt: context.attempt,
+          startedAt: new Date(startedAt).toISOString(),
+          target: { engine: target.engine, model: target.model ?? null },
+          identity: record === undefined || record.session === null
+            ? { resolvedModel: null, resolvedEffort: null }
+            : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
+        }));
     }
     this.progress.noteAgentTranscript(agentId, null);
     if (record?.session === null && engine !== "claude") {
@@ -2283,7 +2291,7 @@ export class EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await this.#runRecordedAttempt(engine, invocation, {
+        const result = await this.#runRecordedAttempt(engine, attempts.target, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
@@ -2367,7 +2375,7 @@ export class EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await this.#runRecordedAttempt(engine, invocation, {
+        const result = await this.#runRecordedAttempt(engine, attempts.target, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),

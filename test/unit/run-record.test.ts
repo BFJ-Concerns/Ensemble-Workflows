@@ -14,9 +14,9 @@ import { readArchiveIntegrity } from "../archive-integrity-reader.js";
 import { EngineRegistry } from "../../src/engines.js";
 import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { EngineShutdownError } from "../../src/errors.js";
-import { RunRecordWriter, reapAbandonedRuns, resolveRunDirectory } from "../../src/run-record.js";
+import { RunRecordWriter, abandonedAttemptEntry, reapAbandonedRuns, resolveRunDirectory } from "../../src/run-record.js";
 import { writeProcStat } from "../fixtures/proc-stat.js";
-import type { RuntimeAgentRecord } from "../../src/run-record.js";
+import type { LiveAttemptStart, RuntimeAgentRecord } from "../../src/run-record.js";
 import { runEnsembleCli } from "../../src/cli.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
@@ -190,21 +190,32 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as Record<string, unknown>;
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as Record<string, unknown>;
-  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v4-manifest-keys.json", "utf8")) as {
+  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-manifest-keys.json", "utf8")) as {
     manifest: string[];
     args: string[];
   };
-  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v4-agent-keys.json", "utf8"));
-  const attemptKeys = JSON.parse(await readFile("test/fixtures/run-record/v4-attempt-keys.json", "utf8"));
+  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-agent-keys.json", "utf8"));
+  const attemptKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-attempt-keys.json", "utf8"));
+  const leafKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-cost-rollup-leaf-keys.json", "utf8"));
 
   assert.deepEqual(Object.keys(manifest).sort(), manifestKeys.manifest);
   assert.deepEqual(Object.keys(manifest.args as Record<string, unknown>).sort(), manifestKeys.args);
   assert.deepEqual(Object.keys(agent).sort(), agentKeys);
   assert.deepEqual(Object.keys((agent.attempts as Array<Record<string, unknown>>)[0]!).sort(), attemptKeys);
-  assert.equal(manifest.schema_version, 4);
+  // One attempt shape for every status: a reader branches on `status`, never on which keys exist.
+  const abandoned = abandonedAttemptEntry({
+    attempt: 1, started_at: "2026-11-10T09:49:47.721Z", transcript: null,
+    target: { engine: "codex", model: null }, resolved_model: "gpt-6-luna", resolved_effort: null
+  });
+  assert.deepEqual(Object.keys(abandoned).sort(), attemptKeys);
+  const rollup = manifest.cost_rollup as Record<string, Record<string, Record<string, unknown>>>;
+  for (const leaf of Object.values(rollup).flatMap((models) => Object.values(models))) {
+    assert.deepEqual(Object.keys(leaf).sort(), leafKeys);
+  }
+  assert.equal(manifest.schema_version, 5);
   assert.equal(manifest.kind, "run_manifest");
   assert.equal(manifest.caller_identity, "session:run-record-test");
-  assert.equal(agent.schema_version, 4);
+  assert.equal(agent.schema_version, 5);
   assert.equal(agent.kind, "agent_record");
   assert.equal(agent.header_identity, "original_request");
   assert.deepEqual(manifest.concurrency, {
@@ -1908,6 +1919,16 @@ async function readAgentRecord(
   ) as Record<string, unknown>;
 }
 
+/** A live attempt start on an unpinned Codex target with no identity reported yet. */
+function liveStart(attempt: number, startedAt: string): LiveAttemptStart {
+  return {
+    attempt,
+    startedAt,
+    target: { engine: "codex", model: null },
+    identity: { resolvedModel: null, resolvedEffort: null }
+  };
+}
+
 async function gitRepo(prefix: string): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), prefix));
   await writeFile(path.join(directory, "package.json"), JSON.stringify({ name: "ensemble-workflows", version: "0.0.0" }));
@@ -2469,9 +2490,10 @@ test("live attempts publish readable references, append in order and settle with
     const agentPath = path.join(writer.archiveDir, "agents/000001/agent.json");
     const readAgent = async () => JSON.parse(await readFile(agentPath, "utf8"));
     assert.equal((await readAgent()).current_attempt, undefined);
-    await writer.recordAttemptStart(1, 1, "2026-11-05T12:00:00Z");
+    await writer.recordAttemptStart(1, liveStart(1, "2026-11-05T12:00:00Z"));
     assert.deepEqual((await readAgent()).current_attempt, {
-      attempt: 1, started_at: "2026-11-05T12:00:00Z", transcript: null
+      attempt: 1, started_at: "2026-11-05T12:00:00Z", transcript: null,
+      target: { engine: "codex", model: null }, resolved_model: null, resolved_effort: null
     }, "execution start must be readable before transcript discovery");
     const external = path.join(store, "claude.jsonl");
     await writeFile(external, "{}\n");
@@ -2504,7 +2526,7 @@ test("live attempts publish readable references, append in order and settle with
     assert.deepEqual(Object.keys(final).sort(), Object.keys(other).sort());
     await writer.finish({ status: "complete", exitCode: 0, result: true });
     const before = await readFile(agentPath, "utf8");
-    await writer.recordAttemptStart(1, 2, "late");
+    await writer.recordAttemptStart(1, liveStart(2, "late"));
     await writer.recordClaudeTranscript(1, 1, external);
     await writer.appendCodexTranscript(1, 1, { sealed: true });
     assert.equal(await readFile(agentPath, "utf8"), before);
@@ -2532,7 +2554,7 @@ test("live Codex appends avoid transcript rereads and settled artefact rewrites"
     assert.ok(previous);
     const previousPath = path.join(writer.archiveDir, previous.path);
     const before = await stat(previousPath, { bigint: true });
-    await writer.recordAttemptStart(1, 2, "2026-11-05T12:00:00Z");
+    await writer.recordAttemptStart(1, liveStart(2, "2026-11-05T12:00:00Z"));
     const transcript = "agents/000001/attempt-002-1-transcript.codex.jsonl";
     const transcriptPath = path.join(writer.archiveDir, transcript);
     const originalReadFile = fsPromises.readFile;
@@ -2597,7 +2619,7 @@ test("ending an attempt clears live metadata and rejects stale transcript update
     await writer.recordAgent(record);
     const agentPath = path.join(writer.archiveDir, "agents/000001/agent.json");
     const readAgent = async () => JSON.parse(await readFile(agentPath, "utf8"));
-    await writer.recordAttemptStart(1, 1, "2026-11-05T12:00:00Z");
+    await writer.recordAttemptStart(1, liveStart(1, "2026-11-05T12:00:00Z"));
     await writer.appendCodexTranscript(1, 1, { first: true });
     const transcript = path.join(writer.archiveDir, (await readAgent()).current_attempt.transcript);
     await writer.recordAttemptEnd(1, 2);
@@ -2606,9 +2628,12 @@ test("ending an attempt clears live metadata and rejects stale transcript update
     assert.equal((await readAgent()).current_attempt, undefined, "ending the active attempt must clear live metadata");
     await writer.appendCodexTranscript(1, 1, { stale: true });
     assert.equal(await readFile(transcript, "utf8"), '{"first":true}\n');
-    await writer.recordAttemptStart(1, 2, "2026-11-05T12:00:01Z");
+    await writer.recordAttemptStart(1, liveStart(2, "2026-11-05T12:00:01Z"));
     await writer.recordAttemptEnd(1, 1);
-    assert.deepEqual((await readAgent()).current_attempt, { attempt: 2, started_at: "2026-11-05T12:00:01Z", transcript: null });
+    assert.deepEqual((await readAgent()).current_attempt, {
+      attempt: 2, started_at: "2026-11-05T12:00:01Z", transcript: null,
+      target: { engine: "codex", model: null }, resolved_model: null, resolved_effort: null
+    });
     await writer.recordAttemptEnd(1, 2);
     assert.equal((await readAgent()).current_attempt, undefined);
     record.status = "complete";
@@ -2631,7 +2656,7 @@ test("settlement restores complete Codex capture after a failed live append", as
     running.status = "in-progress";
     running.attempts = [];
     await writer.recordAgent(running);
-    await writer.recordAttemptStart(1, 1, "2026-11-05T12:00:00Z");
+    await writer.recordAttemptStart(1, liveStart(1, "2026-11-05T12:00:00Z"));
     const spy = t.mock.method(fsPromises, "appendFile", async () => { throw new Error("disk full"); });
     syncBuiltinESMExports();
     try {

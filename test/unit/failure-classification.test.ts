@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { appServerErrorFromPayload } from "../../src/app-server.js";
+import { appServerDiagnosticOf, CodexSchemaSubsetUnsupportedError } from "../../src/errors.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure } from "../../src/failure-classification.js";
 
 import type { AttemptFailureEvidence } from "../../src/failure-classification.js";
@@ -105,6 +107,43 @@ test("Codex schema rejection before generation is recognised without attributing
     })),
     { class: "unclassified", rule: "codex.schema-rejected" }
   );
+});
+
+test("Codex schema rejections forwarded as typed invalid requests keep their specific rule", () => {
+  const body = JSON.stringify({ error: {
+    message: "Invalid schema for response_format 'x'",
+    type: "invalid_request_error",
+    param: "text.format.schema",
+    code: "invalid_json_schema"
+  } });
+  const error = appServerErrorFromPayload("turn notification", {
+    code: "other",
+    message: body,
+    data: { error: { message: body, codexErrorInfo: "other" } }
+  });
+  assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
+  assert.deepEqual(classifyAttemptFailure(evidence({
+    engine: "codex",
+    failure: { kind: error.constructor.name, message: error.message },
+    appServerDiagnostic: appServerDiagnosticOf(error)
+  })), { class: "unclassified", rule: "codex.schema-rejected" });
+});
+
+test("Codex recognises a typed provider request rejection, never the catch-all code or prose alone", () => {
+  const classify = (payload: string | null, code = "other") => classifyAttemptFailure(evidence({
+    engine: "codex",
+    failure: { kind: "AppServerRequestError", message: "invalid_request_error: prompt rejected" },
+    appServerDiagnostic: { code, payload }
+  }));
+  const notification = (message: unknown) => JSON.stringify({ error: { message } });
+  const provider = JSON.stringify({ error: { type: "invalid_request_error", message: "arbitrary wording" } });
+  assert.deepEqual(classify(notification(provider)), { class: "unclassified", rule: "codex.provider-request-rejected" });
+  for (const payload of [null, "not JSON", "null", "[]", "{}", notification(null), notification("prompt rejected"),
+    notification("null"), notification("[]"), notification(JSON.stringify({ error: { type: "unknown_error" } }))]) {
+    assert.deepEqual(classify(payload), { class: "unclassified", rule: null });
+  }
+  assert.deepEqual(classify(notification(provider), "somethingNew"), { class: "unclassified", rule: null });
+  assert.deepEqual(classify(notification(provider), "serverOverloaded"), { class: "availability", rule: "codex.server-overloaded" });
 });
 
 test("an unrecognised Codex diagnostic is unclassified with no rule, never defaulted into a class", () => {

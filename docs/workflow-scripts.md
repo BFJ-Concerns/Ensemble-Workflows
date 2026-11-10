@@ -143,12 +143,17 @@ A failed worker is already its call's `null`. A thunk or stage that throws for
 any other reason also becomes `null` in the results, and is logged. Check
 fan-in results for `null`.
 
-Two things propagate instead. One is errors in how the script was written,
-raised before any worker spawns: a rejected `agent()` option, a malformed
-schema, an unresolvable `workflow()` reference or non-JSON `workflow()`
+Three kinds of error propagate instead. One is errors in how the script was
+written, raised before any worker spawns: a rejected `agent()` option, a
+malformed schema, an unresolvable `workflow()` reference or non-JSON `workflow()`
 arguments, a nesting violation, and a child workflow's load-time error (when
 several of a call's options fail the option check, one error names them all).
-The other is the run's own ending — an interrupt, the whole-run timeout, the
+
+A budget refusal (`BudgetExceededError`) also propagates when a dispatch or
+session turn is not admitted. If uncaught, it fails the run; the manifest and
+completion sentinel record the refusal as the run's error.
+
+The third is the run's own ending — an interrupt, the whole-run timeout, the
 launcher closing the run under a leg still in flight — which throws through
 `parallel()` and `pipeline()` as it does through a bare `await`, so a body
 never resumes past the combinator to run further code (commit, push, write a
@@ -375,7 +380,10 @@ cannot pass silently:
 - Errors raised before a worker exists: an invalid option, a placement that
   could not be opened, an engine refusing the dispatch itself
   (`ClaudeDispatchError`, `CodexSubstrateRefusedError`), a strip that cannot
-  be enforced, or a budget refusal. Before an engine's first attempt in a
+  be enforced, or a budget refusal (`BudgetExceededError`). A budget refusal
+  propagates through `parallel()` and `pipeline()` too, including a refused
+  session turn; if uncaught, the run fails and the manifest and completion
+  sentinel record it as the run's error. Before an engine's first attempt in a
   run, the runtime also checks that it can use the directories that engine
   needs, resolved from the environment that engine is launched with:
   Codex's `CODEX_HOME` (else `$HOME/.codex`); Claude's `CLAUDE_CONFIG_DIR`

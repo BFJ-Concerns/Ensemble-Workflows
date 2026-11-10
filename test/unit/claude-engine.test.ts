@@ -2207,7 +2207,7 @@ for (const grows of [false, true]) {
         if (grows && attempt === 2) {
           const file = await plane.transcriptPath();
           assert.ok(file);
-          await appendFile(file, assistantLine({ id: "later-call", text: "more work", input: 20, output: 5, stop: "tool_use" }));
+          await appendFile(file, assistantLine({ id: "later-call", text: "more work", input: 20, output: 5, stop: "tool_use" }) + "\n");
         }
       },
       recordAttemptEnd: async () => {},
@@ -2251,5 +2251,58 @@ for (const present of [false, true]) {
       assert.deepEqual(records.at(-1)?.attempts[0]?.classification, { class: "unclassified", rule: "claude.delivery" });
       assert.match(JSON.stringify(records.at(-1)?.attempts[0]?.diagnostics), /launch failed/);
     } finally { await runtime.close(); }
+  });
+}
+
+for (const [altered, lateOpening] of [[true, false], [false, false], [false, true]] as const) {
+  test(`a late recovery-nudge receipt ${altered ? "cannot verify an altered task" : lateOpening ? "can finish a late-verified task" : "can finish an already verified task"}`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-nudge-receipt-"));
+    class LateNudge extends FakeControlPlane {
+      readonly messages: string[] = [];
+      nudge: string | null = null;
+      override async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
+        this.messages.push(message);
+        if (this.nudge === null) {
+          this.nudge = message;
+          return { submitted: true };
+        }
+        return super.steer(handle, message);
+      }
+    }
+    const plane = new LateNudge(dir, [{ outcome: "blocked" }, { assistant: { text: "answer after exact redelivery" } }], {
+      openingArrival: sent => lateOpening ? null : altered ? sent.trimEnd() : sent
+    });
+    const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 1, blockedRecoveryBound: 1 });
+    const records: RuntimeAgentRecord[] = [];
+    const nudgeAnswer = altered ? "answer to altered task" : "answer to verified task";
+    runtime.setRunRecorder({
+      recordAttemptStart: async (_id: number, attempt: number) => {
+        if (lateOpening && attempt === 2) {
+          const file = await plane.transcriptPath();
+          assert.ok(file);
+          await appendFile(file, submissionRow(plane.dispatched[0]!.prompt) + "\n");
+        }
+        if (attempt === (lateOpening ? 3 : 2)) {
+          const file = await plane.transcriptPath();
+          assert.ok(file && plane.nudge);
+          await appendFile(file, submissionRow(plane.nudge) + "\n" + assistantLine({ id: "nudge-answer", text: nudgeAnswer }) + "\n");
+        }
+      },
+      recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    try {
+      const held = runtime.createWorkerSession({ engine: "claude" });
+      const result = await held.send("decide ");
+      assert.equal(result, altered ? "answer after exact redelivery" : nudgeAnswer, JSON.stringify({ failures: records.at(-1)?.attempts.map(attempt => attempt.failure), messages: plane.messages }));
+      assert.equal(plane.dispatchCount, 1);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.equal(attempts.length, altered || lateOpening ? 3 : 2);
+      if (altered) {
+        assert.match(attempts[1]?.failure?.message ?? "", /^the opening prompt was submitted, but the session received different text:/);
+        assert.equal(attempts[1]?.rawOutput, nudgeAnswer);
+        assert.ok(plane.messages[1]?.endsWith(plane.dispatched[0]!.prompt), "the full opening was not redelivered");
+      } else assert.equal(plane.messages.length, 1, "a verified task was redelivered after its nudge's receipt arrived");
+    } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
   });
 }

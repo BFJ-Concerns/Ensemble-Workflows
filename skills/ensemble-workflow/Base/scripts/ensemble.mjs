@@ -20295,6 +20295,8 @@ var ClaudeEngineInvocation = class {
   #acceptedTurnCopy = "";
   /** The submission the session accepted whose receipt has not verified, if any. Outlives the turn that made it. */
   #pending = null;
+  /** A task's differing receipt survives any recovery-nudge submission. */
+  #taskDeliveryFailure = null;
   #pollIntervalMs;
   #receiptTimeoutMs;
   #firstLifeTimeoutMs;
@@ -20336,6 +20338,7 @@ var ClaudeEngineInvocation = class {
     this.#turnPrompt = prompt;
     this.#turnSchema = turn.schema;
     this.#turn = "unsent";
+    this.#taskDeliveryFailure = null;
     if (this.#pending !== null) {
       this.#pending = { ...this.#pending, answersTurn: false };
     }
@@ -20535,6 +20538,7 @@ var ClaudeEngineInvocation = class {
         this.#acceptedTurnCopy = submission.message;
       }
       this.#turn = "accepted";
+      this.#taskDeliveryFailure = null;
     }
   }
   /**
@@ -20558,16 +20562,19 @@ var ClaudeEngineInvocation = class {
       this.#pending = null;
       if (submission.carriesTurn) {
         this.#turn = "verified";
+        this.#taskDeliveryFailure = null;
       }
       return;
     }
+    const failure = new ClaudeDeliveryError(
+      receipt.state === "differing" ? `${submission.what} was submitted, but the session received different text: ${differenceAccount(submission.message, receipt.received)}` : `${submission.what} was submitted, but no receipt for it appeared in the transcript within ${this.#receiptTimeoutMs}ms: sent ${textIdentity(submission.message)}`
+    );
+    if (submission.carriesTurn && receipt.state === "differing") this.#taskDeliveryFailure = failure;
     if (receipt.state === "differing" && this.#multiTurn) {
       await this.#runToCompletion(handle, submission.mark, observers);
       this.#pending = null;
     }
-    throw new ClaudeDeliveryError(
-      receipt.state === "differing" ? `${submission.what} was submitted, but the session received different text: ${differenceAccount(submission.message, receipt.received)}` : `${submission.what} was submitted, but no receipt for it appeared in the transcript within ${this.#receiptTimeoutMs}ms: sent ${textIdentity(submission.message)}`
-    );
+    throw failure;
   }
   /** Read the submission's receipt until the transcript shows one, or the receipt deadline passes with it still missing. */
   async #awaitReceipt(handle, submission, observers) {
@@ -20606,12 +20613,22 @@ var ClaudeEngineInvocation = class {
       this.#pending = null;
       return null;
     }
+    if (pending.carriesTurn && pending.answersTurn) {
+      if (receipt.state === "verified") {
+        this.#turn = "verified";
+        this.#taskDeliveryFailure = null;
+      } else if (this.#taskDeliveryFailure === null) {
+        this.#taskDeliveryFailure = new ClaudeDeliveryError(
+          `${pending.what} was submitted, but the session received different text: ${differenceAccount(pending.message, receipt.received)}`
+        );
+      }
+    }
     const transcript = await this.#runToCompletion(handle, pending.mark, observers);
     this.#pending = null;
-    if (receipt.state === "verified" && pending.answersTurn) {
-      this.#turn = "verified";
+    if (receipt.state === "verified" && pending.answersTurn && this.#turn === "verified") {
       return this.#buildResult(handle, transcript, pending.mark);
     }
+    if (pending.answersTurn && this.#taskDeliveryFailure !== null) throw this.#taskDeliveryFailure;
     throw new ClaudeDeliveryError(
       receipt.state === "differing" ? `${pending.what} submitted earlier reached the session late and as different text: ${differenceAccount(pending.message, receipt.received)}` : `${pending.what} submitted for an earlier turn reached the session after that turn had settled, so its reply answers no turn`
     );
@@ -20954,6 +20971,7 @@ var ClaudeEngineInvocation = class {
     this.#handle = null;
     this.#pending = null;
     this.#turn = "unsent";
+    this.#taskDeliveryFailure = null;
     if (handle === null) {
       return;
     }

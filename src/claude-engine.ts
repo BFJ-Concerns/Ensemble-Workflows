@@ -288,6 +288,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #acceptedTurnCopy = "";
   /** The submission the session accepted whose receipt has not verified, if any. Outlives the turn that made it. */
   #pending: PendingSubmission | null = null;
+  /** A task's differing receipt survives any recovery-nudge submission. */
+  #taskDeliveryFailure: ClaudeDeliveryError | null = null;
 
   #pollIntervalMs: number;
   #receiptTimeoutMs: number;
@@ -334,6 +336,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#turnPrompt = prompt;
     this.#turnSchema = turn.schema;
     this.#turn = "unsent";
+    this.#taskDeliveryFailure = null;
     if (this.#pending !== null) {
       // The turn that made it has settled without it: whatever reply it
       // still draws answers nothing the script is waiting on.
@@ -600,6 +603,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         this.#acceptedTurnCopy = submission.message;
       }
       this.#turn = "accepted";
+      this.#taskDeliveryFailure = null;
     }
   }
 
@@ -624,18 +628,21 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       this.#pending = null;
       if (submission.carriesTurn) {
         this.#turn = "verified";
+        this.#taskDeliveryFailure = null;
       }
       return;
     }
-    if (receipt.state === "differing" && this.#multiTurn) {
-      await this.#runToCompletion(handle, submission.mark, observers);
-      this.#pending = null;
-    }
-    throw new ClaudeDeliveryError(
+    const failure = new ClaudeDeliveryError(
       receipt.state === "differing"
         ? `${submission.what} was submitted, but the session received different text: ${differenceAccount(submission.message, receipt.received)}`
         : `${submission.what} was submitted, but no receipt for it appeared in the transcript within ${this.#receiptTimeoutMs}ms: sent ${textIdentity(submission.message)}`
     );
+    if (submission.carriesTurn && receipt.state === "differing") this.#taskDeliveryFailure = failure;
+    if (receipt.state === "differing" && this.#multiTurn) {
+      await this.#runToCompletion(handle, submission.mark, observers);
+      this.#pending = null;
+    }
+    throw failure;
   }
 
   /** Read the submission's receipt until the transcript shows one, or the receipt deadline passes with it still missing. */
@@ -687,12 +694,24 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       this.#pending = null;
       return null;
     }
+    if (pending.carriesTurn && pending.answersTurn) {
+      if (receipt.state === "verified") {
+        // Preserve this task receipt before following work that may itself
+        // submit a recovery nudge whose receipt arrives only on a retry.
+        this.#turn = "verified";
+        this.#taskDeliveryFailure = null;
+      } else if (this.#taskDeliveryFailure === null) {
+        this.#taskDeliveryFailure = new ClaudeDeliveryError(
+          `${pending.what} was submitted, but the session received different text: ${differenceAccount(pending.message, receipt.received)}`
+        );
+      }
+    }
     const transcript = await this.#runToCompletion(handle, pending.mark, observers);
     this.#pending = null;
-    if (receipt.state === "verified" && pending.answersTurn) {
-      this.#turn = "verified";
+    if (receipt.state === "verified" && pending.answersTurn && this.#turn === "verified") {
       return this.#buildResult(handle, transcript, pending.mark);
     }
+    if (pending.answersTurn && this.#taskDeliveryFailure !== null) throw this.#taskDeliveryFailure;
     throw new ClaudeDeliveryError(
       receipt.state === "differing"
         ? `${pending.what} submitted earlier reached the session late and as different text: ${differenceAccount(pending.message, receipt.received)}`
@@ -1114,6 +1133,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // and the turn's prompt is in no session: the next launch submits it anew.
     this.#pending = null;
     this.#turn = "unsent";
+    this.#taskDeliveryFailure = null;
     if (handle === null) {
       return;
     }

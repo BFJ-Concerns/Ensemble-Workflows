@@ -14,9 +14,9 @@ import { readArchiveIntegrity } from "../archive-integrity-reader.js";
 import { EngineRegistry } from "../../src/engines.js";
 import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { EngineShutdownError } from "../../src/errors.js";
-import { RunRecordWriter, reapAbandonedRuns, resolveRunDirectory } from "../../src/run-record.js";
+import { RunRecordWriter, abandonedAttemptEntry, reconcileAbandonedAgentRecord, reapAbandonedRuns, resolveRunDirectory } from "../../src/run-record.js";
 import { writeProcStat } from "../fixtures/proc-stat.js";
-import type { RuntimeAgentRecord } from "../../src/run-record.js";
+import type { LiveAttemptStart, RuntimeAgentRecord } from "../../src/run-record.js";
 import { runEnsembleCli } from "../../src/cli.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
@@ -190,21 +190,32 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as Record<string, unknown>;
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as Record<string, unknown>;
-  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v4-manifest-keys.json", "utf8")) as {
+  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-manifest-keys.json", "utf8")) as {
     manifest: string[];
     args: string[];
   };
-  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v4-agent-keys.json", "utf8"));
-  const attemptKeys = JSON.parse(await readFile("test/fixtures/run-record/v4-attempt-keys.json", "utf8"));
+  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-agent-keys.json", "utf8"));
+  const attemptKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-attempt-keys.json", "utf8"));
+  const leafKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-cost-rollup-leaf-keys.json", "utf8"));
 
   assert.deepEqual(Object.keys(manifest).sort(), manifestKeys.manifest);
   assert.deepEqual(Object.keys(manifest.args as Record<string, unknown>).sort(), manifestKeys.args);
   assert.deepEqual(Object.keys(agent).sort(), agentKeys);
   assert.deepEqual(Object.keys((agent.attempts as Array<Record<string, unknown>>)[0]!).sort(), attemptKeys);
-  assert.equal(manifest.schema_version, 4);
+  // One attempt shape for every status: a reader branches on `status`, never on which keys exist.
+  const abandoned = abandonedAttemptEntry({
+    attempt: 1, started_at: "2026-11-10T09:49:47.721Z", transcript: null,
+    target: { engine: "codex", model: null }, resolved_model: "gpt-6-luna", resolved_effort: null
+  });
+  assert.deepEqual(Object.keys(abandoned).sort(), attemptKeys);
+  const rollup = manifest.cost_rollup as Record<string, Record<string, Record<string, unknown>>>;
+  for (const leaf of Object.values(rollup).flatMap((models) => Object.values(models))) {
+    assert.deepEqual(Object.keys(leaf).sort(), leafKeys);
+  }
+  assert.equal(manifest.schema_version, 5);
   assert.equal(manifest.kind, "run_manifest");
   assert.equal(manifest.caller_identity, "session:run-record-test");
-  assert.equal(agent.schema_version, 4);
+  assert.equal(agent.schema_version, 5);
   assert.equal(agent.kind, "agent_record");
   assert.equal(agent.header_identity, "original_request");
   assert.deepEqual(manifest.concurrency, {
@@ -402,7 +413,9 @@ test("a dispatched worker with no usage has an unresolved roll-up reason", async
     const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
       cost_rollup: Record<string, Record<string, unknown>>;
     };
-    assert.deepEqual(manifest.cost_rollup.codex?.unresolved, { unavailable: "no-usage-reported" });
+    assert.deepEqual(manifest.cost_rollup.codex?.unresolved, {
+      tokens: { unavailable: "no-usage-reported" }, cost: { unavailable: "no-provider-cost-reported" }, complete: true, unobserved: []
+    });
 
     const attempted = await start("attempt-without-usage");
     const attempt = agentRecord(1, "codex", null, 0);
@@ -413,7 +426,10 @@ test("a dispatched worker with no usage has an unresolved roll-up reason", async
     const attemptedManifest = JSON.parse(
       await readFile(path.join(attempted.archiveDir, "manifest.json"), "utf8")
     ) as { cost_rollup: Record<string, Record<string, unknown>> };
-    assert.deepEqual(attemptedManifest.cost_rollup.codex?.unresolved, { unavailable: "no-usage-reported" });
+    assert.deepEqual(attemptedManifest.cost_rollup.codex?.unresolved, {
+      tokens: { unavailable: "no-usage-reported" }, cost: { unavailable: "no-provider-cost-reported" }, complete: false,
+      unobserved: [{ agent: 1, attempt: 1, reason: "engine-reported-no-usage", measured: "none" }]
+    });
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -1909,6 +1925,16 @@ async function readAgentRecord(
   ) as Record<string, unknown>;
 }
 
+/** A live attempt start on an unpinned Codex target with no identity reported yet. */
+function liveStart(attempt: number, startedAt: string): LiveAttemptStart {
+  return {
+    attempt,
+    startedAt,
+    target: { engine: "codex", model: null },
+    identity: { resolvedModel: null, resolvedEffort: null }
+  };
+}
+
 async function gitRepo(prefix: string): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), prefix));
   await writeFile(path.join(directory, "package.json"), JSON.stringify({ name: "ensemble-workflows", version: "0.0.0" }));
@@ -1992,7 +2018,7 @@ test("an interrupted worker's archive names its termination cause and why no tra
   // This is a cold read of the real writer's v3 record. No transcript
   // survives an interruption, but the array's type remains stable and its
   // sibling carries the reason a consumer needs to interpret the empty list.
-  assert.equal(interruptedAgent.schema_version, 4);
+  assert.equal(interruptedAgent.schema_version, 5);
   assert.ok(Array.isArray(interruptedAgent.transcripts));
   assert.deepEqual(interruptedAgent.transcripts, []);
   assert.equal(interruptedAgent.transcripts_unavailable, "worker-interrupted");
@@ -2470,9 +2496,10 @@ test("live attempts publish readable references, append in order and settle with
     const agentPath = path.join(writer.archiveDir, "agents/000001/agent.json");
     const readAgent = async () => JSON.parse(await readFile(agentPath, "utf8"));
     assert.equal((await readAgent()).current_attempt, undefined);
-    await writer.recordAttemptStart(1, 1, "2026-11-05T12:00:00Z");
+    await writer.recordAttemptStart(1, liveStart(1, "2026-11-05T12:00:00Z"));
     assert.deepEqual((await readAgent()).current_attempt, {
-      attempt: 1, started_at: "2026-11-05T12:00:00Z", transcript: null
+      attempt: 1, started_at: "2026-11-05T12:00:00Z", transcript: null,
+      target: { engine: "codex", model: null }, resolved_model: null, resolved_effort: null
     }, "execution start must be readable before transcript discovery");
     const external = path.join(store, "claude.jsonl");
     await writeFile(external, "{}\n");
@@ -2505,7 +2532,7 @@ test("live attempts publish readable references, append in order and settle with
     assert.deepEqual(Object.keys(final).sort(), Object.keys(other).sort());
     await writer.finish({ status: "complete", exitCode: 0, result: true });
     const before = await readFile(agentPath, "utf8");
-    await writer.recordAttemptStart(1, 2, "late");
+    await writer.recordAttemptStart(1, liveStart(2, "late"));
     await writer.recordClaudeTranscript(1, 1, external);
     await writer.appendCodexTranscript(1, 1, { sealed: true });
     assert.equal(await readFile(agentPath, "utf8"), before);
@@ -2533,7 +2560,7 @@ test("live Codex appends avoid transcript rereads and settled artefact rewrites"
     assert.ok(previous);
     const previousPath = path.join(writer.archiveDir, previous.path);
     const before = await stat(previousPath, { bigint: true });
-    await writer.recordAttemptStart(1, 2, "2026-11-05T12:00:00Z");
+    await writer.recordAttemptStart(1, liveStart(2, "2026-11-05T12:00:00Z"));
     const transcript = "agents/000001/attempt-002-1-transcript.codex.jsonl";
     const transcriptPath = path.join(writer.archiveDir, transcript);
     const originalReadFile = fsPromises.readFile;
@@ -2598,7 +2625,7 @@ test("ending an attempt clears live metadata and rejects stale transcript update
     await writer.recordAgent(record);
     const agentPath = path.join(writer.archiveDir, "agents/000001/agent.json");
     const readAgent = async () => JSON.parse(await readFile(agentPath, "utf8"));
-    await writer.recordAttemptStart(1, 1, "2026-11-05T12:00:00Z");
+    await writer.recordAttemptStart(1, liveStart(1, "2026-11-05T12:00:00Z"));
     await writer.appendCodexTranscript(1, 1, { first: true });
     const transcript = path.join(writer.archiveDir, (await readAgent()).current_attempt.transcript);
     await writer.recordAttemptEnd(1, 2);
@@ -2607,9 +2634,12 @@ test("ending an attempt clears live metadata and rejects stale transcript update
     assert.equal((await readAgent()).current_attempt, undefined, "ending the active attempt must clear live metadata");
     await writer.appendCodexTranscript(1, 1, { stale: true });
     assert.equal(await readFile(transcript, "utf8"), '{"first":true}\n');
-    await writer.recordAttemptStart(1, 2, "2026-11-05T12:00:01Z");
+    await writer.recordAttemptStart(1, liveStart(2, "2026-11-05T12:00:01Z"));
     await writer.recordAttemptEnd(1, 1);
-    assert.deepEqual((await readAgent()).current_attempt, { attempt: 2, started_at: "2026-11-05T12:00:01Z", transcript: null });
+    assert.deepEqual((await readAgent()).current_attempt, {
+      attempt: 2, started_at: "2026-11-05T12:00:01Z", transcript: null,
+      target: { engine: "codex", model: null }, resolved_model: null, resolved_effort: null
+    });
     await writer.recordAttemptEnd(1, 2);
     assert.equal((await readAgent()).current_attempt, undefined);
     record.status = "complete";
@@ -2632,7 +2662,7 @@ test("settlement restores complete Codex capture after a failed live append", as
     running.status = "in-progress";
     running.attempts = [];
     await writer.recordAgent(running);
-    await writer.recordAttemptStart(1, 1, "2026-11-05T12:00:00Z");
+    await writer.recordAttemptStart(1, liveStart(1, "2026-11-05T12:00:00Z"));
     const spy = t.mock.method(fsPromises, "appendFile", async () => { throw new Error("disk full"); });
     syncBuiltinESMExports();
     try {
@@ -2703,3 +2733,231 @@ test("runtime abandonment during the dispatch write leaves unmeasured archive ti
     await rm(store, { recursive: true, force: true });
   }
 });
+
+for (const engine of ["codex", "claude"] as const) {
+  for (const resumedSweep of [false, true]) {
+    test(`${engine} abandonment retains served identity and partial transcript${resumedSweep ? " after a sweep dies" : ""}`, async () => {
+      const scratch = await mkdtemp(path.join(tmpdir(), "abandoned-record-test-"));
+      try {
+        const writer = await RunRecordWriter.start({
+          storeDir: path.join(scratch, "store"), cwd: scratch, runUuid: "dead-writer",
+          workflowPath: path.join(scratch, "workflow.js"), workflowSource: "return true;",
+          args: [], cliFlags: { jsonArgs: false }
+        });
+        const completed = agentRecord(1, engine, null, 7);
+        completed.resolvedModel = "served-model";
+        completed.attempts[0]!.resolvedModel = "served-model";
+        await writer.recordAgent(completed);
+        const completedPath = path.join(writer.archiveDir, "agents/000001/agent.json");
+        const completedBytes = await readFile(completedPath);
+        const running = agentRecord(2, engine, null, 0);
+        running.status = "in-progress";
+        running.attempts = [];
+        running.queuedMs = 0;
+        running.executionMs = 0;
+        await writer.recordAgent(running);
+        await writer.recordAttemptStart(2, {
+          ...liveStart(1, "2026-11-10T12:00:00Z"), target: { engine, model: "requested-model" }
+        });
+        await writer.recordAttemptIdentity(2, 1, { resolvedModel: "served-model", resolvedEffort: "high" });
+        const readManifest = async () => JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8"));
+        const liveLeaf = (await readManifest()).cost_rollup[engine]["served-model"];
+        assert.equal(liveLeaf.complete, false);
+        assert.deepEqual(liveLeaf.unobserved, [{ agent: 2, attempt: 1, reason: "record-unsettled", measured: "none" }]);
+        let expected: Buffer;
+        if (engine === "codex") {
+          const relative = await writer.appendCodexTranscript(2, 1, { method: "turn/started" });
+          assert.ok(relative);
+          const file = path.join(writer.archiveDir, relative);
+          expected = Buffer.from('{"method":"turn/started"}\n{"delta":"late append"}\n');
+          // The append reached disk, but the writer died before its manifest update.
+          await writeFile(file, expected);
+          assert.notEqual((await readManifest()).files.find((entry: { path: string }) => entry.path === relative).size, expected.length);
+        } else {
+          const external = path.join(scratch, "external-claude.jsonl");
+          // Preserve bytes even when death cut a UTF-8 character short.
+          expected = Buffer.concat([Buffer.from('{"type":"assistant"}\n'), Buffer.from([0xe2, 0x82])]);
+          await writeFile(external, expected);
+          await writer.recordClaudeTranscript(2, 1, external);
+        }
+        const manifestPath = path.join(writer.archiveDir, "manifest.json");
+        const manifest = await readManifest();
+        await writeAttestedRunManifest(path.dirname(writer.archiveDir), path.basename(writer.archiveDir), {
+          ...manifest, owner: { pid: 999999, start_ticks: "1", host: hostname() }
+        }, manifest.files);
+        const agentPath = path.join(writer.archiveDir, "agents/000002/agent.json");
+        const before = JSON.parse(await readFile(agentPath, "utf8"));
+        if (resumedSweep) {
+          const repair = await reconcileAbandonedAgentRecord(writer.archiveDir, before, {
+            observed_at: "2026-11-10T12:01:00Z", reason: "owner-process-gone",
+            observed_by: { pid: process.pid, run_uuid: "prior-sweep" }
+          });
+          // A sweep died after rewriting the agent, before updating the manifest.
+          await writeFile(agentPath, JSON.stringify(repair.record));
+        }
+        const procDir = path.join(scratch, "proc");
+        await writeProcStat(procDir, process.pid, "1111");
+        assert.deepEqual(await reapAbandonedRuns({
+          namespaceDir: path.dirname(writer.archiveDir), procDir,
+          observer: { pid: process.pid, runUuid: "next-run" }
+        }), ["dead-writer"]);
+        const abandoned = JSON.parse(await readFile(agentPath, "utf8"));
+        assert.equal(abandoned.current_attempt, undefined);
+        assert.equal(abandoned.status, "abandoned");
+        assert.equal(abandoned.resolved_model, "served-model");
+        assert.equal(abandoned.resolved_effort, "high");
+        assert.equal(abandoned.queued_ms, null);
+        assert.equal(abandoned.execution_ms, null);
+        assert.deepEqual(abandoned.usage, before.usage);
+        assert.deepEqual(abandoned.termination_cause, before.termination_cause);
+        assert.equal(abandoned.attempts.length, 1);
+        assert.equal(abandoned.attempts[0].status, "abandoned");
+        assert.equal(abandoned.attempts[0].started_at, "2026-11-10T12:00:00Z");
+        assert.equal(abandoned.attempts[0].ended_at, null);
+        assert.equal(abandoned.attempts[0].duration_ms, null);
+        assert.deepEqual(abandoned.attempts[0].target, { engine, model: "requested-model" });
+        assert.equal(abandoned.transcripts_unavailable, null);
+        assert.equal(abandoned.transcripts.length, 1);
+        assert.equal(abandoned.transcripts[0].partial, true);
+        assert.equal(abandoned.transcripts[0].attempt, 1);
+        assert.deepEqual(await readFile(path.join(writer.archiveDir, abandoned.transcripts[0].path)), expected);
+        assert.deepEqual(await readFile(completedPath), completedBytes, "settled records must not be rewritten");
+        const leaf = (await readManifest()).cost_rollup[engine]["served-model"];
+        assert.equal(leaf.tokens.totalTokens, 7);
+        assert.equal(leaf.complete, false);
+        assert.deepEqual(leaf.unobserved, [{ agent: 2, attempt: 1, reason: "record-unsettled", measured: "none" }]);
+        assert.equal((await readManifest()).cost_rollup[engine].unresolved, undefined);
+        const integrity = await readArchiveIntegrity(writer.archiveDir);
+        assert.equal(integrity.manifestVerified, true);
+        assert.equal(integrity.agentRecordsVerified, 2);
+        assert.deepEqual(integrity.filesLost, []);
+        const once = await readFile(manifestPath);
+        assert.deepEqual(await reapAbandonedRuns({ namespaceDir: path.dirname(writer.archiveDir),
+          observer: { pid: process.pid, runUuid: "again" } }), []);
+        assert.deepEqual(await readFile(manifestPath), once);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+test("abandonment leaves settled attempts intact and never links an unreadable live transcript", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "abandoned-missing-transcript-"));
+  try {
+    const base = {
+      id: 1, status: "in-progress", resolved_model: "earlier", resolved_effort: "medium",
+      attempts: [], transcripts: [], transcripts_unavailable: "record-unsettled",
+      current_attempt: { attempt: 2, started_at: "2026-11-10T12:00:00Z", transcript: path.join(scratch, "missing"),
+        target: { engine: "claude", model: null }, resolved_model: null, resolved_effort: null }
+    };
+    const abandonment = { observed_at: "2026-11-10T12:01:00Z", reason: "owner-process-gone" as const,
+      observed_by: { pid: process.pid, run_uuid: "sweep" } };
+    const result = await reconcileAbandonedAgentRecord(scratch, base, abandonment);
+    assert.deepEqual(result.record.transcripts, []);
+    assert.equal(result.record.transcripts_unavailable, "record-unsettled");
+    assert.deepEqual(result.files, []);
+    assert.equal(result.record.resolved_model, "earlier");
+    const settled = { attempt: 2, status: "complete", resolved_model: "settled-model" };
+    const duplicate = await reconcileAbandonedAgentRecord(scratch, { ...base, attempts: [settled] }, abandonment);
+    assert.deepEqual(duplicate.record.attempts, [settled]);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+});
+
+test("a replacement live attempt clears identity and rejects an earlier attempt's late report", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "live-attempt-identity-"));
+  try {
+    const writer = await RunRecordWriter.start({
+      storeDir: path.join(scratch, "store"), cwd: scratch, runUuid: "identity-retry",
+      workflowPath: path.join(scratch, "workflow.js"), workflowSource: "return true;", args: [], cliFlags: { jsonArgs: false }
+    });
+    const running = agentRecord(1, "codex", null, 0);
+    running.status = "in-progress";
+    running.attempts = [];
+    await writer.recordAgent(running);
+    await writer.recordAttemptStart(1, liveStart(1, "2026-11-10T12:00:00Z"));
+    await writer.recordAttemptIdentity(1, 1, { resolvedModel: "first-model", resolvedEffort: "high" });
+    await writer.recordAttemptStart(1, { ...liveStart(2, "2026-11-10T12:01:00Z"), target: { engine: "claude", model: "requested" } });
+    await writer.recordAttemptIdentity(1, 1, { resolvedModel: "late-model", resolvedEffort: "low" });
+    const read = async () => JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+    assert.deepEqual((await read()).current_attempt, {
+      attempt: 2, started_at: "2026-11-10T12:01:00Z", transcript: null,
+      target: { engine: "claude", model: "requested" }, resolved_model: null, resolved_effort: null
+    });
+    await writer.recordAttemptIdentity(1, 2, { resolvedModel: "second-model", resolvedEffort: "medium" });
+    assert.equal((await read()).current_attempt.resolved_model, "second-model");
+    assert.equal(writer.manifest.cost_rollup.codex, undefined);
+    assert.equal(writer.manifest.cost_rollup.claude?.["second-model"]?.complete, false);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+});
+
+for (const mode of ["text retry", "schema retry", "cross-engine fallback"] as const) {
+  test(`${mode} persists prior attempts before a later attempt can be abandoned`, async () => {
+    const scratch = await mkdtemp(path.join(tmpdir(), "persisted-attempts-"));
+    let rejectTurn: ((error: Error) => void) | undefined;
+    let signalRunning!: () => void;
+    const running = new Promise<void>((resolve) => { signalRunning = resolve; });
+    const firstEngine = mode === "cross-engine fallback" ? "claude" : "codex";
+    const usage = agentRecord(1, firstEngine, null, 13).attempts[0]!.tokenUsageEvents;
+    const adapter = (name: EngineName): EngineAdapter => ({
+      name, concurrency: 1, schedule: async (task) => task(),
+      createInvocation: () => ({ runAttempt: async (context) => {
+        if (context.attempt === 1) return {
+          text: mode === "schema retry" ? "invalid JSON" : "", deltaText: "", durationMs: 5, firstDeltaMs: 1,
+          items: {}, tokenUsageEvents: usage, resolvedModel: `${name}-served`, resolvedEffort: "high",
+          ...(mode === "cross-engine fallback" ? {
+            attemptFailure: { kind: "claude-worker-diagnostic", message: "API Error: overloaded (529)" },
+            diagnostics: { apiError: { status: 529, code: "overloaded_error" } }
+          } : {})
+        };
+        context.onIdentity?.({ resolvedModel: `${name}-served`, resolvedEffort: "high" });
+        signalRunning();
+        return new Promise<TurnResult>((_resolve, reject) => { rejectTurn = reject; });
+      } }), close: async () => { rejectTurn?.(new EngineShutdownError(name)); }
+    });
+    const runtime = new EnsembleRuntime({ cwd: scratch, defaultMaxAttempts: 2, engines: new EngineRegistry(
+      mode === "cross-engine fallback" ? [adapter("claude"), adapter("codex")] : [adapter("codex")]
+    ) });
+    let worker: Promise<unknown> | undefined;
+    try {
+      const writer = await RunRecordWriter.start({ storeDir: path.join(scratch, "store"), cwd: scratch,
+        runUuid: "retrying", workflowPath: path.join(scratch, "workflow.js"), workflowSource: "return true;",
+        args: [], cliFlags: { jsonArgs: false } });
+      runtime.setRunRecorder(writer);
+      worker = runtime.agent("work", { engine: firstEngine, maxAttempts: 2,
+        ...(mode === "schema retry" ? { schema: { type: "object", required: ["answer"] } } : {}),
+        ...(mode === "cross-engine fallback" ? { fallback: [{ engine: "codex", model: "requested" }] } : {}) });
+      void worker.catch(() => undefined);
+      await running;
+      await writer.recordAttemptIdentity(1, 2, { resolvedModel: "codex-served", resolvedEffort: "high" });
+      const agentPath = path.join(writer.archiveDir, "agents/000001/agent.json");
+      const before = JSON.parse(await readFile(agentPath, "utf8"));
+      assert.deepEqual(before.attempts.map((entry: { attempt: number }) => entry.attempt), [1]);
+      assert.equal(before.current_attempt.attempt, 2);
+      assert.equal(before.usage.summary.totalTokens, 13);
+      const manifestPath = path.join(writer.archiveDir, "manifest.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      await writeAttestedRunManifest(path.dirname(writer.archiveDir), "retrying", {
+        ...manifest, owner: { pid: 999999, start_ticks: "1", host: hostname() }
+      }, manifest.files);
+      const procDir = path.join(scratch, "proc");
+      await writeProcStat(procDir, process.pid, "1");
+      assert.deepEqual(await reapAbandonedRuns({ namespaceDir: path.dirname(writer.archiveDir), procDir,
+        observer: { pid: process.pid, runUuid: "sweep" } }), ["retrying"]);
+      const after = JSON.parse(await readFile(agentPath, "utf8"));
+      assert.deepEqual(after.attempts.map((entry: { status: string }) => entry.status), ["failed", "abandoned"]);
+      const rollup = JSON.parse(await readFile(manifestPath, "utf8")).cost_rollup;
+      assert.equal(rollup[firstEngine][`${firstEngine}-served`].tokens.totalTokens, 13);
+      assert.deepEqual(rollup.codex["codex-served"].unobserved,
+        [{ agent: 1, attempt: 2, reason: "record-unsettled", measured: "none" }]);
+      if (mode === "cross-engine fallback") assert.equal(rollup.claude["claude-served"].complete, true);
+      const integrity = await readArchiveIntegrity(writer.archiveDir);
+      assert.equal(integrity.manifestVerified, true);
+      assert.deepEqual(integrity.filesLost, []);
+    } finally {
+      await runtime.close("interrupted");
+      await worker?.catch(() => undefined);
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+}

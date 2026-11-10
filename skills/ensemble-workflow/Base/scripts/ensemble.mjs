@@ -15875,10 +15875,159 @@ function addUsageSummary(target, delta) {
   };
 }
 
+// src/cost-rollup.ts
+var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
+  "CodexSubstrateRefusedError",
+  "ClaudeDispatchError"
+]);
+function isTimeoutFailureKind(kind) {
+  return kind === "TurnTimeoutError" || kind.endsWith("-timeout");
+}
+function runEndingFailureKind(status) {
+  return `run-${status}`;
+}
+var RUN_ENDING_ATTEMPT_ENDING = {
+  "run-interrupted": "interrupted",
+  "run-failed": "interrupted",
+  "run-timed-out": "timed-out"
+};
+function isRunEndingFailureKind(kind) {
+  return Object.hasOwn(RUN_ENDING_ATTEMPT_ENDING, kind);
+}
+function attemptEnding(attempt) {
+  if (!attempt.settled) {
+    return "unsettled";
+  }
+  const kind = attempt.failureKind;
+  if (kind === null) {
+    return "settled";
+  }
+  if (REFUSED_BEFORE_WORKER_KINDS.has(kind)) {
+    return "refused";
+  }
+  if (isRunEndingFailureKind(kind)) {
+    return RUN_ENDING_ATTEMPT_ENDING[kind];
+  }
+  if (isTimeoutFailureKind(kind)) {
+    return "timed-out";
+  }
+  return "settled";
+}
+var UNOBSERVED_REASON = {
+  interrupted: "worker-interrupted",
+  "timed-out": "worker-timed-out",
+  unsettled: "record-unsettled"
+};
+function buildCostRollup(agents) {
+  const buckets = /* @__PURE__ */ new Map();
+  const bucketFor = (engine, model) => {
+    const key = `${engine}\0${model}`;
+    let bucket = buckets.get(key);
+    if (bucket === void 0) {
+      bucket = { engine, model, tokens: null, cost: { amount: 0, currency: null, reported: false, unlike: false }, unobserved: [] };
+      buckets.set(key, bucket);
+    }
+    return bucket;
+  };
+  for (const agent of agents) {
+    const lastReporter = agent.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.engine ?? agent.engine;
+    for (const attempt of agent.attempts) {
+      const borrowed = attempt.settled && attempt.engine === lastReporter ? agent.resolvedModel : null;
+      const bucket = bucketFor(attempt.engine, attempt.resolvedModel ?? borrowed ?? "unresolved");
+      const summary = summariseUsage(attempt.engine, attempt.tokenUsageEvents);
+      if (summary !== null) {
+        bucket.tokens = bucket.tokens === null ? summary : addUsageSummary(bucket.tokens, summary);
+        for (const event of attempt.tokenUsageEvents) {
+          addProviderCost(bucket.cost, event);
+        }
+      }
+      const ending = attemptEnding(attempt);
+      if (ending === "refused" || ending === "settled" && summary !== null) {
+        continue;
+      }
+      bucket.unobserved.push({
+        agent: agent.id,
+        attempt: attempt.attempt,
+        reason: ending === "settled" ? "engine-reported-no-usage" : UNOBSERVED_REASON[ending],
+        measured: summary === null ? "none" : "partial"
+      });
+    }
+    if (agent.attempts.length === 0 || agent.mayHaveUnlistedAttempt) {
+      const bucket = bucketFor(agent.engine, "unresolved");
+      if (agent.mayHaveUnlistedAttempt) {
+        bucket.unobserved.push({ agent: agent.id, attempt: null, reason: "record-unsettled", measured: "none" });
+      }
+    }
+  }
+  const rollup = {};
+  for (const bucket of buckets.values()) {
+    const engineLeaves = rollup[bucket.engine] ??= {};
+    engineLeaves[bucket.model] = {
+      tokens: bucket.tokens ?? { unavailable: "no-usage-reported" },
+      cost: publishedCost(bucket.cost),
+      complete: bucket.unobserved.length === 0,
+      unobserved: bucket.unobserved
+    };
+  }
+  return rollup;
+}
+function publishedCost(accumulator) {
+  if (accumulator.unlike) {
+    return { unavailable: "unlike-currencies" };
+  }
+  if (!accumulator.reported) {
+    return { unavailable: "no-provider-cost-reported" };
+  }
+  return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
+}
+function addProviderCost(target, event) {
+  if (target.unlike) {
+    return;
+  }
+  const cost = event.raw.cost;
+  if (typeof cost !== "number" || !Number.isFinite(cost)) {
+    return;
+  }
+  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
+  if (target.currency !== null && currency !== null && currency !== target.currency) {
+    target.unlike = true;
+    return;
+  }
+  target.amount += cost;
+  target.reported = true;
+  if (currency !== null && target.currency === null) {
+    target.currency = currency;
+  }
+}
+
 // src/run-record.ts
 var execFileAsync = promisify(execFile);
-var SCHEMA_VERSION = 4;
+var SCHEMA_VERSION = 5;
 var MANIFEST_PATH = "manifest.json";
+function abandonedAttemptEntry(live) {
+  return {
+    attempt: live.attempt,
+    status: "abandoned",
+    target: { engine: live.target.engine, model: live.target.model },
+    failure: null,
+    classification: null,
+    chain_decision: null,
+    observed_failure: null,
+    worker_exit: null,
+    app_server_diagnostic: null,
+    background_waits: [],
+    raw_output: null,
+    validated_output: null,
+    resolved_model: live.resolved_model,
+    resolved_effort: live.resolved_effort,
+    started_at: live.started_at,
+    ended_at: null,
+    duration_ms: null,
+    first_delta_ms: null,
+    token_usage_events: [],
+    diagnostics: {}
+  };
+}
 var RunRecordWriter = class _RunRecordWriter {
   archiveDir;
   manifest;
@@ -16133,13 +16282,46 @@ var RunRecordWriter = class _RunRecordWriter {
       await this.#writeManifest();
     });
   }
-  /** Publish execution start separately from dispatch and settlement. */
-  async recordAttemptStart(id, attempt, startedAt) {
+  /**
+   * Publish execution start separately from dispatch and settlement. The
+   * new attempt replaces any earlier one whole, so identity observed on a
+   * refused or retried attempt never carries onto the next.
+   */
+  async recordAttemptStart(id, start) {
     await this.#serialise(async () => {
       if (this.#sealed) return;
       const record = this.#agents.get(id);
       if (record === void 0 || record.status !== "in-progress") return;
-      this.#currentAttempts.set(id, { attempt, started_at: startedAt, transcript: null });
+      this.#currentAttempts.set(id, {
+        attempt: start.attempt,
+        started_at: start.startedAt,
+        transcript: null,
+        target: { engine: start.target.engine, model: start.target.model },
+        resolved_model: start.identity.resolvedModel,
+        resolved_effort: start.identity.resolvedEffort
+      });
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+  /**
+   * Persist a served identity the engine reported for the running attempt,
+   * before it settles, so a writer that dies mid-attempt leaves the model
+   * and effort that were serving it. Each value replaces the live
+   * attempt's own — a null clears it, since an engine reporting none for
+   * this attempt has unsaid the earlier report — and the manifest's
+   * roll-up is recomputed in the same write, so the running attempt books
+   * under the model now serving it. Ignored unless `attempt` is the live
+   * attempt, so a late callback from an attempt already replaced never
+   * relabels its successor.
+   */
+  async recordAttemptIdentity(id, attempt, identity) {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const current2 = this.#currentAttempts.get(id);
+      if (current2?.attempt !== attempt) return;
+      if (current2.resolved_model === identity.resolvedModel && current2.resolved_effort === identity.resolvedEffort) return;
+      current2.resolved_model = identity.resolvedModel;
+      current2.resolved_effort = identity.resolvedEffort;
       await this.#publishCurrentAttempt(id);
     });
   }
@@ -16200,10 +16382,41 @@ var RunRecordWriter = class _RunRecordWriter {
     if (current2 === void 0) {
       delete record.current_attempt;
     } else {
-      record.current_attempt = { ...current2 };
+      record.current_attempt = structuredClone(current2);
     }
     await this.#writeJson(relativePath, record);
+    this.manifest.cost_rollup = buildCostRollup(this.#rollupViews());
     await this.#writeManifest();
+  }
+  /**
+   * The roll-up's view of every recorded agent: its settled attempts, then
+   * its live attempt where one runs that is not already settled — the live
+   * entry outlasts its own settlement until the next attempt or the
+   * settled record replaces it, and must not book the attempt twice.
+   */
+  #rollupViews() {
+    return [...this.#agents.values()].map((record) => {
+      const attempts = record.attempts.map((attempt) => ({
+        attempt: attempt.attempt,
+        engine: attempt.target.engine,
+        resolvedModel: attempt.resolvedModel,
+        settled: true,
+        failureKind: attempt.failure?.kind ?? null,
+        tokenUsageEvents: attempt.tokenUsageEvents
+      }));
+      const live = this.#currentAttempts.get(record.id);
+      if (live !== void 0 && !attempts.some((attempt) => attempt.attempt === live.attempt)) {
+        attempts.push({
+          attempt: live.attempt,
+          engine: live.target.engine,
+          resolvedModel: live.resolved_model,
+          settled: false,
+          failureKind: null,
+          tokenUsageEvents: []
+        });
+      }
+      return { id: record.id, engine: record.engine, resolvedModel: record.resolvedModel, attempts, mayHaveUnlistedAttempt: false };
+    });
   }
   async recordAgent(record) {
     const snapshot = structuredClone(record);
@@ -16249,7 +16462,7 @@ var RunRecordWriter = class _RunRecordWriter {
     const agentJsonPath = `${agentDir}/agent.json`;
     const unsettledTiming = record.status === "in-progress" || record.status === "abandoned";
     await this.#writeJson(agentJsonPath, {
-      ...this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id) } } : {},
+      ...this.#currentAttempts.has(record.id) ? { current_attempt: structuredClone(this.#currentAttempts.get(record.id)) } : {},
       schema_version: SCHEMA_VERSION,
       kind: "agent_record",
       id: record.id,
@@ -16337,7 +16550,7 @@ var RunRecordWriter = class _RunRecordWriter {
       transcripts: transcriptRefs,
       transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
     });
-    this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
+    this.manifest.cost_rollup = buildCostRollup(this.#rollupViews());
     await this.#writeManifest();
   }
   async finish(options) {
@@ -16491,73 +16704,8 @@ function agentUsage(record) {
 }
 function substratesNeverStarted(record) {
   return record.attempts.length > 0 && record.attempts.every(
-    (attempt) => attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
+    (attempt) => attempt.failure !== null && REFUSED_BEFORE_WORKER_KINDS.has(attempt.failure.kind)
   );
-}
-function buildCostRollup(records) {
-  const rollup = {};
-  const accumulators = /* @__PURE__ */ new Map();
-  const noteAbsentUsage = (engine, model) => {
-    rollup[engine] ??= {};
-    rollup[engine][model] ??= { unavailable: "no-usage-reported" };
-  };
-  for (const record of records) {
-    if (record.attempts.length === 0) {
-      noteAbsentUsage(record.engine, "unresolved");
-    }
-    const lastReporter = record.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.target.engine ?? record.engine;
-    for (const attempt of record.attempts) {
-      const engine = attempt.target.engine;
-      const summary = summariseUsage(engine, attempt.tokenUsageEvents);
-      const borrowed = engine === lastReporter ? record.resolvedModel : null;
-      const model = attempt.resolvedModel ?? borrowed ?? "unresolved";
-      if (summary === null) {
-        noteAbsentUsage(engine, model);
-        continue;
-      }
-      rollup[engine] ??= {};
-      const existing = rollup[engine][model];
-      const key = `${engine}\0${model}`;
-      const accumulator = accumulators.get(key) ?? { amount: 0, currency: null, reported: false, unlike: false };
-      accumulators.set(key, accumulator);
-      for (const event of attempt.tokenUsageEvents) {
-        addProviderCost(accumulator, event);
-      }
-      rollup[engine][model] = {
-        tokens: existing === void 0 || "unavailable" in existing ? summary : addUsageSummary(existing.tokens, summary),
-        cost: publishedCost(accumulator)
-      };
-    }
-  }
-  return rollup;
-}
-function publishedCost(accumulator) {
-  if (accumulator.unlike) {
-    return { unavailable: "unlike-currencies" };
-  }
-  if (!accumulator.reported) {
-    return { unavailable: "no-provider-cost-reported" };
-  }
-  return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
-}
-function addProviderCost(target, event) {
-  if (target.unlike) {
-    return;
-  }
-  const cost = event.raw.cost;
-  if (typeof cost !== "number" || !Number.isFinite(cost)) {
-    return;
-  }
-  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
-  if (target.currency !== null && currency !== null && currency !== target.currency) {
-    target.unlike = true;
-    return;
-  }
-  target.amount += cost;
-  target.reported = true;
-  if (currency !== null && target.currency === null) {
-    target.currency = currency;
-  }
 }
 async function resolveRunDirectory(storeDir, cwd, runUuid) {
   return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
@@ -16598,13 +16746,15 @@ async function reapAbandonedRuns(options) {
       };
       const rewritten = await resolveAbandonedAgentRecords(path6.join(options.namespaceDir, entry.name), abandonment);
       if (Array.isArray(fresh.files)) {
-        for (const fileEntry of fresh.files) {
-          const update = rewritten.get(fileEntry.path);
-          if (update !== void 0) {
-            fileEntry.size = update.size;
-            fileEntry.sha256 = update.sha256;
-          }
+        const files = new Map(fresh.files.map((file) => [file.path, file]));
+        for (const [relativePath, update] of rewritten) {
+          files.set(relativePath, { path: relativePath, ...update });
         }
+        fresh.files = [...files.values()].sort((a, b) => compareCodeUnits(a.path, b.path));
+      }
+      if (fresh.schema_version === SCHEMA_VERSION) {
+        const rollup = await abandonedCostRollup(path6.join(options.namespaceDir, entry.name));
+        if (rollup !== null) fresh.cost_rollup = rollup;
       }
       fresh.status = "abandoned";
       fresh.abandonment = abandonment;
@@ -16633,13 +16783,19 @@ async function resolveAbandonedAgentRecords(runDir, abandonment) {
     }
     try {
       const agentJsonPath = path6.join(agentsDir, agentEntry.name, "agent.json");
-      const agentRecord = JSON.parse(await readFile4(agentJsonPath, "utf8"));
-      if (agentRecord.status !== "in-progress") {
+      let agentRecord = JSON.parse(await readFile4(agentJsonPath, "utf8"));
+      if (agentRecord.status !== "in-progress" && !(agentRecord.status === "abandoned" && agentRecord.schema_version === SCHEMA_VERSION && isObject2(agentRecord.abandonment))) {
         continue;
       }
-      agentRecord.status = "abandoned";
-      agentRecord.abandonment = abandonment;
-      delete agentRecord.current_attempt;
+      if (agentRecord.schema_version === SCHEMA_VERSION) {
+        const reconciled = await reconcileAbandonedAgentRecord(runDir, agentRecord, abandonment);
+        agentRecord = reconciled.record;
+        for (const file of reconciled.files) rewritten.set(file.path, file);
+      } else {
+        agentRecord.status = "abandoned";
+        agentRecord.abandonment = abandonment;
+        delete agentRecord.current_attempt;
+      }
       const content = `${canonicalJson(agentRecord)}
 `;
       await writeStandaloneText(agentJsonPath, content);
@@ -16651,6 +16807,108 @@ async function resolveAbandonedAgentRecords(runDir, abandonment) {
     }
   }
   return rewritten;
+}
+async function reconcileAbandonedAgentRecord(runDir, record, abandonment) {
+  const reconciled = structuredClone(record);
+  const files = [];
+  const live = reconciled.current_attempt;
+  const attempts = reconciled.attempts;
+  if (live !== void 0 && !attempts.some((entry) => entry.attempt === live.attempt)) {
+    const abandoned = abandonedAttemptEntry(live);
+    attempts.push({ ...abandoned });
+    if (abandoned.resolved_model !== null) reconciled.resolved_model = abandoned.resolved_model;
+    if (abandoned.resolved_effort !== null) reconciled.resolved_effort = abandoned.resolved_effort;
+    if (live.transcript !== null && (live.target.engine === "codex" || live.target.engine === "claude")) {
+      const engine = live.target.engine;
+      const source = engine === "claude" ? live.transcript : path6.join(runDir, live.transcript);
+      const content = await readFile4(source).catch(() => null);
+      if (content !== null) {
+        const relativePath = engine === "claude" ? `agents/${padId(reconciled.id)}/attempt-${padAttempt(live.attempt)}-1-transcript.claude.jsonl` : live.transcript;
+        if (engine === "claude") await writeStandaloneText(path6.join(runDir, relativePath), content);
+        files.push({ path: relativePath, size: content.length, sha256: createHash2("sha256").update(content).digest("hex") });
+        const transcripts = reconciled.transcripts;
+        if (!transcripts.some((entry) => entry.attempt === live.attempt && entry.path === relativePath)) {
+          transcripts.push({
+            attempt: live.attempt,
+            path: relativePath,
+            format: "jsonl",
+            source: engine === "claude" ? "claude-session-jsonl" : "codex-app-server-events",
+            partial: true,
+            thread_id: null,
+            session_id: null
+          });
+        }
+        reconciled.transcripts_unavailable = null;
+      }
+    }
+  }
+  for (const transcript of reconciled.transcripts) {
+    if (typeof transcript.path !== "string" || files.some((file) => file.path === transcript.path)) continue;
+    const absolute = path6.join(runDir, transcript.path);
+    const metadata = await stat2(absolute).catch(() => null);
+    if (metadata !== null) files.push({ path: transcript.path, size: metadata.size, sha256: await hashFile(absolute) });
+  }
+  reconciled.status = "abandoned";
+  reconciled.abandonment = abandonment;
+  delete reconciled.current_attempt;
+  return { record: reconciled, files };
+}
+async function abandonedCostRollup(runDir) {
+  try {
+    const entries = await readdir3(path6.join(runDir, "agents"), { withFileTypes: true });
+    const views = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const record = JSON.parse(await readFile4(path6.join(runDir, "agents", entry.name, "agent.json"), "utf8"));
+      const view = rollupViewOfArchivedRecord(record);
+      if (view === null || !isObject2(record) || record.status === "in-progress") return null;
+      views.push(view);
+    }
+    return buildCostRollup(views);
+  } catch {
+    return null;
+  }
+}
+function rollupViewOfArchivedRecord(value) {
+  if (!isObject2(value) || value.schema_version !== SCHEMA_VERSION || value.kind !== "agent_record") {
+    return null;
+  }
+  const { id, engine, status, resolved_model: resolvedModel, attempts } = value;
+  if (typeof id !== "number" || !isEngineName(engine) || !isAgentStatus(status) || !(typeof resolvedModel === "string" || resolvedModel === null) || !Array.isArray(attempts)) {
+    return null;
+  }
+  const views = [];
+  for (const attempt of attempts) {
+    if (!isObject2(attempt) || typeof attempt.attempt !== "number" || !isObject2(attempt.target) || !isEngineName(attempt.target.engine) || !Array.isArray(attempt.token_usage_events)) {
+      return null;
+    }
+    const failure = attempt.failure;
+    views.push({
+      attempt: attempt.attempt,
+      engine: attempt.target.engine,
+      resolvedModel: typeof attempt.resolved_model === "string" ? attempt.resolved_model : null,
+      settled: attempt.status !== "abandoned",
+      failureKind: isObject2(failure) && typeof failure.kind === "string" ? failure.kind : null,
+      tokenUsageEvents: attempt.token_usage_events
+    });
+  }
+  const writerSettled = status !== "in-progress" && !(status === "abandoned" && isObject2(value.abandonment));
+  return {
+    id,
+    engine,
+    resolvedModel,
+    attempts: views,
+    mayHaveUnlistedAttempt: !writerSettled && views.every((attempt) => attempt.settled)
+  };
+}
+function isObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isEngineName(value) {
+  return value === "codex" || value === "claude" || value === "opencode";
+}
+function isAgentStatus(value) {
+  return value === "in-progress" || value === "complete" || value === "failed" || value === "timed-out" || value === "interrupted" || value === "abandoned";
 }
 function runDirectoryFor(storeDir, namespace, runUuid) {
   return path6.join(storeDir, "runs", "cwd", namespace.hash.slice(0, 24), runUuid);
@@ -24363,7 +24621,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
   }
   /** Bind transcript callbacks to one attempt and drain them before its outcome is recorded. */
-  async #runRecordedAttempt(engine, invocation, context, agentId, startedAt, cwd) {
+  async #runRecordedAttempt(engine, target, invocation, context, agentId, startedAt, cwd) {
     const recorder = this.#runRecorder;
     const record = this.#unsettledAgentRecords.get(agentId)?.record;
     const previousSpend = record?.attempts.flatMap((attempt) => attempt.tokenUsageEvents).reduce((sum, event) => sum + event.last.totalTokens, 0) ?? 0;
@@ -24381,8 +24639,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
       pending.add(operation);
       void operation.then(() => pending.delete(operation));
     };
-    if (recorder !== null && engine !== "opencode") {
-      await this.#recordArchiveWriteSafely(agentId, () => recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
+    if (recorder !== null) {
+      await this.#recordArchiveWriteSafely(agentId, () => recorder.recordAttemptStart(agentId, {
+        attempt: context.attempt,
+        startedAt: new Date(startedAt).toISOString(),
+        target: { engine: target.engine, model: target.model ?? null },
+        identity: record === void 0 || record.session === null ? { resolvedModel: null, resolvedEffort: null } : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
+      }));
     }
     this.progress.noteAgentTranscript(agentId, null);
     if (record?.session === null && engine !== "claude") {
@@ -24406,6 +24669,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           observedModel = identity.resolvedModel;
           observedEffort = identity.resolvedEffort;
           this.progress.noteAgentIdentity(agentId, identity);
+          if (recorder !== null) enqueue(() => recorder.recordAttemptIdentity(agentId, context.attempt, identity));
         },
         onUsage: (event) => {
           if (!active) return;
@@ -24478,6 +24742,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
         }
       } catch {
       }
+    }
+  }
+  /** Persist an ended attempt before a retry or fallback can replace its live evidence. */
+  async #recordAttemptBeforeRetry(record, attempt, ledger) {
+    const settled = record.attempts.at(-1);
+    if (!this.#closed && boundRemains(ledger) && record.status === "in-progress" && settled?.attempt === attempt && settled.status === "failed") {
+      await this.#recordSettlementSafely(record.id, record);
     }
   }
   async #recordSettlementSafely(agentId, record) {
@@ -24645,7 +24916,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   #closeCause(stage) {
     return {
-      kind: `run-${this.#shutdownAgentStatus}`,
+      kind: runEndingFailureKind(this.#shutdownAgentStatus),
       message: this.#closeOccasion === "body-returned" ? `${BODY_RETURNED}; ${BODY_RETURNED_LEG[stage]}` : `the run ended (${this.#shutdownAgentStatus}) ${RUN_ENDED_LEG[stage]}`
     };
   }
@@ -24672,8 +24943,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       };
       return;
     }
-    const lastFailure = record.attempts.at(-1)?.failure;
-    if (lastFailure?.kind.endsWith("-timeout") === true) {
+    const lastFailure = record.attempts.at(-1)?.failure ?? null;
+    if (lastFailure !== null && isTimeoutFailureKind(lastFailure.kind)) {
       record.status = "timed-out";
       record.terminationCause = { kind: lastFailure.kind, message: lastFailure.message };
       return;
@@ -24811,7 +25082,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await this.#runRecordedAttempt(engine, invocation, {
+        const result = await this.#runRecordedAttempt(engine, attempts.target, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
@@ -24854,6 +25125,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         }
         previousFailure = thrown.failure;
         lastThrown = error;
+      } finally {
+        await this.#recordAttemptBeforeRetry(agentRecord, attempt, attempts.ledger);
       }
     }
     return {
@@ -24875,7 +25148,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await this.#runRecordedAttempt(engine, invocation, {
+        const result = await this.#runRecordedAttempt(engine, attempts.target, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
@@ -24940,6 +25213,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         }
         previousFailure = thrown.failure;
         lastThrown = error;
+      } finally {
+        await this.#recordAttemptBeforeRetry(agentRecord, attempt, attempts.ledger);
       }
     }
     return {

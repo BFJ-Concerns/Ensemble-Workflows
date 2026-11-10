@@ -4,6 +4,7 @@ import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
+import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure } from "./failure-classification.js";
 import { fallbackSourceOf } from "./fallback-source.js";
 
@@ -1763,6 +1764,7 @@ export class EnsembleRuntime {
   /** Bind transcript callbacks to one attempt and drain them before its outcome is recorded. */
   async #runRecordedAttempt(
     engine: EngineName,
+    target: ChainTarget,
     invocation: EngineInvocation,
     context: EngineAttemptContext,
     agentId: number,
@@ -1787,9 +1789,16 @@ export class EnsembleRuntime {
       pending.add(operation);
       void operation.then(() => pending.delete(operation));
     };
-    if (recorder !== null && engine !== "opencode") {
+    if (recorder !== null) {
       await this.#recordArchiveWriteSafely(agentId, () =>
-        recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
+        recorder.recordAttemptStart(agentId, {
+          attempt: context.attempt,
+          startedAt: new Date(startedAt).toISOString(),
+          target: { engine: target.engine, model: target.model ?? null },
+          identity: record === undefined || record.session === null
+            ? { resolvedModel: null, resolvedEffort: null }
+            : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
+        }));
     }
     this.progress.noteAgentTranscript(agentId, null);
     if (record?.session === null && engine !== "claude") {
@@ -1810,6 +1819,7 @@ export class EnsembleRuntime {
           observedModel = identity.resolvedModel;
           observedEffort = identity.resolvedEffort;
           this.progress.noteAgentIdentity(agentId, identity);
+          if (recorder !== null) enqueue(() => recorder.recordAttemptIdentity(agentId, context.attempt, identity));
         },
         onUsage: (event) => {
           if (!active) return;
@@ -1883,6 +1893,15 @@ export class EnsembleRuntime {
           }
         }
       } catch { /* Observability cannot replace the attempt outcome. */ }
+    }
+  }
+
+  /** Persist an ended attempt before a retry or fallback can replace its live evidence. */
+  async #recordAttemptBeforeRetry(record: RuntimeAgentRecord, attempt: number, ledger: AttemptLedger): Promise<void> {
+    const settled = record.attempts.at(-1);
+    if (!this.#closed && boundRemains(ledger) && record.status === "in-progress" &&
+      settled?.attempt === attempt && settled.status === "failed") {
+      await this.#recordSettlementSafely(record.id, record);
     }
   }
 
@@ -2113,7 +2132,7 @@ export class EnsembleRuntime {
    */
   #closeCause(stage: CloseStage): TerminalErrorRecord {
     return {
-      kind: `run-${this.#shutdownAgentStatus}`,
+      kind: runEndingFailureKind(this.#shutdownAgentStatus),
       message:
         this.#closeOccasion === "body-returned"
           ? `${BODY_RETURNED}; ${BODY_RETURNED_LEG[stage]}`
@@ -2145,8 +2164,8 @@ export class EnsembleRuntime {
       };
       return;
     }
-    const lastFailure = record.attempts.at(-1)?.failure;
-    if (lastFailure?.kind.endsWith("-timeout") === true) {
+    const lastFailure = record.attempts.at(-1)?.failure ?? null;
+    if (lastFailure !== null && isTimeoutFailureKind(lastFailure.kind)) {
       record.status = "timed-out";
       record.terminationCause = { kind: lastFailure.kind, message: lastFailure.message };
       return;
@@ -2320,7 +2339,7 @@ export class EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await this.#runRecordedAttempt(engine, invocation, {
+        const result = await this.#runRecordedAttempt(engine, attempts.target, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
@@ -2370,6 +2389,8 @@ export class EnsembleRuntime {
         // out as the exhausted outcome's cause.
         previousFailure = thrown.failure;
         lastThrown = error;
+      } finally {
+        await this.#recordAttemptBeforeRetry(agentRecord, attempt, attempts.ledger);
       }
     }
 
@@ -2401,7 +2422,7 @@ export class EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await this.#runRecordedAttempt(engine, invocation, {
+        const result = await this.#runRecordedAttempt(engine, attempts.target, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
@@ -2475,6 +2496,8 @@ export class EnsembleRuntime {
         // out as the exhausted outcome's cause.
         previousFailure = thrown.failure;
         lastThrown = error;
+      } finally {
+        await this.#recordAttemptBeforeRetry(agentRecord, attempt, attempts.ledger);
       }
     }
 

@@ -401,14 +401,32 @@ The next run that starts in the same namespace applies the same rule and
 rewrites a provably dead run's manifest to `status: "abandoned"`, with an
 `abandonment` block saying what was observed, when, and by which run. It also
 flips that run's agent records that are still `in-progress` to `"abandoned"`
-with the same block and removes `current_attempt`. An abandoned agent record
-keeps the captured content recorded before the death: `attempts` lists settled attempts only, and `usage` and
-`transcripts` cover only those attempts. Where none had recorded usage or a
-transcript, `usage` and `transcripts_unavailable` read `record-unsettled` —
-the attempt in flight and its spend are unobserved, never zero. An agent record that the run's own close
+with the same block, and reconciles each from what its writer persisted
+before the death:
+
+- The attempt the writer died with, read from `current_attempt`, joins
+  `attempts` as an entry with status `"abandoned"` (see
+  [Agent records](#agent-records)), and `current_attempt` is removed.
+- The record's `resolved_model` and `resolved_effort` take that attempt's
+  served identity where the engine had reported one.
+- That attempt's partial transcript is linked in `transcripts` with
+  `partial: true`. A Codex transcript is already in the archive and its
+  files-table entry is re-measured; a Claude transcript is copied into the
+  archive when it is still readable. `transcripts_unavailable` names a reason
+  only when no transcript is linked.
+- `cost_rollup` is recomputed from the reconciled records, so the abandoned
+  attempt is booked under the model that served it and marks its leaf
+  incomplete.
+
+Nothing else is inferred. `usage` keeps the account recorded before the
+death — `record-unsettled` where no attempt had recorded usage, because the
+attempt in flight and its spend are unobserved, never zero — and so do
+`termination_cause` and the timings. An agent record that the run's own close
 abandons (one still being dispatched when the run ended) says
 `no-attempt-ran` instead, because its writer knows no attempt began. Settled
-agent records are never rewritten.
+agent records are never rewritten. A dead run whose records carry an earlier
+`schema_version` keeps that version's sweep: its records' status is flipped,
+`current_attempt` is removed, and its roll-up stands as written.
 
 ## Run record schema
 
@@ -416,7 +434,7 @@ Every record document — the JSON files described below, as opposed to the
 archived workflow source, canonical arguments, transcripts, and diffs —
 carries:
 
-- `schema_version`: currently `4`.
+- `schema_version`: currently `5`. A reader built for an earlier version should not read a version-5 record as one: version 5 lists an abandoned attempt in `attempts` and marks each `cost_rollup` leaf complete or not.
 - `kind`: one of `run_manifest`, `run_args`, `workflow_args`, `run_result`, or
   `agent_record`.
 
@@ -427,7 +445,7 @@ families with their own schema versions (`3` and `3`), described above.
 
 `manifest.json` has these top-level fields:
 
-- `schema_version`: `4`.
+- `schema_version`: `5`.
 - `kind`: `"run_manifest"`.
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.
@@ -559,17 +577,27 @@ fields to determine the outcome.
 
 Each agent's record is at `agents/<zero-padded-id>/agent.json`:
 
-While a Claude or Codex attempt executes, the record also has
-`current_attempt`: an object with `attempt` (its number), `started_at` (the
-ISO start time), and `transcript` (a path or `null`). Ensemble writes the
-start time before invoking the engine. The transcript path appears once a
-readable file exists. A worker waiting for admission has no
-`current_attempt`, including while a fallback target waits for a slot.
-The field remains present between retries and while the outcome is being
-archived, until the next attempt replaces it or the settled record removes
-it. It is cleared when a fallback target re-enters the admission queue.
-Settled records retain their existing schema and fields; attempts in the
-`attempts` array are settled attempts only.
+While an attempt executes, on any engine, the record also has
+`current_attempt`, an object with:
+
+- `attempt`: its number.
+- `started_at`: the ISO start time, written before the engine is invoked.
+- `target`: `{ engine, model }`, the target dispatched to, as on a settled
+  attempt.
+- `transcript`: a path once a readable file exists, otherwise `null`.
+  opencode has no live transcript, so its value stays `null`.
+- `resolved_model` and `resolved_effort`: the served identity the engine has
+  reported for this attempt so far, written as it is reported, and `null`
+  until then. A held session's attempts start with the identity its worker
+  already served, including retries of its first turn. A fresh worker or
+  fallback target starts at `null`.
+
+A worker waiting for admission has no `current_attempt`, including while a
+fallback target waits for a slot. The field remains present between retries
+and while the outcome is being archived, until the next attempt replaces it
+or the settled record removes it. It is cleared when a fallback target
+re-enters the admission queue. While a record is `in-progress`, `attempts`
+lists settled attempts only. The running attempt is `current_attempt`.
 
 Claude's live path is absolute and points to the session's own JSONL file
 under `~/.claude/projects/`. A held session uses that same file across its
@@ -589,7 +617,7 @@ settled manifest to verify final transcript integrity.
 
 The fields present throughout a record's lifetime are:
 
-- `schema_version`: `4`.
+- `schema_version`: `5`.
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, and `concurrency_group` (the engine group of the
   last target admitted: initially the requested engine, and the answering
@@ -684,17 +712,31 @@ The fields present throughout a record's lifetime are:
   spent executing. `null` on an unsettled record means the interval has not
   been measured; it does not claim zero time. Runtime abandonment and a reap
   preserve those unknown intervals.
-- `attempts`: the attempts that have settled. An attempt still running when
-  the record was written is not listed, so an empty array on an `in-progress`
-  or `abandoned` record means unobserved, not "none ran". Each entry has:
+- `attempts`: the attempts that have settled and, on an `abandoned` record
+  reaped by the sweep, the attempt its writer died with. The attempt running
+  on an `in-progress` record is `current_attempt`, not an entry here. An empty
+  array on an `in-progress` record, or on an `abandoned` record whose writer
+  died before any attempt started, means none was observed, not "none ran".
+  Each entry has:
   - `attempt`: 1-based, numbering every dispatch the call made, refused ones
     included.
-  - `status` and `target` (`{ engine, model }`: the engine and requested
-    model this attempt was dispatched to — the call's own until a fallback
-    chain advances).
+  - `status`: `"complete"`, `"failed"`, or `"abandoned"`. An abandoned entry
+    is one whose outcome was never observed. It keeps the evidence persisted
+    while it ran: `attempt`, `target`, `started_at`, `resolved_model` and
+    `resolved_effort`. Every outcome field — `ended_at`, `duration_ms`,
+    `first_delta_ms`, `raw_output`, `validated_output`, `failure`,
+    `classification`, `chain_decision`, `observed_failure`, `worker_exit`,
+    `app_server_diagnostic` — is `null`, which here means unobserved, not
+    "no output" or "no failure". `token_usage_events` and `background_waits`
+    are empty, and `diagnostics` is `{}`, because nothing from the running
+    attempt is persisted beyond the evidence above. Its partial transcript,
+    where one was captured, is in `transcripts`.
+  - `target` (`{ engine, model }`: the engine and requested model this
+    attempt was dispatched to — the call's own until a fallback chain
+    advances).
   - `started_at`, `ended_at`, `duration_ms` (the engine's own measurement
-    where it reports one, otherwise the attempt's recorded endpoints, so an
-    attempt that ran never has a `null` duration), and `first_delta_ms`.
+    where it reports one, otherwise the attempt's recorded endpoints, so a
+    settled attempt never has a `null` duration), and `first_delta_ms`.
   - `raw_output`, `validated_output`, `resolved_model` (including a held
     session's observed model on later turns), and `resolved_effort`.
   - `failure`: `{ kind, message }` or `null`.
@@ -771,7 +813,8 @@ The fields present throughout a record's lifetime are:
   run's own ending.
 - `transcripts`: array; each entry has `attempt`, `path`, `format`, `source`,
   `session_id`, `thread_id`, and `partial` (`true` when the turn ended before
-  completion). Empty when none were archived.
+  completion, and always on an abandoned attempt's transcript). Empty when
+  none were archived.
 - `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise
   why it is empty: `"record-unsettled"`, `"no-attempt-ran"`,
   `"worker-interrupted"`, `"worker-timed-out"`, `"substrate-never-started"`
@@ -856,12 +899,67 @@ count with `0`.
 fallback chain crossed engines books each attempt under the engine that ran
 it. The literal `"unresolved"` is used when no served model was ever learned,
 never the requested model; for opencode the served model is the configured
-`provider_model`. Cost entries carry `amount`, `currency`, and
-`source: "provider-reported"`; Ensemble never estimates money. A bucket with no
-provider figure carries a reason instead of an amount:
-`{ "unavailable": "no-provider-cost-reported" }`, or
-`{ "unavailable": "unlike-currencies" }` when attempts under one served model
-reported different currencies. An engine and model that were dispatched but
-reported no usage at all read `{ "unavailable": "no-usage-reported" }` rather
-than a zero summary. A run that dispatched no worker has an empty roll-up.
+`provider_model`. A run that dispatched no worker has an empty roll-up.
 Figures are never summed across engines.
+
+A live or abandoned attempt with no served identity of its own books under
+its engine's `"unresolved"` leaf, even when an earlier attempt reported a
+model. A held turn keeps its session's known identity, including on retries.
+
+Each leaf has four fields:
+
+- `tokens`: a usage summary, or `{ "unavailable": "no-usage-reported" }` when
+  nothing booked under the leaf reported usage. It is never a zero summary.
+- `cost`: `{ amount, currency, source: "provider-reported" }` — Ensemble never
+  estimates money — or a reason instead of an amount:
+  `{ "unavailable": "no-provider-cost-reported" }`, or
+  `{ "unavailable": "unlike-currencies" }` when attempts under one served model
+  reported different currencies.
+- `complete`: `true` only when the figures contain all the spend of every
+  attempt booked under the leaf. Read `tokens` and `cost` as totals only when
+  it is `true`; otherwise they are a lower bound.
+- `unobserved`: one entry for each attempt whose spend the figures leave out,
+  ordered by agent and then attempt. It is empty exactly when `complete` is
+  `true`. Each entry is `{ agent, attempt, reason, measured }`. `agent` is the
+  agent record's `id` and `attempt` the attempt's number in its `attempts`,
+  or `null` for an attempt the record does not list (see below). `measured`
+  is `"partial"` when the figures include usage the attempt reported before
+  it ended, and `"none"` when they include nothing of it. `reason` uses the
+  words of the agent record's `usage.unavailable`:
+
+  | `reason` | The attempt |
+  |---|---|
+  | `record-unsettled` | had no observed outcome: still running in a live manifest, or running when its writer died (SIGKILL), so the sweep listed it as `abandoned`; or it is an attempt the record does not list |
+  | `worker-interrupted` | was cut short by the run ending with it in flight: the run's interrupt (SIGINT or SIGTERM), or a script body that returned or failed |
+  | `worker-timed-out` | was cut short by a run or turn deadline the runtime enforced, including a timed-out attempt the runtime then retried, so an agent whose record reads `complete` can still name one here |
+  | `engine-reported-no-usage` | settled on its engine's own account, which carried no usage |
+
+Each attempt is judged by its own entry, never by the agent's status. The run
+cut an attempt short only when that attempt's `failure.kind` says so:
+`run-interrupted`, `run-failed` or `run-timed-out`, which the run's close
+writes on the attempt it tears down, or a deadline's kind. An agent that reads
+`interrupted` because the run ended while it waited between attempts — queued
+for its next fallback target, say — has no attempt cut short, and the spend of
+the attempts it settled is booked as complete.
+
+An attempt refused before any worker existed spent nothing. It books its leaf
+without an `unobserved` entry, so a leaf holding only such attempts reads
+`tokens.unavailable` with `complete: true`. Several workers on one served model
+share a leaf. When one reported its usage and another was cut short, the leaf
+carries the first's figures, `complete: false`, and an `unobserved` entry for
+the second.
+
+An agent that lists no attempt books under its engine's `"unresolved"` leaf.
+That leaf stays complete when the record shows no worker started: the agent
+settled without one, or the run's own close abandoned it while it was still
+being dispatched. A record's attempt start is written on a best-effort basis,
+and the worker runs even when that write fails, so a record whose writer
+never settled it — the sweep's `abandoned` records, which carry an
+`abandonment` block — may have had an attempt running that it does not list.
+When such a record lists no unsettled attempt, the roll-up the sweep
+recomputes books that possible attempt under the requested engine's
+`"unresolved"` leaf, as `{ agent, attempt: null, reason: "record-unsettled",
+measured: "none" }`, and the leaf is not complete. The record may only have
+been waiting for its next attempt when the run died, but the archive cannot
+show that. A live manifest never carries such an entry: its writer holds every
+attempt start in memory.

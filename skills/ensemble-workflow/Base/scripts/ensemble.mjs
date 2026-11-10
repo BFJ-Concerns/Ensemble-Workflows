@@ -17526,6 +17526,24 @@ function claudeApiErrorOf(diagnostics) {
 }
 
 // src/progress.ts
+function workerDisposition(record, shutdownStatus) {
+  switch (record.status) {
+    case "in-progress":
+      return null;
+    case "abandoned":
+      return "unsettled";
+    case "complete":
+      return "done";
+    default:
+      return shutdownStatus !== null && record.terminationCause?.kind === `run-${shutdownStatus}` ? "cut-short" : "failed";
+  }
+}
+var DISPOSITION_COUNTER = {
+  done: "done",
+  failed: "failed",
+  "cut-short": "cutShort",
+  unsettled: "unsettled"
+};
 var RunProgress = class {
   runId;
   #budget;
@@ -17731,8 +17749,13 @@ var RunProgress = class {
     record.waitingOn = null;
     this.#touch();
   }
-  /** Retires a worker, tallying it as done or failed and freeing its slot. */
-  settleAgent(id, outcome, failure = null) {
+  /**
+   * Retires a worker with its disposition, counting it and freeing its slot.
+   * `failure` is the account its record carries — kept for every disposition
+   * but `done`. The first settlement is final: later calls are inert, so a
+   * worker is never reclassified once published.
+   */
+  settleAgent(id, disposition, failure = null) {
     const record = this.#live.get(id);
     if (record === void 0) {
       return;
@@ -17744,14 +17767,10 @@ var RunProgress = class {
     } else {
       counters.queued -= 1;
     }
-    if (outcome === "done") {
-      counters.done += 1;
-    } else {
-      counters.failed += 1;
-    }
-    record.state = outcome;
+    counters[DISPOSITION_COUNTER[disposition]] += 1;
+    record.state = disposition;
     record.finishedAtMs = this.#now();
-    record.failure = outcome === "failed" && failure !== null ? { ...failure } : null;
+    record.failure = disposition !== "done" && failure !== null ? { ...failure } : null;
     record.waitingOn = null;
     this.#finished.set(id, record);
     this.#touch();
@@ -17790,7 +17809,7 @@ var RunProgress = class {
   }
   snapshot() {
     const engines = {};
-    const totals = { active: 0, queued: 0, done: 0, failed: 0 };
+    const totals = { active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 0 };
     for (const engine of this.#engines.keys()) {
       const counters = this.#counters(engine);
       const remaining = this.#budget.remaining(engine);
@@ -17800,6 +17819,8 @@ var RunProgress = class {
         queued: counters.queued,
         done: counters.done,
         failed: counters.failed,
+        cutShort: counters.cutShort,
+        unsettled: counters.unsettled,
         spent: this.#budget.spent(engine),
         ceiling: this.#budget.ceilings[engine] ?? null,
         remaining: Number.isFinite(remaining) ? remaining : null
@@ -17808,9 +17829,11 @@ var RunProgress = class {
       totals.queued += counters.queued;
       totals.done += counters.done;
       totals.failed += counters.failed;
+      totals.cutShort += counters.cutShort;
+      totals.unsettled += counters.unsettled;
     }
     return {
-      schema: 3,
+      schema: 4,
       runId: this.runId,
       pid: this.#pid,
       archiveDir: this.#archiveDir,
@@ -17854,7 +17877,7 @@ var RunProgress = class {
   #counters(engine) {
     const counters = this.#engines.get(engine);
     if (counters === void 0) {
-      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0 };
+      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0, cutShort: 0, unsettled: 0 };
       this.#engines.set(engine, fresh);
       return fresh;
     }
@@ -24226,10 +24249,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       resolvedModel: record.resolvedModel,
       resolvedEffort: record.resolvedEffort
     });
-    if (record.status !== "in-progress") {
+    const disposition = workerDisposition(record, this.#closed ? this.#shutdownAgentStatus : null);
+    if (disposition !== null) {
       this.progress.settleAgent(
         record.id,
-        record.status === "complete" ? "done" : "failed",
+        disposition,
         record.terminationCause ?? attemptedFailureAccount(record)
       );
     }
@@ -24425,14 +24449,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     this.#holdManager?.close();
     this.#admission.close();
-    await Promise.all(
-      abandoning.map(async (record) => {
-        this.#abandonedAgentIds.add(record.id);
-        record.status = "abandoned";
-        record.terminationCause = this.#closeCause("dispatching");
-        await this.#recordAgentSafely(record);
-      })
-    );
+    const abandonedEvidence = abandoning.map((record) => {
+      this.#abandonedAgentIds.add(record.id);
+      record.status = "abandoned";
+      record.terminationCause = this.#closeCause("dispatching");
+      return { id: record.id, label: record.label, status: record.status, terminationCause: record.terminationCause };
+    });
+    await Promise.all(abandoning.map((record) => this.#recordAgentSafely(record)));
     const teardownFailures = [];
     try {
       await this.#engines.close();
@@ -24448,19 +24471,30 @@ var EnsembleRuntime = class _EnsembleRuntime {
     await settlementBarrier;
     let done = totalsAtClose.done;
     let failed = totalsAtClose.failed;
-    let cutShort = 0;
-    const unfinished = abandoning.map((record) => ({ id: record.id, label: record.label, disposition: "abandoned" }));
-    for (const [, { record }] of closing) {
-      if (record.status === "complete") {
-        done += 1;
-      } else if (record.terminationCause?.kind === `run-${status}`) {
-        cutShort += 1;
-        unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
-      } else {
-        failed += 1;
+    let cutShort = totalsAtClose.cutShort;
+    let unsettled = totalsAtClose.unsettled;
+    const unfinished = [];
+    for (const record of [...abandonedEvidence, ...closing.map(([, { record: record2 }]) => record2)]) {
+      switch (workerDisposition(record, status)) {
+        case "done":
+          done += 1;
+          break;
+        case "failed":
+          failed += 1;
+          break;
+        case "cut-short":
+          cutShort += 1;
+          unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
+          break;
+        case "unsettled":
+          unsettled += 1;
+          unfinished.push({ id: record.id, label: record.label, disposition: "abandoned" });
+          break;
+        case null:
+          throw new Error(`agent ${record.id} remained in progress after run teardown`);
       }
     }
-    this.#shutdownTally = { done, failed, cutShort, unsettled: abandoning.length };
+    this.#shutdownTally = { done, failed, cutShort, unsettled };
     this.#unfinishedLegs = unfinished;
     if (teardownFailures.length === 1) {
       throw teardownFailures[0];

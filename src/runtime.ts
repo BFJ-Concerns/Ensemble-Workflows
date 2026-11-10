@@ -44,7 +44,7 @@ import {
 } from "./errors.js";
 import { HoldManager, defaultHoldsDirectory, resolveHoldScope } from "./holds.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
-import { RunProgress } from "./progress.js";
+import { RunProgress, workerDisposition } from "./progress.js";
 import { EngineResourceGate } from "./resource-preflight.js";
 
 import type { HoldDecision } from "./holds.js";
@@ -1712,8 +1712,9 @@ export class EnsembleRuntime {
       requestedModel: record.model, requestedEffort: record.effort,
       resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort
     });
-    if (record.status !== "in-progress") {
-      this.progress.settleAgent(record.id, record.status === "complete" ? "done" : "failed",
+    const disposition = workerDisposition(record, this.#closed ? this.#shutdownAgentStatus : null);
+    if (disposition !== null) {
+      this.progress.settleAgent(record.id, disposition,
         record.terminationCause ?? attemptedFailureAccount(record));
     }
     await this.#recordArchiveWriteSafely(record.id, async () => {
@@ -1955,19 +1956,19 @@ export class EnsembleRuntime {
     // wait's own cleanup removes its published hold file.
     this.#holdManager?.close();
     this.#admission.close();
-    await Promise.all(
-      abandoning.map(async (record) => {
-        // The harness knows only that this leg outlived the run. Keep the
-        // dispatch evidence and name that absence of an observed outcome —
-        // and why the run closed, since the record has no attempt to say.
-        this.#abandonedAgentIds.add(record.id);
-        // Keep the dispatch record's evidence (including its empty attempts)
-        // and overwrite that one record through the normal writer path.
-        record.status = "abandoned";
-        record.terminationCause = this.#closeCause("dispatching");
-        await this.#recordAgentSafely(record);
-      })
-    );
+    const abandonedEvidence = abandoning.map((record) => {
+      // The harness knows only that this leg outlived the run. Keep the
+      // dispatch evidence and name that absence of an observed outcome —
+      // and why the run closed, since the record has no attempt to say.
+      this.#abandonedAgentIds.add(record.id);
+      record.status = "abandoned";
+      record.terminationCause = this.#closeCause("dispatching");
+      // A late dispatch continuation can mutate the in-memory record, but
+      // cannot publish another settlement. Count the evidence being
+      // archived here, matching progress's final first settlement.
+      return { id: record.id, label: record.label, status: record.status, terminationCause: record.terminationCause };
+    });
+    await Promise.all(abandoning.map((record) => this.#recordAgentSafely(record)));
     // Teardown failures are collected, never thrown mid-cleanup: cleanup
     // runs to completion first, then close() rejects carrying every cause —
     // a silently discarded engine or session teardown failure would leave
@@ -1991,19 +1992,30 @@ export class EnsembleRuntime {
     await settlementBarrier;
     let done = totalsAtClose.done;
     let failed = totalsAtClose.failed;
-    let cutShort = 0;
-    const unfinished: UnfinishedLeg[] = abandoning.map((record) => ({ id: record.id, label: record.label, disposition: "abandoned" }));
-    for (const [, { record }] of closing) {
-      if (record.status === "complete") {
-        done += 1;
-      } else if (record.terminationCause?.kind === `run-${status}`) {
-        cutShort += 1;
-        unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
-      } else {
-        failed += 1;
+    let cutShort = totalsAtClose.cutShort;
+    let unsettled = totalsAtClose.unsettled;
+    const unfinished: UnfinishedLeg[] = [];
+    for (const record of [...abandonedEvidence, ...closing.map(([, { record }]) => record)]) {
+      switch (workerDisposition(record, status)) {
+        case "done":
+          done += 1;
+          break;
+        case "failed":
+          failed += 1;
+          break;
+        case "cut-short":
+          cutShort += 1;
+          unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
+          break;
+        case "unsettled":
+          unsettled += 1;
+          unfinished.push({ id: record.id, label: record.label, disposition: "abandoned" });
+          break;
+        case null:
+          throw new Error(`agent ${record.id} remained in progress after run teardown`);
       }
     }
-    this.#shutdownTally = { done, failed, cutShort, unsettled: abandoning.length };
+    this.#shutdownTally = { done, failed, cutShort, unsettled };
     this.#unfinishedLegs = unfinished;
     if (teardownFailures.length === 1) {
       throw teardownFailures[0];

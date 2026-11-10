@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { RunProgress } from "../../src/progress.js";
+import { RunProgress, workerDisposition } from "../../src/progress.js";
 
-import type { BudgetView } from "../../src/progress.js";
+import type { BudgetView, DispositionEvidence, ShutdownStatus, WorkerDisposition } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
 
 class StubBudget implements BudgetView {
@@ -378,7 +378,7 @@ test("all finished evidence survives alongside queued and running workers until 
   assert.equal(snapshot.agents[0]?.id, running);
   assert.equal(snapshot.agents[1]?.id, queued);
   assert.deepEqual(snapshot.agents.slice(2), expected.reverse());
-  assert.deepEqual(snapshot.totals, { active: 1, queued: 1, done: 50, failed: 50 });
+  assert.deepEqual(snapshot.totals, { active: 1, queued: 1, done: 50, failed: 50, cutShort: 0, unsettled: 0 });
   assert.equal(snapshot.engines.codex?.done, 50);
   assert.equal(snapshot.engines.codex?.failed, 50);
   assert.equal(snapshot.engines.codex?.active, 0);
@@ -395,4 +395,67 @@ test("all finished evidence survives alongside queued and running workers until 
   assert.equal(finished.state, "finished");
   assert.deepEqual(finished.agents, snapshot.agents);
   assert.deepEqual(finished.totals, snapshot.totals);
+});
+
+test("workerDisposition maps a record's status and cause to one disposition", () => {
+  const cause = (kind: string) => ({ kind });
+  const cases: Array<[DispositionEvidence, ShutdownStatus | null, WorkerDisposition | null]> = [
+    [{ status: "in-progress", terminationCause: null }, "interrupted", null],
+    [{ status: "complete", terminationCause: null }, null, "done"],
+    // Settling successfully while the run shuts down keeps the worker's own account.
+    [{ status: "complete", terminationCause: null }, "interrupted", "done"],
+    [{ status: "failed", terminationCause: cause("turn-failed") }, null, "failed"],
+    [{ status: "timed-out", terminationCause: cause("turn-timeout") }, "timed-out", "failed"],
+    // The run's own ending names the run's status; the record status alone cannot tell.
+    [{ status: "failed", terminationCause: cause("run-failed") }, "failed", "cut-short"],
+    [{ status: "interrupted", terminationCause: cause("run-interrupted") }, "interrupted", "cut-short"],
+    [{ status: "timed-out", terminationCause: cause("run-timed-out") }, "timed-out", "cut-short"],
+    // A run-<status> cause that does not name the closing run's status is not this run's ending.
+    [{ status: "failed", terminationCause: cause("run-failed") }, null, "failed"],
+    [{ status: "failed", terminationCause: cause("run-failed") }, "interrupted", "failed"],
+    [{ status: "abandoned", terminationCause: cause("run-interrupted") }, "interrupted", "unsettled"]
+  ];
+  for (const [record, shutdownStatus, expected] of cases) {
+    assert.equal(workerDisposition(record, shutdownStatus), expected, JSON.stringify([record, shutdownStatus]));
+  }
+});
+
+test("each disposition is published at settlement under its own state and count", () => {
+  let clock = 1_000;
+  const progress = progressAt(() => clock);
+  const done = progress.queueAgent({ engine: "codex", label: "done", phase: null });
+  const failed = progress.queueAgent({ engine: "codex", label: "failed", phase: null });
+  const cutShort = progress.queueAgent({ engine: "claude", label: "cut-short", phase: null });
+  const unsettled = progress.queueAgent({ engine: "claude", label: "unsettled", phase: null });
+  for (const id of [done, failed, cutShort]) progress.startAgent(id);
+
+  clock += 1;
+  const runEnding = { kind: "run-interrupted", message: "the run ended (interrupted) while the turn was in flight" };
+  progress.settleAgent(done, "done");
+  progress.settleAgent(failed, "failed", { kind: "turn-failed", message: "engine refused" });
+  progress.settleAgent(cutShort, "cut-short", runEnding);
+  progress.settleAgent(unsettled, "unsettled", runEnding);
+  const snapshot = progress.snapshot();
+
+  assert.equal(snapshot.schema, 4);
+  assert.deepEqual(snapshot.totals, { active: 0, queued: 0, done: 1, failed: 1, cutShort: 1, unsettled: 1 });
+  const counts = (engine: EngineName) => {
+    const entry = snapshot.engines[engine];
+    return [entry?.done, entry?.failed, entry?.cutShort, entry?.unsettled];
+  };
+  assert.deepEqual(counts("codex"), [1, 1, 0, 0]);
+  assert.deepEqual(counts("claude"), [0, 0, 1, 1]);
+  const byId = new Map(snapshot.agents.map((agent) => [agent.id, agent]));
+  assert.equal(byId.get(done)?.state, "done");
+  assert.equal(byId.get(done)?.failure, null);
+  assert.equal(byId.get(failed)?.state, "failed");
+  assert.equal(byId.get(cutShort)?.state, "cut-short");
+  assert.deepEqual(byId.get(cutShort)?.failure, runEnding);
+  assert.equal(byId.get(unsettled)?.state, "unsettled");
+  assert.deepEqual(byId.get(unsettled)?.failure, runEnding);
+  for (const agent of snapshot.agents) assert.equal(agent.finishedAtMs, clock);
+
+  // The first settlement is final: a later one never reclassifies a published worker.
+  progress.settleAgent(cutShort, "failed", { kind: "late", message: "after teardown" });
+  assert.deepEqual(progress.snapshot(), snapshot);
 });

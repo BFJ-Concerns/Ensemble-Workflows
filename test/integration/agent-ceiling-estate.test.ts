@@ -45,6 +45,8 @@ test(
         queued: 2,
         done: 0,
         failed: 0,
+        cutShort: 0,
+        unsettled: 0,
       });
       assert.deepEqual(codex.startedPrompts, ["codex-active"]);
       assert.deepEqual(claude.startedPrompts, ["cross-engine-verifier"]);
@@ -102,6 +104,8 @@ test(
         queued: 1,
         done: 0,
         failed: 0,
+        cutShort: 0,
+        unsettled: 0,
       });
       assert.deepEqual(verifier.startedPrompts, []);
 
@@ -138,6 +142,8 @@ test(
         queued: 1,
         done: 0,
         failed: 0,
+        cutShort: 0,
+        unsettled: 0,
       });
       assert.deepEqual(successor.startedPrompts, []);
 
@@ -175,12 +181,16 @@ test(
         queued: 0,
         done: 0,
         failed: 0,
+        cutShort: 0,
+        unsettled: 0,
       });
       assert.deepEqual(secondRuntime.progress.snapshot().totals, {
         active: 1,
         queued: 0,
         done: 0,
         failed: 0,
+        cutShort: 0,
+        unsettled: 0,
       });
 
       firstEngine.release("first-run");
@@ -235,6 +245,8 @@ test(
         queued: 1,
         done: 0,
         failed: 0,
+        cutShort: 0,
+        unsettled: 0,
       });
       assert.deepEqual(claude.startedPrompts, []);
 

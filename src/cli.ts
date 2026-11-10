@@ -1360,7 +1360,9 @@ async function parseAgentInvocation(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const unknown = /^Unknown option '([^']+)'/.exec(message)?.[1];
+    const unknown = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+      ? unknownAgentOption(argv)
+      : undefined;
     throw new CliUsageError(unknown === undefined ? message : unknownAgentOptionMessage(unknown));
   }
 
@@ -1418,6 +1420,24 @@ async function parseAgentInvocation(
     ...(workerScope !== undefined ? { workerScope } : {}),
     ...(holdScope !== undefined ? { holdScope } : {})
   };
+}
+
+/** Read the option from tokens: diagnostic punctuation can occur inside the argument itself. */
+function unknownAgentOption(argv: string[]): string | undefined {
+  try {
+    const { tokens } = parseArgs({
+      args: argv,
+      options: AGENT_INVOCATION_OPTIONS,
+      strict: false,
+      allowPositionals: true,
+      tokens: true
+    });
+    const unknown = tokens.find((token) => token.kind === "option" && !Object.hasOwn(AGENT_INVOCATION_OPTIONS, token.name));
+    return unknown?.kind === "option" ? unknown.rawName : undefined;
+  } catch {
+    // A later malformed option must not replace the original diagnostic.
+    return undefined;
+  }
 }
 
 /** Keep option hints stable across Node versions and quote the positional example completely. */

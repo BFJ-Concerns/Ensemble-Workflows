@@ -32791,7 +32791,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const unknown = /^Unknown option '([^']+)'/.exec(message)?.[1];
+    const unknown = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ? unknownAgentOption(argv) : void 0;
     throw new CliUsageError(unknown === void 0 ? message : unknownAgentOptionMessage(unknown));
   }
   if (parsed.positionals.length > 1) {
@@ -32843,6 +32843,21 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...workerScope !== void 0 ? { workerScope } : {},
     ...holdScope !== void 0 ? { holdScope } : {}
   };
+}
+function unknownAgentOption(argv) {
+  try {
+    const { tokens } = parseArgs({
+      args: argv,
+      options: AGENT_INVOCATION_OPTIONS,
+      strict: false,
+      allowPositionals: true,
+      tokens: true
+    });
+    const unknown = tokens.find((token) => token.kind === "option" && !Object.hasOwn(AGENT_INVOCATION_OPTIONS, token.name));
+    return unknown?.kind === "option" ? unknown.rawName : void 0;
+  } catch {
+    return void 0;
+  }
 }
 function unknownAgentOptionMessage(option) {
   const name = option.split("=", 1)[0];

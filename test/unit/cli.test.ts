@@ -2515,6 +2515,20 @@ test("blank prompt refusals name the absolute launcher from another directory", 
   }
 });
 
+test("unknown agent options preserve apostrophes and spaces in the bundled launcher hint", () => {
+  const launcher = fileURLToPath(new URL("../../../skills/ensemble-workflow/Base/scripts/ensemble.mjs", import.meta.url));
+  for (const prompt of ["--don't stop", "--it's", "--say 'hello'. Keep going"]) {
+    const result = spawnSync(process.execPath, [launcher, "agent", "--engine", "codex", prompt], {
+      encoding: "utf8",
+      env: hermeticEstateEnvironment()
+    });
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr,
+      `Unknown option ${JSON.stringify(prompt)}. For a dash-leading prompt, put it after --, as in: -- ${JSON.stringify(prompt)}\n`);
+  }
+});
+
 test("CLI entrypoint keeps every exit-2 path on stderr", () => {
   const entrypointPath = fileURLToPath(new URL("../../src/cli/ensemble.js", import.meta.url));
   const cases = [

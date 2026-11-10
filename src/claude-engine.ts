@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import {
+  CapabilityStripUnsupportedError,
   ClaudeBlockedError,
   InvalidAgentOptionValueError,
   ClaudeCollectionError,
@@ -32,11 +33,12 @@ import {
   turnComplete,
   usageSince
 } from "./claude-transcript.js";
+import { isPreparedClaudeStrip } from "./claude-tool-surface.js";
 import { subtractUsage } from "./usage-summary.js";
 import { CANONICAL_EFFORT_DOMAIN } from "./engine-option-validation.js";
 
 import type { CanonicalEffort } from "./engine-option-validation.js";
-import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
+import type { ClaudeControlPlane, ClaudeDispatchOptions, ClaudeSessionHandle } from "./claude-control-plane.js";
 import type { SubmissionReceipt, TranscriptApiError, TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
 import type {
   EngineAttemptContext,
@@ -48,23 +50,30 @@ import type {
   EngineTurnOptions,
   EngineWorkerSession
 } from "./engines.js";
-import type { StrippableCapability } from "./capability-stripping.js";
 import type {
   AgentWaitSnapshot,
   BackgroundTaskWait, JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
 
 /**
- * Native tool names denied through the worker's per-dispatch settings.
- * Workflow can spawn agents through its scripts, so it belongs to the same
- * restriction as the direct spawn, discovery and messaging tools.
+ * The strip settings a dispatch applies: none unstripped, otherwise exactly
+ * the prepared strip's deny rules and removal variables. A stripped dispatch
+ * with no Claude preparation for this strip refuses before spawn rather than
+ * guess at the tool surface.
  */
-const CAPABILITY_DENY_RULES: Record<StrippableCapability, readonly string[]> = {
-  skills: ["Skill"],
-  agents: ["Task", "Agent", "ListAgents", "SendMessage", "Workflow"]
-};
-
-export function permissionDenyRulesFor(strip: readonly StrippableCapability[] | undefined): string[] {
-  return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
+export function stripSettingsFor(
+  options: Pick<EngineTurnOptions, "strip" | "preparedStrip">
+): Pick<ClaudeDispatchOptions, "permissionDenyRules" | "settingsEnv"> {
+  const strip = options.strip ?? [];
+  if (strip.length === 0) return {};
+  const prepared = options.preparedStrip;
+  const covered = isPreparedClaudeStrip(prepared) && strip.every((capability) => prepared.requested.includes(capability));
+  if (!covered) {
+    throw new CapabilityStripUnsupportedError("claude", strip.join(", "), "no live tool-surface preparation reached this dispatch");
+  }
+  return {
+    permissionDenyRules: prepared.permissionDenyRules,
+    ...(Object.keys(prepared.settingsEnv).length > 0 ? { settingsEnv: prepared.settingsEnv } : {})
+  };
 }
 
 /**
@@ -98,6 +107,8 @@ export interface ClaudeEngineInvocationOptions {
    */
   multiTurn?: boolean;
   onEvent?: (event: RuntimeEvent) => void;
+  /** Invalidate prepared surfaces when native evidence reports a different served CLI. */
+  onVersion?: (version: string) => void;
   config?: ClaudeEngineConfig;
   /** Adapter deregistration: called exactly once, when close() completes. */
   onClose?: (invocation: ClaudeEngineInvocation) => void;
@@ -298,6 +309,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #closePromise: Promise<void> | null = null;
   #settlement: Promise<EngineAttemptResult> | null = null;
   #onClose: ((invocation: ClaudeEngineInvocation) => void) | undefined;
+  #onVersion: ((version: string) => void) | undefined;
+  #reportedVersion: string | null = null;
 
   constructor(options: ClaudeEngineInvocationOptions) {
     this.#turnPrompt = options.prompt;
@@ -308,6 +321,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#controlPlane = options.controlPlane;
     this.#onEvent = options.onEvent;
     this.#onClose = options.onClose;
+    this.#onVersion = options.onVersion;
 
     const config = options.config ?? {};
     this.#pollIntervalMs = config.pollIntervalMs ?? 2_000;
@@ -486,7 +500,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#resolvedEffort = null;
     try { observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null }); }
     catch { /* Observability cannot fail dispatch. */ }
-    const denyRules = permissionDenyRulesFor(this.#options.strip);
+    const stripSettings = stripSettingsFor(this.#options);
     const prompt = this.#buildDispatchPrompt(previousFailure);
     // A rejection here is the launch's word that no session holds the
     // prompt, which is what lets the same prompt go to this target again or
@@ -497,7 +511,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
-      ...(denyRules.length > 0 ? { permissionDenyRules: denyRules } : {})
+      ...stripSettings
     });
     this.#handle = handle;
     // The launch submitted the opening prompt, and like the valve it attests
@@ -789,6 +803,11 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
           await this.#requireReceipt(handle, opening, observers);
         }
         sawLife = true;
+        const version = transcript.entries.findLast((entry) => typeof entry.version === "string")?.version;
+        if (typeof version === "string" && version !== this.#reportedVersion) {
+          this.#reportedVersion = version;
+          this.#onVersion?.(version);
+        }
         this.#reportUsage(handle, transcript.entries, observers);
         try {
           this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;

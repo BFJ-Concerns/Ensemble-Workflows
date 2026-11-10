@@ -845,6 +845,8 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
     this.#present = false;
   }
 
+  async close(): Promise<void> {}
+
   async tmuxAvailable(): Promise<boolean> {
     return this.#tmux;
   }

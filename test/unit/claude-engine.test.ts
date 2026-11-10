@@ -26,8 +26,10 @@ import type {
   ClaudeDispatchOptions,
   ClaudeSessionHandle,
   ClaudeSessionStatus,
+  ClaudeToolSurfaceProbeRequest,
   ValveSubmission
 } from "../../src/claude-control-plane.js";
+import type { ClaudeToolSurface } from "../../src/claude-tool-surface.js";
 
 /**
  * One scripted worker turn — what a single dispatch or steer produces:
@@ -54,6 +56,7 @@ interface ScriptedTurn {
    */
   assistant?: {
     text?: string;
+    version?: string;
     stop?: string | null;
     /** The API message id; rows sharing one are one call to the usage reader. */
     id?: string;
@@ -65,7 +68,15 @@ interface ScriptedTurn {
   };
 }
 
+/**
+ * The tool surface the fake control plane's probe reports: one tool of each
+ * class, including `SpawnTeammate`, a built-in nobody has classified, which
+ * stands for an agent tool a new Claude Code release introduces.
+ */
+const FAKE_TOOL_SURFACE = ["Agent", "Bash", "ListAgents", "Read", "SendMessage", "Skill", "SpawnTeammate", "mcp__fake__lookup"];
+
 class FakeControlPlane implements ClaudeControlPlane {
+  readonly probed: ClaudeToolSurfaceProbeRequest[] = [];
   dispatchCount = 0;
   steerCount = 0;
   stopCount = 0;
@@ -107,6 +118,16 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#refuseDispatch = options.refuseDispatch;
     this.#registrationTimeout = options.registrationTimeout;
     this.#openingArrival = options.openingArrival ?? ((sent) => sent);
+  }
+
+  /** A probe session offers the fixed surface minus whatever its settings deny. */
+  async probeToolSurface(request: ClaudeToolSurfaceProbeRequest): Promise<ClaudeToolSurface> {
+    this.probed.push(request);
+    return {
+      cliVersion: "2.1.322-fake",
+      source: "fake probe",
+      tools: FAKE_TOOL_SURFACE.filter((name) => !request.permissionDenyRules.includes(name)).map((name) => ({ name, exposure: "loaded" }))
+    };
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -181,6 +202,8 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#present = false;
   }
 
+  async close(): Promise<void> {}
+
   async tmuxAvailable(): Promise<boolean> {
     return this.#tmux;
   }
@@ -251,6 +274,7 @@ function assistantLine(
     : undefined;
   return JSON.stringify({
     type: "assistant",
+    ...(assistant.version !== undefined ? { version: assistant.version } : {}),
     ...(effort !== null ? { effort } : {}),
     message: {
       role: "assistant",
@@ -643,35 +667,93 @@ test("a per-call cwd reaches Claude dispatch and overrides the adapter cwd", asy
   }
 });
 
-test("an agents strip denies Claude spawn, discovery, and messaging tools", async () => {
+test("a Claude strip denies what the live tool surface classifies, unknown built-ins included", async () => {
   await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
     const runtime = makeRuntime(controlPlane);
     try {
       await runtime.agent("restricted", { engine: "claude", strip: ["skills", "agents"] });
-      assert.deepEqual(controlPlane.dispatched[0]?.permissionDenyRules, [
-        "Skill",
-        "Task",
-        "Agent",
-        "ListAgents",
-        "SendMessage",
-        "Workflow"
-      ]);
-      assert.deepEqual(runtime.lastAgentRecord()?.strip, {
-        requested: ["skills", "agents"],
-        enforcement: {
-          skills: {
-            route: "config",
-            detail: 'permissions.deny ["Skill"] in the per-dispatch settings file'
-          },
-          agents: {
-            route: "config",
-            detail: 'permissions.deny ["Task","Agent","ListAgents","SendMessage","Workflow"] in the per-dispatch settings file'
-          }
-        }
-      });
+      // Every classified member is denied whether or not the surface shows
+      // it; the unclassified built-in is denied too; unrelated and operator
+      // tools are not.
+      const denied = ["Agent", "ListAgents", "SendMessage", "Skill", "SpawnTeammate", "Task", "Workflow", "advisor"];
+      const removal = { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" };
+      assert.deepEqual(controlPlane.dispatched[0]?.permissionDenyRules, denied);
+      assert.deepEqual(controlPlane.dispatched[0]?.settingsEnv, removal);
+      // One inventory probe, then one confirming probe under the dispatched settings.
+      assert.deepEqual(controlPlane.probed.map((probe) => probe.permissionDenyRules), [[], denied]);
+      assert.deepEqual(controlPlane.probed.map((probe) => probe.settingsEnv), [{}, removal]);
+      const enforcement = runtime.lastAgentRecord()?.strip?.enforcement;
+      for (const capability of ["skills", "agents"] as const) {
+        assert.equal(enforcement?.[capability]?.route, "config");
+        assert.match(enforcement?.[capability]?.detail ?? "", /Claude Code 2\.1\.322-fake/);
+        assert.match(enforcement?.[capability]?.detail ?? "", /unclassified and denied: \["SpawnTeammate"\]/);
+      }
     } finally {
       await runtime.close();
     }
+  });
+});
+
+test("a held Claude strip prepares once and retains its measured enforcement on later turns", async () => {
+  await withControlPlane([{ assistant: { text: "first" } }, { assistant: { text: "second" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    const session = runtime.createWorkerSession({ engine: "claude", strip: ["agents"] });
+    try {
+      assert.equal(await session.send("first"), "first");
+      const first = structuredClone(runtime.lastAgentRecord()?.strip);
+      assert.equal(await session.send("second"), "second");
+      assert.deepEqual(runtime.lastAgentRecord()?.strip, first);
+      assert.match(first?.enforcement.agents?.detail ?? "", /Claude Code 2\.1\.322-fake/);
+      assert.equal(controlPlane.probed.length, 2);
+      assert.equal(controlPlane.dispatchCount, 1);
+    } finally { await session.close(); await runtime.close(); }
+  });
+});
+
+test("an older held session reports its version once and does not repeatedly discard newer preparations", async () => {
+  await withControlPlane([
+    { assistant: { text: "first", version: "2.1.old" } },
+    { assistant: { text: "second", version: "2.1.old" } }
+  ], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const session = adapter.createSession({});
+    try {
+      await session.beginTurn("first", {}).runAttempt({ attempt: 1 });
+      // The daemon's current surface can differ from this held session's
+      // fixed version. Its repeated transcript reads must not invalidate it.
+      const prepared = await adapter.prepareStrip(["agents"], { cwd: "/fake/cwd" });
+      await session.beginTurn("second", {}).runAttempt({ attempt: 1 });
+      assert.equal(await adapter.prepareStrip(["agents"], { cwd: "/fake/cwd" }), prepared);
+      assert.equal(controlPlane.probed.length, 2);
+    } finally { await session.close(); await adapter.close(); }
+  });
+});
+
+test("native transcript versions invalidate the Claude surface cache for later dispatches", async () => {
+  await withControlPlane([
+    { assistant: { text: "first", version: "2.1.330" } },
+    { assistant: { text: "second" } }
+  ], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await runtime.agent("first", { engine: "claude", strip: ["agents"] });
+      await runtime.agent("second", { engine: "claude", strip: ["agents"] });
+      assert.equal(controlPlane.probed.length, 4);
+      assert.equal(controlPlane.dispatchCount, 2);
+    } finally { await runtime.close(); }
+  });
+});
+
+test("an unreadable or unenforced Claude surface refuses before the requested worker is dispatched", async () => {
+  await withControlPlane([{ assistant: { text: "should not run" } }], async (controlPlane) => {
+    controlPlane.probeToolSurface = async () => ({
+      cliVersion: "2.1.322", source: "fake provider", tools: [{ name: "advisor", exposure: "loaded" }]
+    });
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await assert.rejects(runtime.agent("restricted", { engine: "claude", strip: ["agents"] }), /still offered.*advisor/);
+      assert.equal(controlPlane.dispatchCount, 0);
+    } finally { await runtime.close(); }
   });
 });
 
@@ -681,6 +763,8 @@ test("an unstripped Claude dispatch carries no permission deny rules", async () 
     try {
       await runtime.agent("unrestricted", { engine: "claude" });
       assert.equal(controlPlane.dispatched[0]?.permissionDenyRules, undefined);
+      assert.equal(controlPlane.dispatched[0]?.settingsEnv, undefined);
+      assert.equal(controlPlane.probed.length, 0, "an unstripped worker paid for a tool-surface probe");
     } finally {
       await runtime.close();
     }
@@ -1146,6 +1230,8 @@ class MissingTranscriptControlPlane implements ClaudeControlPlane {
     this.#present = false;
   }
 
+  async close(): Promise<void> {}
+
   async tmuxAvailable(): Promise<boolean> {
     return true;
   }
@@ -1189,6 +1275,8 @@ class SlowAliveControlPlane implements ClaudeControlPlane {
   async stop(): Promise<void> {
     this.#present = false;
   }
+
+  async close(): Promise<void> {}
 
   async tmuxAvailable(): Promise<boolean> {
     return true;
@@ -1558,6 +1646,8 @@ class SplitRowsControlPlane implements ClaudeControlPlane {
     this.#present = false;
   }
 
+  async close(): Promise<void> {}
+
   async tmuxAvailable(): Promise<boolean> {
     return true;
   }
@@ -1757,6 +1847,8 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
   async stop(): Promise<void> {
     this.#present = false;
   }
+
+  async close(): Promise<void> {}
 
   async tmuxAvailable(): Promise<boolean> {
     return true;

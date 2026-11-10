@@ -685,7 +685,9 @@ The fields present throughout a record's lifetime are:
   never answered a request). The first means a slow worker; the second, an
   unresponsive engine.
 - `schema`: the requested JSON Schema, or `null`.
-- `strip`: requested capability names and how each was enforced.
+- `strip`: requested capability names and how each was enforced. For an
+  engine that prepares a live strip, `enforcement` is empty until preparation
+  succeeds; a refused preparation claims no enforcement or live inventory.
 - `session`: the held session's run-scoped id and this record's turn number,
   or `null` for a one-shot call.
 - `transcript_capture`: what the engine's capture path observed for this turn —

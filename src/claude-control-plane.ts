@@ -3,11 +3,11 @@ import { homedir, hostname, tmpdir } from "node:os";
 import path from "node:path";
 
 import { withoutRunScopedVariables } from "./ambient-settings.js";
-import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js";
+import { attachFailedTurnResult, ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js";
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
-import type { RuntimeEvent } from "./types.js";
+import type { JsonObject, RuntimeEvent } from "./types.js";
 import { NoWorkerScopes, RUN_SCOPE_GROUP, processTree, type WorkerScopeGrouping, type ScopePlacement, type WorkerScopes } from "./worker-scopes.js";
 
 /**
@@ -37,28 +37,62 @@ const OWNER_FILENAME = "owner.json";
  * deterministic tests and by `ClaudeCliControlPlane` in anger.
  */
 export interface ClaudeControlPlane {
-  /** Spawn a background session and resolve once it is registered in the roster. */
+  /**
+   * Launch a background session and submit the opening prompt to it. Like
+   * the valve, a launch attests submission and never delivery: whether the
+   * prompt arrived as sent is the opening's receipt (`submissionReceipt`),
+   * which the engine reads from the session's transcript.
+   *
+   * - Resolves — a session is registered and the prompt was submitted to
+   *   it, by whatever route the launch uses. A launch that has a registered
+   *   session and cannot tell whether it took the prompt resolves too: a
+   *   wrong rejection hands the prompt to a second worker while the first
+   *   may be running it, and a wrong resolution costs one missing receipt.
+   * - Rejects — no session holds the prompt, and nothing the launch started
+   *   is left running. Only then may the same prompt be launched again, on
+   *   this target or on the next entry of the call's fallback chain, which
+   *   is what classing a rejection as the target being unavailable relies on
+   *   (`ClaudeDispatchError`, `ClaudeRegistrationTimeoutError`). A failure
+   *   that leaves a session holding any part of the prompt is never
+   *   reported by rejecting.
+   */
   dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle>;
   /** One reading of the session's lifecycle state. */
   poll(handle: ClaudeSessionHandle): Promise<ClaudeSessionStatus>;
   /** Locate the session's JSONL transcript on disk, or null if not yet present. */
   transcriptPath(handle: ClaudeSessionHandle): Promise<string | null>;
   /**
-   * Inject a message into the live session (the valve). A refusal names the
-   * step that failed and what it said, so the turn's failure record carries
-   * the cause rather than the bare fact of non-delivery.
+   * Type a message into the live session and submit it (the valve). The
+   * result says whether the message was submitted, never whether it arrived:
+   * see `ValveSubmission`.
    */
-  steer(handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery>;
+  steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission>;
   /** Tear the session down (stop + remove). Best-effort; never throws. */
   stop(handle: ClaudeSessionHandle): Promise<void>;
   /** Whether the tmux valve is usable; gates in-session correction and blocked recovery. */
   tmuxAvailable(): Promise<boolean>;
 }
 
-/** The valve's verdict on one injection: delivered, or refused with the failing step's account. */
-export type ValveDelivery = { delivered: true } | { delivered: false; reason: string };
+/**
+ * What the valve can attest about one injection: whether it submitted the
+ * message. Submission is not delivery. Once the submit keystroke is
+ * accepted the session may run a turn on whatever text it received, and
+ * only the session's transcript says what that text was — the receipt
+ * (`submissionReceipt`), which the engine reads, not the valve.
+ *
+ * - `submitted: false` — nothing was submitted, the session's conversation
+ *   is as it was, and the same message may be sent again. The reason names
+ *   the step that failed and what it said, so the turn's failure record
+ *   carries the cause.
+ * - `submitted: true` — the submit keystroke was accepted. A failure the
+ *   valve cannot place before that keystroke is reported this way too: a
+ *   wrong "not submitted" invites a second copy of a message the session
+ *   already holds, while a wrong "submitted" costs one missing receipt.
+ */
+export type ValveSubmission = { submitted: true } | { submitted: false; reason: string };
 
 export interface ClaudeDispatchOptions {
+  /** The opening text submitted by launch; the engine verifies its receipt. */
   prompt: string;
   /** Unique per dispatch — how the freshly spawned session is found in the roster. */
   name: string;
@@ -74,20 +108,7 @@ export interface ClaudeDispatchOptions {
    * until a live test observes it at a real worker.
    */
   permissionDenyRules?: string[];
-  /**
-   * Prompt-cache TTL for the worker session, in Claude Code's
-   * settings value format ("1h"). Rides the same settings-file `env` block
-   * as the declared worker environment, as
-   * `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` — and a machine-declared value
-   * for that variable wins over this one (the operator's word outranks the
-   * harness default; see the spread order in the writer). Absent means the
-   * engine's own default TTL.
-   */
-  cacheTtl?: string;
 }
-
-/** The settings-file variable Claude Code reads a background worker's prompt-cache TTL from. */
-export const CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 
 /**
  * Declares the workspace sandboxed to every `claude` process this control
@@ -115,6 +136,8 @@ export interface ClaudeSessionHandle {
   sessionId: string;
   name: string;
   cwd: string;
+  /** A launch that could not be safely rejected retains its original account. */
+  launchFailure?: { message: string; diagnostics: JsonObject };
 }
 
 export type ClaudeSessionState = "working" | "blocked" | "done" | "unknown";
@@ -202,6 +225,8 @@ export interface ClaudeCliControlPlaneOptions {
   valveAttachSettleMs?: number;
   valveSubmitSettleMs?: number;
   valveKillSettleMs?: number;
+  /** Bound for the editor-copy wait; defaults to 30 seconds. */
+  valveDeliveryTimeoutMs?: number;
   /**
    * Places each dispatched session in a worker scope and launches every
    * `claude` and `tmux` process this control plane starts.
@@ -239,13 +264,15 @@ interface ExecResult {
   ok: boolean;
   stdout: string;
   stderr: string;
+  exitCode: number | null;
+  signal: string | null;
 }
 
 /**
  * The real control plane: drives `claude` and `tmux` as child processes. The
- * valve sequence (attach in a disposable tmux server, settle, type literally,
- * submit, kill) is retry-safe because the daemon owns the session, so a
- * botched injection costs a retry, never a worker.
+ * reply valve loads a private UTF-8 file through the attached prompt editor,
+ * submits once, and closes its private tmux server. The engine verifies
+ * the native receipt; the daemon owns the held session.
  */
 export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #claudeBin: string;
@@ -257,6 +284,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveAttachSettleMs: number;
   #valveSubmitSettleMs: number;
   #valveKillSettleMs: number;
+  #valveDeliveryTimeoutMs: number;
   #scopes: WorkerScopes;
   #workerScope: WorkerScopeGrouping;
   #placementSettleMs: number;
@@ -312,8 +340,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
     this.#procDir = options.procDir ?? "/proc";
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
-    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1_000;
-    this.#valveKillSettleMs = options.valveKillSettleMs ?? 2_000;
+    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 0;
+    this.#valveKillSettleMs = options.valveKillSettleMs ?? 0;
+    this.#valveDeliveryTimeoutMs = options.valveDeliveryTimeoutMs ?? 30_000;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
     this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
@@ -352,105 +381,126 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // share the first one's sweep.
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
     args.push("--settings", path.join(settingsDir, "settings.json"));
     let registered: ClaudeSessionHandle | null = null;
+    let candidate: { handle: ClaudeSessionHandle; pid: number | null; row: RosterRow } | null = null;
+    const dispatch: { result: ExecResult | null } = { result: null };
+    let accepted = false;
+    let discarded = false;
+    let lastSeen: { handle: ClaudeSessionHandle; pid: number | null; row: RosterRow } | null = null;
     try {
-      // Prompts routinely contain whole diffs and can exceed the platform's argv
-      // ceiling. Claude's background mode accepts its initial prompt on stdin, so
-      // keep argv small and stream the bytes without involving a shell.
-      //
-      // The roster is read while `claude --bg` is still running, not once it
-      // has returned: the row registers, and names its pid, seconds before
-      // the command exits (measured on Claude Code 2.1.318: pid at ~0.9 s,
-      // exit at ~4 s), and Linux never moves memory already charged when a
-      // process changes cgroup, so every moment the session spends outside
-      // its scope is memory charged to the supervisor's cgroup for good.
-      const dispatch: { result: ExecResult | null } = { result: null };
-      void this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd).then(
+      // Start an empty native session. The complete opening rides the same
+      // file-backed editor as later turns, avoiding Claude's stdin reader,
+      // duplicated dispatch-file payload and cold-spawn argument limit.
+      void this.#runWithInput(this.#claudeBin, args, "", options.cwd).then(
         (result) => (dispatch.result = result),
-        (error: unknown) => (dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error) })
+        (error: unknown) => (dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error), exitCode: null, signal: null })
       );
-
-      // The registration window opens when `claude --bg` returns: a slow
-      // daemon start spends the command's own time, not the session's.
       let deadline: number | null = null;
+      let placementDeadline: number | null = null;
+      let placed = false;
+      let placementPid: number | null = null;
       for (;;) {
-        const found = await this.#findByName(options.name);
-        if (found !== null) {
-          registered = found.handle;
-          // The row registers before it carries a pid (measured: about half
-          // a second before), so the wait continues, bounded, for the pid
-          // and placement, and the session is placed the moment it is named; past
-          // the bound the next poll places it.
-          // A no-op manager cannot use a PID, so registration is enough.
-          if (this.#scopes instanceof NoWorkerScopes) break;
-          const settled = Date.now() + this.#placementSettleMs;
-          let pid = found.pid;
-          for (;;) {
-            if (pid !== null) {
-              const outcome = await this.#place(registered, pid);
-              if (outcome.kind !== "refused") break;
-            }
-            if (Date.now() >= settled) break;
-            await delay(100);
-            pid = (await this.#findByName(options.name))?.pid ?? null;
+        candidate = await this.#findByName(options.name);
+        if (candidate !== null) {
+          registered = candidate.handle;
+          lastSeen = candidate;
+          // Placement still starts before the dispatch command returns.
+          // A seeded row without a pid is not a running session.
+          if (candidate.pid !== placementPid) {
+            placed = false;
+            placementDeadline = null;
+            placementPid = candidate.pid;
           }
-          break;
+          if (candidate.pid !== null && !placed) {
+            placementDeadline ??= Date.now() + this.#placementSettleMs;
+            const outcome = await this.#place(registered, candidate.pid);
+            placed = outcome.kind !== "refused" || Date.now() >= placementDeadline;
+          }
         }
         if (dispatch.result !== null) {
-          // `claude --bg` prints the short id and returns; if it failed outright there
-          // is no session to wait for, so surface immediately with its stderr.
           if (!dispatch.result.ok) {
-            // A refusal before any session exists: the directory is the
-            // fact the operator needs, the launch command's stderr is the reason,
-            // and the declaration is named so a refusal that survived it reads
-            // as the substrate's, not as a lift the harness forgot. The text is
-            // engine-controlled and lands on a one-line operator surface, so it
-            // takes the bounded-evidence discipline: control stripped,
-            // whitespace flattened, bounded.
             throw new ClaudeDispatchError(
               `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} ` +
-                `(workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` +
-                boundedEvidence(dispatch.result.stderr.trim() || dispatch.result.stdout.trim() || "claude --bg exited without a message")
+              `(workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` +
+              launchAccount(dispatch.result)
             );
           }
           deadline ??= Date.now() + this.#dispatchTimeoutMs;
+          if (candidate !== null && candidate.pid !== null && placed) break;
           if (Date.now() >= deadline) {
-            // The daemon took the dispatch and never surfaced the session: an
-            // operational failure the retry loop spends an attempt on, not a
-            // refusal — Claude Code did not decline.
             throw new ClaudeRegistrationTimeoutError(
-              `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
+              `dispatched session '${options.name}' in ${options.cwd} did not start within ${this.#dispatchTimeoutMs}ms; ` +
+              launchAccount(dispatch.result) + `; roster: ${boundedEvidence(JSON.stringify(lastSeen))}`
             );
           }
         }
-        await delay(dispatch.result === null ? 100 : 500);
+        await delay(100);
       }
-    } finally {
-      if (registered === null) {
-        // The dispatch never produced a session, so nothing will read the
-        // file again. Best-effort: cleanup failure must never mask the
-        // dispatch error being thrown past this block.
-        await this.#removeSettingsDir(settingsDir);
-      } else {
-        // The session is live and Claude Code watches settings files for
-        // changes, so the file keeps the session's own lifetime: stop()
-        // removes it. Deleting it here — the moment the roster registers —
-        // would risk the daemon observing a mid-session removal of the
-        // very variables the file exists to hold.
-        this.#settingsDirs.set(registered.sessionId, settingsDir);
-        if (!(this.#scopes instanceof NoWorkerScopes)) {
-          this.#watchedSessions.set(registered.sessionId, registered);
-          this.#schedulePlacementWatch();
+      if (registered === null || dispatch.result === null) throw new Error("Claude dispatch lost its ready session");
+      const handle = registered;
+      // Register ownership before opening delivery so every failure can use
+      // stop()'s complete teardown, including tagged descendants and settings.
+      this.#settingsDirs.set(handle.sessionId, settingsDir);
+      const delivery = await this.steer(handle, options.prompt);
+      if (!delivery.submitted) {
+        throw new ClaudeRegistrationTimeoutError(
+          `Claude opening submission failed for worker '${options.name}' in ${options.cwd}: ${delivery.reason}; ` +
+          launchAccount(dispatch.result)
+        );
+      }
+      accepted = true;
+      if (!(this.#scopes instanceof NoWorkerScopes)) {
+        this.#watchedSessions.set(handle.sessionId, handle);
+        this.#schedulePlacementWatch();
+      }
+      return handle;
+    } catch (error) {
+      if (error instanceof Error) {
+        const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id]).catch(() => null);
+        const file = registered === null ? null : await this.transcriptPath(registered).catch(() => null);
+        const transcript = file === null ? null : await readFile(file, "utf8").catch(() => null);
+        const diagnostics = { claudeLaunch: {
+          failure: error.message,
+          cleanupConfirmed: registered === null,
+          command: dispatch.result === null ? null : { ...dispatch.result },
+          roster: lastSeen === null ? null : JSON.parse(JSON.stringify(lastSeen.row)),
+          logs: logs === null ? null : { ...logs }
+        } };
+        if (registered !== null) {
+          discarded = await this.#stopSession(registered, true).catch(() => false);
+          diagnostics.claudeLaunch.cleanupConfirmed = discarded;
+          if (!discarded) {
+            // No rejection may hand this prompt to another target while a
+            // launch we could not remove still exists. The engine owns its
+            // receipt and subsequent teardown, including the original account.
+            registered.launchFailure = { message: error.message, diagnostics };
+            accepted = true;
+            this.#settingsDirs.set(registered.sessionId, settingsDir);
+            if (!(this.#scopes instanceof NoWorkerScopes)) {
+              this.#watchedSessions.set(registered.sessionId, registered);
+              this.#schedulePlacementWatch();
+            }
+            return registered;
+          }
         }
+        attachFailedTurnResult(error, {
+          text: "", deltaText: "", durationMs: null, firstDeltaMs: null, items: {}, tokenUsageEvents: [],
+          diagnostics,
+          ...(transcript === null ? {} : { transcripts: [{
+            filename: "transcript.claude.jsonl", format: "jsonl", source: "claude-session-jsonl",
+            sessionId: registered!.sessionId, content: transcript, partial: true
+          }] })
+        });
+      }
+      throw error;
+    } finally {
+      if (!accepted) {
+        if (registered !== null && !discarded) await this.stop(registered);
+        await this.#removeSettingsDir(settingsDir);
       }
     }
-    if (registered === null) {
-      // Unreachable: every path that leaves the loop without a handle throws.
-      throw new ClaudeRegistrationTimeoutError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
-    }
-    return registered;
   }
 
   /**
@@ -464,11 +514,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[], cacheTtl?: string): Promise<string> {
-    // Spread order is the precedence: the TTL is a harness default the
-    // dispatch asks for, so a machine-declared worker_environment value for
-    // the same variable (spread after it) wins, and the ownership tag —
-    // harness bookkeeping, not configuration — always lands last.
+  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[]): Promise<string> {
+    // The ownership tag is harness bookkeeping and always lands last.
     // The hold scope is per-lead coordination state whose contract is
     // inheritance by every nested invocation (`HOLD_SCOPE_ENV`). It is
     // withheld from control-plane children like every run-level setting —
@@ -479,7 +526,6 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // launcher took from `--hold-scope` exists nowhere in the environment.
     const env = {
       ...(this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {}),
-      ...(cacheTtl !== undefined ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {}),
       ...this.#workerEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
@@ -616,9 +662,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return null;
   }
 
-  async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery> {
+  async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
     if ((await this.poll(handle)).present === false) {
-      return { delivered: false, reason: "the session is no longer in the daemon's roster" };
+      return { submitted: false, reason: "the session is no longer in the daemon's roster" };
     }
 
     this.#valveCounter += 1;
@@ -640,47 +686,59 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       socketDir = await mkdtemp(path.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
-      return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
+      return { submitted: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
     }
     const server = ["-S", path.join(socketDir, "tmux.sock")];
 
+    let submitAttempted = false;
     try {
-      const created = await this.#run(this.#tmuxBin, [
-        ...server,
-        "-f",
-        "/dev/null",
-        "new-session",
-        "-d",
-        "-s",
-        valve,
-        `${this.#claudeBin} attach ${handle.id}`
-      ]);
-      if (!created.ok) {
-        return refused("tmux new-session", created);
-      }
+      const payload = path.join(socketDir, "prompt.txt");
+      const editor = path.join(socketDir, "editor.cjs");
+      const copied = path.join(socketDir, "copied");
+      await writeFile(payload, message, { mode: 0o600 });
+      // The helper takes only Claude's editor filename on argv. All payload
+      // bytes remain in private files, independent of argv and tmux caps.
+      await writeFile(editor, `#!${process.execPath}
+        const fs = require("node:fs");
+        fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
+        fs.writeFileSync(${JSON.stringify(copied)}, "complete", { mode: 0o600 });
+      `, { mode: 0o700 });
+      const editorCommand = editor;
+      const created = await this.#launch(this.#tmuxBin, [
+        ...server, "-f", "/dev/null", "new-session", "-d", "-s", valve,
+        `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
+      ], null, undefined, { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand });
+      if (!created.ok) return refused("tmux new-session", created);
 
-      // The TUI needs a beat to attach and take focus before input lands.
       await delay(this.#valveAttachSettleMs);
-      // Complete Win32 terminal key records stay typed even when the reader
-      // falls behind and coalesces input. Bound each literal send and never
-      // split a record; submit follows the final batch as its own keystroke.
-      const slices = valveSlices(message);
-      for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", "--", slice]);
-        if (!typed.ok) {
-          return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
+      const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
+      if (!opened.ok) return refused("tmux send-keys (editor)", opened);
+      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
+      for (;;) {
+        try {
+          await access(copied);
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
+        if (Date.now() >= copyDeadline) {
+          return { submitted: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
+        }
+        await delay(50);
       }
       await delay(this.#valveSubmitSettleMs);
+      submitAttempted = true;
       const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
-      if (!submitted.ok) {
-        return refused("tmux send-keys (submit)", submitted);
-      }
+      if (!submitted.ok) return refused("tmux send-keys (submit)", submitted);
+
       await delay(this.#valveKillSettleMs);
-      return { delivered: true };
+      return { submitted: true };
+    } catch (error) {
+      return submitAttempted ? { submitted: true } : {
+        submitted: false, reason: `reply valve failed before submission: ${boundedEvidence(error instanceof Error ? error.message : String(error))}`
+      };
     } finally {
-      // The server is this valve's alone, so ending it ends the pane too.
-      // tmux leaves its socket file behind; the directory takes it.
+      // The server and all editor files belong to this delivery alone.
       await this.#run(this.#tmuxBin, [...server, "kill-server"]);
       await rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -757,6 +815,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   async stop(handle: ClaudeSessionHandle): Promise<void> {
+    await this.#stopSession(handle).catch(() => false);
+  }
+
+  async #stopSession(handle: ClaudeSessionHandle, requireClean = false): Promise<boolean> {
     this.#watchedSessions.delete(handle.sessionId);
     if (this.#watchedSessions.size === 0 && this.#placementTimer !== null) {
       clearTimeout(this.#placementTimer);
@@ -768,20 +830,24 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     await this.#placing.get(handle.sessionId);
     // Best-effort teardown; `stop`/`rm` can mishandle an already-exited session,
     // so failures are swallowed rather than allowed to mask the real result.
-    await this.#run(this.#claudeBin, ["stop", handle.id]);
+    const stopped = await this.#run(this.#claudeBin, ["stop", handle.id]);
     this.#placements.delete(handle.sessionId);
     // The session is over; anything still carrying its tag is a descendant
     // the daemon will never reap (they reparent to the user session, not to
     // the harness). Ownership means killing them here, not warning about them.
     await this.#reapTaggedDescendants(handle.name);
-    await this.#run(this.#claudeBin, ["rm", handle.id]);
+    const removed = await this.#run(this.#claudeBin, ["rm", handle.id]);
+    const roster = await this.#roster();
+    const clean = stopped.ok && removed.ok && roster.ok && !roster.rows.some(row => matchesHandle(row, handle)) &&
+      (await this.#findTaggedProcesses(handle.name)).length === 0;
     // The session is gone, so its settings file (which carries the declared
     // gateway values) goes with it. Same best-effort discipline as above.
     const settingsDir = this.#settingsDirs.get(handle.sessionId);
-    if (settingsDir !== undefined) {
+    if (settingsDir !== undefined && (clean || !requireClean)) {
       this.#settingsDirs.delete(handle.sessionId);
       await this.#removeSettingsDir(settingsDir);
     }
+    return clean;
   }
 
   /**
@@ -855,7 +921,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   /** The roster's row for a dispatch, as a handle plus the pid the row names (null until the supervisor reports one). */
-  async #findByName(name: string): Promise<{ handle: ClaudeSessionHandle; pid: number | null } | null> {
+  async #findByName(name: string): Promise<{ handle: ClaudeSessionHandle; pid: number | null; row: RosterRow } | null> {
     const { rows } = await this.#roster();
     const match = rows.find(
       (row) => row.kind === "background" && row.name === name && typeof row.sessionId === "string"
@@ -873,7 +939,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         name,
         cwd: typeof match.cwd === "string" ? match.cwd : ""
       },
-      pid: typeof match.pid === "number" ? match.pid : null
+      pid: typeof match.pid === "number" && match.pid > 0 ? match.pid : null,
+      row: match
     };
   }
 
@@ -912,10 +979,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * exit status read as the verdict. `input` is streamed to stdin and the
    * stream then closed; null closes it at once.
    */
-  async #launch(file: string, args: string[], input: string | null, cwd?: string): Promise<ExecResult> {
+  async #launch(file: string, args: string[], input: string | null, cwd?: string, env = this.#env): Promise<ExecResult> {
     const child = await this.#scopes.launch(file, args, {
       ...(cwd !== undefined ? { cwd } : {}),
-      env: this.#env,
+      env,
       stdio: ["pipe", "pipe", "pipe"]
     });
     return new Promise<ExecResult>((resolve) => {
@@ -932,11 +999,13 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
       child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
       child.on("error", (error) => {
-        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
+        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message, exitCode: null, signal: null });
       });
-      child.on("close", (code) => {
+      child.on("close", (code, signal) => {
         finish({
           ok: code === 0,
+          exitCode: code,
+          signal,
           stdout: Buffer.concat(stdout).toString(),
           stderr: Buffer.concat(stderr).toString()
         });
@@ -952,6 +1021,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 }
 
 interface RosterRow {
+  [key: string]: unknown;
   id?: unknown;
   /** The session's own process while it lives (Claude Code 2.1.318); absent for the first moments after registration. */
   pid?: unknown;
@@ -978,50 +1048,20 @@ function normaliseState(state: unknown): ClaudeSessionState {
   return "unknown";
 }
 
-/**
- * Largest byte length of one `send-keys -l` argument. Two caps bound it: Linux
- * rejects a single argv element over 128 KiB (`spawn E2BIG`), and tmux's client
- * refuses any one command over its 16 KiB message size ("command too long",
- * measured on tmux 3.7c: 16000 bytes accepted, 20000 refused). This sits well
- * beneath both, so a valve message of any size reaches the pane as an ordered
- * sequence of literal sends.
- */
-export const VALVE_SLICE_BYTES = 8 * 1024;
-
 /** A refused valve step, named with the bounded text tmux gave for it. */
-function refused(step: string, result: ExecResult): ValveDelivery {
+function refused(step: string, result: ExecResult): ValveSubmission {
   const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
-  return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
+  return { submitted: false, reason: `${step} failed: ${boundedEvidence(said)}` };
 }
 
-/**
- * Split a valve message into `send-keys -l` arguments of at most
- * `VALVE_SLICE_BYTES` bytes each, encoding each UTF-16 unit as a complete Win32
- * terminal key record. Tabs become four spaces; CR and CRLF become LF.
- * No record is torn across two sends. Exported for the delivery tests; an
- * encoded message within the bound is one slice, and an empty message is none.
- */
-export function valveSlices(message: string): string[] {
-  message = message.replace(/\r\n?/g, "\n").replaceAll("\t", "    ");
-  const slices: string[] = [];
-  let current = "";
-  let currentBytes = 0;
-  for (let index = 0; index < message.length; index += 1) {
-    // Vk;Sc;Unicode;KeyDown;ControlKeyState;RepeatCount, all ASCII.
-    const character = `\u001b[0;0;${message.charCodeAt(index)};1;0;1_`;
-    const characterBytes = character.length;
-    if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
-      slices.push(current);
-      current = "";
-      currentBytes = 0;
-    }
-    current += character;
-    currentBytes += characterBytes;
-  }
-  if (current !== "") {
-    slices.push(current);
-  }
-  return slices;
+function launchAccount(result: ExecResult): string {
+  return `dispatch exit ${result.exitCode ?? "unknown"}, signal ${result.signal ?? "none"}; ` +
+    `stdout: ${boundedEvidence(result.stdout.trim() || "(empty)")}; ` +
+    `stderr: ${boundedEvidence(result.stderr.trim() || "(empty)")}`;
+}
+
+function shellQuote(value: string): string {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
 }
 
 function delay(ms: number): Promise<void> {

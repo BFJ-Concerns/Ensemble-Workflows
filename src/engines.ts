@@ -78,6 +78,7 @@ export interface EngineAttemptFailure {
     | "claude-registration-timeout"
     | "claude-blocked"
     | "claude-valve-error"
+    | "claude-delivery-error"
     | "claude-transcript-error"
     | "claude-collection-error"
     | "claude-worker-diagnostic"

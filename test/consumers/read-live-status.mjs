@@ -10,6 +10,9 @@ import { createAcknowledgementWriter } from "./archive-helpers.mjs";
 
 const spec = JSON.parse(await readFile(process.argv[2], "utf8"));
 const agentKeys = ["id", "attempt", "engine", "label", "phase", "state", "startedAtMs", "firstEvidenceAtMs", "lastEvidenceAtMs", "finishedAtMs", "waitingOn", "requestedModel", "requestedEffort", "resolvedModel", "resolvedEffort", "transcript", "worktree", "spent", "failure"].sort();
+// Schema 4 finishes every worker with one of four dispositions, each counted under its own total.
+const finishedCounts = { done: "done", failed: "failed", "cut-short": "cutShort", unsettled: "unsettled" };
+const finishedStates = Object.keys(finishedCounts);
 const snapshotKeys = ["schema", "runId", "pid", "archiveDir", "workflow", "state", "startedAt", "updatedAt", "finishedAt", "currentPhase", "totals", "engines", "agents", "holds", "owner"].sort();
 const child = spawn(process.execPath, [spec.bundle, spec.workflow], {
   cwd: spec.cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"]
@@ -49,13 +52,14 @@ try {
       throw error;
     }
     snapshot = current;
-    assert.equal(current.schema, 3);
+    assert.equal(current.schema, 4);
     assert.deepEqual(Object.keys(current).sort(), snapshotKeys);
     assert.equal(current.runId, announcement.run_id);
     assert.equal(current.pid, child.pid);
     assert.equal(current.owner.pid, child.pid);
     assert.equal(current.agents.length,
-      current.totals.active + current.totals.queued + current.totals.done + current.totals.failed,
+      current.totals.active + current.totals.queued + current.totals.done + current.totals.failed +
+        current.totals.cutShort + current.totals.unsettled,
       "every registered worker must be listed");
     const listedIds = new Set(current.agents.map((agent) => agent.id));
     assert.equal(listedIds.size, current.agents.length, "worker IDs must be unique");
@@ -68,7 +72,7 @@ try {
     }
     for (const agent of current.agents) {
       assert.deepEqual(Object.keys(agent).sort(), agentKeys);
-      assert.ok(["queued", "running", "done", "failed"].includes(agent.state));
+      assert.ok(["queued", "running", ...finishedStates].includes(agent.state));
       for (const field of ["requestedModel", "requestedEffort", "resolvedModel", "resolvedEffort", "transcript", "worktree"]) {
         assert.ok(agent[field] === null || typeof agent[field] === "string", field);
       }
@@ -112,10 +116,10 @@ try {
       if (observed.evidenceTimes.length > 1 && agent.transcript !== null) await acknowledge(`${agent.id}:growth`);
       if (attemptTimes.length > 1 && agent.transcript !== null) await acknowledge(`${agent.id}:${agent.attempt}:growth`);
       if (agent.spent > 0) await acknowledge(`${agent.id}:usage`);
-      if (agent.state === "done" || agent.state === "failed") {
+      if (finishedStates.includes(agent.state)) {
         assert.ok(agent.finishedAtMs !== null);
         assert.equal(agent.waitingOn, null);
-        if (agent.state === "failed") {
+        if (agent.state !== "done") {
           assert.equal(typeof agent.failure?.kind, "string");
           assert.equal(typeof agent.failure?.message, "string");
           assert.ok(agent.failure.message.length > 0);
@@ -124,7 +128,7 @@ try {
     }
     const expected = spec.workers ?? [];
     const settled = expected.every((entry) => workers.get(entry.id)?.latest?.state === entry.state);
-    const totalsMatch = spec.terminalTotals === undefined || current.totals.done + current.totals.failed === spec.terminalTotals;
+    const totalsMatch = spec.terminalTotals === undefined || finishedStates.reduce((sum, state) => sum + current.totals[finishedCounts[state]], 0) === spec.terminalTotals;
     const authorised = spec.finishWhen === undefined || await exists(spec.finishWhen);
     if (!released && settled && totalsMatch && authorised) {
       // The workflow waits here after workers settle, so outcomes are read
@@ -173,7 +177,7 @@ try {
       if (agent.transcript !== null && !path.isAbsolute(agent.transcript)) {
         assert.ok(record.transcripts.some((entry) => entry.path === agent.transcript));
       }
-      if (agent.state === "failed") {
+      if (finishedStates.includes(agent.state) && agent.state !== "done") {
         const failure = record.termination_cause ?? record.attempts.findLast((entry) => entry.failure !== null)?.failure;
         assert.deepEqual(agent.failure, failure);
       }

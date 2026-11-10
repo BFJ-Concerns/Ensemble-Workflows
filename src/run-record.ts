@@ -48,7 +48,7 @@ const execFileAsync = promisify(execFile);
  * summary or a bare absence. A version-4 reader would read the abandoned
  * entry as settled and a lower bound as a total, so the version moves.
  */
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const MANIFEST_PATH = "manifest.json";
 
 /**
@@ -523,7 +523,7 @@ interface AbandonmentRecord {
 }
 
 interface Manifest {
-  schema_version: 5;
+  schema_version: 6;
   kind: "run_manifest";
   run_id: string;
   run_uuid: string;

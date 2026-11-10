@@ -190,13 +190,13 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as Record<string, unknown>;
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as Record<string, unknown>;
-  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-manifest-keys.json", "utf8")) as {
+  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v6-manifest-keys.json", "utf8")) as {
     manifest: string[];
     args: string[];
   };
-  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-agent-keys.json", "utf8"));
-  const attemptKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-attempt-keys.json", "utf8"));
-  const leafKeys = JSON.parse(await readFile("test/fixtures/run-record/v5-cost-rollup-leaf-keys.json", "utf8"));
+  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v6-agent-keys.json", "utf8"));
+  const attemptKeys = JSON.parse(await readFile("test/fixtures/run-record/v6-attempt-keys.json", "utf8"));
+  const leafKeys = JSON.parse(await readFile("test/fixtures/run-record/v6-cost-rollup-leaf-keys.json", "utf8"));
 
   assert.deepEqual(Object.keys(manifest).sort(), manifestKeys.manifest);
   assert.deepEqual(Object.keys(manifest.args as Record<string, unknown>).sort(), manifestKeys.args);
@@ -212,10 +212,10 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
   for (const leaf of Object.values(rollup).flatMap((models) => Object.values(models))) {
     assert.deepEqual(Object.keys(leaf).sort(), leafKeys);
   }
-  assert.equal(manifest.schema_version, 5);
+  assert.equal(manifest.schema_version, 6);
   assert.equal(manifest.kind, "run_manifest");
   assert.equal(manifest.caller_identity, "session:run-record-test");
-  assert.equal(agent.schema_version, 5);
+  assert.equal(agent.schema_version, 6);
   assert.equal(agent.kind, "agent_record");
   assert.equal(agent.header_identity, "original_request");
   assert.deepEqual(manifest.concurrency, {
@@ -427,7 +427,7 @@ test("a dispatched worker with no usage has an unresolved roll-up reason", async
       await readFile(path.join(attempted.archiveDir, "manifest.json"), "utf8")
     ) as { cost_rollup: Record<string, Record<string, unknown>> };
     assert.deepEqual(attemptedManifest.cost_rollup.codex?.unresolved, {
-      tokens: { unavailable: "no-usage-reported" }, cost: { unavailable: "no-provider-cost-reported" }, complete: false,
+      tokens: { unavailable: "engine-reported-no-usage" }, cost: { unavailable: "no-provider-cost-reported" }, complete: false,
       unobserved: [{ agent: 1, attempt: 1, reason: "engine-reported-no-usage", measured: "none" }]
     });
   } finally {
@@ -2018,7 +2018,7 @@ test("an interrupted worker's archive names its termination cause and why no tra
   // This is a cold read of the real writer's v3 record. No transcript
   // survives an interruption, but the array's type remains stable and its
   // sibling carries the reason a consumer needs to interpret the empty list.
-  assert.equal(interruptedAgent.schema_version, 5);
+  assert.equal(interruptedAgent.schema_version, 6);
   assert.ok(Array.isArray(interruptedAgent.transcripts));
   assert.deepEqual(interruptedAgent.transcripts, []);
   assert.equal(interruptedAgent.transcripts_unavailable, "worker-interrupted");

@@ -60,10 +60,36 @@ test("an abandoned attempt books under the model it reported and marks what it m
     agent(1, [attempt(1, { settled: false, tokenUsageEvents: [] })])
   ]);
   assert.deepEqual(rollup.codex?.["gpt-6-luna"], {
-    tokens: { unavailable: "no-usage-reported" },
+    tokens: { unavailable: "record-unsettled" },
     cost: { unavailable: "no-provider-cost-reported" },
     complete: false,
     unobserved: [{ agent: 1, attempt: 1, reason: "record-unsettled", measured: "none" }]
+  });
+});
+
+test("a leaf with no figures names the least certain way its attempts ended", () => {
+  const engineSaidNone = attempt(1, { failureKind: "SomeEngineFailure", tokenUsageEvents: [] });
+  const mixed = buildCostRollup([
+    agent(1, [engineSaidNone]),
+    agent(2, [attempt(1, { settled: false, tokenUsageEvents: [] })])
+  ]).codex?.["gpt-6-luna"];
+  assert.deepEqual(mixed?.tokens, { unavailable: "record-unsettled" });
+  assert.deepEqual(mixed?.unobserved, [
+    { agent: 1, attempt: 1, reason: "engine-reported-no-usage", measured: "none" },
+    { agent: 2, attempt: 1, reason: "record-unsettled", measured: "none" }
+  ]);
+
+  assert.deepEqual(
+    buildCostRollup([agent(1, [engineSaidNone])]).codex?.["gpt-6-luna"]?.tokens,
+    { unavailable: "engine-reported-no-usage" }
+  );
+
+  const refused = attempt(1, { failureKind: "CodexSubstrateRefusedError", resolvedModel: null, tokenUsageEvents: [] });
+  assert.deepEqual(buildCostRollup([agent(1, [refused])]).codex?.unresolved, {
+    tokens: { unavailable: "substrate-never-started" },
+    cost: { unavailable: "no-provider-cost-reported" },
+    complete: true,
+    unobserved: []
   });
 });
 
@@ -74,7 +100,7 @@ test("a live retry with no served identity leaves earlier measured spend complet
   ])]);
   assert.deepEqual(rollup.codex?.["gpt-6-luna"], buildCostRollup([agent(1, [attempt(1)])]).codex?.["gpt-6-luna"]);
   assert.deepEqual(rollup.codex?.unresolved, {
-    tokens: { unavailable: "no-usage-reported" },
+    tokens: { unavailable: "record-unsettled" },
     cost: { unavailable: "no-provider-cost-reported" },
     complete: false,
     unobserved: [{ agent: 1, attempt: 2, reason: "record-unsettled", measured: "none" }]
@@ -213,7 +239,7 @@ test("an agent whose start evidence may be missing books an unnumbered unobserve
   // may have failed while its worker ran.
   const rollup = buildCostRollup([agent(2, [], true)]);
   assert.deepEqual(rollup.codex?.unresolved, {
-    tokens: { unavailable: "no-usage-reported" },
+    tokens: { unavailable: "record-unsettled" },
     cost: { unavailable: "no-provider-cost-reported" },
     complete: false,
     unobserved: [{ agent: 2, attempt: null, reason: "record-unsettled", measured: "none" }]
@@ -221,7 +247,7 @@ test("an agent whose start evidence may be missing books an unnumbered unobserve
 });
 
 function archivedRecord(status: string, attempts: unknown[], extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return { schema_version: 5, kind: "agent_record", id: 2, engine: "codex", status, resolved_model: null, attempts, ...extra };
+  return { schema_version: 6, kind: "agent_record", id: 2, engine: "codex", status, resolved_model: null, attempts, ...extra };
 }
 
 function archivedAttempt(status: string): Record<string, unknown> {

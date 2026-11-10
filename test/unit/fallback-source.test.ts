@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { EngineRegistry } from "../../src/engines.js";
-import { createWorkflowHooks } from "../../src/hooks.js";
+import { UnreadableAgentOptionError } from "../../src/errors.js";
+import { createWorkflowHooks, parallel } from "../../src/hooks.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { ChainEngine } from "./chain-engine-fakes.js";
 
 import type { EngineAttemptResult } from "../../src/engines.js";
 import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
-import type { FallbackTarget } from "../../src/types.js";
+import type { AgentOptions, FallbackTarget } from "../../src/types.js";
 
 function answer(text: string): () => Promise<EngineAttemptResult> {
   return async () => ({ text, deltaText: text, durationMs: 10, firstDeltaMs: 5, items: {}, tokenUsageEvents: [] });
@@ -64,6 +65,34 @@ test("an agent record names the defaults block, the call or nothing as its chain
     const direct = settledRecordLabelled(records, "direct");
     assert.equal(direct.fallback, null);
     assert.deepEqual(direct.fallbackSource, { kind: "none" });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("an unreadable fallback is refused as an author error, directly and through a combinator", async () => {
+  // Enumerable and fresh on every call, as a script's object literal would be.
+  const unreadableFallback = (label: string): Partial<AgentOptions> => {
+    const options: Partial<AgentOptions> = { engine: "codex", label };
+    Object.defineProperty(options, "fallback", {
+      enumerable: true,
+      get() {
+        throw new Error("unreadable fallback");
+      }
+    });
+    return options;
+  };
+  const { runtime, records } = recordingRuntime(0);
+
+  try {
+    await assert.rejects(runtime.agent("direct", unreadableFallback("direct")), UnreadableAgentOptionError);
+    // A pre-spawn author error fails the run: the combinator rethrows it
+    // rather than collapsing the slot to null.
+    await assert.rejects(
+      parallel([() => runtime.agent("in a combinator", unreadableFallback("combinator"))], () => {}),
+      UnreadableAgentOptionError
+    );
+    assert.deepEqual(records, []);
   } finally {
     await runtime.close();
   }

@@ -59,16 +59,24 @@ export function handOffFallbackSource<T extends object>(options: T, source: Fall
 }
 
 /**
- * The source of the chain on `options`, as the runtime records it at a
- * dispatch's entry. A handed-off source wins. Without one — a direct library
- * call, which bypasses the hooks — the options are the call's own, so a
- * declared chain came from the call and an undeclared one from nowhere.
+ * The source of `validated.fallback`, as the runtime records it at a
+ * dispatch's entry. A source handed off on `passed` wins. Without one — a
+ * direct library call, which bypasses the hooks — the options are the
+ * call's own, so a declared chain came from the call and an undeclared one
+ * from nowhere.
  *
- * Read it from the object the caller passed, before any copy: a spread or
- * `Object.assign` copy does not carry the hand-off.
+ * The two arguments split identity from value. `passed` is the options
+ * object exactly as the caller handed it over, consulted only by identity:
+ * no property of it is read here, so capture it before any copy or
+ * snapshot replaces it (neither carries the hand-off). `validated` is the
+ * object the option validation has already passed, and the only one whose
+ * `fallback` is read: call this after validation, so an unreadable or
+ * malformed chain is refused there as an author error before it can escape
+ * from here as anything else. The two may be the same object where nothing
+ * replaces the caller's options before validation.
  */
-export function fallbackSourceOf(options: { fallback?: FallbackTarget[] }): FallbackSource {
-  return handedOff.get(options) ?? (options.fallback === undefined ? { kind: "none" } : { kind: "call" });
+export function fallbackSourceOf(passed: object, validated: { fallback?: FallbackTarget[] }): FallbackSource {
+  return handedOff.get(passed) ?? (validated.fallback === undefined ? { kind: "none" } : { kind: "call" });
 }
 
 /**

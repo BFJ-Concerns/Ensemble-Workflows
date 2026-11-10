@@ -18,8 +18,8 @@ Where these files live, and how to turn them off, is covered in
 ## Live status
 
 While a run is active it publishes a JSON snapshot of what it is doing —
-current phase, per-engine active/queued/done/failed counts, per-engine token
-spend, and every queued, running and finished worker — to its own
+current phase, per-engine counts of live workers and of finished workers by
+disposition, per-engine token spend, and every queued, running and finished worker — to its own
 file in the status directory. By default it creates
 `$XDG_DATA_HOME/ensemble/status` (`~/.local/share/ensemble/status` by default)
 and writes there, independently of the working directory and any `.claude`
@@ -68,11 +68,14 @@ rules, and a token on one engine does not cost the same as on another.
 
 ### `ensemble.<run-uuid>.local.json` schema
 
-Schema 3 retains finished workers in `agents` and permits `done` and `failed` states. Schema 2 contains only live workers. Consumers must check the schema before interpreting the worker list.
+Schema 4 finishes every worker with one of four dispositions and counts each.
+Schema 3 finished workers as `done` or `failed` only, so a worker the run's
+ending tore down read as failed; schema 2 contains only live workers. Consumers
+must check the schema before interpreting the worker list or the counts.
 
 Each status file contains one JSON object with these fields:
 
-- `schema`: `3`.
+- `schema`: `4`.
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
 - `archiveDir`: string or `null`, the run archive directory when published.
@@ -85,17 +88,18 @@ Each status file contains one JSON object with these fields:
 - `finishedAt`: number or `null`, Unix epoch milliseconds when the run has
   finished.
 - `currentPhase`: string or `null`.
-- `totals`: object with numeric `active`, `queued`, `done`, and `failed` counts.
+- `totals`: object with numeric `active`, `queued`, `done`, `failed`,
+  `cutShort`, and `unsettled` counts.
 - `engines`: object keyed by registered engine name (`codex`, `claude`, and
-  `opencode`). Each entry has numeric `active`, `queued`, `done`, `failed`, and
-  `spent`; `cap`, `ceiling`, and `remaining` are numbers or `null`. Spend and
-  ceilings are per-engine and are never summed.
+  `opencode`). Each entry has numeric `active`, `queued`, `done`, `failed`,
+  `cutShort`, `unsettled`, and `spent`; `cap`, `ceiling`, and `remaining` are
+  numbers or `null`. Spend and ceilings are per-engine and are never summed.
 - `agents`: array of every worker: running first, then queued (oldest
   first within each), then finished (newest registered first). Each object has
   `id`, `attempt`, `engine` (codex, claude or opencode), `state` (queued,
-  running, done or failed), nullable strings `label`, `phase`, `requestedModel`,
-  `requestedEffort`, `resolvedModel`, `resolvedEffort`, `transcript`, and
-  `worktree`; nullable numeric `spent`, `startedAtMs`, `firstEvidenceAtMs`,
+  running, done, failed, cut-short or unsettled), nullable strings `label`,
+  `phase`, `requestedModel`, `requestedEffort`, `resolvedModel`,
+  `resolvedEffort`, `transcript`, and `worktree`; nullable numeric `spent`, `startedAtMs`, `firstEvidenceAtMs`,
   `lastEvidenceAtMs`, and `finishedAtMs`; and nullable `failure` and `waitingOn`.
 
 Worker spend is cumulative across attempts and fallback targets; null means
@@ -106,7 +110,29 @@ current attempt: archive-relative for Codex, absolute native paths for
 Claude. Resolve relative paths against archiveDir. A settled Claude record
 archives a copy of the native transcript; the status entry retains its
 live path.
-Failure is an object with kind and message, or null when unavailable or successful.
+
+A finished worker's state is its disposition, and each disposition has the
+count of the same name (`cut-short` counts under `cutShort`):
+
+- `done` — the worker settled on its own account, successfully.
+- `failed` — the worker settled on its own account, with a failure.
+- `cut-short` — the run's ending tore the worker down, whether its turn was at
+  an engine or still waiting for admission. Its agent record carries the
+  `run-<status>` termination cause naming the run's shutdown status.
+- `unsettled` — the run ended before any outcome was observed; its agent
+  record reads `abandoned`.
+
+A worker that settles on its own account while the run is shutting down keeps
+that account, `done` or `failed`. Each worker's state is published when it
+settles and never changes afterwards, so the finished snapshot's counts match
+the completion sentinel's worker tally (`cut_short` there, `cutShort` here).
+The library export `workerDisposition` maps an agent record's status and
+termination cause to its disposition.
+
+Failure is the `{ kind, message }` account the worker's record carries, or
+null when unavailable or successful. A `cut-short` or `unsettled` worker's
+failure is the run's own cause, never a failure of the worker.
+
 Finished time is the settlement observation time. All timestamps are epoch
 milliseconds. First evidence stays fixed across same-target retries, while last
 evidence advances on each output observation. A fallback clears both evidence
@@ -118,7 +144,7 @@ Queued and settled workers ignore output observations. waitingOn is null or the
 background-task object described by the engine (taskId, description, sinceMs).
 Every worker remains listed until the run ends; neither live nor finished
 entries are evicted or omitted from the snapshot. Finished entries have
-state done or failed and no outstanding wait. Repeated settlement is inert.
+a disposition state and no outstanding wait. Repeated settlement is inert.
 
 - `holds`: array of open decision holds, empty when the run is not waiting.
   Each object has string `id`, string `content` (cut to 500 characters plus
@@ -133,7 +159,7 @@ Example:
 
 ```json
 {
-  "schema": 3,
+  "schema": 4,
   "runId": "run-01HZY7V4Q8P2",
   "pid": 43122,
   "archiveDir": null,
@@ -143,7 +169,7 @@ Example:
   "updatedAt": 1766491214500,
   "finishedAt": null,
   "currentPhase": "Verify",
-  "totals": { "active": 1, "queued": 0, "done": 12, "failed": 1 },
+  "totals": { "active": 1, "queued": 0, "done": 12, "failed": 1, "cutShort": 0, "unsettled": 0 },
   "engines": {
     "codex": {
       "cap": 12,
@@ -151,6 +177,8 @@ Example:
       "queued": 0,
       "done": 8,
       "failed": 0,
+      "cutShort": 0,
+      "unsettled": 0,
       "spent": 48000,
       "ceiling": 100000,
       "remaining": 52000
@@ -161,6 +189,8 @@ Example:
       "queued": 0,
       "done": 4,
       "failed": 1,
+      "cutShort": 0,
+      "unsettled": 0,
       "spent": 6500,
       "ceiling": null,
       "remaining": null
@@ -171,6 +201,8 @@ Example:
       "queued": 0,
       "done": 0,
       "failed": 0,
+      "cutShort": 0,
+      "unsettled": 0,
       "spent": 0,
       "ceiling": 20000,
       "remaining": 20000

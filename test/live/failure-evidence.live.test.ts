@@ -5,12 +5,17 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { liveOpenCodeModel } from "./live-models.js";
 
 // These destructive legs are separate from the ordinary live estate: each
 // observes text from the real worker transport before terminating that worker.
-const isLive = process.env.ENSEMBLE_LIVE === "1" && process.env.ENSEMBLE_LIVE_FAILURE_EVIDENCE === "1";
+const liveSkip = process.env.ENSEMBLE_LIVE !== "1"
+  ? "ENSEMBLE_LIVE is unset"
+  : process.env.ENSEMBLE_LIVE_FAILURE_EVIDENCE !== "1"
+    ? "ENSEMBLE_LIVE_FAILURE_EVIDENCE is unset; these tests terminate their own real workers"
+    : false;
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 for (const scenario of [
@@ -23,8 +28,8 @@ for (const scenario of [
 ] as const) {
   test(
     `live built CLI archives observed partial ${scenario.engine} text and reports its termination cause`,
-    { skip: !isLive, timeout: 300_000 },
-    async () => {
+    { skip: liveSkip, timeout: 300_000 },
+    async (t) => {
       const directory = await mkdtemp(path.join(tmpdir(), `ensemble-live-${scenario.engine}-failure-`));
       const script = path.join(directory, "workflow.js");
       const recordStore = path.join(directory, "records");
@@ -40,20 +45,20 @@ for (const scenario of [
         ENSEMBLE_RUN_RECORD_DIR: recordStore,
         ENSEMBLE_STATUS: "0"
       };
-      let terminateWorker: () => Promise<void>;
+      let terminateWorker: (signal: AbortSignal) => Promise<void>;
       let observedWorkerText = token;
 
       try {
         if (scenario.engine === "claude") {
           const existingSessions = new Set((await claudeRoster()).map((entry) => entry.sessionId));
-          terminateWorker = async () => stopClaudeWorkerAfterText(token, existingSessions);
+          terminateWorker = async (signal) => stopClaudeWorkerAfterText(token, existingSessions, directory, signal);
         } else {
           const observer = path.join(directory, "opencode-stream.jsonl");
           const wrapperDirectory = path.join(directory, "bin");
           await setupOpenCodeObserver(wrapperDirectory, observer);
           env = { ...env, PATH: `${wrapperDirectory}:${env.PATH ?? ""}` };
-          terminateWorker = async () => {
-            observedWorkerText = await stopOpenCodeWorkerAfterText(observer, directory);
+          terminateWorker = async (signal) => {
+            observedWorkerText = await stopOpenCodeWorkerAfterText(observer, directory, signal);
           };
         }
 
@@ -73,6 +78,7 @@ for (const scenario of [
                 engine: ${JSON.stringify(scenario.engine)},
                 ${model}
                 label: ${JSON.stringify(`failure-evidence-${scenario.engine}`)},
+                cwd: ${JSON.stringify(directory)},
                 timeoutMs: 180_000,
                 maxAttempts: 1
               }
@@ -80,7 +86,7 @@ for (const scenario of [
           `
         );
 
-        const result = await runNode([bundledCliPath, script], env, terminateWorker);
+        const result = await runNode([bundledCliPath, script], env, terminateWorker, t.signal);
 
         // The script returned its worker's null, so the run itself
         // completed; the failure is announced on stderr and archived.
@@ -98,6 +104,83 @@ for (const scenario of [
     }
   );
 }
+
+test("a partial-output observer failure waits for launcher cleanup before rejecting", { timeout: 15_000 }, async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "failure-evidence-cleanup-"));
+  const ready = path.join(directory, "ready");
+  const stopping = path.join(directory, "stopping");
+  const release = path.join(directory, "release");
+  const cleaned = path.join(directory, "cleaned");
+  const failure = new Error("fixture observation failed");
+  let settled = false;
+  const run = runNode(["--input-type=module", "-e", `
+    import { existsSync, writeFileSync } from "node:fs";
+    const idle = setInterval(() => {}, 1000);
+    process.once("SIGTERM", () => {
+      writeFileSync(${JSON.stringify(stopping)}, "");
+      const wait = setInterval(() => {
+        if (!existsSync(${JSON.stringify(release)})) return;
+        writeFileSync(${JSON.stringify(cleaned)}, "");
+        clearInterval(wait);
+        clearInterval(idle);
+      }, 10);
+    });
+    writeFileSync(${JSON.stringify(ready)}, "");
+  `], process.env, async (signal) => {
+    await waitForFile(ready, signal);
+    throw failure;
+  }, t.signal).then(
+    () => { settled = true; return null; },
+    (error: unknown) => { settled = true; return error; }
+  );
+  try {
+    await waitForFile(stopping, t.signal);
+    assert.equal(settled, false, "the observation rejected before its launcher finished cleanup");
+    await writeFile(release, "");
+    const error = await run;
+    assert.ok(error instanceof Error);
+    assert.equal(error.cause, failure);
+    assert.match(error.message, /fixture observation failed/);
+    await readFile(cleaned);
+  } finally {
+    await writeFile(release, "");
+    await run;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an opencode partial-output observer accepts its kill witness after termination frames", { timeout: 15_000 }, async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "failure-evidence-opencode-stream-"));
+  const stream = path.join(directory, "stream.jsonl");
+  const text = "observed partial output";
+  try {
+    await writeFile(stream, [
+      { type: "text", part: { type: "text", text } },
+      { type: "step_finish" }
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n");
+    await writeFile(path.join(directory, "opencode-worker-killed"), "");
+    assert.equal(await stopOpenCodeWorkerAfterText(stream, directory, t.signal), text);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a launcher exit cancels and settles its unfinished partial-output observer", { timeout: 15_000 }, async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "failure-evidence-early-exit-"));
+  let observerSettled = false;
+  try {
+    await assert.rejects(runNode(["-e", "process.exit(0)"], process.env, async (signal) => {
+      try {
+        await waitForFile(path.join(directory, "never-created"), signal);
+      } finally {
+        observerSettled = true;
+      }
+    }, t.signal), /launcher exited before its worker was observed/);
+    assert.equal(observerSettled, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 interface RecordedAgent {
   label: string | null;
@@ -120,24 +203,58 @@ async function recordedAgent(recordStore: string, label: string): Promise<Record
   throw new Error(`No recorded agent with label ${label}`);
 }
 
-function runNode(
+async function runNode(
   args: string[],
   env: NodeJS.ProcessEnv,
-  terminateWorker: () => Promise<void>
+  terminateWorker: (signal: AbortSignal) => Promise<void>,
+  signal: AbortSignal
 ): Promise<{ code: number | null; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, { env });
-    let stderr = "";
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, stderr }));
-    void terminateWorker().catch((error: unknown) => {
-      child.kill("SIGTERM");
-      reject(error);
-    });
+  signal.throwIfAborted();
+  const child = spawn(process.execPath, args, { env });
+  const observer = new AbortController();
+  let stderr = "";
+  let observerError: unknown;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  child.stdout.resume();
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
   });
+  const closed = new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  const stop = (): void => {
+    child.kill("SIGTERM");
+    killTimer ??= setTimeout(() => child.kill("SIGKILL"), 5_000);
+  };
+  signal.addEventListener("abort", stop, { once: true });
+  if (signal.aborted) stop();
+  const observation = terminateWorker(AbortSignal.any([signal, observer.signal])).then(
+    () => true,
+    (error: unknown) => {
+      if (!observer.signal.aborted && !signal.aborted) {
+        observerError = error;
+        stop();
+      }
+      return false;
+    }
+  );
+  try {
+    const code = await closed;
+    observer.abort();
+    const observed = await observation;
+    signal.throwIfAborted();
+    if (observerError !== undefined) {
+      throw new Error(`Live worker observation failed: ${String(observerError)}\n${stderr}`, { cause: observerError });
+    }
+    assert.equal(observed, true, `The launcher exited before its worker was observed and terminated\n${stderr}`);
+    return { code, stderr };
+  } finally {
+    observer.abort();
+    signal.removeEventListener("abort", stop);
+    clearTimeout(killTimer);
+    await observation;
+  }
 }
 
 interface ClaudeRosterEntry {
@@ -147,12 +264,13 @@ interface ClaudeRosterEntry {
   cwd: string | null;
 }
 
-async function stopClaudeWorkerAfterText(token: string, existingSessions: ReadonlySet<string>): Promise<void> {
-  const worker = await waitForNewClaudeWorker(existingSessions);
-  const transcript = await waitForClaudeTranscript(worker.sessionId);
+async function stopClaudeWorkerAfterText(token: string, existingSessions: ReadonlySet<string>, cwd: string, signal: AbortSignal): Promise<void> {
+  const worker = await waitForNewClaudeWorker(existingSessions, cwd, signal);
+  const transcript = await waitForClaudeTranscript(worker.sessionId, signal);
   await waitForFileContaining(
     transcript,
-    (events) => events.some((event) => isClaudeAssistantTextContaining(event, token)) && !isClaudeTurnComplete(events)
+    (events) => events.some((event) => isClaudeAssistantTextContaining(event, token)) && !isClaudeTurnComplete(events),
+    signal
   );
   await execFileOutput("claude", ["stop", worker.id]);
 }
@@ -171,30 +289,31 @@ async function claudeRoster(): Promise<ClaudeRosterEntry[]> {
   });
 }
 
-async function waitForNewClaudeWorker(existingSessions: ReadonlySet<string>): Promise<ClaudeRosterEntry> {
+async function waitForNewClaudeWorker(existingSessions: ReadonlySet<string>, cwd: string, signal: AbortSignal): Promise<ClaudeRosterEntry> {
   const deadline = Date.now() + 150_000;
   while (Date.now() < deadline) {
     const worker = (await claudeRoster()).find(
       (entry) =>
-        !existingSessions.has(entry.sessionId) && entry.name?.startsWith("ensemble-") === true && entry.cwd === process.cwd()
+        !existingSessions.has(entry.sessionId) && entry.name?.startsWith("ensemble-") === true && entry.cwd === cwd
     );
     if (worker !== undefined) {
       return worker;
     }
-    await delay(500);
+    await observationPoll(500, signal);
   }
   throw new Error("No new live Claude worker registered");
 }
 
-async function waitForClaudeTranscript(sessionId: string): Promise<string> {
+async function waitForClaudeTranscript(sessionId: string, signal: AbortSignal): Promise<string> {
   const projectsRoot = path.join(homedir(), ".claude", "projects");
   const filename = `${sessionId}.jsonl`;
-  const projectDirectories = await readdir(projectsRoot, { withFileTypes: true });
-  const candidates = projectDirectories
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(projectsRoot, entry.name, filename));
   const deadline = Date.now() + 150_000;
   while (Date.now() < deadline) {
+    // The worker's project directory may itself appear after registration.
+    const projectDirectories = await readdir(projectsRoot, { withFileTypes: true });
+    const candidates = projectDirectories
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(projectsRoot, entry.name, filename));
     for (const candidate of candidates) {
       try {
         await readFile(candidate, "utf8");
@@ -203,7 +322,7 @@ async function waitForClaudeTranscript(sessionId: string): Promise<string> {
         // The exact session transcript has not appeared in this project directory yet.
       }
     }
-    await delay(250);
+    await observationPoll(250, signal);
   }
   throw new Error(`No transcript appeared for live Claude worker ${sessionId}`);
 }
@@ -276,10 +395,10 @@ async function setupOpenCodeObserver(wrapperDirectory: string, observer: string)
   await chmod(wrapper, 0o755);
 }
 
-async function stopOpenCodeWorkerAfterText(observer: string, directory: string): Promise<string> {
+async function stopOpenCodeWorkerAfterText(observer: string, directory: string, signal: AbortSignal): Promise<string> {
   let observedText = "";
   await waitForFileContaining(observer, (events) => {
-    const textIndex = events.findIndex((event) => {
+    return events.some((event) => {
       const text = openCodeTextOf(event);
       if (text === null) {
         return false;
@@ -287,26 +406,27 @@ async function stopOpenCodeWorkerAfterText(observer: string, directory: string):
       observedText = text;
       return true;
     });
-    return textIndex >= 0 && !events.slice(textIndex + 1).some(isOpenCodeStepFinish);
-  });
-  await waitForFile(path.join(directory, "opencode-worker-killed"));
+  }, signal);
+  // The wrapper kills synchronously on the text event. Later termination
+  // frames may already be in the stream by the time this observer polls.
+  await waitForFile(path.join(directory, "opencode-worker-killed"), signal);
   return observedText;
 }
 
-async function waitForFile(file: string): Promise<void> {
+async function waitForFile(file: string, signal: AbortSignal): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     try {
       await readFile(file, "utf8");
       return;
     } catch {
-      await delay(25);
+      await observationPoll(25, signal);
     }
   }
   throw new Error(`Expected live-worker signal file ${file} did not appear`);
 }
 
-async function waitForFileContaining(file: string, matches: (events: unknown[]) => boolean): Promise<void> {
+async function waitForFileContaining(file: string, matches: (events: unknown[]) => boolean, signal: AbortSignal): Promise<void> {
   const deadline = Date.now() + 150_000;
   while (Date.now() < deadline) {
     try {
@@ -316,7 +436,7 @@ async function waitForFileContaining(file: string, matches: (events: unknown[]) 
     } catch {
       // Observer files and live transcripts appear asynchronously.
     }
-    await delay(100);
+    await observationPoll(100, signal);
   }
   throw new Error(`Live worker output in ${file} did not reach the required pre-completion state`);
 }
@@ -341,10 +461,6 @@ function openCodeTextOf(event: unknown): string | null {
   return event.part.text;
 }
 
-function isOpenCodeStepFinish(event: unknown): boolean {
-  return typeof event === "object" && event !== null && "type" in event && event.type === "step_finish";
-}
-
 function execFileOutput(file: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     execFile(file, args, (error, stdout, stderr) => {
@@ -361,6 +477,12 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** Abort wakes the poll for one final read of evidence left by an exiting launcher. */
+async function observationPoll(milliseconds: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  try {
+    await delay(milliseconds, undefined, { signal });
+  } catch (error) {
+    if (!signal.aborted) throw error;
+  }
 }

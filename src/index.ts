@@ -46,7 +46,7 @@ export {
   WorkflowTimeoutError
 } from "./script-runner.js";
 export { parseJsonFromText, validateJsonSchema } from "./schema.js";
-export { RunProgress } from "./progress.js";
+export { RunProgress, workerDisposition } from "./progress.js";
 export { RunRecordWriter, resolveRunDirectory } from "./run-record.js";
 export type { WorkflowInvocationRecord } from "./run-record.js";
 export {
@@ -137,10 +137,14 @@ export type {
 export type {
   AgentState,
   BudgetView,
+  DispositionCounts,
+  DispositionEvidence,
   EngineProgressSnapshot,
   LiveAgentSnapshot,
   ProgressSnapshot,
-  RunProgressOptions
+  RunProgressOptions,
+  ShutdownStatus,
+  WorkerDisposition
 } from "./progress.js";
 export type {
   AgentOptions,

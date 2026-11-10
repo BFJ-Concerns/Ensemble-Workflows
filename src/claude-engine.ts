@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   ClaudeBlockedError,
   InvalidAgentOptionValueError,
   ClaudeCollectionError,
+  ClaudeDeliveryError,
   ClaudeFirstLifeTimeoutError,
   ClaudePollTimeoutError,
   ClaudeRegistrationTimeoutError,
@@ -20,11 +21,14 @@ import {
 import {
   apiErrorSince,
   effortSince,
+  enteredWorktrees,
   endsInSyntheticReply,
   finalAssistantText,
   outstandingBackgroundTasks,
+  parseTranscriptText,
   readTranscriptFile,
   resolvedModelSince,
+  submissionReceipt,
   turnComplete,
   usageSince
 } from "./claude-transcript.js";
@@ -33,7 +37,7 @@ import { CANONICAL_EFFORT_DOMAIN } from "./engine-option-validation.js";
 
 import type { CanonicalEffort } from "./engine-option-validation.js";
 import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
-import type { TranscriptApiError, TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
+import type { SubmissionReceipt, TranscriptApiError, TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
 import type {
   EngineAttemptContext,
   EngineAttemptFailure,
@@ -81,7 +85,7 @@ export function permissionDenyRulesFor(strip: readonly StrippableCapability[] | 
 export interface ClaudeEngineConfig {
   /** Gap between roster polls while waiting for a worker to finish. */
   pollIntervalMs?: number;
-  /** How long to wait for a steered worker to acknowledge before treating the valve as failed. */
+  /** How long a submitted message's receipt may stay missing from the transcript before the delivery fails. */
   receiptTimeoutMs?: number;
   /** How long a new session may exist without creating any transcript. */
   firstLifeTimeoutMs?: number;
@@ -175,6 +179,49 @@ const MAX_CONSECUTIVE_ABSENCES = 3;
 const SETTLED_CONFIRMATION_POLLS = 5;
 
 /**
+ * How far the current turn's prompt has got into the session.
+ *
+ * - `unsent` — no submission of it has been accepted. The next attempt
+ *   sends the prompt itself; after a valve refusal that is still true.
+ * - `accepted` — a submission of it was accepted and no receipt has
+ *   verified it. The session may hold an altered copy, or none. The next
+ *   attempt sends the redelivery, which says it replaces an earlier copy;
+ *   the bare prompt is never sent twice.
+ * - `verified` — a receipt showed the session holding the prompt exactly as
+ *   sent. A retry is a correction.
+ */
+type TurnDelivery = "unsent" | "accepted" | "verified";
+
+/**
+ * One message submitted to a session, with what the engine must know to
+ * judge and account for it. Two things submit: the launch, which carries a
+ * new session's opening prompt (`ClaudeControlPlane.dispatch`), and the
+ * valve, which carries every later message (`steer`).
+ */
+interface Submission {
+  message: string;
+  /** The transcript's length before the submission: where its receipt is read from. 0 for an opening. */
+  mark: number;
+  /** What the message is, for the failure account: "the opening prompt", "the follow-up turn", "the correction". */
+  what: string;
+  /** Whether the message carries the turn's prompt, so that its receipt moves `TurnDelivery`. */
+  carriesTurn: boolean;
+}
+
+/**
+ * A submission the session accepted whose receipt has not verified. While
+ * one is pending nothing else is sent into the session: it is accounted for
+ * first (`#accountForPending`).
+ */
+interface PendingSubmission extends Submission {
+  /**
+   * Whether the reply to this submission would answer the turn in progress.
+   * False once a later turn has begun: its reply then answers no `send()`.
+   */
+  answersTurn: boolean;
+}
+
+/**
  * One `agent({ engine: 'claude' })` call, as a stateful invocation across the
  * shared loop's bounded attempts.
  *
@@ -185,6 +232,20 @@ const SETTLED_CONFIRMATION_POLLS = 5;
  *   session** through the reply valve and the corrected final message is read —
  *   no redispatch, full context preserved. This is what makes Claude's schema
  *   enforcement as strong as Codex's despite the absent backend `outputSchema`.
+ * - **Every message is a submission and a receipt**: the launch attests only
+ *   that it submitted the opening prompt, the valve only that it submitted a
+ *   later message (`#deliver`), and either is delivered when the transcript
+ *   shows the session holding it exactly (`#requireReceipt`). A receipt that
+ *   differs or is missing fails the attempt as `claude-delivery-error` under
+ *   the ordinary retry rule, and never as a launch that failed: the session
+ *   took something, so the call stays on its target instead of moving down
+ *   its fallback chain. A one-shot call's failure stops its session before
+ *   the retry launches another. In a held session the retry never sends on top
+ *   of the failed submission: a turn the session took on altered text is
+ *   followed to its end first, a missing receipt is read again before
+ *   anything else is sent, and a turn prompt that was accepted without a
+ *   verified receipt is sent again only as a redelivery that says it
+ *   replaces the earlier copy.
  * - **Without the valve** (no tmux), correction degrades to a fresh re-dispatch
  *   whose prompt carries the prior failure; the engine never depends on the valve.
  * - **Operational failures** (dispatch died, poll timed out, blocked past the
@@ -200,21 +261,38 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #controlPlane: ClaudeControlPlane;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #reportedUsage: TokenUsageBreakdown | null = null;
+  /** Cumulative native usage already covered by settled attempts in each session. */
+  #settledUsage = new Map<string, TokenUsageBreakdown>();
+  #usageAtSettlement: { sessionId: string; total: TokenUsageBreakdown } | null = null;
   /** The background tasks this attempt's turn waited on, in the order observed; reset per attempt. */
   #waits: BackgroundTaskWait[] = [];
+  /**
+   * Blocked-worker nudges sent this attempt; reset per attempt. One count
+   * for the attempt, however many turns it follows, so recovery stays
+   * bounded when a nudge's own delivery fails and its turn is followed.
+   */
+  #nudges = 0;
 
   #multiTurn: boolean;
   /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
   #turnPrompt: string;
   /** The current turn's schema — the one thing a session varies per turn. */
   #turnSchema: JsonSchema | undefined;
+  /** How far the current turn's prompt has got into the session; it decides what a retry sends. */
+  #turn: TurnDelivery = "unsent";
   /**
-   * Whether the current turn's prompt has reached the worker. A follow-up
-   * turn is delivered by the valve, and a retry after a failed delivery
-   * must re-send the prompt itself — a correction message would ask the
-   * worker to fix an answer it was never asked for.
+   * The turn's prompt as the session first accepted it: the opening prompt
+   * its launch carried, preamble included, or the turn message the valve
+   * carried. A redelivery repeats this copy. Read only while `#turn` is
+   * `accepted`.
    */
-  #turnDelivered = false;
+  #acceptedTurnCopy = "";
+  /** The submission the session accepted whose receipt has not verified, if any. Outlives the turn that made it. */
+  #pending: PendingSubmission | null = null;
+  /** A differing receipt survives nudges until a fresh answer is requested. */
+  #deliveryFailure: ClaudeDeliveryError | null = null;
+  /** Start of the current answer's work; recovery-nudge receipts never move it. */
+  #collectionMark = 0;
 
   #pollIntervalMs: number;
   #receiptTimeoutMs: number;
@@ -260,7 +338,13 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   beginTurn(prompt: string, turn: EngineSessionTurn): EngineInvocation {
     this.#turnPrompt = prompt;
     this.#turnSchema = turn.schema;
-    this.#turnDelivered = false;
+    this.#turn = "unsent";
+    this.#deliveryFailure = null;
+    if (this.#pending !== null) {
+      // The turn that made it has settled without it: whatever reply it
+      // still draws answers nothing the script is waiting on.
+      this.#pending = { ...this.#pending, answersTurn: false };
+    }
     return {
       runAttempt: (context) => this.runAttempt(context)
     };
@@ -272,6 +356,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
     this.#settlement = settlement;
     return settlement.finally(() => {
+      if (this.#usageAtSettlement !== null) {
+        this.#settledUsage.set(this.#usageAtSettlement.sessionId, this.#usageAtSettlement.total);
+        this.#usageAtSettlement = null;
+      }
       if (this.#settlement === settlement) {
         this.#settlement = null;
       }
@@ -289,21 +377,36 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     this.#assertOpen();
     this.#reportedUsage = null;
+    this.#usageAtSettlement = null;
     this.#waits = [];
+    this.#nudges = 0;
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
 
-      if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
-        // A follow-up turn (or a retry whose delivery never landed): the
-        // prompt itself rides the valve into the held session. A correction
-        // branch would be wrong here — the worker has not seen this turn.
-        // The high-water mark is read first so a failure past this point
-        // attaches only *this* turn's text, never the previous turn's.
-        const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
-        this.#requireValve(await this.#controlPlane.tmuxAvailable());
-        return await this.#sendTurnInSession(handle, fromIndex, context);
+      const held = this.#multiTurn ? this.#handle : null;
+      if (held !== null) {
+        const pending = this.#pending;
+        if (pending !== null) {
+          // An earlier submission is still unaccounted for, and nothing is
+          // sent on top of it. Keep the answer's collection window while
+          // judging the receipt, including work started before a nudge.
+          fromIndex = this.#collectionMark;
+          const answered = await this.#accountForPending(held, pending, context);
+          if (answered !== null) {
+            return answered;
+          }
+        }
+        if (this.#turn !== "verified") {
+          // The session does not hold this turn's prompt, so the prompt
+          // itself rides the valve: a correction would ask the worker to
+          // fix an answer to a question it was never asked. The high-water
+          // mark is read first so a failure past this point attaches only
+          // *this* turn's text, never the previous turn's.
+          fromIndex = (await this.#readTranscript(held, context)).entries.length;
+          this.#requireValve(await this.#controlPlane.tmuxAvailable());
+          return await this.#sendTurnInSession(held, fromIndex, context);
+        }
       }
 
       const correcting = previousFailure !== undefined && this.#handle !== null;
@@ -333,8 +436,14 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       // The initial-dispatch interruption branch below has already captured
       // and attached its one evidence read before it tears the new handle
       // down. Every other failure keeps this existing catch-path read.
+      if (error instanceof Error && this.#handle?.launchFailure !== undefined) {
+        attachFailedTurnResult(error, {
+          text: "", deltaText: "", durationMs: null, firstDeltaMs: null, items: {}, tokenUsageEvents: [],
+          diagnostics: this.#handle.launchFailure.diagnostics
+        });
+      }
       const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex) : null;
+      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex, error) : null;
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
@@ -389,8 +498,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     try { observers.onIdentity?.({ resolvedModel: null, resolvedEffort: null }); }
     catch { /* Observability cannot fail dispatch. */ }
     const denyRules = permissionDenyRulesFor(this.#options.strip);
+    const prompt = this.#buildDispatchPrompt(previousFailure);
+    // A rejection here is the launch's word that no session holds the
+    // prompt, which is what lets the same prompt go to this target again or
+    // to the next entry of the call's fallback chain.
     const handle = await this.#controlPlane.dispatch({
-      prompt: this.#buildDispatchPrompt(previousFailure),
+      prompt,
       name: this.#nextName(),
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
@@ -398,7 +511,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       ...(denyRules.length > 0 ? { permissionDenyRules: denyRules } : {})
     });
     this.#handle = handle;
-    this.#turnDelivered = true;
+    // The launch submitted the opening prompt, and like the valve it attests
+    // no more than that. From here every failure is this session's own.
+    const opening: Submission = { message: prompt, mark: 0, what: "the opening prompt", carriesTurn: true };
+    this.#accept(opening);
     if (this.#closed) {
       // close() ran while dispatch was in flight and found no handle, so it
       // returned without waiting for this dispatch. The new session is ours
@@ -416,23 +532,22 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       throw error;
     }
 
-    const transcript = await this.#runToCompletion(handle, 0, observers);
+    const transcript = await this.#runToCompletion(handle, 0, observers, opening);
     return this.#buildResult(handle, transcript, 0);
   }
 
-  /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
+  /**
+   * Put the turn's prompt into the held session and collect its reply. The
+   * first submission is the prompt itself; once a submission of it has been
+   * accepted without a verified receipt, what goes is the redelivery.
+   */
   async #sendTurnInSession(
     handle: ClaudeSessionHandle,
     fromIndex: number,
     observers: AttemptObservers
   ): Promise<TurnResult> {
-    const delivery = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
-    if (!delivery.delivered) {
-      throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
-    }
-
-    await this.#awaitReceipt(handle, fromIndex, observers);
-    this.#turnDelivered = true;
+    const message = this.#turn === "accepted" ? this.#redeliveryMessage() : this.#buildTurnMessage();
+    await this.#deliver(handle, { message, mark: fromIndex, what: "the follow-up turn", carriesTurn: true }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
@@ -456,35 +571,158 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     fromIndex: number,
     observers: AttemptObservers
   ): Promise<TurnResult> {
-    const delivery = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
-    if (!delivery.delivered) {
-      throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
-    }
-
-    await this.#awaitReceipt(handle, fromIndex, observers);
+    this.#collectionMark = fromIndex;
+    this.#deliveryFailure = null;
+    const message = this.#correctionMessage(previousFailure);
+    await this.#deliver(handle, { message, mark: fromIndex, what: "the correction", carriesTurn: false }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
 
-  /** Confirm the steered worker received the message (started generating, or the transcript grew). */
-  async #awaitReceipt(handle: ClaudeSessionHandle, mark: number, observers: AttemptObservers): Promise<void> {
+  /**
+   * The one way a message enters a live session: submit it through the
+   * valve, then require its receipt. Returns only when the transcript shows
+   * the session holding the message exactly as sent. The valve did not
+   * submit → `ClaudeValveError`: nothing reached the session and nothing is
+   * pending.
+   */
+  async #deliver(handle: ClaudeSessionHandle, submission: Submission, observers: AttemptObservers): Promise<void> {
+    const outcome = await this.#controlPlane.steer(handle, submission.message);
+    if (!outcome.submitted) {
+      throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
+    }
+    this.#accept(submission);
+    await this.#requireReceipt(handle, submission, observers);
+  }
+
+  /**
+   * Record that the session accepted a submission, the moment the launch or
+   * the valve says so and before anything can fail: from here the session
+   * may be running a turn on it, and nothing else is sent until its receipt
+   * has been judged.
+   */
+  #accept(submission: Submission): void {
+    this.#pending = { ...submission, answersTurn: true };
+    if (submission.carriesTurn) {
+      if (this.#turn === "unsent") {
+        this.#acceptedTurnCopy = submission.message;
+      }
+      this.#turn = "accepted";
+      this.#deliveryFailure = null;
+      this.#collectionMark = submission.mark;
+    }
+  }
+
+  /**
+   * Require an accepted submission's receipt, whichever of the launch and
+   * the valve submitted it. Returns only when the transcript shows the
+   * session holding the message exactly as sent.
+   *
+   * - The receipt differs → `ClaudeDeliveryError`. The session took a turn
+   *   on text nobody sent. In a held session that turn is followed to its
+   *   end before the failure is raised: the session must be at a turn
+   *   boundary before anything else is sent, and the turn's text and spend
+   *   belong on the attempt that started it. A one-shot call is torn down
+   *   by its failure, which ends the turn with it.
+   * - The receipt is missing at the deadline → `ClaudeDeliveryError`, with
+   *   the submission left pending: it may yet land, so the next attempt
+   *   reads its receipt again before sending (`#accountForPending`).
+   */
+  async #requireReceipt(handle: ClaudeSessionHandle, submission: Submission, observers: AttemptObservers): Promise<void> {
+    const receipt = await this.#awaitReceipt(handle, submission, observers);
+    if (receipt.state === "verified") {
+      this.#pending = null;
+      if (submission.carriesTurn) {
+        this.#turn = "verified";
+        this.#deliveryFailure = null;
+      }
+      return;
+    }
+    const failure = new ClaudeDeliveryError(
+      receipt.state === "differing"
+        ? `${submission.what} was submitted, but the session received different text: ${differenceAccount(submission.message, receipt.received)}`
+        : `${submission.what} was submitted, but no receipt for it appeared in the transcript within ${this.#receiptTimeoutMs}ms: sent ${textIdentity(submission.message)}`
+    );
+    if (receipt.state === "differing" && this.#deliveryFailure === null) this.#deliveryFailure = failure;
+    if (receipt.state === "differing" && this.#multiTurn) {
+      await this.#runToCompletion(handle, this.#collectionMark, observers);
+      this.#pending = null;
+    }
+    throw failure;
+  }
+
+  /** Read the submission's receipt until the transcript shows one, or the receipt deadline passes with it still missing. */
+  async #awaitReceipt(
+    handle: ClaudeSessionHandle,
+    submission: Submission,
+    observers: AttemptObservers
+  ): Promise<SubmissionReceipt> {
     const deadline = Date.now() + this.#receiptTimeoutMs;
     for (;;) {
       this.#assertOpen();
-      const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
-      if (status.status === "busy") {
-        return;
-      }
       const transcript = await this.#tryReadTranscript(handle, observers);
-      if (transcript !== null && transcript.entries.length > mark) {
-        return;
-      }
-      if (Date.now() >= deadline) {
-        throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
+      const receipt: SubmissionReceipt =
+        transcript === null
+          ? { state: "missing" }
+          : submissionReceipt(transcript.entries, submission.mark, submission.message);
+      if (receipt.state !== "missing" || Date.now() >= deadline) {
+        return receipt;
       }
       await this.#pollDelay();
     }
+  }
+
+  /**
+   * Account for a submission an earlier attempt left pending, before this
+   * attempt sends anything: read its receipt again from its own mark.
+   *
+   * - Still missing → the session took no turn on it. It is dropped, and
+   *   the attempt goes on to send (returns null).
+   * - Verified, and it answers the turn in progress → it was delivered
+   *   after all, only late. Its reply is this attempt's result, and nothing
+   *   is sent.
+   * - Anything else — it arrived as different text, or it belongs to a turn
+   *   that has already settled — is a turn nobody is waiting on. It is
+   *   followed to its end and the attempt fails with its text and spend, so
+   *   that one attempt covers one stretch of the transcript.
+   *
+   * The submission stays pending if following its turn fails, so the next
+   * attempt accounts for it again instead of sending on top of it.
+   */
+  async #accountForPending(
+    handle: ClaudeSessionHandle,
+    pending: PendingSubmission,
+    observers: AttemptObservers
+  ): Promise<TurnResult | null> {
+    const seen = await this.#readTranscript(handle, observers);
+    const receipt = submissionReceipt(seen.entries, pending.mark, pending.message);
+    if (receipt.state === "missing") {
+      this.#pending = null;
+      return null;
+    }
+    if (pending.answersTurn) {
+      if (pending.carriesTurn && receipt.state === "verified") {
+        // Preserve this task receipt before following work that may itself
+        // submit a recovery nudge whose receipt arrives only on a retry.
+        this.#turn = "verified";
+        this.#deliveryFailure = null;
+      } else if (receipt.state === "differing" && this.#deliveryFailure === null) {
+        this.#deliveryFailure = new ClaudeDeliveryError(
+          `${pending.what} was submitted, but the session received different text: ${differenceAccount(pending.message, receipt.received)}`
+        );
+      }
+    }
+    const transcript = await this.#runToCompletion(handle, this.#collectionMark, observers);
+    this.#pending = null;
+    if (receipt.state === "verified" && pending.answersTurn && this.#turn === "verified" && this.#deliveryFailure === null) {
+      return this.#buildResult(handle, transcript, this.#collectionMark);
+    }
+    if (pending.answersTurn && this.#deliveryFailure !== null) throw this.#deliveryFailure;
+    throw new ClaudeDeliveryError(
+      receipt.state === "differing"
+        ? `${pending.what} submitted earlier reached the session late and as different text: ${differenceAccount(pending.message, receipt.received)}`
+        : `${pending.what} submitted for an earlier turn reached the session after that turn had settled, so its reply answers no turn`
+    );
   }
 
   /**
@@ -528,7 +766,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #runToCompletion(
     handle: ClaudeSessionHandle,
     fromIndex: number,
-    observers: AttemptObservers
+    observers: AttemptObservers,
+    /** For a new session: the submission its launch made, whose receipt is required at the session's first life. */
+    opening?: Submission
   ): Promise<TranscriptFile> {
     // No timeoutMs → no poll deadline; wait indefinitely for the worker to settle.
     const deadline = this.#options.timeoutMs === undefined ? Infinity : Date.now() + this.#options.timeoutMs;
@@ -536,7 +776,6 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // Corrections necessarily operate on an existing transcript. The guard is
     // only for a newly dispatched child that never starts writing one.
     let sawLife = fromIndex > 0;
-    let nudges = 0;
     let absences = 0;
     let settledPolls = 0;
     let evidenceReported = false;
@@ -551,8 +790,17 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null) {
+        if (!sawLife && opening !== undefined) {
+          // A new session's first life, and the first moment its opening
+          // prompt's receipt can be read: nothing the session writes is
+          // collected as this turn's until the prompt is shown to have
+          // arrived as sent. A session that never writes a transcript has
+          // no receipt to fail — it never held the prompt, and that stays
+          // the first-life guard's diagnosis below.
+          await this.#requireReceipt(handle, opening, observers);
+        }
         sawLife = true;
-        this.#reportUsage(handle, transcript.entries, fromIndex, observers);
+        this.#reportUsage(handle, transcript.entries, observers);
         try {
           this.#resolvedModel = resolvedModelSince(transcript.entries, 0) ?? this.#resolvedModel;
           this.#resolvedEffort = effortSince(transcript.entries, 0) ?? this.#resolvedEffort;
@@ -595,9 +843,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         }
       }
       if (!sawLife && Date.now() >= firstLifeDeadline) {
-        throw new ClaudeFirstLifeTimeoutError(
-          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
-        );
+        throw this.#firstLifeFailure(handle,
+          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`);
+
       }
 
       const status = await this.#controlPlane.poll(handle);
@@ -606,6 +854,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       if (!status.present) {
         absences += 1;
         if (absences >= MAX_CONSECUTIVE_ABSENCES) {
+          if (!sawLife && opening !== undefined) {
+            throw this.#firstLifeFailure(handle, "worker left the roster before writing an opening transcript");
+          }
           throw new ClaudePollTimeoutError("worker left the roster before completing");
         }
         await this.#pollDelay();
@@ -614,20 +865,17 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       absences = 0;
 
       if (status.state === "blocked") {
-        const canNudge = nudges < this.#blockedRecoveryBound && (await this.#controlPlane.tmuxAvailable());
+        const canNudge = this.#nudges < this.#blockedRecoveryBound && (await this.#controlPlane.tmuxAvailable());
         if (!canNudge) {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
-        nudges += 1;
-        // Re-read at nudge time: entries written between the loop-top read
-        // and the blocked observation would otherwise satisfy the receipt's
-        // growth test immediately, acknowledging a nudge never received.
+        this.#nudges += 1;
+        // Re-read at nudge time: the nudge's receipt is read from this
+        // mark, and a submission recorded between the loop-top read and the
+        // blocked observation must not be taken for it.
         const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
-        const delivery = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
-        if (!delivery.delivered) {
-          throw new ClaudeValveError(`reply valve failed to inject the blocked-worker nudge: ${delivery.reason}`);
-        }
-        await this.#awaitReceipt(handle, mark, observers);
+        const message = this.#blockedNudge(status.waitingFor);
+        await this.#deliver(handle, { message, mark, what: "the blocked-worker nudge", carriesTurn: false }, observers);
         continue;
       }
 
@@ -690,6 +938,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     }
   }
 
+  #firstLifeFailure(handle: ClaudeSessionHandle, message: string): ClaudeWorkerError {
+    return handle.launchFailure === undefined
+      ? new ClaudeFirstLifeTimeoutError(message)
+      : new ClaudeDeliveryError(`${message}; launch cleanup remains unconfirmed: ${handle.launchFailure.message}`);
+  }
+
   #buildResult(handle: ClaudeSessionHandle, transcript: TranscriptFile, fromIndex: number): TurnResult {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
@@ -708,8 +962,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // served model — evidence, never the dispatched flag, so a clamped or
     // silently defaulted dispatch is visible in the record as what ran.
     const resolvedEffort = effortSince(entries, fromIndex);
-    const usage = usageSince(entries, fromIndex);
-    this.#reportUsage(handle, entries, fromIndex);
+    const usage = this.#unaccountedUsage(handle, entries);
+    this.#reportUsage(handle, entries);
     const usageEvent = this.#usageEvent(handle, usage, usage);
     return {
       text,
@@ -721,6 +975,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       firstDeltaMs: null,
       items: {},
       tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      diagnostics: { ...handle.launchFailure?.diagnostics, worktrees: enteredWorktrees(entries) },
       transcripts: [
         {
           filename: "transcript.claude.jsonl",
@@ -765,21 +1020,28 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * the failure, and the transcript itself. Best-effort — an unreadable or
    * absent transcript is `null`, and nothing here polls or retries.
    */
-  async #tryFailureEvidence(fromIndex: number): Promise<FailureEvidence | null> {
-    const handle = this.#handle;
-    if (handle === null) {
-      return null;
+  async #tryFailureEvidence(fromIndex: number, error?: Error): Promise<FailureEvidence | null> {
+    let handle: Pick<ClaudeSessionHandle, "sessionId"> | null = this.#handle;
+    let transcript: Pick<TranscriptFile, "text" | "entries"> | null;
+    if (this.#handle === null) {
+      // A rejected opening can already have native output. The control plane
+      // snapshots it before teardown, even though dispatch returned no handle.
+      const retained = failedTurnResultOf(error)?.transcripts?.find(item => item.source === "claude-session-jsonl");
+      if (retained?.sessionId === undefined) return null;
+      handle = { sessionId: retained.sessionId };
+      transcript = { text: retained.content, entries: parseTranscriptText(retained.content) };
+    } else {
+      transcript = await this.#tryReadTranscript(this.#handle);
     }
-    const transcript = await this.#tryReadTranscript(handle);
-    if (transcript === null) {
-      return null;
-    }
+    if (handle === null || transcript === null) return null;
     return {
       handle,
       transcript,
+      completed: turnComplete(transcript.entries, fromIndex) &&
+        outstandingBackgroundTasks(transcript.entries, fromIndex).length === 0,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex),
+      usage: this.#unaccountedUsage(handle, transcript.entries),
       apiError: apiErrorSince(transcript.entries, fromIndex),
       backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
     };
@@ -809,6 +1071,17 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   }
 
   /**
+   * A pending submission may be read again from an older entry mark after a
+   * failed attempt. Count only growth beyond the session total that earlier
+   * attempts already covered, while retaining new API calls in the same work.
+   */
+  #unaccountedUsage(handle: Pick<ClaudeSessionHandle, "sessionId">, entries: TranscriptEntry[]): TokenUsageBreakdown {
+    const total = usageSince(entries);
+    this.#usageAtSettlement = { sessionId: handle.sessionId, total };
+    return subtractUsage(total, this.#settledUsage.get(handle.sessionId) ?? null);
+  }
+
+  /**
    * Feed transcript-derived usage through the same event shape Codex emits.
    * The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
@@ -819,8 +1092,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * and the archived event's `total` is the same figure the agent record's
    * usage summarises — budget and archive read one arithmetic.
    */
-  #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number, observers?: AttemptObservers): void {
-    const total = usageSince(entries, fromIndex);
+  #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], observers?: AttemptObservers): void {
+    const total = this.#unaccountedUsage(handle, entries);
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
       return;
@@ -839,7 +1112,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   }
 
   #usageEvent(
-    handle: ClaudeSessionHandle,
+    handle: Pick<ClaudeSessionHandle, "sessionId">,
     last: TokenUsageBreakdown,
     total: TokenUsageBreakdown
   ): TokenUsageEvent | null {
@@ -864,6 +1137,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #teardown(): Promise<void> {
     const handle = this.#handle;
     this.#handle = null;
+    // A stopped session runs nothing, so nothing submitted to it is pending,
+    // and the turn's prompt is in no session: the next launch submits it anew.
+    this.#pending = null;
+    this.#turn = "unsent";
+    this.#deliveryFailure = null;
+    this.#collectionMark = 0;
     if (handle === null) {
       return;
     }
@@ -888,8 +1167,21 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     if (previousFailure !== undefined) {
       lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
-    lines.push("", "Task:", this.#turnPrompt);
+    lines.push("", this.#framedTask());
     return lines.join("\n");
+  }
+
+  #framedTask(): string {
+    // The closing tag keeps the caller's trailing whitespace inside the
+    // message: native submission trims the message's end. Choose a tag name
+    // absent from the task so even literal boundary examples remain intact.
+    let tagIndex = 0;
+    while (this.#turnPrompt.includes(`ensemble_task_${tagIndex}`)) tagIndex += 1;
+    const taskTag = `ensemble_task_${tagIndex}`;
+    return [
+      `Carry out the task enclosed by <${taskTag}> and </${taskTag}>. The tags mark its boundaries.`,
+      `<${taskTag}>${this.#turnPrompt}</${taskTag}>`
+    ].join("\n");
   }
 
   /**
@@ -906,8 +1198,29 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         ""
       );
     }
-    lines.push(this.#turnPrompt);
+    // Keep native command handling for tasks with no boundary whitespace.
+    // Otherwise use the opening's literal boundary so native trimming is inert.
+    lines.push(this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask());
     return lines.join("\n");
+  }
+
+  /**
+   * The turn's prompt again, for a session that accepted a submission of it
+   * no receipt verified. It says what happened first, so a worker that
+   * acted on an altered copy knows which copy stands, and one that received
+   * nothing loses nothing. What it repeats is the copy the session first
+   * accepted, so a session whose opening prompt never arrived still receives
+   * everything its launch carried. The preface makes it a correction like
+   * every other retry message: a leading `/command` in the prompt is not
+   * expanded a second time.
+   */
+  #redeliveryMessage(): string {
+    return [
+      "An earlier copy of the message below was submitted to you but did not arrive as sent: it reached you altered, or not at all. " +
+        "This copy replaces it. Treat the earlier copy as void, keep any work you have already done that this message also asks for, and answer this message.",
+      "",
+      this.#acceptedTurnCopy
+    ].join("\n");
   }
 
   #correctionMessage(previousFailure: PreviousAttemptFailure): string {
@@ -966,6 +1279,7 @@ function failedTurnResult(
   const resolvedEffort = evidence?.resolvedEffort ?? null;
   const backgroundWaits = evidence?.backgroundWaits ?? [];
   return {
+    ...failedTurnResultOf(error),
     text,
     ...(resolvedModel !== null ? { resolvedModel } : {}),
     ...(resolvedEffort !== null ? { resolvedEffort } : {}),
@@ -979,7 +1293,11 @@ function failedTurnResult(
     // The refusal's structured account rides the attempt as diagnostics,
     // where the failure classifier reads it: a 429's status and code are
     // the engine's own word, which the diagnostic prose is not.
-    ...(evidence !== null && evidence.apiError !== null ? { diagnostics: { apiError: evidence.apiError } } : {}),
+    ...(evidence !== null ? { diagnostics: {
+      ...failedTurnResultOf(error)?.diagnostics,
+      ...(evidence.apiError !== null ? { apiError: evidence.apiError } : {}),
+      worktrees: enteredWorktrees(evidence.transcript.entries)
+    } } : {}),
     ...(evidence === null
       ? {}
       : {
@@ -990,7 +1308,7 @@ function failedTurnResult(
               source: "claude-session-jsonl",
               sessionId: evidence.handle.sessionId,
               content: evidence.transcript.text,
-              partial: true
+              partial: !evidence.completed
             }
           ]
         })
@@ -999,8 +1317,9 @@ function failedTurnResult(
 
 /** What one best-effort pre-teardown transcript read yields a dying turn. */
 interface FailureEvidence {
-  handle: ClaudeSessionHandle;
-  transcript: TranscriptFile;
+  handle: Pick<ClaudeSessionHandle, "sessionId">;
+  transcript: Pick<TranscriptFile, "text" | "entries">;
+  completed: boolean;
   resolvedModel: string | null;
   resolvedEffort: string | null;
   usage: TokenUsageBreakdown;
@@ -1027,6 +1346,9 @@ function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
   if (error instanceof ClaudeValveError) {
     return { kind: "claude-valve-error", message: error.message };
   }
+  if (error instanceof ClaudeDeliveryError) {
+    return { kind: "claude-delivery-error", message: error.message };
+  }
   if (error instanceof ClaudePollTimeoutError) {
     return { kind: "claude-poll-timeout", message: error.message };
   }
@@ -1044,6 +1366,19 @@ function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
   // degraded. The arm keeps the mapping total for a member added without
   // its own kind, and its `rule: null` classification says so in the archive.
   return { kind: "claude-worker-error", message: error.message };
+}
+
+/**
+ * A text named by size and digest, for a failure account: enough to tell
+ * two texts apart and to match one against a transcript, without copying a
+ * prompt of any length into an error message.
+ */
+function textIdentity(text: string): string {
+  return `${Buffer.byteLength(text, "utf8")} UTF-8 bytes, sha256 ${createHash("sha256").update(text).digest("hex")}`;
+}
+
+function differenceAccount(sent: string, received: string): string {
+  return `sent ${textIdentity(sent)}; received ${textIdentity(received)}`;
 }
 
 function hasAssistantEntrySince(entries: TranscriptEntry[], fromIndex: number): boolean {

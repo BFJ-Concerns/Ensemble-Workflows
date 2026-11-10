@@ -20,6 +20,7 @@ import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
 import { isStatusFileName } from "../../src/status-file.js";
+import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
 import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
 import type { Budget, EngineName, RuntimeEvent, RuntimeOptions, TurnResult } from "../../src/types.js";
@@ -1946,6 +1947,44 @@ test("CLI emits completed worker outputs when interrupted by SIGINT", async () =
   assert.match(stderr.text(), /Interrupted \(SIGINT\) — partial result on stdout/);
 });
 
+test("run endings stop the script after an awaited parallel or pipeline", async () => {
+  for (const combinator of ["parallel", "pipeline"]) {
+    for (const ending of ["interrupted", "timed-out"]) {
+      const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-combinator-ending-"));
+      const script = path.join(directory, "workflow.js");
+      const call = 'agent("hang", { engine: "codex" })';
+      await writeFile(script, `
+        export const meta = { name: "combinator-ending" };
+        await ${combinator === "parallel" ? `parallel([() => ${call}])` : `pipeline(["item"], () => ${call})`};
+        log("post-combinator side effect");
+        return "must not resume";
+      `);
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const engine = new HangOnPromptEngine("codex", 1, () => {
+        if (ending === "interrupted") process.emit("SIGINT");
+      });
+      const exitCode = await runEnsembleCli(
+        ending === "timed-out" ? ["--timeout=120", script] : [script],
+        {
+          cwd: directory,
+          stdout,
+          stderr,
+          runRecordDir: null,
+          createRuntime: async () => new EnsembleRuntime({
+            engines: new EngineRegistry([engine]),
+            defaultMaxAttempts: 1
+          })
+        }
+      );
+      assert.equal(exitCode, ending === "interrupted" ? 130 : 1);
+      assert.equal(engine.cancelCount, 1);
+      assert.equal(JSON.parse(stdout.text()).reason, ending);
+      assert.doesNotMatch(stderr.text(), /post-combinator side effect/);
+    }
+  }
+});
+
 test("a SIGTERM-stopped run exits 143 and records 143 on every durable surface", async () => {
   // The other interrupt signal takes the same convention (128 + 15): the
   // envelope names the signal, and the sentinel and result carry the code
@@ -2362,36 +2401,18 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
 
   assert.equal(result.status, 2);
   assert.equal(result.stdout, "");
-  assert.equal(
-    result.stderr,
-      "Usage: ensemble [run options] <script.js> [args...]\n" +
-      "       ensemble agent --engine <engine> [agent options] [prompt]\n" +
-      "       ensemble workflows\n" +
-      "       ensemble holds [--json] [--scope <scope> | --all]\n" +
-      "       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\n" +
-      "\n" +
-      "Run options (before the script path):\n" +
-      "  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N\n" +
-      "  --agent-ceiling N|null  --timeout ms  --strip capability\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run\n" +
-      "Agent options (after agent, before the prompt):\n" +
-      "  --model <model>  --effort <effort>  --label <label>  --phase <phase>\n" +
-      "  --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'\n" +
-      "  --max-attempts N  --task <identity>  --strip capability  --budget engine=N\n" +
-      "  --agent-ceiling N|null  --concurrency engine=N  --timeout ms\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run\n" +
-      "The prompt is the one positional argument, or stdin when omitted.\n" +
-      "Run `ensemble --help` for orientation; each subcommand answers --help.\n"
-  );
+  const expected = new CaptureStream();
+  await runEnsembleCli([], { stdout: new CaptureStream(), stderr: expected, programName: binPath });
+  assert.equal(result.stderr, expected.text());
 });
 
 test("usage names the program as the caller invoked it and keeps every line within 80 columns", async () => {
   // The word comes from what Node was handed: a script file reads as the
   // command the reader must type, a bin shim or symlink as itself.
   assert.equal(programNameFor(undefined), "ensemble");
-  assert.equal(programNameFor("/opt/skills/ensemble-workflow/scripts/ensemble.mjs"), "node ensemble.mjs");
-  assert.equal(programNameFor("/repo/dist/src/cli/ensemble.js"), "node ensemble.js");
-  assert.equal(programNameFor("/home/me/.local/bin/ensemble"), "ensemble");
+  assert.equal(programNameFor("/opt/skills/ensemble-workflow/scripts/ensemble.mjs"), "node /opt/skills/ensemble-workflow/scripts/ensemble.mjs");
+  assert.equal(programNameFor("/repo/dist/src/cli/ensemble.js"), "node /repo/dist/src/cli/ensemble.js");
+  assert.equal(programNameFor("/home/me/.local/bin/ensemble"), "/home/me/.local/bin/ensemble");
 
   for (const programName of ["ensemble", "node ensemble.mjs"]) {
     const escaped = programName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -2451,10 +2472,10 @@ test("CLI entrypoint keeps every exit-2 path on stderr", () => {
         "Unknown option '--unknown'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \"--unknown\"\n"
     },
     { argv: ["--timeout"], stderr: "Option --timeout expects a value\n" },
-    // Spawned as `node ensemble.js`, so that is the program the lines name.
-    { argv: ["workflows", "extra"], stderr: "Usage: node ensemble.js workflows\n" },
-    { argv: ["holds", "--unknown"], stderr: "Unknown option for node ensemble.js holds: --unknown\n" },
-    { argv: ["holds", "extra"], stderr: "Unexpected argument for node ensemble.js holds: extra\n" },
+    // The compiled entrypoint is named by its absolute invocation path.
+    { argv: ["workflows", "extra"], stderr: `Usage: node ${entrypointPath} workflows\n` },
+    { argv: ["holds", "--unknown"], stderr: `Unknown option for node ${entrypointPath} holds: --unknown\n` },
+    { argv: ["holds", "extra"], stderr: `Unexpected argument for node ${entrypointPath} holds: extra\n` },
     { argv: ["holds", "--scope"], stderr: "--scope requires a non-empty value\n" },
     { argv: ["holds", "--scope=", "--all"], stderr: "--scope requires a non-empty value\n" },
     { argv: ["holds", "--scope", "named", "--all"], stderr: "--scope and --all cannot be used together\n" }
@@ -2467,7 +2488,11 @@ test("CLI entrypoint keeps every exit-2 path on stderr", () => {
     });
     assert.equal(result.status, 2, argv.join(" "));
     assert.equal(result.stdout, "", argv.join(" "));
-    assert.equal(result.stderr, stderr, argv.join(" "));
+    if (argv[0] === "workflows") {
+      assert.equal(result.stderr.replace(/\s+/g, " ").trim(), stderr.trim(), argv.join(" "));
+    } else {
+      assert.equal(result.stderr, stderr, argv.join(" "));
+    }
   }
 });
 
@@ -2544,7 +2569,8 @@ test("--help, -h, and --version answer a cold arrival at exit 0", async () => {
 });
 
 test("ensemble holds serves the two listing contracts: one scope's view, and machine-wide", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-holds-"));
+  // Answer paths contain the other hold's id; only listing rows name holds.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-hold-s-"));
   const dataHome = path.join(directory, "data-home");
   const holdsRoot = path.join(dataHome, "ensemble", "holds");
   const record = (holdId: string, scope: string | null, scopeSegment: string): Record<string, unknown> => ({
@@ -2582,8 +2608,8 @@ test("ensemble holds serves the two listing contracts: one scope's view, and mac
     }),
     0
   );
-  assert.match(scoped.text(), /hold-a/);
-  assert.doesNotMatch(scoped.text(), /hold-s/);
+  assert.match(scoped.text(), /^hold-a\t/m);
+  assert.doesNotMatch(scoped.text(), /^hold-s\t/m);
 
   // The inherited variable scopes the default view the same way.
   const inherited = new CaptureStream();
@@ -2595,8 +2621,8 @@ test("ensemble holds serves the two listing contracts: one scope's view, and mac
     }),
     0
   );
-  assert.match(inherited.text(), /hold-a/);
-  assert.doesNotMatch(inherited.text(), /hold-s/);
+  assert.match(inherited.text(), /^hold-a\t/m);
+  assert.doesNotMatch(inherited.text(), /^hold-s\t/m);
 
   // Machine-wide (--all, or keyless): every scope, shared included.
   const machineWide = new CaptureStream();
@@ -3504,47 +3530,6 @@ test("a workflow's failed worker is announced on stderr under its engine tag, wi
   assert.match(directStderr.text(), /Agent exhausted its attempts without producing a result/);
 });
 
-/** An engine whose turns follow a script in dispatch order — a chain's targets on one engine share it. */
-class ScriptedTurnsEngine implements EngineAdapter {
-  readonly concurrency = 1;
-  readonly scheduler = new Scheduler(1);
-  #steps: Array<() => Promise<EngineAttemptResult>>;
-
-  constructor(
-    readonly name: EngineName,
-    steps: Array<() => Promise<EngineAttemptResult>>
-  ) {
-    this.#steps = [...steps];
-  }
-
-  schedule<T>(task: () => Promise<T>): Promise<T> {
-    return this.scheduler.schedule(task);
-  }
-
-  createInvocation(): EngineInvocation {
-    return {
-      runAttempt: async () => {
-        const step = this.#steps.shift();
-        assert.ok(step, `${this.name} engine ran out of scripted turns`);
-        return step();
-      }
-    };
-  }
-
-  async close(): Promise<void> {
-    return Promise.resolve();
-  }
-}
-
-/** A Claude API refusal as the engine returns it: a failed turn carrying the status the classifier reads as availability. */
-function claudeApiRefusal(status: number, message: string): () => Promise<EngineAttemptResult> {
-  return async () => ({
-    ...turn(""),
-    attemptFailure: { kind: "claude-worker-diagnostic", message },
-    diagnostics: { apiError: { status, code: null } }
-  });
-}
-
 async function runChainScript(
   source: string,
   engines: EngineAdapter[],
@@ -3578,12 +3563,12 @@ test("an answer from a fallback entry is announced naming the refused declared t
       return { answer };
     `,
     [
-      new ScriptedTurnsEngine("claude", [
+      new ChainEngine("claude", [
         // Worker-controlled text: flattened to one line on the notice.
-        claudeApiRefusal(429, "API Error: Request rejected (429)\n\tslow down"),
-        claudeApiRefusal(529, "API Error: Request rejected (529)"),
+        claudeRefusal(429, null, "API Error: Request rejected (429)\n\tslow down"),
+        claudeRefusal(529, null, "API Error: Request rejected (529)"),
         async () => ({ ...turn("from opus"), resolvedModel: "opus" })
-      ])
+      ], 1)
     ],
     1
   );
@@ -3611,8 +3596,8 @@ test("a declared chain left unconsulted by an unrecognised failure says so once,
       return { answer };
     `,
     [
-      new ScriptedTurnsEngine("codex", [threadFailed, threadFailed, async () => turn("in place")]),
-      new ScriptedTurnsEngine("claude", [])
+      new ChainEngine("codex", [threadFailed, threadFailed, async () => turn("in place")], 1),
+      new ChainEngine("claude", [], 1)
     ],
     3
   );
@@ -3638,10 +3623,10 @@ test("an exhausted chain's failure notice names the last target's own failure an
       return { answer };
     `,
     [
-      new ScriptedTurnsEngine("claude", [
-        claudeApiRefusal(429, "API Error: Request rejected (429)"),
-        claudeApiRefusal(529, "API Error: Request rejected (529)")
-      ])
+      new ChainEngine("claude", [
+        claudeRefusal(429, null, "API Error: Request rejected (429)"),
+        claudeRefusal(529, null, "API Error: Request rejected (529)")
+      ], 1)
     ],
     1
   );
@@ -3986,14 +3971,20 @@ test(`CLI publishes and announces automatic status before execution with .claude
     if (claudeEntry === "directory") await mkdir(path.join(directory, ".claude"));
     if (claudeEntry === "file") await writeFile(path.join(directory, ".claude"), "file");
     const statusDir = path.join(directory, "data", "ensemble", "status");
+    // An atomic update may have a temporary file alongside the published one.
+    // Keep that interleaving present without depending on filesystem timing.
+    const pendingSnapshot = `ensemble.pending.local.json.${process.pid}.1.tmp`;
     await writeFile(script, `
       export const meta = { name: "automatic-status" };
-      const { readdir, readFile } = require("node:fs/promises");
+      const { readdir, readFile, writeFile } = require("node:fs/promises");
       const dir = ${JSON.stringify(statusDir)};
-      const files = await readdir(dir);
+      await writeFile(dir + "/" + ${JSON.stringify(pendingSnapshot)}, "unfinished snapshot");
+      // The final filename is the atomic publication signal; .tmp entries
+      // belong to updates that have not completed their rename yet.
+      const files = (await readdir(dir)).filter((file) => file.startsWith("ensemble.") && file.endsWith(".local.json"));
       if (files.length !== 1) throw new Error("status missing before execution");
       const snapshot = JSON.parse(await readFile(dir + "/" + files[0], "utf8"));
-      if (!snapshot.runId) throw new Error("invalid initial status");
+      if (!snapshot.runId || files[0] !== "ensemble." + snapshot.runId + ".local.json") throw new Error("invalid initial status");
       log("workflow-started");
       return "ok";
     `);
@@ -4011,7 +4002,7 @@ test(`CLI publishes and announces automatic status before execution with .claude
     const announcement = JSON.parse(line.slice("[status-file] ".length)) as { run_id: string; status_path: string };
     assert.equal(announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${announcement.run_id}.local.json`));
     await assert.rejects(access(announcement.status_path));
-    assert.deepEqual(await readdir(path.dirname(announcement.status_path)), []);
+    assert.deepEqual(await readdir(path.dirname(announcement.status_path)), [pendingSnapshot]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

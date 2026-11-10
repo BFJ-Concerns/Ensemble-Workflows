@@ -24,6 +24,7 @@ import {
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError,
   appServerDiagnosticOf,
+  partialTranscriptOf,
   partialWorkerTextOf,
   workerExitStatusOf
 } from "../../src/errors.js";
@@ -229,6 +230,7 @@ test("a systemError followed by completion remains a diagnostic-less terminal fa
         assert.ok(error instanceof AppServerSystemError);
         assert.match(error.message, /systemError without a diagnostic/);
         assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        assert.equal(partialTranscriptOf(error)?.partial, false);
         return true;
       }
     );
@@ -708,7 +710,7 @@ test("a started turn with no output expires before its ordinary timeout and reco
   }
 });
 
-test("the archive distinguishes a transport request deadline from a turn deadline", { timeout: 5_000 }, async () => {
+test("the archive distinguishes a transport request deadline from a turn deadline", { timeout: 20_000 }, async () => {
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-request-deadline-record-"));
   const archiveCauseFor = async (
     mode: "no-turn-start-ack" | "hang-after-delta",

@@ -53,7 +53,10 @@ level. `meta` is bound read-only.
 A free identifier that is neither a Node global, a hook, nor a binding in the
 script fails at load, before any worker spawns, and the error names it. A
 `typeof X` probe is fine. Syntax errors name the script's own line and column
-with a source excerpt and a caret.
+with a source excerpt and a caret. Line positions recognise LF, CRLF, CR
+and the JavaScript Unicode line separators. An extra closing brace points to
+the brace even when more body code follows; an unfinished body points to its
+end after its last non-whitespace character.
 
 The script is a trusted program run by the user who launched it. Ensemble
 dispatches and records workers only through `agent()` and `session()`; prompts
@@ -140,16 +143,23 @@ A failed worker is already its call's `null`. A thunk or stage that throws for
 any other reason also becomes `null` in the results, and is logged. Check
 fan-in results for `null`.
 
-One family of errors propagates instead and fails the run: errors in how the
-script was written, raised before any worker spawns. These are a rejected
-`agent()` option, a malformed schema, an unresolvable `workflow()` reference
-or non-JSON `workflow()` arguments, a nesting violation, and a child
-workflow's load-time error. When several of a call's options fail the
-option check, one error names them all.
+Two things propagate instead. One is errors in how the script was written,
+raised before any worker spawns: a rejected `agent()` option, a malformed
+schema, an unresolvable `workflow()` reference or non-JSON `workflow()`
+arguments, a nesting violation, and a child workflow's load-time error (when
+several of a call's options fail the option check, one error names them all).
+The other is the run's own ending — an interrupt, the whole-run timeout, the
+launcher closing the run under a leg still in flight — which throws through
+`parallel()` and `pipeline()` as it does through a bare `await`, so a body
+never resumes past the combinator to run further code (commit, push, write a
+results file) on a run that has already begun ending. Only a worker's own
+failure is a value.
 
 To tell a failed call from one that legitimately answered `null`, pass
-`identity: true`. The call then resolves `{ label, phase, output, failure }`,
-where `failure` is `null` exactly when the worker completed — so
+`identity: true`. The call then resolves `{ label, phase, output, failure }`.
+`phase` is the call's explicit phase, or the run's current `phase()` title
+when the call enters the queue; it is `null` when neither was set.
+`failure` is `null` exactly when the worker completed — so
 `output: null` with `failure: null` is a genuine answer — and a `{ message }`
 account when it failed. Inside `parallel()` and `pipeline()`, an identified
 call that collapses resolves this shape too, never a bare `null`.
@@ -166,6 +176,14 @@ result. `nameOrRef` is a workflow name or `{ scriptPath }`:
 - `{ scriptPath }` resolves like the script path on the command line:
   relative to the run's working directory unless absolute.
 
+A literal `workflow("name")` is checked against the saved registries when the
+script loads, including calls in branches and callbacks. A missing name
+reports the script's line and column before the body can dispatch a worker.
+Names computed at runtime and `{ scriptPath }` references are resolved when
+their calls execute. A call through a local binding named `workflow`, such as
+a nested function parameter or a block-local variable, is an ordinary
+JavaScript call.
+
 The child shares the parent's runtime: the same concurrency caps, budgets,
 worktrees, and run record. Nesting is one level only; calling `workflow()`
 inside a child throws. Both registries start empty; saved workflows in the
@@ -175,7 +193,9 @@ workflows` lists them.
 ### `phase()`, `log()`, and `tally()`
 
 `phase(title)` and `log(message)` write to the run log on stderr; `phase()`
-also sets the current phase in the live status file.
+also sets the current run phase. Each agent or session turn captures it when
+it queues, for both the live status file and the archived agent record, unless
+the agent/session has an explicit `phase` option.
 
 `tally(name, value)` records a named number in the run record's manifest,
 beside the usage totals — how many findings a check accepted, or how many fix
@@ -218,7 +238,7 @@ unknown engine throws before any worker spawns.
 | `maxAttempts` | Attempt bound, a positive integer. Default 3 |
 | `strip` | Capabilities to remove from the worker: `"skills"`, `"agents"` (see [Permissions](#permissions-and-strip)) |
 | `identity` | `true` to resolve `{ label, phase, output, failure }` (see [`parallel()`](#parallel-and-pipeline)) |
-| `label`, `phase` | Bookkeeping shown in progress output and the run record |
+| `label`, `phase` | Bookkeeping shown in progress output and the run record. An omitted `phase` takes the current `phase()` title when queued, or `null` if unset |
 
 An unrecognised option, or an invalid value for `effort`, `isolation`,
 `timeoutMs`, `maxAttempts`, `identity`, or `strip`, throws before the worker
@@ -291,6 +311,14 @@ Each agent record lists the requested strips and how each was enforced.
 
 ### Worktree isolation
 
+`cwd` places edits in the requested directory on every engine. Claude
+background sessions receive a per-session `worktree.bgIsolation: "none"`
+setting, so Claude Code does not require a second worktree before editing.
+This leaves the operator's project and user settings unchanged. If a Claude
+session explicitly enters a worktree, its agent record retains the observed
+paths and branches in each attempt's `diagnostics.worktrees`; Ensemble does
+not manage or remove those native worktrees.
+
 With `isolation: "worktree"` the worker runs in a fresh linked git worktree on
 a temporary branch. With `cwd` as well, `cwd` selects the source repository; a
 `cwd` that is not in a git repository fails before the worker spawns.
@@ -346,16 +374,58 @@ cannot pass silently:
   (`ClaudeDispatchError`, `CodexSubstrateRefusedError`), a strip that cannot
   be enforced, or a budget refusal.
 - The run's own ending — an interrupt or a whole-run timeout — which throws
-  through any call it cut short.
+  through any call it cut short, and through `parallel()` and `pipeline()`
+  around it.
 
 A schema value of JSON `null` that validates is a successful answer, not a
 failure.
 
+### Claude opening delivery
+
+Claude dispatch requires tmux. Ensemble starts an empty native `claude --bg`
+session, waits for the dispatch command to finish and the roster to name its
+process, then loads the complete UTF-8 opening through Claude Code's external
+prompt editor. The first native user turn must equal the text sent. The prompt
+stays in a private file rather than Claude's launch arguments or dispatch
+payload; no bootstrap model turn is added. The same background session serves
+follow-ups and corrections.
+
+A launch failure retains the command's exit code, signal, stdout and stderr,
+the last observed session identity and PID, native logs and any transcript in
+the attempt's `diagnostics.claudeLaunch` and transcript references. The
+dispatch command's status is separate from `worker_exit`, which names the
+worker process itself. A PID-less roster seed is insufficient for registration.
+A refused launch, or one that never acquires a process, is an availability
+failure and advances a declared fallback after its session and tagged
+processes have been removed. If cleanup cannot be confirmed, dispatch keeps
+the session owned rather than rejecting it, with the original failure under
+`diagnostics.claudeLaunch` when the engine reports its outcome.
+
+Once the opening has been submitted, the engine checks its receipt at the
+session's first transcript. A missing or differing receipt is
+`claude-delivery-error`, so it retries on the same target and never advances
+fallback. One-shot retries stop the old session before relaunching. A held
+session follows an altered turn to its end before resending the complete
+opening through the valve; it is never relaunched. A worker that never writes
+a transcript normally fails as `claude-first-life-timeout`, an availability
+failure. A retained launch whose cleanup is unconfirmed remains an
+unclassified delivery failure even without a transcript, so it cannot advance
+fallback.
+A model context rejection after exact delivery retains its own diagnostic.
+
+Ensemble encloses the opening task in boundary tags chosen to be absent from
+its text. The caller's text stays literal, including leading and trailing
+whitespace; the closing tag keeps it inside the message when Claude trims
+the message boundary. The complete opening still requires an exact receipt,
+so any input transformation fails delivery explicitly. Host memory, storage
+and model context still bound prompt size.
+
 ### Retries
 
 Each attempt that fails is retried, up to `maxAttempts`, with the failure fed
-back to the worker. Claude corrects in the same session when tmux is
-available, and otherwise starts a fresh session with the failure appended.
+back to the worker. Claude corrects in the same session through the prompt
+editor. If tmux becomes unavailable, a one-shot correction starts a fresh session, whose
+opening delivery also requires tmux.
 Codex and opencode retry with the failure appended to the prompt.
 
 Operational failures — a Claude session that never registered or died, a
@@ -365,6 +435,50 @@ failed thread — are failed attempts like any other. They consume an attempt
 and keep the worker's partial text, exit status, and the engine's diagnostic
 on the attempt record. A call whose deadline should end it outright sets
 `maxAttempts: 1`.
+
+An opencode subprocess stopped by its per-attempt deadline records a turn
+timeout, retaining its engine diagnostic, streamed usage, transcript, and
+subprocess exit signal on the attempt. The execution deadline stops when the
+subprocess exits, even if its output streams are still draining. A subprocess
+that exits non-zero for another reason records an opencode run error.
+
+A message Ensemble sends into a live Claude session — a follow-up turn, a
+correction, a nudge to a blocked worker — counts as delivered only when the
+session's transcript shows it received exactly the text sent. Two failures
+are told apart:
+
+- `claude-valve-error`: the message was never submitted. Nothing reached the
+  worker, and the retry sends the same message again.
+- `claude-delivery-error`: the message was submitted, but the transcript
+  shows the worker received different text, or shows no trace of it within
+  the receipt deadline. The message names the sizes and SHA-256 digests of
+  what was sent and what arrived. A reply to altered text is never returned
+  as the turn's value.
+
+In a `session()`, a turn the worker took on altered text runs to its end
+before the attempt fails, with its text kept on the attempt record, so the
+session is between turns when the retry begins. A recovery nudge's matching
+receipt never verifies altered task or correction text. That delivery failure
+survives nudges; a fresh task or correction submission must verify before
+its reply can succeed. Resuming a nudge still waits for the
+task's outstanding background work; an interim reply is not a final answer.
+The retry never sends the follow-up a second time as though it were new: a
+submission that turns out to have landed late is collected as the answer, and otherwise the follow-up goes
+again with a preface telling the worker it replaces the earlier copy. Because
+of that preface a leading `/skill` line is not expanded on the retry.
+
+The prompt a Claude worker is launched with is held to the same rule: the
+worker holds it only when the first message its transcript records is exactly
+the prompt sent. Otherwise the attempt fails as a `claude-delivery-error`.
+One-shot retries stop the old session and launch a fresh one on the same
+target; held-session retries stay in the session and resend the whole opening
+through the valve after the altered turn ends. A
+delivery failure is never an availability failure, so it does not move the
+call down its fallback chain: the worker took something and may have begun
+work, and launching the prompt on another target would start that work a
+second time. A failed launch moves down the chain only when no worker held
+the prompt: the launch was refused, no session registered, or the session
+never wrote a transcript.
 
 When a single `ensemble agent` run times out, the error says which deadline
 expired, because the remedies differ: the call's own `timeoutMs` (raise it or
@@ -477,9 +591,9 @@ await builder.close();
 ```
 
 - **Fixed at creation:** `engine`, `model`, `effort`, `fallback`, `cwd`,
-  `isolation`, `timeoutMs`, `maxAttempts`, `label`, `phase`, `strip`, and
-  `stalenessMark`. The fallback chain applies to the first turn only: the
-  target that answers it fixes the session's engine and model for its life
+  `isolation`, `timeoutMs`, `maxAttempts`, `label`, `phase`, `strip`,
+  `stalenessMark`, and `identity`. The fallback chain applies to the first turn
+  only: the target that answers it fixes the session's engine and model for its life
   (`handle.engine` reports it), and a later turn's availability failure fails
   that turn. Changing model or effort would invalidate the session's prompt
   cache, so a change of model means a new session.
@@ -488,35 +602,58 @@ await builder.close();
   turn leaves the session usable. Creating a session spawns nothing; the
   worker starts at the first `send()`. opencode sessions throw before any
   worker spawns.
+- **Identified turns:** `identity: true` at creation makes every `send()`
+  resolve `{ label, phase, output, failure }`. `failure` is `null` for a
+  successful answer, including a valid JSON `null`; a failed turn carries
+  its recorded failure message. The option cannot vary per turn.
 - **Turns are sequential:** calling `send()` while a previous send is
   unsettled throws, as does `send()` after `close()` or after the run ends.
 - **Concurrency and budget are per turn:** a turn holds its engine slot from
   dispatch to settlement, an idle session holds nothing, and each turn's
   budget check happens at its own dispatch.
 - **Prompt caching:** Claude Code fixes the subscription prompt-cache TTL at
-  one hour. Ensemble does not request a TTL for Claude workers.
+  one hour. Ensemble does not request a TTL for Claude workers. That lifetime
+  does not guarantee a cache read on the next turn. Claude Code places cache
+  breakpoints in the continued request; observed follow-ups with different
+  breakpoint placements have re-created different amounts of the prefix,
+  even when sent to the same held session immediately. The request records
+  do not expose the provider's cache decisions. Judge a held worker's cost
+  from the run record's per-turn `cacheReadTokens` and `cacheCreationTokens`
+  figures, which reflect the engine's reported reads and writes.
 - **Staleness:** `handle.stale` becomes `true` once the idle time since the
   last turn reaches the threshold — one idle hour on Claude, 60 idle minutes on
   Codex — and `handle.idleMs` gives the idle time. It is advisory: a send to a
   stale session still runs, and the script decides whether to pay for the
   re-read or start a fresh worker. `stalenessMark: false` turns the mark off
-  for that session, and `handle.staleAfterMs` gives the threshold in use.
+  for that session. `handle.stalenessMark` reports whether the mark is enabled,
+  including before the first turn. `handle.staleAfterMs` gives the active
+  threshold, or `null` when marking is disabled. A Claude session below this
+  idle threshold may still miss the prompt cache.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.
 - **Records:** each turn is its own agent record with a
   `session: { id, turn }` field. A session using `isolation: "worktree"` works
   in one worktree for its whole life, finalised when the session closes.
-- **Claude follow-ups need tmux:** follow-up turns are typed into the held
-  session through tmux as individual terminal key records, batched without
-  splitting a record. Follow-ups stay typed even when the reader pauses,
-  so a leading `/skill` line expands. Unicode and LF line breaks are preserved;
-  tabs become four spaces and CR or CRLF line endings become LF, matching
-  Claude Code's paste-handler conversions. The turn is submitted once, after
-  all records arrive. Each injection uses a private tmux server that loads
-  no tmux configuration and does not appear among your own sessions. Without
-  tmux, a follow-up or correction fails with a `claude-valve-error` naming
-  the tmux step that failed, rather than silently starting a fresh worker.
+- **Claude follow-ups need tmux:** a private attach client loads the complete
+  UTF-8 message through Claude Code's external prompt editor, then submits it
+  once. The payload stays in a private file, avoiding command-line size and
+  per-character input limits. Tasks with leading or trailing whitespace use
+  the opening's collision-free task tags, preserving the caller's text inside
+  the message boundary. Redelivery repeats that framed copy. Tasks without
+  edge whitespace arrive as ordinary typed text, so a leading `/skill` line
+  expands. Ensemble overrides `VISUAL` and `EDITOR` only for that attach client and removes its files and tmux server after delivery.
+  It loads no tmux configuration and does not appear among your own sessions.
+  Delivery requires a new native user row equal to the message sent (or the
+  matching command name and arguments for a slash command). Roster activity
+  and model output do not prove delivery. Missing or differing text fails with
+  `claude-delivery-error`, including UTF-8 lengths and SHA-256 digests for a
+  mismatch. Ensemble applies no whitespace conversion to the caller's task;
+  delivery compares the complete framed message where tags are needed. Any
+  other transformation by native submission still fails equality.
+  Model context limits still apply after successful delivery; a subsequent
+  context rejection retains the model's diagnostic on the failed attempt.
+  Without tmux, follow-ups and corrections fail rather than starting a fresh worker.
 
 ## Holds
 

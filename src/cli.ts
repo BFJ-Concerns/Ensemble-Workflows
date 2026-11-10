@@ -1930,22 +1930,22 @@ async function answerHoldCommand(
 const DEFAULT_PROGRAM_NAME = "ensemble";
 
 /**
- * How the caller addresses the CLI, derived from the script path Node was
- * given (`process.argv[1]`): a bundle or compiled entry run through Node
- * reads `node <file>`, so the usage text tells the reader to type what they
- * typed — there is no `ensemble` on PATH unless a bin shim or symlink puts
- * one there, and such a shim (a file without a script extension) is named
- * as itself. No path: the default word.
+ * The absolute invocation path, preserving a symlink's name rather than
+ * resolving its target. Script files run through Node; executable shims
+ * name themselves. Shell quoting keeps each path a single argument.
  */
 export function programNameFor(scriptPath: string | undefined): string {
   if (scriptPath === undefined || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
-  const file = path.basename(scriptPath);
-  return /\.(?:mjs|cjs|js)$/.test(file) ? `node ${file}` : file;
+  const absolutePath = path.resolve(scriptPath);
+  const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath)
+    ? absolutePath
+    : `'${absolutePath.replaceAll("'", "'\"'\"'")}'`;
+  return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
 }
 
-/** Every usage line fits a conventional terminal; longer lines wrap at a token. */
+/** Usage wraps at tokens; the absolute launcher path may exceed the width. */
 const USAGE_WIDTH = 80;
 const USAGE_LEAD = "Usage: ";
 
@@ -1999,7 +1999,7 @@ function usage(program: string): string {
     ["holds", "[--json]", "[--scope <scope> | --all]"],
     ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]
   ];
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  const continuation = " ".repeat(Math.min(USAGE_LEAD.length + program.length + 1, 24));
   const lines: string[] = [];
   forms.forEach((tokens, index) => {
     const lead = `${index === 0 ? USAGE_LEAD : " ".repeat(USAGE_LEAD.length)}${program}`;
@@ -2012,7 +2012,7 @@ function usage(program: string): string {
     "Agent options (after agent, before the prompt):",
     ...wrapTokens("  ", AGENT_OPTION_SYNOPSES, "  ", "  "),
     "The prompt is the one positional argument, or stdin when omitted.",
-    `Run \`${program} --help\` for orientation; each subcommand answers --help.`,
+    ...wrapTokens("Run", [`\`${program} --help\``, "for orientation;", "each subcommand answers --help."], "  ", " "),
     ""
   );
   return lines.join("\n");
@@ -2021,26 +2021,25 @@ function usage(program: string): string {
 /**
  * One subcommand's own synopsis, laid out like the top-level usage: the
  * program as invoked, the form's tokens, wrapped at `USAGE_WIDTH` with the
- * continuation under the first token. Every standalone `Usage:` line a
+ * continuation indented by at most 24 columns. Every standalone `Usage:` line a
  * subcommand prints comes through here.
  */
 function subcommandSynopsis(program: string, tokens: readonly string[]): string {
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  const continuation = " ".repeat(Math.min(USAGE_LEAD.length + program.length + 1, 24));
   return `${wrapTokens(`${USAGE_LEAD}${program}`, tokens, continuation, " ").join("\n")}\n`;
 }
 
 /**
  * Greedy wrap of `tokens` after `lead`, never splitting a token: a line that
  * would pass `USAGE_WIDTH` ends before the token, which opens the next line
- * at `indent`. The first token always follows the lead, so a lead longer
- * than the width still produces a line rather than an empty one.
+ * at `indent`. An overlong launcher lead stays whole on its own line.
  */
 function wrapTokens(lead: string, tokens: readonly string[], indent: string, separator: string): string[] {
   const lines: string[] = [];
   let line = lead;
   tokens.forEach((token, index) => {
     const joined = index === 0 ? `${lead}${lead.endsWith(" ") ? "" : " "}${token}` : `${line}${separator}${token}`;
-    if (index > 0 && joined.length > USAGE_WIDTH) {
+    if (joined.length > USAGE_WIDTH && line.trim().length > 0) {
       lines.push(line);
       line = `${indent}${token}`;
     } else {

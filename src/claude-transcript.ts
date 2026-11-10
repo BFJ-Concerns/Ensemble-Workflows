@@ -18,7 +18,12 @@ import type { TokenUsageBreakdown } from "./types.js";
 /** One JSONL line. We model only the fields we read; everything else is ignored. */
 export interface TranscriptEntry {
   type?: string;
+  isMeta?: boolean;
+  isCompactSummary?: boolean;
+  origin?: { kind?: unknown };
   message?: TranscriptMessage;
+  /** Claude Code's persisted EnterWorktree state, or null after exiting it. */
+  worktreeSession?: unknown;
   /**
    * Claude Code's record of a queued prompt absorbed into a turn already
    * in flight (`attachment.type === "queued_command"`, the prompt in
@@ -73,6 +78,59 @@ interface TranscriptMessage {
   stop_reason?: unknown;
 }
 
+/**
+ * The operator's submitted text, excluding tool results and synthetic rows.
+ * Claude records an expanded slash command as command-name/command-args;
+ * reconstruct that submission so its arguments receive the same equality
+ * check as plain text. Ordinary submissions remain unwrapped strings.
+ */
+export function submittedUserText(entry: TranscriptEntry): string | null {
+  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
+  const content = entry.message?.content;
+  if (typeof content !== "string") return null;
+  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
+  if (command === null) return content;
+  const name = command[1] ?? "";
+  const args = command[2] ?? "";
+  return args === "" ? name : `${name} ${args}`;
+}
+
+/**
+ * What the transcript shows the session received for one submitted message
+ * — the only evidence that a submission was delivered.
+ *
+ * - `verified` — the session holds the message exactly as sent.
+ * - `differing` — the session took a submission in its place whose text is
+ *   not the message (`received`). A turn is running, or ran, on text nobody
+ *   sent; its reply answers that text and is never the message's answer.
+ * - `missing` — the transcript shows no submission yet. That is not proof
+ *   none will land: a later read from the same mark may find one.
+ */
+export type SubmissionReceipt =
+  | { state: "verified" }
+  | { state: "differing"; received: string }
+  | { state: "missing" };
+
+/**
+ * Read the receipt for `message`, submitted when the transcript held `mark`
+ * entries: the first submission recorded at or after the mark, compared
+ * with the message for equality and nothing looser. Pure, so the same
+ * submission can be judged again from the same mark for as long as its
+ * receipt is missing.
+ */
+export function submissionReceipt(entries: TranscriptEntry[], mark: number, message: string): SubmissionReceipt {
+  for (let index = Math.max(0, mark); index < entries.length; index += 1) {
+    const entry = entries[index];
+    const received = entry === undefined ? null : submittedUserText(entry);
+    if (received === null) {
+      continue;
+    }
+    return received === message || entry?.message?.content === message
+      ? { state: "verified" } : { state: "differing", received };
+  }
+  return { state: "missing" };
+}
+
 /** Parse a whole transcript file's text into entries, skipping blank/garbled lines. */
 export function parseTranscriptText(text: string): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
@@ -86,6 +144,28 @@ export function parseTranscriptText(text: string): TranscriptEntry[] {
     }
   }
   return entries;
+}
+
+/**
+ * Worktrees the session entered, including ones it later left. Read native
+ * state rows rather than tool requests or prose: a requested move may fail.
+ * Repeated state snapshots name one visit; hook-created trees may have no
+ * branch. The history spans turns so a held session keeps its placement
+ * evidence even when its current turn did not enter the tree.
+ */
+export function enteredWorktrees(entries: TranscriptEntry[]): Array<{ path: string; branch: string | null }> {
+  const worktrees: Array<{ path: string; branch: string | null }> = [];
+  for (const entry of entries) {
+    if (entry.type !== "worktree-state" || entry.worktreeSession === null ||
+      typeof entry.worktreeSession !== "object" || Array.isArray(entry.worktreeSession)) continue;
+    const state = entry.worktreeSession as Record<string, unknown>;
+    if (typeof state.worktreePath !== "string" || state.worktreePath.length === 0) continue;
+    const branch = typeof state.worktreeBranch === "string" && state.worktreeBranch.length > 0 ? state.worktreeBranch : null;
+    if (!worktrees.some((tree) => tree.path === state.worktreePath && tree.branch === branch)) {
+      worktrees.push({ path: state.worktreePath, branch });
+    }
+  }
+  return worktrees;
 }
 
 /** Read and parse a transcript file. Missing/unreadable file → a worker error. */

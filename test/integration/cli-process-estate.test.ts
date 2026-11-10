@@ -1863,11 +1863,23 @@ test("built CLI interrupts and settles a turn that times out before any turn not
           name: "interrupt-timeout-before-notification",
           description: "Interrupt a started turn when its local deadline expires"
         };
-        return await agent("time out before a notification", {
+        const result = await agent("time out before a notification", {
           engine: "codex",
           maxAttempts: 1,
           timeoutMs: 30001
         });
+        // The interrupt is sent without awaiting its response. Keep the
+        // app-server alive until it has read that request, before returning
+        // lets runtime shutdown terminate it. The parent timeout catches a
+        // missing interrupt; no scheduling delay stands in for receipt.
+        const { readFile } = require("node:fs/promises");
+        for (;;) {
+          const capture = await readFile(process.env.ENSEMBLE_FAKE_CODEX_CAPTURE, "utf8");
+          const messages = capture.split("\\n").slice(0, -1).filter(Boolean).map((line) => JSON.parse(line));
+          if (messages.some((message) => message.method === "turn/interrupt")) break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return result;
       `
     );
 

@@ -16254,6 +16254,7 @@ var RunRecordWriter = class _RunRecordWriter {
       model: record.model,
       effort: record.effort,
       fallback: record.fallback,
+      fallback_source: { ...record.fallbackSource },
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
@@ -17523,6 +17524,25 @@ function claudeApiErrorOf(diagnostics) {
     status: typeof record.status === "number" ? record.status : null,
     code: typeof record.code === "string" ? record.code : null
   };
+}
+
+// src/fallback-source.ts
+var handedOff = /* @__PURE__ */ new WeakMap();
+function handOffFallbackSource(options, source) {
+  handedOff.set(options, source);
+  return options;
+}
+function fallbackSourceOf(options) {
+  return handedOff.get(options) ?? (options.fallback === void 0 ? { kind: "none" } : { kind: "call" });
+}
+function attributeMergedChain(merged, callFallback, engine) {
+  if (callFallback !== void 0) {
+    return handOffFallbackSource(merged, { kind: "call" });
+  }
+  if (merged.fallback !== void 0) {
+    return handOffFallbackSource(merged, { kind: "defaults", engine });
+  }
+  return handOffFallbackSource(merged, { kind: "none" });
 }
 
 // src/progress.ts
@@ -23534,6 +23554,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
+    const fallbackSource = fallbackSourceOf(options);
     options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
     if (options.schema !== void 0) {
@@ -23572,6 +23593,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       engine.name,
       prompt,
       { ...dispatchOptions, ...phase !== null ? { phase } : {} },
+      fallbackSource,
       stripRoutes
     );
     const unsettled = { record: agentRecord, stage: "dispatching" };
@@ -23646,6 +23668,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
+    const fallbackSource = fallbackSourceOf(options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === void 0) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -23670,6 +23693,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       resolvedModel: null,
       resolvedEffort: null,
       stripRoutes,
+      fallbackSource,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
@@ -23753,7 +23777,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...turn.schema !== void 0 ? { schema: turn.schema } : {},
         ...options.strip !== void 0 ? { strip: options.strip } : {}
       };
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
+      const fallbackSource = state.turnCount === 0 ? state.fallbackSource : { kind: "later-turn" };
+      const agentRecord = this.#newAgentRecord(
+        agentId,
+        engine.name,
+        prompt,
+        recordOptions,
+        fallbackSource,
+        state.stripRoutes
+      );
       agentRecord.resolvedModel = state.resolvedModel;
       agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
@@ -25036,7 +25068,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd
     };
   }
-  #newAgentRecord(id, engine, prompt, options, stripRoutes = null) {
+  #newAgentRecord(id, engine, prompt, options, fallbackSource, stripRoutes = null) {
     return {
       id,
       engine,
@@ -25049,6 +25081,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
       fallback: options.fallback === void 0 ? null : options.fallback.map((target) => ({ ...target })),
+      fallbackSource,
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
@@ -25346,7 +25379,7 @@ function mergeAgentDefaults(defaults, agentOptions) {
   assertValidAgentOptions(agentOptions ?? {});
   const engine = agentOptions?.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
-  if (engineDefaults === void 0) {
+  if (engine === void 0 || engineDefaults === void 0) {
     return agentOptions ?? {};
   }
   const merged = { ...engineDefaults };
@@ -25355,7 +25388,7 @@ function mergeAgentDefaults(defaults, agentOptions) {
       merged[key] = value;
     }
   }
-  return merged;
+  return attributeMergedChain(merged, agentOptions?.fallback, engine);
 }
 function mergeSessionDefaults(defaults, sessionOptions) {
   const engineDefaults = typeof sessionOptions.engine === "string" ? defaults[sessionOptions.engine] : void 0;
@@ -25368,7 +25401,7 @@ function mergeSessionDefaults(defaults, sessionOptions) {
       merged[key] = value;
     }
   }
-  return merged;
+  return attributeMergedChain(merged, sessionOptions.fallback, sessionOptions.engine);
 }
 function describeWorkerFailure(error) {
   const presented = presentOperationalError(error);

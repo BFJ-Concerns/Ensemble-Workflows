@@ -1,4 +1,5 @@
 import { assertValidAgentOptions } from "./engine-option-validation.js";
+import { attributeMergedChain } from "./fallback-source.js";
 import { PreSpawnAuthorError, agentIdentityOf, isRunEnding } from "./errors.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 
@@ -292,7 +293,9 @@ function mergeAgentDefaults(
   assertValidAgentOptions(agentOptions ?? {});
   const engine = agentOptions?.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : undefined;
-  if (engineDefaults === undefined) {
+  if (engine === undefined || engineDefaults === undefined) {
+    // No block to merge: the options are the call's own, and the runtime
+    // attributes their chain to the call or to none without a hand-off.
     return agentOptions ?? {};
   }
   const merged: Record<string, unknown> = { ...engineDefaults };
@@ -301,7 +304,7 @@ function mergeAgentDefaults(
       merged[key] = value;
     }
   }
-  return merged as Partial<AgentOptions>;
+  return attributeMergedChain(merged as Partial<AgentOptions>, agentOptions?.fallback, engine);
 }
 
 /**
@@ -324,7 +327,7 @@ function mergeSessionDefaults(
       merged[key] = value;
     }
   }
-  return merged as unknown as WorkerSessionOptions;
+  return attributeMergedChain(merged as unknown as WorkerSessionOptions, sessionOptions.fallback, sessionOptions.engine);
 }
 
 /**

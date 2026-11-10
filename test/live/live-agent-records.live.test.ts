@@ -21,6 +21,7 @@ for (const engine of ["claude", "codex"] as const) {
   }, async () => {
     const directory = await mkdtemp(path.join(tmpdir(), `live-agent-records-${engine}-`));
     const processes: Array<Promise<unknown>> = [];
+    const acknowledgements = path.join(directory, "observed");
     const probes: HeldProbe[] = ["first", "queued", "held-first", "held-second"].map((name) => ({
       paths: probePaths(directory, name),
       evidence: { kind: "marker", content: `${name}_${randomUUID()}` },
@@ -28,7 +29,6 @@ for (const engine of ["claude", "codex"] as const) {
     }));
     try {
       const store = path.join(directory, "records");
-      const acknowledgements = path.join(directory, "observed");
       const workflow = path.join(directory, "workflow.mjs");
       await mkdir(store);
       await writeFile(acknowledgements, "");
@@ -100,10 +100,18 @@ for (const engine of ["claude", "codex"] as const) {
         assert.equal(held[0]!.attempts[0]!.transcript, held[1]!.attempts[0]!.transcript);
       }
     } finally {
-      // Release every possible hold even when an observation fails.
-      await Promise.all(probes.map((probe) => writeFile(probe.paths.release, "")));
-      await Promise.allSettled(processes);
-      await rm(directory, { recursive: true, force: true });
+      try {
+        // Release every possible hold even when an observation fails.
+        await Promise.all(probes.map((probe) => writeFile(probe.paths.release, "")));
+      } finally {
+        try {
+          // A failed run may never create all four records the reader expects.
+          await appendFile(acknowledgements, "stop\n");
+        } finally {
+          await Promise.allSettled(processes);
+          await rm(directory, { recursive: true, force: true });
+        }
+      }
     }
   });
 }

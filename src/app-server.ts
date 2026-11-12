@@ -1177,6 +1177,18 @@ export class CodexAppServerTransport implements RuntimeTransport {
     // itemText first, mirroring #completeTurn: a worker whose text arrived
     // as a completed item rather than deltas has still said it.
     this.#turns.delete(threadId);
+    // thread/start confirms configuration before the provider accepts the
+    // model. An explicit rejection invalidates that tentative served identity,
+    // including the live record already notified of it.
+    if (error instanceof AppServerRequestError && error.code === "modelNotFound") {
+      const identity = this.#transcripts.get(threadId);
+      if (identity !== undefined) {
+        identity.resolvedModel = null;
+        identity.resolvedEffort = null;
+        this.#threadIdentity.set(threadId, { resolvedModel: null, resolvedEffort: null });
+        this.#reportTurnIdentity(threadId, turn);
+      }
+    }
     if (turn.firstDeltaAt !== null) {
       attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
     }

@@ -493,7 +493,7 @@ test("files table hashes artefacts and cost roll-up stays per engine and per mod
     cliFlags: { jsonArgs: false }
   });
   await writer.recordAgent(agentRecord(1, "codex", null, 3));
-  const openCodeRecord = agentRecord(2, "opencode" as EngineName, "glm-5.2", 7, 0.002);
+  const openCodeRecord = agentRecord(2, "opencode" as EngineName, "glm-5.2", 7, 0.002, "USD");
   // Spend is keyed under the *served* model, never the requested pin.
   openCodeRecord.resolvedModel = "zai/glm-5.2";
   await writer.recordAgent(openCodeRecord);

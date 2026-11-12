@@ -1075,6 +1075,67 @@ test("a dispatch Claude Code refuses is a ClaudeDispatchError naming the directo
   }
 });
 
+for (const home of ["relative", "absolute", "default", "empty"] as const) {
+  test(`missing bypass consent gives an executable command for the resolved ${home} Claude home`, async () => {
+    const dir = await mkdtemp("/mnt/ai-data/scratch/ensemble-claude-consent-");
+    try {
+      const workerCwd = path.join(dir, "worker-worktree");
+      await mkdir(workerCwd);
+      const workerHome = path.join(dir, "worker home");
+      const selected = home === "relative"
+        ? path.relative(process.cwd(), path.join(dir, "relative-home"))
+        : path.join(dir, "Claude's $home `literal` ; config");
+      const configDir = home === "default" || home === "empty"
+        ? path.join(workerHome, ".claude") : path.resolve(selected);
+      const stubPath = path.join(dir, "Claude's command.mjs");
+      await writeFile(stubPath, `#!/usr/bin/env node
+        if (process.argv[2] === "--bg") {
+          process.stderr.write("--bg with bypassPermissions requires accepting the disclaimer first. Run " +
+            "claude --dangerously-skip-permissions once interactively.");
+          process.exit(1);
+        }
+        if (process.argv[2] === "agents") process.stdout.write("[]");
+        if (process.argv[2] === "--dangerously-skip-permissions") {
+          process.stdout.write(JSON.stringify(process.env.CLAUDE_CONFIG_DIR));
+        }
+      `);
+      await chmod(stubPath, 0o755);
+      const inheritedConfig = process.env.CLAUDE_CONFIG_DIR;
+      delete process.env.CLAUDE_CONFIG_DIR;
+      let controlPlane: DeliveryStubControlPlane;
+      try {
+        controlPlane = new DeliveryStubControlPlane({
+          claudeBin: stubPath, projectsDir: dir,
+          workerEnv: { HOME: workerHome, ...(home === "default" ? {} : { CLAUDE_CONFIG_DIR: home === "empty" ? "" : selected }) }
+        });
+      } finally {
+        if (inheritedConfig !== undefined) process.env.CLAUDE_CONFIG_DIR = inheritedConfig;
+      }
+      try {
+        await assert.rejects(
+          () => controlPlane.dispatch({ prompt: "hello", name: "consent-probe", cwd: workerCwd }),
+          (error: unknown) => {
+            assert.ok(error instanceof ClaudeDispatchError);
+            assert.ok(error.message.includes("lacks bypass-permissions consent"));
+            assert.ok(error.message.includes(configDir.replaceAll("'", "'\\''")));
+            assert.match(error.message, /--bg with bypassPermissions requires accepting the disclaimer first/);
+            const command = error.message.split("Run interactively: ")[1]?.replace(/; then retry\.$/, "");
+            assert.ok(command);
+            // Run from another ordinary shell directory with a different home.
+            const output = execFileSync("/bin/sh", ["-c", command], {
+              cwd: dir, env: { ...process.env, HOME: dir, CLAUDE_CONFIG_DIR: path.join(dir, "wrong-home") }, encoding: "utf8"
+            });
+            assert.equal(JSON.parse(output), configDir);
+            return true;
+          }
+        );
+      } finally { await controlPlane.close(); }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
 test("a dispatch the daemon accepted but never registered is a registration timeout, not a refusal", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-unregistered-"));
   try {

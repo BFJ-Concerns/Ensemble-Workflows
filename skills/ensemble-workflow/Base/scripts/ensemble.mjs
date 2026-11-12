@@ -20486,8 +20486,13 @@ var ClaudeCliControlPlane = class {
         }
         if (dispatch.result !== null) {
           if (!dispatch.result.ok) {
+            const account = launchAccount(dispatch.result);
+            const configDir = claudeConfigDirectory(this.#env, process.cwd());
+            const consentAdvice = /bypassPermissions requires accepting the disclaimer/i.test(
+              dispatch.result.stderr + "\n" + dispatch.result.stdout
+            ) ? `; CLAUDE_CONFIG_DIR=${shellQuote(configDir)} lacks bypass-permissions consent. Run interactively: CLAUDE_CONFIG_DIR=${shellQuote(configDir)} ${shellQuote(this.#claudeBin)} --dangerously-skip-permissions; then retry.` : "";
             throw new ClaudeDispatchError(
-              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + launchAccount(dispatch.result)
+              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + account + consentAdvice
             );
           }
           deadline ??= Date.now() + this.#dispatchTimeoutMs;

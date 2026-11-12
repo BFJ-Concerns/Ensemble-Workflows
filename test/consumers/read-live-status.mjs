@@ -10,10 +10,10 @@ import { createAcknowledgementWriter } from "./archive-helpers.mjs";
 
 const spec = JSON.parse(await readFile(process.argv[2], "utf8"));
 const agentKeys = ["id", "attempt", "engine", "label", "phase", "state", "startedAtMs", "firstEvidenceAtMs", "lastEvidenceAtMs", "finishedAtMs", "waitingOn", "requestedModel", "requestedEffort", "resolvedModel", "resolvedEffort", "transcript", "worktree", "spent", "failure"].sort();
-// Schema 4 finishes every worker with one of four dispositions, each counted under its own total.
+// Every finished worker carries one of four dispositions, each counted under its own total.
 const finishedCounts = { done: "done", failed: "failed", "cut-short": "cutShort", unsettled: "unsettled" };
 const finishedStates = Object.keys(finishedCounts);
-const snapshotKeys = ["schema", "runId", "pid", "archiveDir", "workflow", "state", "startedAt", "updatedAt", "finishedAt", "currentPhase", "totals", "engines", "agents", "holds", "owner"].sort();
+const snapshotKeys = ["schema", "runId", "pid", "archiveDir", "workflow", "state", "startedAt", "updatedAt", "finishedAt", "currentPhase", "totals", "agentCeiling", "engines", "agents", "holds", "owner"].sort();
 const child = spawn(process.execPath, [spec.bundle, spec.workflow], {
   cwd: spec.cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"]
 });
@@ -52,7 +52,7 @@ try {
       throw error;
     }
     snapshot = current;
-    assert.equal(current.schema, 4);
+    assert.equal(current.schema, 5);
     assert.deepEqual(Object.keys(current).sort(), snapshotKeys);
     assert.match(announcement.run_id, /^cwd:[0-9a-f]{24}:[0-9a-f-]{36}$/);
     assert.equal(current.runId, announcement.run_id.split(":")[2]);
@@ -87,9 +87,17 @@ try {
       for (const field of ["startedAtMs", "firstEvidenceAtMs", "lastEvidenceAtMs", "finishedAtMs", "spent"]) {
         assert.ok(agent[field] === null || (Number.isFinite(agent[field]) && agent[field] >= 0), field);
       }
-      const observed = workers.get(agent.id) ?? { states: [], attempts: [], evidenceTimes: [], attemptEvidence: {}, transcriptPaths: [], latest: null };
+      const observed = workers.get(agent.id) ?? { states: [], attempts: [], evidenceTimes: [], attemptEvidence: {}, transcriptPaths: [], admissionWaits: [], latest: null };
       workers.set(agent.id, observed);
       observed.latest = agent;
+      if (agent.waitingOn?.kind === "admission") {
+        assert.equal(agent.state, "queued");
+        assert.ok(["engine-cap", "agent-ceiling"].includes(agent.waitingOn.gate));
+        assert.ok(Number.isFinite(agent.waitingOn.sinceMs));
+        if (!observed.admissionWaits.some((wait) => wait.gate === agent.waitingOn.gate)) {
+          observed.admissionWaits.push({ ...agent.waitingOn, ceiling: current.agentCeiling, engineCap: current.engines[agent.engine].cap });
+        }
+      }
       if (!observed.states.includes(agent.state)) observed.states.push(agent.state);
       if (!observed.attempts.includes(agent.attempt)) observed.attempts.push(agent.attempt);
       const attemptTimes = observed.attemptEvidence[agent.attempt] ??= [];
@@ -158,10 +166,12 @@ try {
     assert.ok(observed, `worker ${expected.id} was never visible`);
     const agent = observed.latest;
     for (const [key, value] of Object.entries(expected)) {
-      if (["queued", "worktree", "growth", "live"].includes(key)) continue;
+      if (["queued", "worktree", "growth", "live", "admissionGate"].includes(key)) continue;
       assert.deepEqual(agent[key], value, `worker ${expected.id}: ${key}`);
     }
     if (expected.queued) assert.ok(observed.states.includes("queued"));
+    if (expected.admissionGate) assert.ok(observed.admissionWaits.some((wait) => wait.gate === expected.admissionGate),
+      `worker ${expected.id} never published ${expected.admissionGate}`);
     if (expected.growth) assert.ok(observed.evidenceTimes.length > 1);
     if (expected.worktree) {
       assert.ok(path.isAbsolute(agent.worktree));

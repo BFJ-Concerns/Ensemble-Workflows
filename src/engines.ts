@@ -40,7 +40,7 @@ import type { OpenCodeRunner } from "./opencode-engine.js";
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode-model-registry.js";
 import type { ResourceRequirement } from "./resource-preflight.js";
 import type {
-  AgentWaitSnapshot,
+  BackgroundTaskWaitSnapshot,
   EngineName,
   EngineConcurrencyCaps,
   EngineWorkerEnvironment,
@@ -132,7 +132,7 @@ export interface EngineAttemptContext extends LiveTranscriptObserver, TurnProgre
    * (`null`) once it ends. Observability for the live status only — the
    * durable account rides the result's `backgroundWaits`.
    */
-  onWaiting?: (wait: AgentWaitSnapshot | null) => void;
+  onWaiting?: (wait: BackgroundTaskWaitSnapshot | null) => void;
 }
 
 export interface EngineAttemptResult extends TurnResult {

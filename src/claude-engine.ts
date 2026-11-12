@@ -51,7 +51,7 @@ import type {
   EngineWorkerSession
 } from "./engines.js";
 import type {
-  AgentWaitSnapshot,
+  BackgroundTaskWaitSnapshot,
   BackgroundTaskWait, JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
 
 /**
@@ -931,7 +931,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * outstanding closes its wait. Returns what the worker is waiting on now
    * (the earliest still-open wait), or null.
    */
-  #noteWaits(outstanding: readonly { id: string; description: string }[]): AgentWaitSnapshot | null {
+  #noteWaits(outstanding: readonly { id: string; description: string }[]): BackgroundTaskWaitSnapshot | null {
     const now = new Date();
     const open = new Set(outstanding.map((task) => task.id));
     for (const wait of this.#waits) {

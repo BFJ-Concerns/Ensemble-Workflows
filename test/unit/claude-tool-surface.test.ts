@@ -103,6 +103,17 @@ test("confirmation refuses a leaked tool, a lost unrelated tool, or a changed ve
   assert.match(prepared.enforcement.agents?.detail ?? "", /Claude Code 2\.1\.322/);
 });
 
+test("the skills enforcement detail names the follow-up slash-command boundary", () => {
+  const inventory = surface(["Bash", "Skill", "Agent"]);
+  for (const strip of [["skills"], ["skills", "agents"]] as const) {
+    const derived = deriveClaudeStrip(inventory, strip);
+    const prepared = confirmClaudeStrip(derived, surface(strip.length === 1 ? ["Bash", "Agent"] : ["Bash"]));
+    assert.match(prepared.enforcement.skills?.detail ?? "", /permissions\.deny .*"Skill"/);
+    assert.match(prepared.enforcement.skills?.detail ?? "", /follow-up slash-command expansion is not covered; a leading \/skill line can still load a skill/);
+    assert.doesNotMatch(prepared.enforcement.agents?.detail ?? "", /follow-up slash-command/);
+  }
+});
+
 /** A probe that offers `names` minus the request's denies, counting its calls. Deny rules do not reach `advisor`; its removal variable does. */
 function countingProbe(names: string[], cliVersion = "2.1.322"): { calls: ClaudeToolSurfaceProbeRequest[]; probe: (request: ClaudeToolSurfaceProbeRequest) => Promise<ClaudeToolSurface> } {
   const calls: ClaudeToolSurfaceProbeRequest[] = [];

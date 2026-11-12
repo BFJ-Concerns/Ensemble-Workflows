@@ -136,6 +136,8 @@ export type {
   SettingLayer
 } from "./ambient-settings.js";
 export type {
+  AdmissionView,
+  AgentCeilingSnapshot,
   AgentState,
   BudgetView,
   DispositionCounts,
@@ -148,7 +150,11 @@ export type {
   WorkerDisposition
 } from "./progress.js";
 export type {
+  AdmissionGate,
+  AdmissionWaitSnapshot,
   AgentOptions,
+  AgentWaitSnapshot,
+  BackgroundTaskWaitSnapshot,
   Budget,
   EngineBudgetCeilings,
   EngineConcurrencyCaps,

@@ -636,15 +636,16 @@ export class OpenCodeModelNotRegisteredError extends AgentOptionRejectedError {
   }
 }
 
-/** The registry's names, or — when it has none — where the operator declares them. */
+/** The registry's choices and the source the operator can edit to declare more. */
 function registeredOpenCodeModels(registry: OpenCodeModelRegistry): string {
   const registered = registry.names();
-  if (registered.length > 0) {
-    return `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`;
-  }
-  return registry.source.kind === "machine-config"
-    ? `no opencode models are declared; declare them under opencode_models in the machine configuration (${registry.source.file})`
-    : "no opencode models are declared; supply model entries through openCodeModels or the adapter's modelRegistry";
+  const choices = registered.length > 0
+    ? `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
+    : "no opencode models are declared";
+  const remedy = registry.source.kind === "machine-config"
+    ? `declare them under opencode_models in the machine configuration (${registry.source.file})`
+    : "supply model entries through openCodeModels or the adapter's modelRegistry";
+  return `${choices}; ${remedy}`;
 }
 
 function renderDiagnostic(value: unknown): string {

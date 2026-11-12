@@ -36,6 +36,38 @@ function agent(id: number, attempts: RollupAttemptView[], mayHaveUnlistedAttempt
   };
 }
 
+test("provider costs need a usable amount and currency for every usage event", () => {
+  const priced = { ...usage, raw: { cost: 0.25, currency: "USD" } };
+  const costOf = (events: TokenUsageEvent[]) => buildCostRollup([
+    agent(1, [attempt(1, { tokenUsageEvents: events })])
+  ]).codex?.["gpt-6-luna"]?.cost;
+
+  for (const raw of [
+    {}, { cost: 0 }, { cost: 0.25, currency: null },
+    { cost: 0.25, currency: "" }, { cost: 0.25, currency: "  " },
+    { cost: -1, currency: "USD" }, { cost: Infinity, currency: "USD" },
+    { cost: NaN, currency: "USD" }, { cost: "0.25", currency: "USD" }
+  ]) {
+    const unpriced = { ...usage, raw } as TokenUsageEvent;
+    for (const events of [[unpriced], [priced, unpriced], [unpriced, priced]]) {
+      assert.deepEqual(costOf(events), { unavailable: "no-provider-cost-reported" }, JSON.stringify(raw));
+    }
+  }
+  assert.deepEqual(costOf([{ ...usage, raw: { cost: 0, currency: "USD" } }]), {
+    amount: 0, currency: "USD", source: "provider-reported"
+  });
+  assert.deepEqual(costOf([priced, priced]), { amount: 0.5, currency: "USD", source: "provider-reported" });
+  assert.deepEqual(costOf([priced, { ...usage, raw: { cost: 1, currency: "GBP" } }]), {
+    unavailable: "unlike-currencies"
+  });
+  assert.deepEqual(costOf([priced, usage, { ...usage, raw: { cost: 1, currency: "GBP" } }]), {
+    unavailable: "unlike-currencies"
+  });
+  assert.deepEqual(costOf(Array.from({ length: 2 }, () => ({ ...usage, raw: { cost: Number.MAX_VALUE, currency: "USD" } }))), {
+    unavailable: "no-provider-cost-reported"
+  });
+});
+
 test("a leaf whose every attempt reported its usage is a complete total", () => {
   const rollup = buildCostRollup([agent(1, [attempt(1)])]);
   const leaf = rollup.codex?.["gpt-6-luna"];
@@ -140,6 +172,27 @@ test("a settled same-engine attempt can still use its agent's known model", () =
   const leaf = rollup.codex?.["gpt-6-luna"];
   assert.equal(leaf?.complete, true);
   assert.equal(leaf?.tokens !== undefined && "totalTokens" in leaf.tokens ? leaf.tokens.totalTokens : null, 28);
+});
+
+test("a rejected Codex model cannot borrow a successful attempt's served identity", () => {
+  for (const resolvedModel of [null, "rejected-model"]) {
+    const rejected = attempt(1, { resolvedModel, failureKind: "model-not-found", tokenUsageEvents: [] });
+    const successful = attempt(2);
+    for (const attempts of [[rejected, successful], [successful, rejected]]) {
+      const rollup = buildCostRollup([{ ...agent(1, attempts), resolvedModel: "gpt-6-luna" }]);
+      assert.deepEqual(rollup.codex?.["gpt-6-luna"], buildCostRollup([agent(1, [successful])]).codex?.["gpt-6-luna"]);
+      assert.equal(rollup.codex?.["rejected-model"], undefined);
+      assert.deepEqual(rollup.codex?.unresolved?.unobserved, [
+        { agent: 1, attempt: 1, reason: "engine-reported-no-usage", measured: "none" }
+      ]);
+    }
+  }
+  const archived = rollupViewOfArchivedRecord(archivedRecord("complete", [
+    { ...archivedAttempt("failed"), failure: { kind: "model-not-found" }, resolved_model: "rejected-model" },
+    { ...archivedAttempt("complete"), attempt: 2, resolved_model: "gpt-6-luna", token_usage_events: [usage] }
+  ], { resolved_model: "gpt-6-luna" }));
+  assert.notEqual(archived, null);
+  assert.deepEqual(Object.keys(buildCostRollup([archived!]).codex ?? {}).sort(), ["gpt-6-luna", "unresolved"]);
 });
 
 test("only the attempt the run's close cut short reads interrupted; a refusal spent nothing", () => {

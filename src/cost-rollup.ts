@@ -44,7 +44,7 @@ export interface CostRollupLeaf {
 /** Provider-reported spend, summed across the leaf's own usage events. */
 export interface ReportedCost {
   amount: number;
-  currency: string | null;
+  currency: string;
   /** Always `provider-reported`: the harness has no pricing table. */
   source: "provider-reported";
 }
@@ -308,7 +308,7 @@ export function buildCostRollup(agents: readonly RollupAgentView[]): CostRollup 
     const key = `${engine}\u0000${model}`;
     let bucket = buckets.get(key);
     if (bucket === undefined) {
-      bucket = { engine, model, tokens: null, cost: { amount: 0, currency: null, reported: false, unlike: false }, unobserved: [] };
+      bucket = { engine, model, tokens: null, cost: { amount: 0, currency: null, unpriced: false, unlike: false }, unobserved: [] };
       buckets.set(key, bucket);
     }
     return bucket;
@@ -325,7 +325,11 @@ export function buildCostRollup(agents: readonly RollupAgentView[]): CostRollup 
     const lastReporter = agent.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.engine ?? agent.engine;
     for (const attempt of agent.attempts) {
       const borrowed = attempt.settled && attempt.engine === lastReporter ? agent.resolvedModel : null;
-      const bucket = bucketFor(attempt.engine, attempt.resolvedModel ?? borrowed ?? "unresolved");
+      // A provider's rejection overrides configured or borrowed identity,
+      // including stale identity retained in an archived attempt.
+      const model = attempt.engine === "codex" && attempt.failureKind === "model-not-found"
+        ? null : attempt.resolvedModel ?? borrowed;
+      const bucket = bucketFor(attempt.engine, model ?? "unresolved");
       const summary = summariseUsage(attempt.engine, attempt.tokenUsageEvents);
       if (summary !== null) {
         bucket.tokens = bucket.tokens === null ? summary : addUsageSummary(bucket.tokens, summary);
@@ -381,7 +385,8 @@ interface Bucket {
 interface CostAccumulator {
   amount: number;
   currency: string | null;
-  reported: boolean;
+  /** A usage event without a usable price prevents publishing a partial charge as a total. */
+  unpriced: boolean;
   /** Latched once two events disagree on currency; never unlatched. */
   unlike: boolean;
 }
@@ -390,7 +395,7 @@ function publishedCost(accumulator: CostAccumulator): CostRollupLeaf["cost"] {
   if (accumulator.unlike) {
     return { unavailable: "unlike-currencies" };
   }
-  if (!accumulator.reported) {
+  if (accumulator.unpriced || accumulator.currency === null || !Number.isFinite(accumulator.amount)) {
     return { unavailable: "no-provider-cost-reported" };
   }
   return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
@@ -401,17 +406,17 @@ function addProviderCost(target: CostAccumulator, event: TokenUsageEvent): void 
     return;
   }
   const cost = event.raw.cost;
-  if (typeof cost !== "number" || !Number.isFinite(cost)) {
+  const currency = typeof event.raw.currency === "string" && event.raw.currency.trim().length > 0 ? event.raw.currency : null;
+  if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0 || currency === null) {
+    target.unpriced = true;
     return;
   }
-  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
-  if (target.currency !== null && currency !== null && currency !== target.currency) {
+  if (target.currency !== null && currency !== target.currency) {
     target.unlike = true;
     return;
   }
   target.amount += cost;
-  target.reported = true;
-  if (currency !== null && target.currency === null) {
+  if (target.currency === null) {
     target.currency = currency;
   }
 }

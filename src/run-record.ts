@@ -1,5 +1,5 @@
 import { createHash, type Hash } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -769,7 +769,7 @@ export class RunRecordWriter {
           arch: os.arch()
         },
         node: process.version,
-        tools: await toolVersions()
+        tools: await toolVersions(archiveDir)
       },
       harness: {
         package_name: packageInfo.name,
@@ -1931,14 +1931,33 @@ async function findHarnessRoot(): Promise<string | null> {
   }
 }
 
-async function toolVersions(): Promise<Record<string, string | null>> {
+async function toolVersions(archiveDir: string): Promise<Record<string, string | null>> {
   const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
     commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
-    commandVersion("opencode", ["--version"])
+    queryOpenCodeVersion(archiveDir)
   ]);
   return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
+}
+
+/**
+ * opencode initialises its XDG directories even for --version. Metadata
+ * collection owns these writes: it must not touch the launcher's homes
+ * before the worker's resource preflight has judged its own placement.
+ */
+async function queryOpenCodeVersion(archiveDir: string): Promise<string | null> {
+  const scratch = await mkdtemp(path.join(archiveDir, ".opencode-version-"));
+  try {
+    const env = { ...process.env };
+    for (const key of ["XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR", "TMP", "TEMP"]) {
+      env[key] = path.join(scratch, key);
+      await mkdir(env[key]);
+    }
+    return await commandVersion("opencode", ["--version"], env);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 }
 
 async function commandVersion(command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string | null> {

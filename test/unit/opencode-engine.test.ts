@@ -9,7 +9,7 @@ import test from "node:test";
 
 import { CommandContainment } from "../../src/contained-command.js";
 import { NoWorkerScopes } from "../../src/worker-scopes.js";
-
+import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
 import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
 import { testOpenCodeModelRegistry, testOpenCodeModels } from "../fixtures/opencode/models.js";
 
@@ -589,7 +589,7 @@ test("opencode requires a registered model before spawning", () => {
     () => adapter.createInvocation("missing", { timeoutMs: 1_000 }),
     (error: unknown) => {
       assert.ok(error instanceof OpenCodeModelRequiredError);
-      assert.match(error.message, /expected one of "glm-5\.2", "local-model"$/);
+      assert.match(error.message, /expected one of "glm-5\.2", "local-model"; supply model entries through openCodeModels or the adapter's modelRegistry$/);
       return true;
     }
   );
@@ -697,6 +697,35 @@ test("empty opencode registries name the config resolved for custom, unset and e
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("non-empty opencode registries name the rejected model, choices and declaration source", () => {
+  for (const source of [
+    { kind: "machine-config", file: "/machine/config with spaces/ensemble/config.json" },
+    { kind: "caller" }
+  ] as const) {
+    const registry = createOpenCodeModelRegistry(testOpenCodeModels, source);
+    const runner = new FakeOpenCodeRunner();
+    const adapter = new OpenCodeEngineAdapter({ runner, modelRegistry: registry });
+    for (const refuse of [
+      () => validateEngineDefaults("opencode", { model: "unregistered-first-model" }, registry),
+      () => adapter.createInvocation("hello", { model: "unregistered-first-model" })
+    ]) {
+      assert.throws(refuse, (error: unknown) => {
+        assert.ok(error instanceof OpenCodeModelNotRegisteredError);
+        assert.match(error.message, /"unregistered-first-model" is not registered/);
+        for (const name of registry.names()) assert.ok(error.message.includes(JSON.stringify(name)));
+        if (source.kind === "machine-config") {
+          assert.ok(error.message.includes(`opencode_models in the machine configuration (${source.file})`));
+        } else {
+          assert.match(error.message, /openCodeModels or the adapter's modelRegistry/);
+          assert.ok(!error.message.includes("machine configuration"));
+        }
+        return true;
+      });
+    }
+    assert.equal(runner.runs.length, 0);
   }
 });
 
@@ -1130,6 +1159,10 @@ test("opencode cache writes survive the engine path as a separate archive roll-u
       assert.equal(tokens.cacheReadTokens, 13);
       assert.equal(tokens.cacheCreationTokens, 5);
       assert.equal(tokens.totalTokens, 30);
+      // opencode supplies a scalar cost without a currency; it is not a priced charge.
+      assert.deepEqual(manifest.cost_rollup.opencode["openrouter/z-ai/glm-5.2"].cost, {
+        unavailable: "no-provider-cost-reported"
+      });
     `, writer.archiveDir]);
   } finally {
     await runtime.close();

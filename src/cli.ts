@@ -1800,17 +1800,10 @@ function isBooleanTuningOption(value: string): boolean {
 }
 
 function isKnownInlineOption(value: string): boolean {
-  return (
-    value.startsWith("--json-args=") ||
-    value.startsWith("--budget=") ||
-    value.startsWith("--agent-ceiling=") ||
-    value.startsWith("--concurrency=") ||
-    value.startsWith("--timeout=") ||
-    value.startsWith("--strip=") ||
-    value.startsWith("--caller-identity=") ||
-    value.startsWith("--worker-scope=") ||
-    value.startsWith("--hold-scope=")
-  );
+  if (!value.startsWith("--") || !value.includes("=")) {
+    return false;
+  }
+  return Object.hasOwn(WORKFLOW_TUNING_OPTIONS, value.slice(2, value.indexOf("=")));
 }
 
 async function parseJsonArgs(value: string, cwd: string): Promise<unknown> {

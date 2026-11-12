@@ -2556,7 +2556,7 @@ test("blank prompt refusals name the absolute launcher from another directory", 
 
 test("unknown options name the invoked launcher path for agent and workflow runs", async () => {
   const launcher = fileURLToPath(new URL("../../../skills/ensemble-workflow/Base/scripts/ensemble.mjs", import.meta.url));
-  const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-option-path-");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-option-path-"));
   const invoked = path.join(directory, "operator's launcher.mjs");
   try {
     await symlink(launcher, invoked);

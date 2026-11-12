@@ -247,6 +247,49 @@ test("Claude reports a mid-turn loss before settling its sole attempt and keeps 
   } finally { await runtime.close(); await f.dispose(); }
 });
 
+test("Claude loss after the opening transcript settles the creating send once and stays lost", { timeout: 10_000 }, async () => {
+  const f = await fixture();
+  f.plane.pending = true;
+  const runtime = new EnsembleRuntime({ defaultMaxAttempts: 3,
+    engines: new EngineRegistry([new ClaudeEngineAdapter({ controlPlane: f.plane, config: { pollIntervalMs: 1 } })]) });
+  const records: RuntimeAgentRecord[] = [];
+  const losses: unknown[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async record => { records.push(structuredClone(record)); },
+    recordSessionEvent: async event => { losses.push(event); }
+  } as RunRecordWriter);
+  const held = runtime.createWorkerSession({ engine: "claude" });
+  const firstLife = Promise.withResolvers<void>();
+  const disappear = Promise.withResolvers<void>();
+  const poll = f.plane.poll.bind(f.plane);
+  f.plane.poll = async handle => {
+    firstLife.resolve();
+    await disappear.promise;
+    return poll(handle);
+  };
+  try {
+    const pending = held.send("first");
+    // The engine polls only after reading and verifying its opening receipt.
+    await firstLife.promise;
+    assert.equal(held.lost, false);
+    await appendFile(await f.plane.transcriptPath(), JSON.stringify({ type: "assistant", message: {
+      content: [{ type: "text", text: "opening partial answer" }], stop_reason: "tool_use"
+    } }) + "\n");
+    await writeFile(f.mode, "absent");
+    disappear.resolve();
+    assert.equal(await pending, null);
+    assert.equal(held.lost, true);
+    assert.equal(records.at(-1)?.attempts.length, 1);
+    assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "session-lost");
+    assert.equal(records.at(-1)?.rawOutput, "opening partial answer");
+    assert.equal(await held.send("second"), null);
+    assert.equal(records.at(-1)?.attempts.length, 1);
+    assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "session-lost");
+    assert.equal(losses.length, 1);
+    assert.equal(f.plane.steers, 1, "a lost opening worker received more input");
+  } finally { disappear.resolve(); await runtime.close(); await f.dispose(); }
+});
+
 test("a throwing Claude session-loss observer cannot fail later attempts or repeat the notice", async () => {
   const f = await fixture(10);
   const adapter = new ClaudeEngineAdapter({ controlPlane: f.plane, cwd: f.dir });

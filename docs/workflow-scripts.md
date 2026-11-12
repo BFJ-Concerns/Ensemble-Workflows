@@ -893,7 +893,7 @@ await builder.close();
   `session-lost` attempt without a retry, and resolves `null`; the context
   the worker held is gone, so start a fresh session and brief it again.
   `false` means only that no loss has been observed.
-  On Claude, loss watching starts after a native turn has completed. A worker
+  On Claude, loss watching starts when the opening transcript appears. A worker
   that disappears before producing its opening transcript retains
   `claude-first-life-timeout`, so the creating send can retry or use its
   fallback chain.

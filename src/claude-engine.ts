@@ -274,8 +274,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #nudges = 0;
 
   #multiTurn: boolean;
-  /** An opening failure is retryable until a native turn has completed. */
-  #nativeTurnCompleted = false;
+  /** A worker can fail for first life only until its opening transcript appears. */
+  #nativeLifeObserved = false;
   #sessionObserver: EngineSessionObserver | undefined;
   #lost: EngineSessionLoss | null = null;
   #lossController = new AbortController();
@@ -365,10 +365,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     // close() must be able to await a live attempt so cancellation is not
     // "torn down under a caller still running": track the settlement.
-    const settlement = this.#runAttempt(context).then((result) => {
-      if (result.attemptFailure === undefined) this.#nativeTurnCompleted = true;
-      return this.#withObservedIdentity(result);
-    });
+    const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#usageAtSettlement !== null) {
@@ -400,7 +397,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // until it starts collecting a pending turn or reads a new input mark.
     let fromIndex: number | null = this.#multiTurn && this.#handle !== null ? null : 0;
     try {
-      if (this.#multiTurn && this.#nativeTurnCompleted && this.#handle !== null && this.#pending === null) {
+      if (this.#multiTurn && this.#nativeLifeObserved && this.#handle !== null && this.#pending === null) {
         // A send can beat the watch to a disappearance. Confirm the same
         // three successful absences before touching the valve or transcript.
         for (let misses = 0; misses < CLAUDE_ROSTER_ABSENCE_BOUND; misses++) {
@@ -532,7 +529,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // remain available.
         // Other one-shot operational failures end their session. Held-session
         // teardown belongs to close(): redispatch would lose continuity.
-        if (this.#multiTurn && !this.#nativeTurnCompleted && error instanceof ClaudeFirstLifeTimeoutError) {
+        if (this.#multiTurn && !this.#nativeLifeObserved && error instanceof ClaudeFirstLifeTimeoutError) {
           // Nothing ever established this worker. A creating-turn retry
           // must dispatch afresh rather than keep its dead pending opening.
           await this.#teardown();
@@ -565,7 +562,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   }
 
   #noteLost(loss: EngineSessionLoss): void {
-    if (!this.#multiTurn || !this.#nativeTurnCompleted || this.#closed || this.#lost !== null) return;
+    if (!this.#multiTurn || !this.#nativeLifeObserved || this.#closed || this.#lost !== null) return;
     this.#lost = loss;
     this.#lossController.abort();
     try { this.#sessionObserver?.onLost(loss); }
@@ -601,7 +598,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
-      ...(this.#multiTurn ? { keepAlive: true, lossReady: () => this.#nativeTurnCompleted,
+      ...(this.#multiTurn ? { keepAlive: true, lossReady: () => this.#nativeLifeObserved,
         onLost: (loss: EngineSessionLoss) => this.#noteLost(loss) } : {}),
       ...stripSettings,
       ...(this.#options.lean === true ? { lean: true } : {})
@@ -890,6 +887,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null) {
+        // First life establishes the worker even while its opening turn
+        // is unfinished or its receipt is still being checked.
+        this.#nativeLifeObserved = true;
         if (!sawLife && opening !== undefined) {
           // A new session's first life, and the first moment its opening
           // prompt's receipt can be read: nothing the session writes is
@@ -1269,6 +1269,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #teardown(): Promise<void> {
     const handle = this.#handle;
     this.#handle = null;
+    this.#nativeLifeObserved = false;
     // A stopped session runs nothing, so nothing submitted to it is pending,
     // and the turn's prompt is in no session: the next launch submits it anew.
     this.#pending = null;

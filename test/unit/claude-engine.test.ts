@@ -1217,10 +1217,10 @@ for (const unavailable of ["session", "valve"] as const) {
           const result = session === null ? await runtime.agent("decide", { engine: "claude" }) : await session.send("decide");
           assert.equal(result, held ? null : "recovered");
           assert.equal(controlPlane.dispatchCount, held ? 1 : 2);
-          // The opening is still blocked and has never completed a native
-          // turn, so a refused nudge retains its ordinary bounded retry.
-          assert.equal(controlPlane.steerCount, held ? 2 : 1);
-          if (held) assert.equal(session?.lost, false);
+          // Its opening transcript established the worker: absence is
+          // terminal even though the creating turn never completed.
+          assert.equal(controlPlane.steerCount, held && unavailable === "valve" ? 2 : 1);
+          if (held) assert.equal(session?.lost, unavailable === "session");
           if (!held) assert.match(controlPlane.dispatched[1]?.prompt ?? "", /previous attempt failed \(claude-valve-error\)/);
           await session?.close();
           assert.equal(controlPlane.stopCount, held ? 1 : 2);

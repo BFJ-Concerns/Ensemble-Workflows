@@ -149,22 +149,31 @@ A failed worker is already its call's `null`. A thunk or stage that throws for
 any other reason also becomes `null` in the results, and is logged. Check
 fan-in results for `null`.
 
-Three kinds of error propagate instead. One is errors in how the script was
-written, raised before any worker spawns: a rejected `agent()` option, a
+Pre-spawn validation errors and dispatch refusals propagate instead. These
+include errors in how the script was written: a rejected `agent()` option, a
 malformed schema, an unresolvable `workflow()` reference or non-JSON `workflow()`
 arguments, a nesting violation, and a child workflow's load-time error (when
 several of a call's options fail the option check, one error names them all).
+They also include environmental dispatch refusals, such as
+`ResourcePreflightRefusedError`, `WorktreePlacementRejectedError`, or an
+engine substrate refusal; see [Failures](#failures).
+
+Validation is per call. An invalid `agent()` option in `parallel()` can be
+rejected after siblings have already started. If the error is uncaught, the
+run fails and cuts those siblings short; their spend and side effects are
+not undone.
 
 A budget refusal (`BudgetExceededError`) also propagates when a dispatch or
 session turn is not admitted. If uncaught, it fails the run; the manifest and
-completion sentinel record the refusal as the run's error. When a fallback
-engine's budget refuses re-admission, the error also names every earlier
+completion sentinel record the refusal as the run's error. The message names
+the refused call, spend, ceiling and remaining amount (zero when exhausted).
+When a fallback engine's budget refuses re-admission, the error also names every earlier
 refused target, its classification rule and a bounded diagnostic. These
 accounts reach the partial envelope and stderr, so the budget refusal stays
 legible beside the failures that advanced the chain.
 
-The third is the run's own ending — an interrupt, the whole-run timeout, the
-launcher closing the run under a leg still in flight — which throws through
+The run's own ending — an interrupt, the whole-run timeout, the launcher
+closing the run under a leg still in flight — also propagates through
 `parallel()` and `pipeline()` as it does through a bare `await`, so a body
 never resumes past the combinator to run further code (commit, push, write a
 results file) on a run that has already begun ending. Only a worker's own
@@ -217,7 +226,8 @@ beside the usage totals — how many findings a check accepted, or how many fix
 rounds ran: `await tally("fix rounds", 3)`. Ensemble cannot know which worker
 checked which, but the script can, and a tally is how it records that. Values
 must be finite numbers; recording a name again replaces its value; a blank
-name or a non-finite value throws.
+name or a non-finite value throws. A rejected value includes its type; strings
+are quoted so `"3"` cannot be mistaken for the number `3`.
 
 ### `budget`, `worktrees`, and `args`
 
@@ -543,7 +553,11 @@ a transcript normally fails as `claude-first-life-timeout`, an availability
 failure. A retained launch whose cleanup is unconfirmed remains an
 unclassified delivery failure even without a transcript, so it cannot advance
 fallback.
-A model context rejection after exact delivery retains its own diagnostic.
+A model context rejection after exact delivery retains its own diagnostic
+under failure kind `claude-worker-diagnostic`. With API error evidence in
+the transcript, its classification is `unclassified` with rule
+`claude.api-refusal` unless the status or code matches an availability rule.
+Without API error evidence, the rule is `claude.client-diagnostic`.
 Claude client rejections, including rejected credentials and context limits,
 end the request without a blocked-worker nudge, even when the roster reports
 that the worker is awaiting input.

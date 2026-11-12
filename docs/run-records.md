@@ -38,8 +38,9 @@ entry. Explicit status directories must already exist. Writes
 are atomic, so a reader never sees a half-written file.
 
 After the first successful write and before workflow execution, the CLI prints
-`[status-file] {"run_id":…, "status_path":…}` on stderr. A supervisor can
-follow that path without knowing the working directory's layout or searching
+`[status-file] {"run_id":…, "status_path":…}` on stderr. `status_path` is
+absolute, including when `XDG_DATA_HOME` or `ENSEMBLE_STATUS_DIR` is relative.
+A supervisor can follow that path without knowing the working directory's layout or searching
 the archive. Its `run_id` is the public `cwd:<namespace-hash>:<run-uuid>`
 identity, identical to the archive announcement and manifest when recording is
 on, and namespaced the same way when recording is off. The snapshot's `runId`
@@ -544,7 +545,10 @@ families; their versions are listed in [Schema versions](#schema-versions).
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.
 - `caller_identity`: opaque identity of the invoking session, or `null`.
-- `namespace`: namespace strategy, id, hash, and local material.
+- `namespace`: namespace strategy, id, hash, and local material. The strategy
+  label `git-root-realpath-sha256` names the combined rule in
+  [Run identity](#run-identity), including its `realpath(cwd)` fallback outside
+  a git repository; it does not prove a git root was found.
 - `status`: `"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
   `"interrupted"`, `"incomplete"` (the run ended but files it archived were
   gone at the seal), or `"abandoned"` (written only by another run's sweep).
@@ -634,7 +638,8 @@ families; their versions are listed in [Schema versions](#schema-versions).
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. See
   [Token usage and cost](#token-usage-and-cost).
 - `files`: integrity table for archived artefacts, each with `path`, `size`,
-  and `sha256`. `manifest.json` is excluded; it carries its own digest instead.
+  and `sha256`. `manifest.json` and `completion-sentinel.json` are excluded;
+  each carries its own digest instead.
 - `integrity`: `algorithm` (`"sha256"`), `recipe` (the digest rule, stated in
   the archive itself), `manifest_sha256` (the manifest's own digest), and
   `files_lost` — one `{ path, reason }` entry, sorted by path, for each
@@ -675,8 +680,11 @@ handle. A run killed before it seals can have no result file. Its fields are:
 A partial-result envelope has `partial: true`, `reason` (`"failed"`,
 `"timed-out"`, or `"interrupted"`), `error` (`{ kind, message }`), and
 `completed`: an array of `{ id, engine, label, phase, output }` for workers
-that finished successfully, in completion order. `label` and `phase` can be
-`null`; `output` is the worker's validated value or text. The script's
+that finished successfully, in completion order, including those that settled
+during teardown on any engine. The CLI prints this envelope after worker
+teardown, so it includes the same successful workers the sentinel counts.
+`label` and `phase` can be `null`; `output` is the worker's validated value or
+text. The script's
 unfinished return value cannot be recovered from this envelope. A teardown
 failure after a successful body can leave that body's value in `value` while
 `status`, `exit_code` and `error` report the teardown failure. Use those
@@ -829,7 +837,8 @@ The fields present throughout a record's lifetime are:
   `in-progress`, or was abandoned after its run was killed — so the attempt
   in flight and its spend are unobserved), `"no-attempt-ran"`,
   `"substrate-never-started"` (every attempt was refused before a worker
-  existed), `"worker-interrupted"` or `"worker-timed-out"` (the run cut the
+  existed, including a resource-preflight refusal), `"worker-interrupted"` or
+  `"worker-timed-out"` (the run cut the
   worker short before usage was reported), or `"engine-reported-no-usage"`
   (a settled worker supplied no usage). Any usage the engine did report,
   including zero tokens, is retained as a summary instead of an absence reason.
@@ -906,7 +915,10 @@ The fields present throughout a record's lifetime are:
     with it (such as the last status after its own retries ran out), or
     `null`. The whole field is `null` when Codex supplied no diagnostic.
   - `worker_exit`: `{ exit_code, signal }` when the worker process died
-    rather than returned; `null` otherwise.
+    rather than returned; `null` otherwise. On Codex this describes the shared
+    app-server process. An attempt refused as `CodexSubstrateRefusedError`
+    can carry that server's exit evidence even though no worker thread
+    started for the attempt.
   - `background_waits`: the background tasks the worker started and Ensemble
     waited on (including Claude native `Workflow` tasks), each
     `{ task_id, description, observed_at, ended_at }`

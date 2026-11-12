@@ -1459,7 +1459,7 @@ test("ensemble agent rejects misplaced tuning flags, duplicate scalar flags, and
   const cases = [
     {
       argv: ["--timeout", "1000", "agent", "--engine=codex", "prompt"],
-      diagnostic: "Tuning flags must appear after ensemble agent, not before it"
+      diagnostic: "ensemble: Run option --timeout must come after agent: ensemble agent --timeout 1000 --engine <engine> <prompt>"
     },
     {
       argv: ["agent", "--engine=codex", "prompt", "--timeout", "1000"],
@@ -2414,7 +2414,7 @@ test("CLI rejects a tuning flag after the script path with pass-through guidance
 
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
-  assert.match(stderr.text(), /Tuning flag --json-args appears after the script path/);
+  assert.match(stderr.text(), /Run option --json-args appears after the script path/);
   assert.match(stderr.text(), /put `--` before the script path to pass it through/);
 });
 
@@ -3605,7 +3605,7 @@ test("a direct agent whose --cwd is missing is rejected the same way, before any
 
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
-  assert.equal(stderr.text(), `--cwd must name an existing directory; got ${missingCwd}\n`);
+  assert.equal(stderr.text(), `ensemble agent: --cwd must name an existing directory; got ${missingCwd}; choose an existing directory or omit --cwd\n`);
   assert.equal(engine.attempts, 0);
   await assert.rejects(access(runRecordDir), "a rejected invocation writes no archive");
 });
@@ -3630,7 +3630,7 @@ test("the durable surfaces name what ended a failed run, discriminating one caus
       name: "budget-refusal",
       source: `export const meta = { name: "cause-budget" };\nawait agent("hi", { engine: "codex" });`,
       kind: "BudgetExceededError",
-      message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
+      message: /Token budget for codex is 0, which admits no dispatch; remaining 0; refused dispatch/
     },
     {
       name: "budget-refusal-parallel",
@@ -3638,7 +3638,7 @@ test("the durable surfaces name what ended a failed run, discriminating one caus
 await parallel([() => agent("hi", { engine: "codex", label: "blocked", identity: true })]);
 return { continuedAfterBudgetRefusal: true };`,
       kind: "BudgetExceededError",
-      message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
+      message: /Token budget for codex is 0, which admits no dispatch; remaining 0; refused dispatch/
     },
     {
       name: "budget-refusal-pipeline",
@@ -3646,7 +3646,7 @@ return { continuedAfterBudgetRefusal: true };`,
 await pipeline(["hi"], (prompt) => agent(prompt, { engine: "codex", label: "blocked" }));
 return { continuedAfterBudgetRefusal: true };`,
       kind: "BudgetExceededError",
-      message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
+      message: /Token budget for codex is 0, which admits no dispatch; remaining 0; refused dispatch/
     }
   ] as const;
 
@@ -4014,7 +4014,7 @@ test("an exhausted chain's failure notice names the last target's own failure an
   assert.equal(result.stdout, '{"answer":null}\n');
   assert.equal(
     result.stderr,
-    "[claude] agent 1 (scout) failed after 2 attempts across 2 chain targets — " +
+    "[claude] agent 1 (scout) failed after 1 answered attempt, 1 refused target across 2 chain targets — " +
       "the last target's failure: claude-worker-diagnostic: API Error: Request rejected (529)\n"
   );
 });
@@ -4815,7 +4815,7 @@ test("workflow lean flags obey placement, reject inline values and pass through 
         createRuntime: async () => { assert.fail("misplaced lean created a runtime"); }
       }), 2);
       assert.equal(stdout.text(), "");
-      assert.ok(stderr.text().includes(`Tuning flag ${flag} appears after the script path`), stderr.text());
+      assert.ok(stderr.text().includes(`Run option ${flag} appears after the script path`), stderr.text());
     }
     for (const flag of ["--lean=true", "--lean=false"]) {
       const stderr = new CaptureStream();
@@ -4833,4 +4833,107 @@ test("workflow lean flags obey placement, reject inline values and pass through 
     }), 0, stderr.text());
     assert.deepEqual(JSON.parse(stdout.text()), ["--lean=true"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("common invocation mistakes give a one-line repair using the invoked launcher", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cli-refusals-"));
+  const program = "node '/opt/operator launcher.mjs'";
+  try {
+    const cases = [
+      { argv: ["run", "workflow.js"], hint: /"run" was taken as the script path; there is no run subcommand\. Use:/ },
+      { argv: ["run", "--agent-ceiling", "3", "workflow.js"], hint: /there is no run subcommand/ },
+      { argv: ["--modle", "example", "workflow.js"], hint: /Did you mean "--model"\?.*belongs to.*agent; set script models.*agent\(\)/ },
+      { argv: ["--model=example", "workflow.js"], hint: /--model belongs to.*agent; set script models/ },
+      { argv: ["--agent-ceilng", "3", "workflow.js"], hint: /Did you mean "--agent-ceiling"\?/ },
+      { argv: ["--json-arg", "{}", "workflow.js"], hint: /Did you mean "--json-args"\?/ },
+      { argv: ["workflow.js", "--lean"], hint: /Run option --lean.*put run options before the script/ },
+      { argv: ["agent", "--engine=codex", "--model"], hint: /--model requires a value; put a value immediately after --model/ },
+      { argv: ["agent", "--model", "--engine=codex", "prompt"], hint: /--model requires a value/ },
+      { argv: ["agent", "--engine=codex", "--cwd=missing", "prompt"], hint: /--cwd must name an existing directory.*choose an existing directory or omit --cwd/ },
+      { argv: ["--lean", "agent", "--engine=codex", "prompt"], hint: /Run option --lean must come after agent:/ }
+    ];
+    for (const { argv, hint } of cases) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      assert.equal(await runEnsembleCli(argv, {
+        cwd: directory, programName: program, stdout, stderr,
+        runRecordDir: null, statusDir: null,
+        env: { XDG_CONFIG_HOME: directory },
+        createRuntime: async () => { assert.fail("rejected invocation created a runtime"); }
+      }), 2, stderr.text());
+      assert.equal(stdout.text(), "");
+      assert.ok(stderr.text().startsWith(program), stderr.text());
+      assert.match(stderr.text(), hint);
+      assert.equal(stderr.text().trimEnd().split("\n").length, 1, stderr.text());
+      if (argv[0] === "run") assert.ok(stderr.text().includes(`${program} [run options] <script.js>`));
+    }
+    // `run` remains a valid filename, including when it receives script args.
+    await writeFile(path.join(directory, "run"), 'export const meta = { name: "run-file" }; return args;');
+    for (const argv of [["run", "input"], ["--", "run", "--lean"]]) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      assert.equal(await runEnsembleCli(argv, {
+        cwd: directory, programName: program, stdout, stderr,
+        runRecordDir: null, statusDir: null, env: { XDG_CONFIG_HOME: directory },
+        createRuntime: async () => fakeRuntime()
+      }), 0, stderr.text());
+      assert.deepEqual(JSON.parse(stdout.text()), [argv.at(-1)]);
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("chain exhaustion separates pre-spawn refusals from answered attempts", async () => {
+  for (const terminalRefuses of [false, true]) {
+    const directory = await mkdtemp(path.join(tmpdir(), "cli-chain-counts-"));
+    try {
+      const script = path.join(directory, "workflow.js");
+      await writeFile(script, `export const meta = { name: "count-exhaustion" };
+        try { await agent("work", { engine: "codex", model: "primary", maxAttempts: 1,
+          fallback: [{ engine: "codex", model: "last" }] }); } catch {}
+        return "finished";`);
+      const stderr = new CaptureStream();
+      const engine = new ChainEngine("codex", [
+        async () => { throw new CodexSubstrateRefusedError(undefined, new Error("primary unavailable")); },
+        terminalRefuses
+          ? async () => { throw new CodexSubstrateRefusedError(undefined, new Error("last unavailable")); }
+          : async () => ({ text: "", deltaText: "", durationMs: 1, firstDeltaMs: null, items: {}, tokenUsageEvents: [] })
+      ]);
+      assert.equal(await runEnsembleCli([script], {
+        cwd: directory, stdout: new CaptureStream(), stderr, runRecordDir: null, statusDir: null,
+        createRuntime: async () => new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 })
+      }), 0, stderr.text());
+      assert.ok(stderr.text().includes(terminalRefuses
+        ? "0 answered attempts, 2 refused targets across 2 chain targets"
+        : "1 answered attempt, 1 refused target across 2 chain targets"), stderr.text());
+      assert.equal(engine.dispatches.length, 2);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test("built launcher refusal repairs preserve the invoked symlink path", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cli-built-refusals-"));
+  const launcher = fileURLToPath(new URL("../../../skills/ensemble-workflow/Base/scripts/ensemble.mjs", import.meta.url));
+  const invoked = path.join(directory, "operator's launcher.mjs");
+  try {
+    await symlink(launcher, invoked);
+    for (const [argv, hint] of [
+      [["run", "workflow.js"], /there is no run subcommand/],
+      [["run", "--agent-ceiling", "3", "workflow.js"], /there is no run subcommand/],
+      [["--modle", "example", "workflow.js"], /Did you mean "--model"\?.*agent\(\)/],
+      [["--model=example", "workflow.js"], /--model belongs to.*agent/],
+      [["workflow.js", "--lean"], /put run options before the script/],
+      [["agent", "--engine=codex", "--model"], /--model requires a value/],
+      [["agent", "--engine=codex", "--cwd=missing", "prompt"], /choose an existing directory or omit --cwd/],
+      [["--lean", "agent", "--engine=codex", "prompt"], /Run option --lean must come after agent/]
+    ] as const) {
+      const result = spawnSync(process.execPath, [invoked, ...argv], {
+        cwd: directory, encoding: "utf8", env: hermeticEstateEnvironment()
+      });
+      assert.equal(result.status, 2, result.stderr);
+      assert.equal(result.stdout, "");
+      assert.ok(result.stderr.startsWith(programNameFor(invoked)), result.stderr);
+      assert.match(result.stderr, hint);
+      assert.equal(result.stderr.trimEnd().split("\n").length, 1, result.stderr);
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

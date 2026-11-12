@@ -228,6 +228,24 @@ before a move in the original cgroup. Run teardown stops the scopes Ensemble own
 Claude control-command scopes and the shared supervisor are outside that
 ownership.
 
+Opencode run and session-export commands each take a separate scope under
+either grouping. They enter that scope before executing, so commands they start
+inherit its ownership. An attempt can therefore stop its own commands without
+ending another worker. Without a scope, opencode uses a process group. A stop
+an attempt makes before the run ends discloses unconfirmed reach on the attempt
+record and stderr, without changing the attempt's or run's outcome. A command
+the run's own ending cuts short there produces a teardown failure because
+descendants that left the group cannot be confirmed stopped.
+
+Stopping a scope ends every process in it, including one a worker started in
+a session of its own or one reparented away from the worker. Each scope gets
+SIGTERM, then SIGKILL two seconds later, and three more seconds to be seen
+empty. The run reads the scope's own cgroup to confirm that nothing is left.
+A scope still holding processes after that, or one the user manager would not
+report on, is a teardown failure: stderr names the unit and what was
+observed, and the run ends `failed` (see
+[How a run ends](cli.md#how-a-run-ends)).
+
 > [!WARNING]
 > Relocate the run record with `ENSEMBLE_RUN_RECORD_DIR`, not by pointing
 > `XDG_DATA_HOME` at another directory. Claude Code keeps its own data under

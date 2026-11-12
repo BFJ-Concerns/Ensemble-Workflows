@@ -602,6 +602,25 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         );
         return;
       }
+      if (event.method.endsWith("/attemptStopUnestablished")) {
+        const engine = event.method.slice(0, -"/attemptStopUnestablished".length);
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const attempt = typeof event.params.attempt === "number" ? event.params.attempt : "?";
+        const stops = Array.isArray(event.params.stops) ? event.params.stops : [];
+        const accounts = stops.map((value: unknown) => {
+          const stop = value as { owner?: unknown; reason?: unknown };
+          const owner = typeof stop.owner === "string" ? boundedEvidence(stop.owner) : "an unnamed command";
+          const reason = typeof stop.reason === "string" ? boundedEvidence(stop.reason) : "no account";
+          return `${owner} (${reason})`;
+        });
+        // A report, not a failure: the worker's own outcome is announced
+        // where it settles, and the run ends as the script leaves it.
+        stderr.write(
+          `[${engine}] agent ${agentId}${label} attempt ${attempt} stopped a command and could not establish that everything it started has ended: ${accounts.join("; ")}\n`
+        );
+        return;
+      }
       if (event.method === "worktree/finalisationFailed") {
         const worktreePath = typeof event.params.path === "string" ? event.params.path : "<unknown>";
         const branch = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
@@ -744,6 +763,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           // returned, not that the run was interrupted. The word and the
           // occasion are chosen here, the one site that already knows the
           // body's outcome; `abandoned` stays the reaper's alone.
+          const pendingWorkers = progress?.snapshot().totals;
+          if (pendingWorkers !== undefined && pendingWorkers.active + pendingWorkers.queued > 0) {
+            stderr.write("[teardown] stopping workers and their commands\n");
+          }
           await runtime.close(
             terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus,
             terminalStatus === "complete" ? "body-returned" : "run-ended"
@@ -796,14 +819,17 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       teardownError ??= judgeLateEnding();
       // A teardown failure degrades whatever the body earned: the outcome
       // the sentinel publishes and the code the process exits with both say
-      // the run did not end cleanly. The reason rides the existing `error`
-      // field, so the payload grows by nothing.
+      // the run did not end cleanly. The reason has a field of its own, and
+      // also fills `error` where nothing else ended the run: a run that had
+      // already failed keeps what ended it there, and still says its
+      // teardown could not confirm a clean end.
       const terminal = teardownError === null ? settled : { status: "failed" as const, exitCode: 1 };
       exitCode = terminal.exitCode;
       try {
         await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
           workers: workerOutcomes(progress, runtime),
           error: terminalError ?? teardownError,
+          teardownError,
           // The sealed manifest's own digest, attested from outside the file
           // it covers. A missing writer or an unsealed archive says why no
           // digest can be attested rather than omitting the field.

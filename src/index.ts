@@ -86,6 +86,7 @@ export {
   SubstrateRefusedError,
   SessionBusyError,
   SessionClosedError,
+  StopUnconfirmedError,
   TallyRejectedError,
   WorkflowScriptReadError,
   attachPartialWorkerText,
@@ -95,7 +96,7 @@ export {
   markRunEnding,
   isRunEnding
 } from "./errors.js";
-export type { WorkerExitStatus } from "./errors.js";
+export type { UnestablishedStop, WorkerExitStatus } from "./errors.js";
 export { ResourcePreflightRefusedError } from "./resource-preflight.js";
 export type { CallerSandbox, ResourceDenial, ResourceRequirement } from "./resource-preflight.js";
 export type { LocatedDirectory, ResourceLocation, SettingName, SettingReading } from "./resource-location.js";
@@ -185,7 +186,8 @@ export type {
   EngineInvocation,
   EngineSessionTurn,
   EngineTurnOptions,
-  EngineWorkerSession
+  EngineWorkerSession,
+  SharedEngineResource
 } from "./engines.js";
 export { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 export type { CapabilityEnforcement, EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";
@@ -200,7 +202,7 @@ export type {
   WorktreeState
 } from "./worktree-isolation.js";
 export { NoWorkerScopes, SystemdWorkerScopes, containingSlice, createWorkerScopes, parentSlice, processTree } from "./worker-scopes.js";
-export type { LaunchOptions, ScopePlacement, WorkerScopeGrouping, WorkerScopes } from "./worker-scopes.js";
+export type { LaunchOptions, ScopePlacement, StopBounds, StopOutcome, WorkerScopeGrouping, WorkerScopes } from "./worker-scopes.js";
 export type {
   SavedWorkflowEntry,
   SavedWorkflowMeta,

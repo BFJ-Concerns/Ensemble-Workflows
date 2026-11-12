@@ -232,8 +232,29 @@ Logs and diagnostics go to stderr. These lines are written there:
 - `[claude] worker scope watch failed; retrying: <reason>` — an unexpected
   background roster-watch error. The watch continues across idle turns and
   retries while Ensemble owns a Claude session.
+- `[teardown] stopping workers and their commands` — emitted before waiting
+  for teardown when workers are still active or queued, including after a
+  script throw, a whole-run timeout, or an early return.
+- `[<engine>] agent <id> (<label>) attempt <n> stopped a command and could not establish that everything it started has ended: <owner> (<reason>); …`
+  — a worker's command was stopped while the script was still running, by its
+  turn's deadline for example, and Ensemble could not confirm that everything
+  the command had started was gone. Each `<owner>` names a systemd scope unit
+  or a process group, and `<reason>` says what was observed there. The line
+  is a report, not a failure. The attempt ends as it otherwise would, and the
+  script receives the worker's result or failure as usual. A script that
+  handles it and returns still ends `complete` with exit code 0. The attempt's
+  record keeps the same entries under
+  [`diagnostics.unestablishedStops`](run-records.md#agent-records).
 - `[teardown] …` — the script returned while a worker it started was still
   running, or tried to end the process after returning.
+- `[teardown] the run failed to end cleanly: run-owned processes may still be running: <owner> (<reason>); …`
+  — the run could not confirm that processes it owns had ended. Each
+  `<owner>` names a systemd scope unit or a process group, and `<reason>`
+  says what was observed there. It names the commands the run's own ending
+  cut short, and any command an attempt had stopped earlier that was still
+  running when the run closed. The run ends `failed` with exit code 1, and
+  the completion sentinel carries the line as its
+  [`teardown_error`](run-records.md#completion-sentinel).
 
 ### Partial results
 

@@ -2,6 +2,7 @@ import { execFile, spawn, type ChildProcess, type SpawnOptions } from "node:chil
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
+import { StopUnconfirmedError } from "./errors.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
 
 /**
@@ -34,6 +35,28 @@ export type ScopePlacement =
 export type LaunchOptions = Pick<SpawnOptions, "cwd" | "env" | "stdio">;
 
 /**
+ * The result of a stop. `stopped` is an observation, never an intention:
+ * nothing the stop could reach was left running when it returned.
+ * `unconfirmed` means the bound ran out with processes still there, or the
+ * observation itself could not be made; `reason` says which, naming the
+ * processes where they could be listed.
+ */
+export type StopOutcome = { kind: "stopped" } | { kind: "unconfirmed"; reason: string };
+
+/**
+ * The time a stop may take: SIGTERM to everything it reaches, `stopGraceMs`
+ * for that to end, then SIGKILL and `confirmMs` for the end to be observed.
+ * A stop settles within `stopGraceMs + confirmMs` plus the manager's own
+ * round trips, each of which is bounded too, whatever the processes do.
+ */
+export interface StopBounds {
+  stopGraceMs: number;
+  confirmMs: number;
+}
+
+export const DEFAULT_STOP_BOUNDS: StopBounds = { stopGraceMs: 2_000, confirmMs: 3_000 };
+
+/**
  * Places worker processes into systemd user scopes inside the slice that
  * holds the launcher's own cgroup, so that whatever box the launcher runs
  * in — a terminal pane's scope, a run slice an admission tool made — also
@@ -57,16 +80,39 @@ export type LaunchOptions = Pick<SpawnOptions, "cwd" | "env" | "stdio">;
  *   The command's streams, environment, working directory and exit status
  *   pass through unchanged.
  *
- * The manager owns every scope it created and nothing else: `close()` stops
- * those scopes, and a scope `launch()` ran a command in is never one of
- * them, so teardown cannot reach the supervisor.
+ * The manager owns every scope it created and nothing else: `stop()` ends
+ * one of them and `close()` ends them all, and a scope `launch()` ran a
+ * command in is never one of them, so teardown cannot reach the supervisor.
+ * Ending a scope ends every process in it — a worker's descendant in a
+ * session of its own, or reparented away from the worker, included — which
+ * is what owning the scope means, and the end is confirmed from the scope's
+ * own cgroup rather than assumed from a signal sent or a job queued.
+ *
+ * A worker's own command — a process the launcher spawns per attempt — is
+ * not placed here directly: `CommandContainment` (contained-command.ts)
+ * starts it inside a scope of its own before it can start anything.
  */
 export interface WorkerScopes {
   /** The slice that holds the launcher's cgroup, as discovered; null where none was found (the manager's default applies). */
   readonly slice: string | null;
   place(group: string, pids: readonly number[]): Promise<ScopePlacement>;
   launch(file: string, args: readonly string[], options: LaunchOptions): Promise<ChildProcess>;
-  /** Stop every scope this manager created. Best-effort; never throws. */
+  /**
+   * End every process in the group's scope and confirm the scope empty,
+   * within `bounds`. A placement for the group already under way finishes
+   * first. A group this manager holds no scope for has nothing of the
+   * manager's to stop, and reports `stopped`. A confirmed stop releases the
+   * group; an unconfirmed one keeps it, so `close()` names it again. Never
+   * rejects.
+   */
+  stop(group: string, bounds?: StopBounds): Promise<StopOutcome>;
+  /**
+   * Stop every scope this manager created and confirm each empty. Placements
+   * are refused once close has begun; one already under way finishes first
+   * and is stopped with the rest. Every stop is attempted, and the call
+   * rejects with `StopUnconfirmedError` naming each scope it could not
+   * confirm. Later calls share the first call's outcome.
+   */
   close(): Promise<void>;
 }
 
@@ -88,6 +134,10 @@ export interface SystemdWorkerScopesOptions {
   procDir?: string;
   /** How long a scope creation may take to move its processes before the placement is reported refused. */
   moveTimeoutMs?: number;
+  /** The cgroup v2 mount a scope's emptiness is confirmed from. Defaults to `/sys/fs/cgroup`. */
+  cgroupRoot?: string;
+  /** The bounds `close()` stops each scope within. */
+  stopBounds?: StopBounds;
 }
 
 /** The scope manager over a reachable systemd user manager, driven through its D-Bus API by `busctl` and by `systemd-run`. */
@@ -101,11 +151,14 @@ export class SystemdWorkerScopes implements WorkerScopes {
   #env: NodeJS.ProcessEnv;
   #procDir: string;
   #moveTimeoutMs: number;
+  #cgroupRoot: string;
+  #stopBounds: StopBounds;
   /** Units this manager created, by group: the set `close()` stops. */
   #units = new Map<string, string>();
   /** One placement at a time per group, so concurrent first placements create one scope rather than race for the name. */
   #groupTurns = new Map<string, Promise<unknown>>();
   #closed = false;
+  #closing: Promise<void> | null = null;
 
   constructor(options: SystemdWorkerScopesOptions = {}) {
     this.slice = options.slice ?? null;
@@ -116,6 +169,8 @@ export class SystemdWorkerScopes implements WorkerScopes {
     this.#env = options.env ?? process.env;
     this.#procDir = options.procDir ?? "/proc";
     this.#moveTimeoutMs = options.moveTimeoutMs ?? 5_000;
+    this.#cgroupRoot = options.cgroupRoot ?? "/sys/fs/cgroup";
+    this.#stopBounds = options.stopBounds ?? DEFAULT_STOP_BOUNDS;
   }
 
   /** The unit a group's processes are placed in: `ensemble-<label>-<group>.scope`, the group made unit-name safe. */
@@ -267,31 +322,133 @@ export class SystemdWorkerScopes implements WorkerScopes {
     );
   }
 
-  async close(): Promise<void> {
-    this.#closed = true;
-    // A placement already queued runs to its end before the units are
-    // read: one accepted after the snapshot would otherwise leave a scope
-    // nobody stops. Placements queued from here on are refused above.
-    await Promise.all([...this.#groupTurns.values()]);
-    this.#groupTurns.clear();
-    const units = [...this.#units.values()];
-    this.#units.clear();
-    // Stopping a scope ends every process still in it — a worker's escaped
-    // descendant included — which is what owning the scope means. A scope
-    // whose processes already left is gone from the manager and the stop
-    // reports it not loaded; that is the state wanted, not a failure.
-    await Promise.all(
-      units.map(
-        (unit) =>
-          new Promise<void>((resolve) => {
-            execFile(this.#systemctlBin, ["--user", "stop", "--no-block", unit], { env: this.#env }, () => resolve());
-          })
-      )
-    );
+  stop(group: string, bounds: StopBounds = DEFAULT_STOP_BOUNDS): Promise<StopOutcome> {
+    // A stop takes the group's turn like a placement, so it never reads a
+    // scope a placement is still filling, and a placement queued behind it
+    // creates the scope afresh rather than joining one being emptied.
+    const turn = (this.#groupTurns.get(group) ?? Promise.resolve()).then(() => this.#stopInTurn(group, bounds));
+    this.#groupTurns.set(group, turn);
+    void turn.then(() => {
+      // A group stopped for good leaves nothing behind: per-command groups
+      // come and go through a run, and only a live group needs a turn kept.
+      if (this.#groupTurns.get(group) === turn && !this.#units.has(group)) {
+        this.#groupTurns.delete(group);
+      }
+    });
+    return turn;
   }
 
-  /** One call on the manager object. Null when it succeeded; otherwise the bounded text of its refusal. */
-  #manager(method: string, signature: string, args: readonly string[]): Promise<string | null> {
+  async #stopInTurn(group: string, bounds: StopBounds): Promise<StopOutcome> {
+    const unit = this.#units.get(group);
+    if (unit === undefined) {
+      return { kind: "stopped" };
+    }
+    const outcome = await this.#stopUnit(unit, bounds);
+    if (outcome.kind === "stopped") {
+      this.#units.delete(group);
+    }
+    return outcome;
+  }
+
+  /**
+   * Signal every process in a unit and wait, within the bounds, until its
+   * cgroup reports nothing left. Emptiness is read from the cgroup itself —
+   * `populated 0`, or the cgroup gone because the manager collected the
+   * unit — never inferred from a signal having been sent or a job having
+   * been queued. A unit the manager no longer has loaded holds no process;
+   * a manager that cannot be asked leaves the stop unconfirmed. Never
+   * rejects.
+   */
+  async #stopUnit(unit: string, bounds: StopBounds): Promise<StopOutcome> {
+    const cgroup = await this.#controlGroup(unit, bounds.confirmMs);
+    if (cgroup.kind === "unreadable") {
+      return { kind: "unconfirmed", reason: `the manager did not report the processes of ${unit}: ${cgroup.reason}` };
+    }
+    if (cgroup.kind === "unloaded") {
+      return { kind: "stopped" };
+    }
+    const directory = path.join(this.#cgroupRoot, cgroup.path);
+    if (await cgroupEmpty(directory)) {
+      return { kind: "stopped" };
+    }
+    // What the manager answers to a kill is not consulted: whether the unit
+    // emptied is observed below, whatever the manager said.
+    await this.#manager("KillUnit", "ssi", [unit, "all", "15"], bounds.stopGraceMs);
+    if (await waitUntil(() => cgroupEmpty(directory), bounds.stopGraceMs)) {
+      return { kind: "stopped" };
+    }
+    await this.#manager("KillUnit", "ssi", [unit, "all", "9"], bounds.confirmMs);
+    if (await waitUntil(() => cgroupEmpty(directory), bounds.confirmMs)) {
+      return { kind: "stopped" };
+    }
+    const procs = await readFile(path.join(directory, "cgroup.procs"), "utf8").catch(() => "");
+    const left = procs.split(/\s+/).filter((entry) => entry.length > 0);
+    return {
+      kind: "unconfirmed",
+      reason: `${left.length > 0 ? `pids ${left.join(", ")}` : "processes"} outlived SIGTERM by ${bounds.stopGraceMs}ms and SIGKILL by ${bounds.confirmMs}ms`
+    };
+  }
+
+  /** The unit's cgroup path below the cgroup mount, as the manager reports it. */
+  #controlGroup(
+    unit: string,
+    timeoutMs: number
+  ): Promise<{ kind: "loaded"; path: string } | { kind: "unloaded" } | { kind: "unreadable"; reason: string }> {
+    return new Promise((resolve) => {
+      execFile(
+        this.#systemctlBin,
+        ["--user", "show", "--property=ControlGroup", "--value", unit],
+        { env: this.#env, timeout: timeoutMs },
+        (error, stdout, stderr) => {
+          if (error !== null) {
+            resolve({ kind: "unreadable", reason: boundedEvidence(stderr.trim() || error.message) });
+            return;
+          }
+          // A unit the manager does not have loaded answers with an empty
+          // control group, as does one whose scope already ended.
+          const reported = stdout.trim();
+          resolve(reported.length > 0 ? { kind: "loaded", path: reported } : { kind: "unloaded" });
+        }
+      );
+    });
+  }
+
+  close(): Promise<void> {
+    this.#closing ??= this.#closeOnce();
+    return this.#closing;
+  }
+
+  async #closeOnce(): Promise<void> {
+    this.#closed = true;
+    // A placement or stop already queued runs to its end before the units
+    // are read: a placement accepted after the snapshot would otherwise
+    // leave a scope nobody stops. Placements queued from here on are
+    // refused above.
+    await Promise.all([...this.#groupTurns.values()]);
+    this.#groupTurns.clear();
+    const stops = await Promise.all(
+      [...this.#units.entries()].map(async ([group, unit]) => ({ group, unit, outcome: await this.#stopUnit(unit, this.#stopBounds) }))
+    );
+    const unconfirmed: { owner: string; reason: string }[] = [];
+    for (const { group, unit, outcome } of stops) {
+      if (outcome.kind === "stopped") {
+        this.#units.delete(group);
+      } else {
+        unconfirmed.push({ owner: unit, reason: outcome.reason });
+      }
+    }
+    if (unconfirmed.length > 0) {
+      throw new StopUnconfirmedError(unconfirmed);
+    }
+  }
+
+  /**
+   * One call on the manager object. Null when it succeeded; otherwise the
+   * bounded text of its refusal. `timeoutMs` bounds a call a stop waits on
+   * (0, the default, leaves it unbounded); a call that outlives it is
+   * reported as refused.
+   */
+  #manager(method: string, signature: string, args: readonly string[], timeoutMs = 0): Promise<string | null> {
     return new Promise((resolve) => {
       execFile(
         this.#busctlBin,
@@ -306,7 +463,7 @@ export class SystemdWorkerScopes implements WorkerScopes {
           signature,
           ...args
         ],
-        { env: this.#env },
+        { env: this.#env, timeout: timeoutMs },
         (error, _stdout, stderr) => {
           resolve(error === null ? null : boundedEvidence(stderr.trim() || error.message));
         }
@@ -325,6 +482,10 @@ export class NoWorkerScopes implements WorkerScopes {
 
   async launch(file: string, args: readonly string[], options: LaunchOptions): Promise<ChildProcess> {
     return spawn(file, [...args], options);
+  }
+
+  async stop(): Promise<StopOutcome> {
+    return { kind: "stopped" };
   }
 
   async close(): Promise<void> {}
@@ -429,6 +590,25 @@ function userManagerAnswers(busctlBin: string, env: NodeJS.ProcessEnv): Promise<
       (error) => resolve(error === null)
     );
   });
+}
+
+/** Whether a cgroup holds no process: `populated 0` in its events file, or the cgroup gone. */
+async function cgroupEmpty(directory: string): Promise<boolean> {
+  try {
+    return /^populated 0$/m.test(await readFile(path.join(directory, "cgroup.events"), "utf8"));
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+/** Poll a condition until it holds or the bound passes; whether it held. */
+export async function waitUntil(condition: () => boolean | Promise<boolean>, boundMs: number): Promise<boolean> {
+  const deadline = Date.now() + boundMs;
+  for (;;) {
+    if (await condition()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 /** Whether the current user can signal an existing process. */

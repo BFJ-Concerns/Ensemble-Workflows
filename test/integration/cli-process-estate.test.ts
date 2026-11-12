@@ -2659,7 +2659,10 @@ test("a body that returns with a worker in flight ends complete on its own accou
     assert.equal(result.stdout, `"returned"\n`);
     assert.deepEqual(
       result.stderr.split("\n").filter((line) => line.startsWith("[teardown]")),
-      ["[teardown] the script returned without awaiting agent 1 (straggler): cut short, its answer lost — await the call to keep it"],
+      [
+        "[teardown] stopping workers and their commands",
+        "[teardown] the script returned without awaiting agent 1 (straggler): cut short, its answer lost — await the call to keep it"
+      ],
       result.stderr
     );
     const announced = result.stderr.match(/\[sentinel\] will write (\S+) when the run ends/);

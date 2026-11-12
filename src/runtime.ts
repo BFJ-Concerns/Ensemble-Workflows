@@ -4,6 +4,7 @@ import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
+import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure } from "./failure-classification.js";
 import { fallbackSourceOf } from "./fallback-source.js";
@@ -1927,6 +1928,20 @@ export class EnsembleRuntime {
             this.progress.noteAgentSpend(agentId, previousSpend + result.tokenUsageEvents
               .reduce((sum, event) => sum + event.last.totalTokens, 0));
           }
+          // An attempt that stopped a command of its own and could not
+          // establish its end says so on its result, whether it returned or
+          // threw. The attempt record keeps that with the rest of the
+          // result's diagnostics; this is the same account for whoever
+          // watches the run, and it changes nothing about how the attempt
+          // or the run ends.
+          const stops = unestablishedStopsOf(result.diagnostics);
+          if (stops.length > 0) {
+            this.#emitEvent({
+              method: `${engine}/attemptStopUnestablished`,
+              params: { agentId, label: record?.label ?? null, attempt: context.attempt, stops },
+              receivedAt: Date.now()
+            });
+          }
         }
       } catch { /* Observability cannot replace the attempt outcome. */ }
     }
@@ -1995,6 +2010,10 @@ export class EnsembleRuntime {
     this.#shutdownAgentStatus = status;
     this.#closeOccasion = occasion;
     this.#closed = true;
+    // Said before anything below cancels a worker, so every stop the
+    // teardown causes is known as the run's and none is taken for an
+    // attempt's own (`StopOccasion`).
+    this.#engines.runEnding();
     // Teardown rejects every open call's promise with the run's own
     // settlement. A script that returned without awaiting a call is not
     // listening, and Node would raise the unhandled rejection as an

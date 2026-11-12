@@ -274,6 +274,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #nudges = 0;
 
   #multiTurn: boolean;
+  /** An opening failure is retryable until a native turn has completed. */
+  #nativeTurnCompleted = false;
   #sessionObserver: EngineSessionObserver | undefined;
   #lost: EngineSessionLoss | null = null;
   #lossController = new AbortController();
@@ -363,7 +365,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     // close() must be able to await a live attempt so cancellation is not
     // "torn down under a caller still running": track the settlement.
-    const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
+    const settlement = this.#runAttempt(context).then((result) => {
+      if (result.attemptFailure === undefined) this.#nativeTurnCompleted = true;
+      return this.#withObservedIdentity(result);
+    });
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#usageAtSettlement !== null) {
@@ -393,7 +398,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#nudges = 0;
     let fromIndex = 0;
     try {
-      if (this.#multiTurn && this.#handle !== null && this.#pending === null) {
+      if (this.#multiTurn && this.#nativeTurnCompleted && this.#handle !== null && this.#pending === null) {
         // A send can beat the watch to a disappearance. Confirm the same
         // three successful absences before touching the valve or transcript.
         for (let misses = 0; misses < CLAUDE_ROSTER_ABSENCE_BOUND; misses++) {
@@ -526,7 +531,11 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // remain available.
         // Other one-shot operational failures end their session. Held-session
         // teardown belongs to close(): redispatch would lose continuity.
-        if (!this.#multiTurn) {
+        if (this.#multiTurn && !this.#nativeTurnCompleted && error instanceof ClaudeFirstLifeTimeoutError) {
+          // Nothing ever established this worker. A creating-turn retry
+          // must dispatch afresh rather than keep its dead pending opening.
+          await this.#teardown();
+        } else if (!this.#multiTurn) {
           const keepSession = error instanceof ClaudeValveError && this.#refused !== null && this.#handle !== null &&
             (await this.#controlPlane.poll(this.#handle)).present && await this.#controlPlane.tmuxAvailable();
           if (!keepSession) await this.#teardown();
@@ -555,7 +564,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   }
 
   #noteLost(loss: EngineSessionLoss): void {
-    if (!this.#multiTurn || this.#closed || this.#lost !== null) return;
+    if (!this.#multiTurn || !this.#nativeTurnCompleted || this.#closed || this.#lost !== null) return;
     this.#lost = loss;
     this.#lossController.abort();
     try { this.#sessionObserver?.onLost(loss); }
@@ -591,7 +600,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
-      ...(this.#multiTurn ? { keepAlive: true, onLost: (loss: EngineSessionLoss) => this.#noteLost(loss) } : {}),
+      ...(this.#multiTurn ? { keepAlive: true, lossReady: () => this.#nativeTurnCompleted,
+        onLost: (loss: EngineSessionLoss) => this.#noteLost(loss) } : {}),
       ...stripSettings,
       ...(this.#options.lean === true ? { lean: true } : {})
     });

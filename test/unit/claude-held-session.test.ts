@@ -317,3 +317,22 @@ test("a refused attachment repair cannot starve another worker's loss or client 
     await f.dispose();
   }
 });
+
+test("opening absences keep the watch available until the native worker is established", async () => {
+  const f = await fixture();
+  const losses: EngineSessionLoss[] = [];
+  let ready = false;
+  const handle = await f.plane.dispatch({ prompt: "first", name: "held", cwd: f.dir,
+    lossReady: () => ready, onLost: loss => losses.push(loss) });
+  try {
+    await writeFile(f.mode, "absent");
+    for (let i = 0; i < 4; i++) await f.plane.poll(handle);
+    assert.equal(losses.length, 0, "opening availability became a held-worker loss");
+    await writeFile(f.mode, "present");
+    await f.plane.poll(handle);
+    ready = true;
+    await writeFile(f.mode, "absent");
+    for (let i = 0; i < 3; i++) await f.plane.poll(handle);
+    assert.equal(losses.length, 1, "early absence permanently removed the worker's watch");
+  } finally { await f.plane.stop(handle); await f.dispose(); }
+});

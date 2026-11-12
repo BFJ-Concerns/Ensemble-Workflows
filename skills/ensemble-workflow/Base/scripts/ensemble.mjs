@@ -21161,7 +21161,8 @@ var ClaudeCliControlPlane = class {
           handle,
           absences: 0,
           keepAlive: options.keepAlive ?? false,
-          ...options.onLost === void 0 ? {} : { onLost: options.onLost }
+          ...options.onLost === void 0 ? {} : { onLost: options.onLost },
+          ...options.lossReady === void 0 ? {} : { lossReady: options.lossReady }
         });
         this.#schedulePlacementWatch();
       }
@@ -21603,6 +21604,10 @@ var ClaudeCliControlPlane = class {
     const watched = this.#watchedSessions.get(handle.sessionId);
     if (watched === void 0 || this.#closeController.signal.aborted) return;
     if (present) {
+      watched.absences = 0;
+      return;
+    }
+    if (watched.lossReady?.() === false) {
       watched.absences = 0;
       return;
     }
@@ -22365,6 +22370,8 @@ var ClaudeEngineInvocation = class {
    */
   #nudges = 0;
   #multiTurn;
+  /** An opening failure is retryable until a native turn has completed. */
+  #nativeTurnCompleted = false;
   #sessionObserver;
   #lost = null;
   #lossController = new AbortController();
@@ -22444,7 +22451,10 @@ var ClaudeEngineInvocation = class {
     };
   }
   runAttempt(context) {
-    const settlement = this.#runAttempt(context).then((result) => this.#withObservedIdentity(result));
+    const settlement = this.#runAttempt(context).then((result) => {
+      if (result.attemptFailure === void 0) this.#nativeTurnCompleted = true;
+      return this.#withObservedIdentity(result);
+    });
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#usageAtSettlement !== null) {
@@ -22472,7 +22482,7 @@ var ClaudeEngineInvocation = class {
     this.#nudges = 0;
     let fromIndex = 0;
     try {
-      if (this.#multiTurn && this.#handle !== null && this.#pending === null) {
+      if (this.#multiTurn && this.#nativeTurnCompleted && this.#handle !== null && this.#pending === null) {
         for (let misses = 0; misses < CLAUDE_ROSTER_ABSENCE_BOUND; misses++) {
           const status = await this.#controlPlane.poll(this.#handle);
           this.#assertOpen();
@@ -22563,7 +22573,9 @@ var ClaudeEngineInvocation = class {
         attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       }
       if (error instanceof ClaudeWorkerError) {
-        if (!this.#multiTurn) {
+        if (this.#multiTurn && !this.#nativeTurnCompleted && error instanceof ClaudeFirstLifeTimeoutError) {
+          await this.#teardown();
+        } else if (!this.#multiTurn) {
           const keepSession = error instanceof ClaudeValveError && this.#refused !== null && this.#handle !== null && (await this.#controlPlane.poll(this.#handle)).present && await this.#controlPlane.tmuxAvailable();
           if (!keepSession) await this.#teardown();
         }
@@ -22586,7 +22598,7 @@ var ClaudeEngineInvocation = class {
     await this.#closePromise;
   }
   #noteLost(loss) {
-    if (!this.#multiTurn || this.#closed || this.#lost !== null) return;
+    if (!this.#multiTurn || !this.#nativeTurnCompleted || this.#closed || this.#lost !== null) return;
     this.#lost = loss;
     this.#lossController.abort();
     try {
@@ -22618,7 +22630,11 @@ var ClaudeEngineInvocation = class {
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
-      ...this.#multiTurn ? { keepAlive: true, onLost: (loss) => this.#noteLost(loss) } : {},
+      ...this.#multiTurn ? {
+        keepAlive: true,
+        lossReady: () => this.#nativeTurnCompleted,
+        onLost: (loss) => this.#noteLost(loss)
+      } : {},
       ...stripSettings,
       ...this.#options.lean === true ? { lean: true } : {}
     });

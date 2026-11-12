@@ -1217,8 +1217,10 @@ for (const unavailable of ["session", "valve"] as const) {
           const result = session === null ? await runtime.agent("decide", { engine: "claude" }) : await session.send("decide");
           assert.equal(result, held ? null : "recovered");
           assert.equal(controlPlane.dispatchCount, held ? 1 : 2);
-          assert.equal(controlPlane.steerCount, held && unavailable === "valve" ? 2 : 1);
-          if (held && unavailable === "session") assert.equal(session?.lost, true);
+          // The opening is still blocked and has never completed a native
+          // turn, so a refused nudge retains its ordinary bounded retry.
+          assert.equal(controlPlane.steerCount, held ? 2 : 1);
+          if (held) assert.equal(session?.lost, false);
           if (!held) assert.match(controlPlane.dispatched[1]?.prompt ?? "", /previous attempt failed \(claude-valve-error\)/);
           await session?.close();
           assert.equal(controlPlane.stopCount, held ? 1 : 2);
@@ -1520,22 +1522,35 @@ test("a worker that never shows life fails fast with a distinct recorded failure
   }
 });
 
-test("a newly registered worker that disappears before any transcript keeps the first-life availability diagnosis", async () => {
-  class GoneBeforeLife extends MissingTranscriptControlPlane {
-    override async poll(): Promise<ClaudeSessionStatus> { return { status: "absent", state: "unknown", present: false }; }
-  }
-  const plane = new GoneBeforeLife();
-  const records: RuntimeAgentRecord[] = [];
-  const runtime = makeRuntime(plane, { maxAttempts: 1, turnTimeoutMs: 5_000, firstLifeTimeoutMs: 4_000 });
-  runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); } } as unknown as RunRecordWriter);
-  try {
-    assert.equal(await runtime.agent("decide", { engine: "claude", fallback: [{ engine: "claude", model: "next" }] }), null);
-    const attempts = records.at(-1)?.attempts ?? [];
-    assert.equal(attempts.length, 2);
-    assert.deepEqual(attempts.map(attempt => attempt.failure?.kind), ["claude-first-life-timeout", "claude-first-life-timeout"]);
-    assert.deepEqual(attempts.map(attempt => attempt.chainDecision), ["advanced", "exhausted"]);
-  } finally { await runtime.close(); }
-});
+for (const mode of ["one-shot", "held-chain", "held-retry"] as const) {
+  test(`a worker gone before its opening transcript retains first-life availability, ${mode}`, async () => {
+    class GoneBeforeLife extends MissingTranscriptControlPlane {
+      launches = 0;
+      override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+        this.launches++;
+        return super.dispatch(options);
+      }
+      override async poll(): Promise<ClaudeSessionStatus> { return { status: "absent", state: "unknown", present: false }; }
+    }
+    const plane = new GoneBeforeLife();
+    const records: RuntimeAgentRecord[] = [];
+    const runtime = makeRuntime(plane, { maxAttempts: mode === "held-retry" ? 2 : 1, turnTimeoutMs: 5_000, firstLifeTimeoutMs: 4_000 });
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); } } as unknown as RunRecordWriter);
+    try {
+      const options = { engine: "claude" as const,
+        ...(mode === "held-retry" ? {} : { fallback: [{ engine: "claude" as const, model: "next" }] }) };
+      const session = mode === "one-shot" ? null : runtime.createWorkerSession(options);
+      assert.equal(session === null ? await runtime.agent("decide", options) : await session.send("decide"), null);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.equal(attempts.length, 2);
+      assert.equal(plane.launches, 2, "creating-turn recovery must request a fresh worker");
+      assert.deepEqual(attempts.map(attempt => attempt.failure?.kind), ["claude-first-life-timeout", "claude-first-life-timeout"]);
+      assert.ok(attempts.every(attempt => attempt.classification?.rule === "claude.no-first-life"));
+      assert.deepEqual(attempts.map(attempt => attempt.chainDecision), mode === "held-retry" ? [null, null] : ["advanced", "exhausted"]);
+      if (session !== null) assert.equal(session.lost, false);
+    } finally { await runtime.close(); }
+  });
+}
 
 test("a slow worker survives the first-life guard once its transcript appears", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-slow-alive-"));

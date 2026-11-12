@@ -173,6 +173,8 @@ export interface ClaudeDispatchOptions {
   keepAlive?: boolean;
   /** A successful roster read has confirmed this owned session absent three times. */
   onLost?: (loss: EngineSessionLoss) => void;
+  /** False while the creating turn can still fail for first life and retry or fall back. */
+  lossReady?: () => boolean;
   /**
    * Permission deny rules for the worker session (capability stripping).
    * Delivered through the per-dispatch settings file — the surface
@@ -402,6 +404,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     handle: ClaudeSessionHandle;
     absences: number;
     onLost?: ClaudeDispatchOptions["onLost"];
+    lossReady?: ClaudeDispatchOptions["lossReady"];
     keepAlive: boolean;
   }>();
   #heldAttachments = new Map<string, string>();
@@ -623,7 +626,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       if (options.keepAlive || options.onLost !== undefined || !(this.#scopes instanceof NoWorkerScopes)) {
         this.#watchedSessions.set(handle.sessionId, {
           handle, absences: 0, keepAlive: options.keepAlive ?? false,
-          ...(options.onLost === undefined ? {} : { onLost: options.onLost })
+          ...(options.onLost === undefined ? {} : { onLost: options.onLost }),
+          ...(options.lossReady === undefined ? {} : { lossReady: options.lossReady })
         });
         this.#schedulePlacementWatch();
       }
@@ -1166,6 +1170,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     const watched = this.#watchedSessions.get(handle.sessionId);
     if (watched === undefined || this.#closeController.signal.aborted) return;
     if (present) { watched.absences = 0; return; }
+    if (watched.lossReady?.() === false) { watched.absences = 0; return; }
     // Parking/respawning can omit a row briefly. Match the engine's three
     // successful absent observations; a failed query never reaches here.
     if (++watched.absences < CLAUDE_ROSTER_ABSENCE_BOUND) return;

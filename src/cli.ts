@@ -1452,7 +1452,7 @@ async function parseAgentInvocation(
     const unknown = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION"
       ? unknownAgentOption(argv)
       : undefined;
-    throw new CliUsageError(unknown === undefined ? message : unknownAgentOptionMessage(unknown));
+    throw new CliUsageError(unknown === undefined ? message : `${program} agent: ${unknownAgentOptionMessage(unknown)}`);
   }
 
   if (parsed.positionals.length > 1) {
@@ -1642,7 +1642,7 @@ function splitTuningFlags(
     }
 
     if (value.startsWith("-")) {
-      throw new CliUsageError(`Unknown option before script path: ${value}`);
+      throw new CliUsageError(`${program}: Unknown option before script path: ${value}`);
     }
 
     const scriptArgs = argv.slice(index + 1);

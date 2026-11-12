@@ -1631,7 +1631,7 @@ test("CLI reports a rejected option as exactly one line, exit 2", async () => {
   // The whole rejection surface: the named diagnostic alone. Usage belongs
   // to the invocation that named no work at all (the bin entrypoint test),
   // never to an option mistake, where it buries the actionable line.
-  assert.equal(stderr.text(), "Unknown option before script path: --unknown\n");
+  assert.equal(stderr.text(), "ensemble: Unknown option before script path: --unknown\n");
 });
 
 test("CLI rejects empty caller identities as usage errors before starting a run", async () => {
@@ -2586,6 +2586,40 @@ test("blank prompt refusals name the absolute launcher from another directory", 
   }
 });
 
+test("unknown options name the invoked launcher path for agent and workflow runs", async () => {
+  const launcher = fileURLToPath(new URL("../../../skills/ensemble-workflow/Base/scripts/ensemble.mjs", import.meta.url));
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-option-path-"));
+  const invoked = path.join(directory, "operator's launcher.mjs");
+  try {
+    await symlink(launcher, invoked);
+    for (const script of [launcher, invoked]) {
+      for (const argv of [
+        ["agent", "--engine", "codex", "--modle", "example", "prompt"],
+        ["agent", "--engine=codex", "--modle=example", "prompt"],
+        ["agent", "--unknown", "prompt"],
+        ["--unknown", "workflow.js"]
+      ]) {
+        const result = spawnSync(process.execPath, [script, ...argv], {
+          cwd: process.env.HOME,
+          encoding: "utf8",
+          env: hermeticEstateEnvironment()
+        });
+        assert.equal(result.status, 2, result.stderr);
+        assert.equal(result.stdout, "");
+        assert.equal(result.stderr.trimEnd().split("\n").length, 1, result.stderr);
+        const command = programNameFor(script);
+        assert.ok(result.stderr.startsWith(`${command}${argv[0] === "agent" ? " agent" : ""}: Unknown option`), result.stderr);
+        assert.ok(result.stderr.includes(argv.find((arg) => arg.startsWith("--modle") || arg === "--unknown")!), result.stderr);
+        if (argv.some((arg) => arg.startsWith("--modle"))) {
+          assert.match(result.stderr, /Did you mean "--model"\?/);
+        }
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("unknown agent option hints round-trip the complete prompt through a POSIX shell", () => {
   const launcher = fileURLToPath(new URL("../../../skills/ensemble-workflow/Base/scripts/ensemble.mjs", import.meta.url));
   for (const prompt of [
@@ -2599,7 +2633,7 @@ test("unknown agent option hints round-trip the complete prompt through a POSIX 
     });
     assert.equal(result.status, 2);
     assert.equal(result.stdout, "");
-    const prefix = `Unknown option ${JSON.stringify(prompt)}. For a dash-leading prompt, put it after --, as in: `;
+    const prefix = `node ${launcher} agent: Unknown option ${JSON.stringify(prompt)}. For a dash-leading prompt, put it after --, as in: `;
     assert.ok(result.stderr.startsWith(prefix), result.stderr);
     const example = result.stderr.slice(prefix.length).replace(/\n$/, "");
     const pasted = spawnSync("/bin/sh", ["-c", `set -- ${example}; printf '%s\\0' "$@"`], {
@@ -2615,14 +2649,14 @@ test("unknown agent option hints round-trip the complete prompt through a POSIX 
 test("CLI entrypoint keeps every exit-2 path on stderr", () => {
   const entrypointPath = fileURLToPath(new URL("../../src/cli/ensemble.js", import.meta.url));
   const cases = [
-    { argv: ["--unknown"], stderr: "Unknown option before script path: --unknown\n" },
+    { argv: ["--unknown"], stderr: `node ${entrypointPath}: Unknown option before script path: --unknown\n` },
     {
       argv: ["agent", "--unknown", "prompt"],
       stderr:
-        "Unknown option \"--unknown\". For a dash-leading prompt, put it after --, as in: -- '--unknown'\n"
+        `node ${entrypointPath} agent: Unknown option "--unknown". For a dash-leading prompt, put it after --, as in: -- '--unknown'\n`
     },
-    { argv: ["agent", "--modle", "some-model", "prompt"], stderr: 'Unknown option "--modle". Did you mean "--model"?\n' },
-    { argv: ["agent", "--modle=some-model", "prompt"], stderr: 'Unknown option "--modle=some-model". Did you mean "--model"?\n' },
+    { argv: ["agent", "--modle", "some-model", "prompt"], stderr: `node ${entrypointPath} agent: Unknown option "--modle". Did you mean "--model"?\n` },
+    { argv: ["agent", "--modle=some-model", "prompt"], stderr: `node ${entrypointPath} agent: Unknown option "--modle=some-model". Did you mean "--model"?\n` },
     { argv: ["--timeout"], stderr: "Option --timeout expects a value\n" },
     // The compiled entrypoint is named by its absolute invocation path.
     { argv: ["workflows", "extra"], stderr: `Usage: node ${entrypointPath} workflows\n` },

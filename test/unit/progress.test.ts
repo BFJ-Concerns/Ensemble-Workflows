@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { RunProgress, workerDisposition } from "../../src/progress.js";
 import { StatusFileWriter } from "../../src/status-file.js";
+import { documentedSchemaVersion } from "../documented-schema-versions.js";
 
 import type { AdmissionView, BudgetView, DispositionEvidence, ShutdownStatus, WorkerDisposition } from "../../src/progress.js";
 import type { SnapshotOwnerEvidence } from "../../src/status-file.js";
@@ -131,7 +132,12 @@ test("documented status file schema stays in sync with published snapshots", asy
     const section = documentedStatusSchemaSection();
 
     assert.deepEqual(documentedTopLevelFields(section).sort(), sortedKeys(snapshot));
-    assert.equal(Number(documentedNestedFields(section, "schema")[0]), snapshot.schema);
+    assert.equal(documentedSchemaVersion("Live status"), snapshot.schema);
+    assert.doesNotMatch(
+      documentedBullet(section, "schema"),
+      /`\d+`/,
+      "the schema bullet must refer to the Schema versions table, which alone states the number"
+    );
     assert.deepEqual(
       documentedNestedFields(section, "owner").filter((field) => field !== "null").sort(),
       sortedKeys(snapshot.owner)

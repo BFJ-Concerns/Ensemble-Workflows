@@ -223,8 +223,20 @@ input and cache-read figures once, plus every output and reasoning delta. A
 stream with no usable token data records no spend.
 
 `worktrees` lists the finished worktrees from `isolation: "worktree"` calls on
-any engine, with each one's final tip commit, whether it changed, and whether
-an unchanged worktree was removed.
+any engine. Each entry has the worktree's `path`, `branch`, and `baseCommit`,
+and a `state` saying where its work is:
+
+| `state` | Meaning |
+|---|---|
+| `"unchanged"` | No commit and no uncommitted file; the worktree and its branch were removed |
+| `"uncommitted"` | The work is only in the worktree's files (staged, unstaged, or untracked); the branch still points at `baseCommit` |
+| `"committed"` | The branch holds all of the work |
+| `"committed-and-uncommitted"` | The branch holds commits, and the worktree also has uncommitted files |
+| `"unknown"` | Clean-up failed, so nothing is claimed about the worktree's contents; it is kept |
+
+`tipCommit` is the commit the worktree ended on, or `null` when the state is
+`"unknown"`. `changed` is `true` for every state except `"unchanged"`, and
+`removed` is `true` only for `"unchanged"`.
 
 `args` is the array of positional string arguments from the command line, or
 the parsed value of `--json-args` (a JSON `null` arrives as an empty array).
@@ -395,9 +407,10 @@ When the worker finishes, an unchanged worktree and its branch are removed.
 Changed work is kept and reported, never merged automatically: committed work
 is on the reported branch, while uncommitted changes remain only in the kept
 worktree. If clean-up itself fails, the call fails, the error is reported,
-and the branch is recorded as changed and kept, since it was not proven
-unchanged. A linked worktree shares its repository's objects and refs, so
-isolation separates checkouts; it does not contain the worker.
+and the branch is kept and recorded as changed with the state `"unknown"`,
+since it was not proven unchanged. A linked worktree shares its repository's
+objects and refs, so isolation separates checkouts; it does not contain the
+worker.
 
 ## Failures
 
@@ -447,10 +460,15 @@ cannot pass silently:
   separately. Unused engines are not checked. A denied
   resource refuses dispatches needing that resource with
   `ResourcePreflightRefusedError`, naming the directory, the setting it came
-  from and the error. Evidence identifying a Codex sandbox adds its name and
-  the `danger-full-access` mode that lifts it; without such evidence the
-  refusal says that no caller sandbox was identified. These checks exercise
-  current access and cannot guarantee later writes will succeed. A probe
+  from and the error, with a direct remedy such as “set XDG_DATA_HOME to a
+  writable directory”. Relative values appear as written alongside the
+  directory they were resolved against. Defaults name the setting that
+  moves the directory; fixed locations such as Claude daemon sockets ask
+  for access to that directory because no setting moves them. Socket
+  remedies require a directory that permits Unix socket binding. Evidence
+  identifying a Codex sandbox adds its name and the `danger-full-access`
+  mode that lifts it; otherwise the refusal mentions no sandbox. These checks
+  exercise current access and cannot guarantee later writes will succeed. A probe
   that cannot finish its own cleanup raises a substrate refusal with the
   cause retained; that failed check is not cached as a resource verdict.
 - The run's own ending — an interrupt or a whole-run timeout — which throws
@@ -725,10 +743,12 @@ spend reaches the ceiling, admission throws a budget-exhausted error; a
 ceiling of 0 admits no dispatch and says so.
 
 The refusal names the dispatch, fallback dispatch (with its agent id), or
-numbered session turn it blocked. A session's first `send()` is `session
-turn 1`, even when admission refuses it before the worker opens; a refused
-send does not advance the turn number. Earlier targets or session turns may
-already have run and caused side effects.
+numbered session turn it blocked. An ordinary dispatch includes its label
+and phase when available; the phase comes from the call's `phase` option or
+the current `phase()` title. Calls with neither retain `refused dispatch`.
+A session's first `send()` is `session turn 1`, even when admission refuses
+it before the worker opens; a refused send does not advance the turn number.
+Earlier targets or session turns may already have run and caused side effects.
 
 Every call admitted below the ceiling still runs, including calls waiting
 in the concurrency queue when spend reaches the ceiling. Admission is not

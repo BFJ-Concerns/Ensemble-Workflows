@@ -15,11 +15,47 @@ export interface IsolatedWorktree {
   baseCommit: string;
 }
 
-export interface IsolatedWorktreeRecord extends IsolatedWorktree {
-  /** The branch tip observed during finalisation, or null when finalisation could not inspect it. */
-  tipCommit: string | null;
-  changed: boolean;
-  removed: boolean;
+/**
+ * Where a finished worktree's work is, as finalisation found it:
+ *
+ * - `unchanged`: no commit and no uncommitted file; the worktree and its
+ *   branch were removed.
+ * - `uncommitted`: the work is only in the worktree's files — staged,
+ *   unstaged or untracked — and the branch still points at the base commit.
+ * - `committed`: the tip moved off the base commit and the files are clean,
+ *   so the branch holds all of the work.
+ * - `committed-and-uncommitted`: the tip moved and files are left
+ *   uncommitted, so the branch holds only part of the work.
+ * - `unknown`: finalisation failed, so none of the above was established.
+ */
+export type WorktreeState =
+  | "unchanged"
+  | "uncommitted"
+  | "committed"
+  | "committed-and-uncommitted"
+  | "unknown";
+
+/**
+ * A finished worktree. `state` is the one field to branch on; `tipCommit`,
+ * `changed` and `removed` follow from it, and the union admits no other
+ * combination. `changed` is the retention signal: every state but
+ * `unchanged` keeps the worktree and its branch, `unknown` included, since a
+ * failed finalisation did not prove there was nothing to keep.
+ */
+export type IsolatedWorktreeRecord = IsolatedWorktree & (
+  | { state: "unchanged"; tipCommit: string; changed: false; removed: true }
+  | {
+      state: "uncommitted" | "committed" | "committed-and-uncommitted";
+      tipCommit: string;
+      changed: true;
+      removed: false;
+    }
+  | { state: "unknown"; tipCommit: null; changed: true; removed: false }
+);
+
+/** The record of a worktree whose finalisation failed: kept, with nothing claimed about its contents. */
+export function unknownWorktreeRecord(worktree: IsolatedWorktree): IsolatedWorktreeRecord {
+  return { ...worktree, state: "unknown", tipCommit: null, changed: true, removed: false };
 }
 
 export interface WorktreeIsolationManager {
@@ -58,14 +94,19 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
   async finish(worktree: IsolatedWorktree): Promise<IsolatedWorktreeRecord> {
     const status = await git(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
     // A worker that commits its work leaves a clean status but moves the branch
-    // tip; both count as changed, or `branch -D` below would orphan the commits.
+    // tip; either observation keeps the worktree, or `branch -D` below would
+    // orphan the commits.
     const tip = (await git(worktree.path, ["rev-parse", "HEAD"])).trim();
-    const changed = status.trim().length > 0 || tip !== worktree.baseCommit;
+    const state = inspectedState({
+      committed: tip !== worktree.baseCommit,
+      uncommitted: status.trim().length > 0
+    });
 
-    if (changed) {
+    if (state !== "unchanged") {
       this.#worktreeRoots.delete(worktree.path);
       return {
         ...worktree,
+        state,
         tipCommit: tip,
         changed: true,
         removed: false
@@ -93,6 +134,7 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
 
     return {
       ...worktree,
+      state,
       tipCommit: tip,
       changed: false,
       removed: true
@@ -139,6 +181,14 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     this.#counter += 1;
     return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID().slice(0, 8)}`;
   }
+}
+
+/** The state two successful reads establish: whether the tip moved, and whether files are left uncommitted. */
+function inspectedState(observed: { committed: boolean; uncommitted: boolean }): Exclude<WorktreeState, "unknown"> {
+  if (observed.committed) {
+    return observed.uncommitted ? "committed-and-uncommitted" : "committed";
+  }
+  return observed.uncommitted ? "uncommitted" : "unchanged";
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {

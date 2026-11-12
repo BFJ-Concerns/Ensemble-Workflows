@@ -267,12 +267,10 @@ class FakeWorktreeManager implements WorktreeIsolationManager {
 
   async finish(worktree: IsolatedWorktree): Promise<IsolatedWorktreeRecord> {
     this.finished.push(worktree);
-    return {
-      ...worktree,
-      tipCommit: `${worktree.baseCommit}-tip`,
-      changed: this.#changed,
-      removed: !this.#changed
-    };
+    const tipCommit = `${worktree.baseCommit}-tip`;
+    return this.#changed
+      ? { ...worktree, state: "committed", tipCommit, changed: true, removed: false }
+      : { ...worktree, state: "unchanged", tipCommit, changed: false, removed: true };
   }
 }
 
@@ -1004,6 +1002,49 @@ test("Codex budget records Codex tokenUsage.last deltas and blocks later Codex c
   await assert.rejects(() => runtime.agent("blocked", { engine: "codex" }), BudgetExceededError);
 });
 
+test("ordinary budget refusals locate the call without admitting a worker", async () => {
+  const cases: Array<{ options: Partial<AgentOptions>; currentPhase?: string; admission: string }> = [
+    { options: { label: 'review "exports"' }, admission: String.raw`dispatch (label "review \"exports\"")` },
+    { options: { phase: "verify" }, admission: 'dispatch (phase "verify")' },
+    { options: {}, currentPhase: "build", admission: 'dispatch (phase "build")' },
+    {
+      options: { label: "review", phase: "verify" }, currentPhase: "build",
+      admission: 'dispatch (label "review", phase "verify")'
+    },
+    {
+      options: { label: "review" }, currentPhase: "build",
+      admission: 'dispatch (label "review", phase "build")'
+    },
+    { options: {}, admission: "dispatch" }
+  ];
+  for (const ceiling of [0, 5]) {
+    for (const { options, currentPhase, admission } of cases) {
+      const transport = new FakeTransport([]);
+      const runtime = new EnsembleRuntime({ transport, budgetCeilings: { codex: ceiling }, defaultMaxAttempts: 1 });
+      if (currentPhase !== undefined) runtime.notePhase(currentPhase);
+      if (ceiling > 0) {
+        runtime.budget.record("codex", {
+          threadId: "earlier-thread", turnId: "earlier-turn",
+          last: usage(7), total: usage(7), raw: {}
+        });
+      }
+      await assert.rejects(runtime.agent("private prompt", { engine: "codex", ...options }), (error: unknown) => {
+        assert.ok(error instanceof BudgetExceededError);
+        assert.equal(error.engine, "codex");
+        assert.equal(error.total, ceiling);
+        assert.equal(error.spent, ceiling === 0 ? 0 : 7);
+        const reason = ceiling === 0
+          ? "Token budget for codex is 0, which admits no dispatch"
+          : "Token budget exhausted for codex: spent 7 of 5 tokens";
+        assert.equal(error.message, `${reason}; refused ${admission}`);
+        return true;
+      });
+      assert.deepEqual(transport.openedThreads, []);
+      assert.deepEqual(runtime.progress.snapshot().agents, []);
+    }
+  }
+});
+
 test("an active Codex record retains a decode diagnostic without failing its worker", async () => {
   class DecodeFailureTransport extends FakeTransport {
     #runtime: (() => EnsembleRuntime | null) | undefined;
@@ -1234,7 +1275,7 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
     defaultMaxAttempts: 1,
     worktreeManager
   });
-  const events: string[] = [];
+  const events: Array<{ method: string; params: unknown }> = [];
   let recordedWorktree: unknown;
   runtime.setRunRecorder({
     recordAttemptStart: ignoreAttemptStart,
@@ -1244,7 +1285,7 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
     }
   } as RunRecordWriter);
   runtime.onEvent((event) => {
-    events.push(event.method);
+    events.push({ method: event.method, params: event.params });
   });
 
   const result = await runtime.agent("write", { engine: "codex", isolation: "worktree" });
@@ -1265,6 +1306,7 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
       path: "/fake/worktree-1",
       branch: "ensemble-workflows/fake-1",
       baseCommit: "fake-base-1",
+      state: "committed",
       tipCommit: "fake-base-1-tip",
       changed: true,
       removed: false
@@ -1277,11 +1319,63 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
   assert.deepEqual(recordedWorktree, {
     branch: "ensemble-workflows/fake-1",
     baseCommit: "fake-base-1",
+    state: "committed",
     tipCommit: "fake-base-1-tip",
     changed: true,
     removed: false
   });
-  assert.deepEqual(events, ["worktree/finished"]);
+  assert.deepEqual(events, [
+    {
+      method: "worktree/finished",
+      params: {
+        path: "/fake/worktree-1",
+        branch: "ensemble-workflows/fake-1",
+        state: "committed",
+        changed: true,
+        removed: false
+      }
+    }
+  ]);
+});
+
+test("a held session publishes its worktree state only when the session closes", async () => {
+  const worktreeManager = new FakeWorktreeManager(true);
+  const runtime = new EnsembleRuntime({
+    transport: new FakeTransport([turn("first"), turn("second")]),
+    cwd: "/fake/repo",
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1,
+    worktreeManager
+  });
+  const events: Array<{ method: string; params: unknown }> = [];
+  runtime.onEvent((event) => {
+    if (event.method === "worktree/finished") {
+      events.push({ method: event.method, params: event.params });
+    }
+  });
+  const session = runtime.createWorkerSession({ engine: "codex", isolation: "worktree" });
+  try {
+    assert.equal(await session.send("first turn"), "first");
+    assert.equal(await session.send("second turn"), "second");
+    assert.deepEqual(events, []);
+    assert.equal(runtime.worktrees.length, 0);
+    await session.close();
+    assert.equal(runtime.worktrees[0]?.state, "committed");
+    assert.deepEqual(events, [{
+      method: "worktree/finished",
+      params: {
+        path: "/fake/worktree-1",
+        branch: "ensemble-workflows/fake-1",
+        state: "committed",
+        changed: true,
+        removed: false
+      }
+    }]);
+    await session.close();
+    assert.equal(events.length, 1);
+  } finally {
+    await runtime.close();
+  }
 });
 
 test("one worktree stays open across every retry in one agent call", async () => {
@@ -1337,6 +1431,7 @@ test("a failed worker still finishes and records its changed worktree", async ()
   assert.deepEqual((records.at(-1) as { worktree: unknown }).worktree, {
     branch: "ensemble-workflows/fake-1",
     baseCommit: "fake-base-1",
+    state: "committed",
     tipCommit: "fake-base-1-tip",
     changed: true,
     removed: false
@@ -1383,10 +1478,13 @@ test("a missing worktree path remains discoverable and reports its finalisation 
     message: finalisationError.message
   });
   assert.deepEqual(worktreeManager.finished, [worktree]);
-  assert.deepEqual(runtime.worktrees, [{ ...worktree, tipCommit: null, changed: true, removed: false }]);
+  assert.deepEqual(runtime.worktrees, [
+    { ...worktree, state: "unknown", tipCommit: null, changed: true, removed: false }
+  ]);
   assert.deepEqual(records.at(-1)?.worktree, {
     branch: worktree.branch,
     baseCommit: worktree.baseCommit,
+    state: "unknown",
     tipCommit: null,
     changed: true,
     removed: false
@@ -1440,7 +1538,9 @@ test("a worker error remains primary when worktree finalisation also fails", asy
   // The worker's own failure is the attempt's account; the finalisation
   // failure that followed is reported as its event, not promoted over it.
   assert.equal(records.at(-1)?.attempts.at(-1)?.failure?.message, workerError.message);
-  assert.deepEqual(runtime.worktrees, [{ ...worktree, tipCommit: null, changed: true, removed: false }]);
+  assert.deepEqual(runtime.worktrees, [
+    { ...worktree, state: "unknown", tipCommit: null, changed: true, removed: false }
+  ]);
   assert.equal(records.at(-1)?.worktree?.branch, worktree.branch);
   assert.deepEqual(events, [
     {
@@ -1505,7 +1605,7 @@ test("invocation shutdown completes before worktree finalisation", async () => {
     }),
     finish: async (worktree) => {
       order.push("worktree-finish");
-      return { ...worktree, tipCommit: worktree.baseCommit, changed: false, removed: true };
+      return { ...worktree, state: "unchanged", tipCommit: worktree.baseCommit, changed: false, removed: true };
     }
   };
   const engine: EngineAdapter = {

@@ -616,6 +616,7 @@ for (const scenario of placementScenarios) {
     assert.deepEqual(agent.worktree, {
       branch: worktree.branch,
       base_commit: worktree.baseCommit,
+      state: "committed",
       tip_commit: tip,
       changed: true,
       removed: false
@@ -643,6 +644,7 @@ interface RecordedAgent {
   worktree: {
     branch: string;
     base_commit: string;
+    state: string;
     tip_commit: string | null;
     changed: boolean;
     removed: boolean;

@@ -175,6 +175,7 @@ test("exposes worktrees as a workflow-visible side channel", async () => {
         path: "/tmp/worktree",
         branch: "ensemble-workflows/example",
         baseCommit: "fake-base",
+        state: "committed",
         tipCommit: "fake-tip",
         changed: true,
         removed: false

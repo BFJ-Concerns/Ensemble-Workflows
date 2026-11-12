@@ -105,6 +105,7 @@ import type {
   RuntimeAgentRecord,
   TerminalErrorRecord
 } from "./run-record.js";
+import { unknownWorktreeRecord } from "./worktree-isolation.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
 function assertValidAgentPrompt(prompt: unknown): asserts prompt is string {
@@ -863,7 +864,13 @@ export class EnsembleRuntime {
     // attempts to completion, so spend can overshoot by the whole dispatched
     // backlog. A blocked call is a pre-dispatch rejection, like a rejected
     // option: no engine invocation, no progress entry, no run record.
-    this.budget.assertCanStart(engine.name);
+    const dispatchPhase = options.phase ?? this.progress.snapshot().currentPhase;
+    const dispatchContext = [
+      ...(options.label !== undefined ? [`label ${JSON.stringify(options.label)}`] : []),
+      ...(dispatchPhase !== null ? [`phase ${JSON.stringify(dispatchPhase)}`] : [])
+    ];
+    this.budget.assertCanStart(engine.name,
+      dispatchContext.length > 0 ? `dispatch (${dispatchContext.join(", ")})` : "dispatch");
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
       engine: engine.name,
@@ -1315,23 +1322,14 @@ export class EnsembleRuntime {
         const worktree = await this.#placement.close(placement);
         if (worktree !== null) {
           this.worktrees.push(worktree);
-          this.#emitEvent({
-            method: "worktree/finished",
-            params: {
-              path: worktree.path,
-              branch: worktree.branch,
-              changed: worktree.changed,
-              removed: worktree.removed
-            },
-            receivedAt: Date.now()
-          });
+          this.#emitWorktreeFinished(worktree);
         }
       } catch (error) {
         if (placement.worktree !== undefined) {
           // Finalisation did not prove the branch unchanged or removed:
           // retain the recoverable identity conservatively, as agent
           // placement does.
-          this.worktrees.push({ ...placement.worktree, tipCommit: null, changed: true, removed: false });
+          this.worktrees.push(unknownWorktreeRecord(placement.worktree));
           this.#emitEvent({
             method: "worktree/finalisationFailed",
             params: {
@@ -2312,27 +2310,13 @@ export class EnsembleRuntime {
           const worktree = await this.#placement.close(placement);
           if (worktree !== null) {
             this.#publishWorktree(agentRecord, worktree);
-            this.#emitEvent({
-              method: "worktree/finished",
-              params: {
-                path: worktree.path,
-                branch: worktree.branch,
-                changed: worktree.changed,
-                removed: worktree.removed
-              },
-              receivedAt: Date.now()
-            });
+            this.#emitWorktreeFinished(worktree);
           }
         } catch (error) {
           if (placement.worktree !== undefined) {
             // Finalisation did not prove that the branch was unchanged or
             // removed. Retain the recoverable identity conservatively.
-            const worktree = {
-              ...placement.worktree,
-              tipCommit: null,
-              changed: true,
-              removed: false
-            };
+            const worktree = unknownWorktreeRecord(placement.worktree);
             this.#publishWorktree(agentRecord, worktree);
             this.#emitEvent({
               method: "worktree/finalisationFailed",
@@ -2373,10 +2357,31 @@ export class EnsembleRuntime {
     agentRecord.worktree = {
       branch: worktree.branch,
       baseCommit: worktree.baseCommit,
+      state: worktree.state,
       tipCommit: worktree.tipCommit,
       changed: worktree.changed,
       removed: worktree.removed
     };
+  }
+
+  /**
+   * The one `worktree/finished` shape, for an agent call's worktree and a
+   * held session's alike. A failed finalisation raises
+   * `worktree/finalisationFailed` instead, so `state` here is never
+   * `unknown`.
+   */
+  #emitWorktreeFinished(worktree: IsolatedWorktreeRecord): void {
+    this.#emitEvent({
+      method: "worktree/finished",
+      params: {
+        path: worktree.path,
+        branch: worktree.branch,
+        state: worktree.state,
+        changed: worktree.changed,
+        removed: worktree.removed
+      },
+      receivedAt: Date.now()
+    });
   }
 
   /**

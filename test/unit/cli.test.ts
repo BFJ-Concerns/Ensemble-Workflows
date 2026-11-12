@@ -497,7 +497,7 @@ test("a store the launcher cannot create refuses the invocation before any run a
     const lines = stderr.text().split("\n").filter((line) => line.length > 0);
     assert.equal(lines.length, 1, stderr.text());
     assert.ok(lines[0]!.includes(`cannot create entries in ${runRecordDir}`), stderr.text());
-    assert.match(lines[0]!, /run record store \(from the runRecordDir option\): ENOTDIR/);
+    assert.match(lines[0]!, /run record store \(from the runRecordDir option=.*\): ENOTDIR/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -588,6 +588,51 @@ test("CLI prints result JSON to stdout and logs to stderr", async () => {
   assert.equal(stdout.text(), "{\"args\":[\"a\",\"b\"]}\n");
   assert.equal(stderr.text(), "hello stderr\n");
 });
+
+for (const mode of ["workflow", "agent"] as const) {
+  for (const [state, phrase] of [
+    ["unchanged", "unchanged and removed"],
+    ["uncommitted", "uncommitted"],
+    ["committed", "committed"],
+    ["committed-and-uncommitted", "committed with uncommitted edits"]
+  ]) {
+    test(`${mode} CLI reports a ${state} worktree explicitly`, async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worktree-state-"));
+      try {
+        const script = path.join(directory, "workflow.js");
+        await writeFile(script, 'export const meta = { name: "worktree-state" }; return "ok";');
+        const runtime = fakeRuntime();
+        runtime.onEvent = (listener) => {
+          listener({
+            method: "worktree/finished",
+            params: {
+              path: "/repo/worktree with spaces",
+              branch: "ensemble-workflows/worker",
+              state,
+              changed: state !== "unchanged",
+              removed: state === "unchanged"
+            },
+            receivedAt: 0
+          });
+          return () => {};
+        };
+        const stdout = new CaptureStream();
+        const stderr = new CaptureStream();
+        const argv = mode === "workflow" ? [script]
+          : ["agent", "--engine=codex", "--isolation=worktree", "work"];
+        const exitCode = await runEnsembleCli(argv, {
+          cwd: directory, stdout, stderr, runRecordDir: null,
+          createRuntime: async () => runtime
+        });
+        assert.equal(exitCode, 0, stderr.text());
+        assert.equal(stderr.text(), mode === "workflow" && state === "unchanged" ? ""
+          : `[worktree] ${phrase} /repo/worktree with spaces (ensemble-workflows/worker)\n`);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+  }
+}
 
 test("CLI reports a worktree finalisation failure through the operator log", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worktree-finalisation-"));
@@ -1551,6 +1596,7 @@ test("ensemble agent reports a recoverable branch carrying the worker commit", a
 
     assert.equal(exitCode, 0, stderr.text());
     assert.equal(stdout.text(), '"committed"\n');
+    assert.match(stderr.text(), /\[worktree\] committed .* \(ensemble-workflows\/[^)]+\)\n/);
     const branch = stderr.text().match(/\((ensemble-workflows\/[^)]+)\)/)?.[1];
     assert.ok(branch, stderr.text());
     const { stdout: committed } = await execFileAsync("git", ["show", `${branch}:worker-receipt.txt`], {
@@ -4550,6 +4596,39 @@ test("a raising CLI announces holds and every rejected answer without polling th
   }
 });
 
+test("record-store refusals name the configured key or default override and retain relative values", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-preflight-record-"));
+  try {
+    const configHome = path.join(directory, "config");
+    const configFile = path.join(configHome, "ensemble", "config.json");
+    await mkdir(path.dirname(configFile), { recursive: true });
+    const blocker = path.join(directory, "file");
+    await writeFile(blocker, "not a directory");
+    const relative = path.relative(process.cwd(), blocker);
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "refused" }; return "answer";');
+    for (const source of ["config", "default"] as const) {
+      await writeFile(configFile, JSON.stringify({ schema_version: 1, ...(source === "config" ? { run_record: { dir: relative } } : {}) }));
+      const stderr = new CaptureStream();
+      let runtimeCreated = false;
+      const exit = await runEnsembleCli([script], {
+        cwd: directory, stdout: new CaptureStream(), stderr,
+        env: { XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: relative, ENSEMBLE_STATUS: "0" },
+        createRuntime: async () => { runtimeCreated = true; return fakeRuntime(); }
+      });
+      assert.equal(exit, 2, stderr.text());
+      assert.equal(runtimeCreated, false);
+      const reading = source === "config" ? `run_record.dir in ${configFile}` : "XDG_DATA_HOME";
+      assert.ok(stderr.text().includes(`${reading}=${JSON.stringify(relative)}; relative to ${process.cwd()}`), stderr.text());
+      const remedy = source === "config" ? `run_record.dir in ${configFile}` : "ENSEMBLE_RUN_RECORD_DIR";
+      assert.ok(stderr.text().includes(`set ${remedy} to a writable directory`), stderr.text());
+      assert.doesNotMatch(stderr.text(), /sandbox/);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("relative record stores use the launcher directory for preflight, archive and sentinel", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-relative-store-"));
   try {
@@ -4600,6 +4679,10 @@ test("relative record stores use the launcher directory for preflight, archive a
       assert.equal(runtimeCreated, false);
       assert.equal(refusedOut.text(), "");
       assert.ok(refusedErr.text().includes(`cannot create entries in ${store}`), refusedErr.text());
+      const setting = source === "option" ? "the runRecordDir option" : "ENSEMBLE_RUN_RECORD_DIR";
+      assert.ok(refusedErr.text().includes(`${setting}=${JSON.stringify(relativeStore)}; relative to ${process.cwd()}`), refusedErr.text());
+      assert.ok(refusedErr.text().includes(`set ${setting} to a writable directory`), refusedErr.text());
+      assert.doesNotMatch(refusedErr.text(), /sandbox/);
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

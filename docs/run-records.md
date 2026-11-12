@@ -4,7 +4,7 @@ A run can leave three kinds of file behind or alongside it:
 
 | Artefact | Lifetime | Purpose |
 |---|---|---|
-| Live status file (`ensemble.<run-uuid>.local.json`) | While the run is active; removed when it ends | Watch what a run is doing right now |
+| Live status file (`ensemble.<run-uuid>.local.json`) | While the run is active and during its close window; removed when the status writer closes | Watch what a run is doing right now |
 | Completion sentinel (`completion-sentinel.json`) | Permanent | Learn that a run has ended, and how |
 | Durable run record (the archive) | Permanent; on by default | Audit or evaluate a run after the fact |
 
@@ -96,11 +96,16 @@ Each status file contains one JSON object with these fields:
 - `schema`: `5`.
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
+- `owner`: object with string `host`, the publishing host name; numeric `pid`,
+  the publishing process id; and `start_ticks`, a string identifying that
+  process's start time in proc clock ticks, or `null` when unreadable.
 - `archiveDir`: string or `null`, the run archive directory when published.
 - `workflow`: string or `null`, from `meta.name` when present.
 - `state`: `"running"` or `"finished"`. A finished snapshot may exist briefly
   while the writer closes; `close()` then removes the file. Readers should treat
   absence as no active run and tolerate `"finished"` during that close window.
+  A finished snapshot may still list running workers while teardown settles
+  them; read their individual states and counts as teardown progresses.
 - `startedAt`: number, Unix epoch milliseconds.
 - `updatedAt`: number, Unix epoch milliseconds.
 - `finishedAt`: number or `null`, Unix epoch milliseconds when the run has
@@ -146,14 +151,19 @@ count of the same name (`cut-short` counts under `cutShort`):
 - `failed` — the worker settled on its own account, with a failure.
 - `cut-short` — the run's ending tore the worker down, whether its turn was at
   an engine or still waiting for admission. Its agent record carries the
-  `run-<status>` termination cause naming the run's shutdown status.
+  `run-failed`, `run-timed-out` or `run-interrupted` termination cause.
+  Workers cut short because the script returned without awaiting them carry
+  `run-interrupted` even when the run completed normally; the cause's message
+  says that the script body returned. This worker cause alone does not mean
+  the run was interrupted.
 - `unsettled` — the run ended before any outcome was observed; its agent
   record reads `abandoned`.
 
 A worker that settles on its own account while the run is shutting down keeps
 that account, `done` or `failed`. Each worker's state is published when it
-settles and never changes afterwards, so the finished snapshot's counts match
-the completion sentinel's worker tally (`cut_short` there, `cutShort` here).
+settles and never changes afterwards. Once teardown has settled every worker,
+the snapshot's counts match the completion sentinel's worker tally
+(`cut_short` there, `cutShort` here).
 The library export `workerDisposition` maps an agent record's status and
 termination cause to its disposition.
 
@@ -197,10 +207,6 @@ A finished worker waits on nothing.
   Each object has string `id`, string `content` (cut to 500 characters plus
   an ellipsis when longer; the hold file carries the full text), string-array
   `verdicts`, and numeric `raisedAtMs` (Unix epoch milliseconds).
-
-The published file also carries an `owner` object (`host`, `pid`,
-`start_ticks`): the writer's liveness evidence, which a reader uses to refute
-a snapshot that a killed run left behind.
 
 Example:
 
@@ -745,8 +751,14 @@ The fields present throughout a record's lifetime are:
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).
-- `worktree`: the isolated worktree's `branch`, `base_commit`, `tip_commit`,
-  `changed`, and `removed` — or `null`.
+- `worktree`: the isolated worktree's `branch`, `base_commit`, `state`,
+  `tip_commit`, `changed`, and `removed` — or `null`. `state` is
+  `"unchanged"`, `"uncommitted"`, `"committed"`,
+  `"committed-and-uncommitted"`, or `"unknown"`, as for a script's
+  [`worktrees`](workflow-scripts.md#budget-worktrees-and-args). `state` joined
+  the record within its schema version, so an agent record from an older
+  Ensemble checkout can lack it; read a missing `state` as unrecorded, and
+  rely on `changed` there.
 - `phase`: the explicit agent/session option, or the current run phase set by
   `phase(title)` when the agent or session turn queues; `null` if neither is
   set. Later phase changes do not alter an existing agent record.

@@ -3242,8 +3242,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path20) {
-      let input = path20;
+    function removeDotSegments(path21) {
+      let input = path21;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3495,8 +3495,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path20, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path20 && path20 !== "/" ? path20 : void 0;
+        const [path21, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path21 && path21 !== "/" ? path21 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -13834,13 +13834,13 @@ var require_acorn_globals = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path19 from "node:path";
+import path20 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
 import { readFile as readFile11, stat as stat6 } from "node:fs/promises";
-import { hostname as hostname4 } from "node:os";
-import path18 from "node:path";
+import { homedir as homedir5, hostname as hostname4 } from "node:os";
+import path19 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/ambient-settings.ts
@@ -16499,6 +16499,7 @@ var RunRecordWriter = class _RunRecordWriter {
       worktree: record.worktree === null ? null : {
         branch: record.worktree.branch,
         base_commit: record.worktree.baseCommit,
+        state: record.worktree.state,
         tip_commit: record.worktree.tipCommit,
         changed: record.worktree.changed,
         removed: record.worktree.removed
@@ -17336,6 +17337,9 @@ import { mkdir as mkdir5, rmdir } from "node:fs/promises";
 import path8 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var execFileAsync2 = promisify2(execFile2);
+function unknownWorktreeRecord(worktree) {
+  return { ...worktree, state: "unknown", tipCommit: null, changed: true, removed: false };
+}
 var GitWorktreeIsolationManager = class {
   #counter = 0;
   #repoRoots = /* @__PURE__ */ new Map();
@@ -17358,11 +17362,15 @@ var GitWorktreeIsolationManager = class {
   async finish(worktree) {
     const status = await git2(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
     const tip = (await git2(worktree.path, ["rev-parse", "HEAD"])).trim();
-    const changed = status.trim().length > 0 || tip !== worktree.baseCommit;
-    if (changed) {
+    const state = inspectedState({
+      committed: tip !== worktree.baseCommit,
+      uncommitted: status.trim().length > 0
+    });
+    if (state !== "unchanged") {
       this.#worktreeRoots.delete(worktree.path);
       return {
         ...worktree,
+        state,
         tipCommit: tip,
         changed: true,
         removed: false
@@ -17381,6 +17389,7 @@ var GitWorktreeIsolationManager = class {
     }
     return {
       ...worktree,
+      state,
       tipCommit: tip,
       changed: false,
       removed: true
@@ -17417,6 +17426,12 @@ var GitWorktreeIsolationManager = class {
     return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID2().slice(0, 8)}`;
   }
 };
+function inspectedState(observed2) {
+  if (observed2.committed) {
+    return observed2.uncommitted ? "committed-and-uncommitted" : "committed";
+  }
+  return observed2.uncommitted ? "uncommitted" : "unchanged";
+}
 async function git2(cwd, args) {
   try {
     const { stdout } = await execFileAsync2("git", args, {
@@ -18731,8 +18746,8 @@ var RunProgress = class {
     this.#counters(engine).cap = cap;
     this.#touch();
   }
-  setArchiveDir(path20) {
-    this.#archiveDir = path20;
+  setArchiveDir(path21) {
+    this.#archiveDir = path21;
     this.#touch();
   }
   /** Publishes only observed identity; served values must not echo the request. */
@@ -18742,16 +18757,16 @@ var RunProgress = class {
     Object.assign(record, identity);
     this.#touch();
   }
-  noteAgentTranscript(id, path20) {
+  noteAgentTranscript(id, path21) {
     const record = this.#live.get(id);
     if (record === void 0) return;
-    record.transcript = path20;
+    record.transcript = path21;
     this.#touch();
   }
-  noteAgentWorktree(id, path20) {
+  noteAgentWorktree(id, path21) {
     const record = this.#live.get(id);
     if (record === void 0) return;
-    record.worktree = path20;
+    record.worktree = path21;
     this.#touch();
   }
   /** Cumulative worker tokens across attempts and targets; null means unobserved. */
@@ -19042,7 +19057,38 @@ function rank(state) {
 import { randomBytes } from "node:crypto";
 import { mkdtemp as mkdtemp2, rm as rm4, stat as stat5 } from "node:fs/promises";
 import { createServer } from "node:net";
+import path13 from "node:path";
+
+// src/resource-location.ts
 import path12 from "node:path";
+function readSetting(setting, value, base) {
+  return { setting, value, resolvedAgainst: path12.isAbsolute(value) ? null : base };
+}
+function declaredDirectory(reading, ...below) {
+  return { path: directoryOf(reading, below), location: { kind: "declared", reading } };
+}
+function defaultDirectory(chosen, root, ...below) {
+  return typeof root === "string" ? { path: path12.resolve(root, ...below), location: { kind: "default", ...chosen, from: null } } : { path: directoryOf(root, below), location: { kind: "default", ...chosen, from: root } };
+}
+function fixedDirectory(rule, directory) {
+  return { path: path12.resolve(directory), location: { kind: "fixed", rule } };
+}
+function settingToChange(location) {
+  switch (location.kind) {
+    case "declared":
+      return location.reading.setting;
+    case "default":
+      return location.movedBy;
+    case "fixed":
+      return null;
+  }
+}
+function directoryOf(reading, below) {
+  const base = reading.resolvedAgainst === null ? [] : [reading.resolvedAgainst];
+  return path12.resolve(...base, reading.value, ...below);
+}
+
+// src/resource-preflight.ts
 var CALLER_SANDBOX_RULES = [
   {
     // Codex workspace-write marks disabled networking or an active network
@@ -19080,10 +19126,26 @@ function refusalMessage(denials, sandbox) {
     const verb = requirement.access === "bind-socket" ? "bind a socket under" : "create entries in";
     const where = denial.probedPath === requirement.path ? "" : ` (probed at ${denial.probedPath})`;
     const who = requirement.owner === "launcher" ? "the launcher" : `the ${requirement.owner} engine`;
-    return `cannot ${verb} ${requirement.path}${where}, ${who}'s ${requirement.role} (from ${requirement.resolvedFrom}): ${denial.code}`;
+    const setting = settingToChange(requirement.location);
+    const access4 = requirement.access === "bind-socket" ? "a directory where Unix socket binding is permitted" : "a writable directory";
+    const remedy = setting === null ? `grant the launching process access to ${verb} this directory; no setting moves it` : `set ${setting} to ${access4}, or grant the launching process access to ${verb} this directory`;
+    return `cannot ${verb} ${requirement.path}${where}, ${who}'s ${requirement.role} (${describeLocation(requirement.location)}): ${denial.code}; ${remedy}`;
   });
-  const cause = sandbox === null ? "no sandbox around the launching process was identified; grant it this access, or move the path by the setting named" : `the launching process runs inside the ${sandbox.name} sandbox (${sandbox.evidence}), and access was denied; ${sandbox.lift}`;
-  return `${denied.join("; ")} \u2014 ${cause}`;
+  const cause = sandbox === null ? "" : ` \u2014 the launching process runs inside the ${sandbox.name} sandbox (${sandbox.evidence}), and access was denied; ${sandbox.lift}`;
+  return `${denied.join("; ")}${cause}`;
+}
+function describeLocation(location) {
+  switch (location.kind) {
+    case "declared":
+      return `from ${describeReading(location.reading)}`;
+    case "default":
+      return `default: ${location.rule}${location.from === null ? "" : `; from ${describeReading(location.from)}`}`;
+    case "fixed":
+      return `fixed: ${location.rule}`;
+  }
+}
+function describeReading(reading) {
+  return `${reading.setting}=${JSON.stringify(reading.value)}${reading.resolvedAgainst === null ? "" : `; relative to ${reading.resolvedAgainst}`}`;
 }
 async function probeResources(requirements) {
   const outcomes = await Promise.all(requirements.map((requirement) => probeResource(requirement)));
@@ -19105,7 +19167,7 @@ async function probeResource(requirement) {
 async function probeEntryCreation(requirement, dir) {
   let scratch;
   try {
-    scratch = await mkdtemp2(path12.join(dir, ".ensemble-probe-"));
+    scratch = await mkdtemp2(path13.join(dir, ".ensemble-probe-"));
   } catch (error) {
     return denialOf(requirement, dir, error);
   }
@@ -19113,7 +19175,7 @@ async function probeEntryCreation(requirement, dir) {
   return null;
 }
 async function probeSocketBinding(requirement, dir) {
-  const socketPath = path12.join(dir, `.ep-${randomBytes(4).toString("hex")}`);
+  const socketPath = path13.join(dir, `.ep-${randomBytes(4).toString("hex")}`);
   if (Buffer.byteLength(socketPath) > MAX_SOCKET_PATH_BYTES) {
     return {
       requirement,
@@ -19132,7 +19194,7 @@ async function probeSocketBinding(requirement, dir) {
 }
 var MAX_SOCKET_PATH_BYTES = 107;
 async function nearestExistingDirectory(target) {
-  let current2 = path12.resolve(target);
+  let current2 = path13.resolve(target);
   for (; ; ) {
     try {
       const entry = await stat5(current2);
@@ -19142,7 +19204,7 @@ async function nearestExistingDirectory(target) {
       return { path: current2, code: "ENOTDIR", message: `${current2} exists and is not a directory` };
     } catch (error) {
       const code = errnoOf(error);
-      const parent = path12.dirname(current2);
+      const parent = path13.dirname(current2);
       if (code !== "ENOENT" || parent === current2) {
         return { path: current2, code, message: messageOf(error) };
       }
@@ -19208,17 +19270,20 @@ import { spawn as spawn3 } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/engine-environment.ts
-import path13 from "node:path";
+import path14 from "node:path";
 var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
 function launchEnvironment(engine, declared, inherited = process.env) {
+  const env = writtenEnvironment(engine, declared, inherited);
   if (engine === "claude") {
-    const env = { ...withoutRunScopedVariables(inherited), ...declared, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
+    env[SANDBOXED_WORKSPACE_VARIABLE] = "1";
     if (env.CLAUDE_CONFIG_DIR) {
-      env.CLAUDE_CONFIG_DIR = path13.resolve(env.CLAUDE_CONFIG_DIR.normalize("NFC"));
+      env.CLAUDE_CONFIG_DIR = path14.resolve(env.CLAUDE_CONFIG_DIR.normalize("NFC"));
     }
-    return env;
   }
-  return { ...inherited, ...declared };
+  return env;
+}
+function writtenEnvironment(engine, declared, inherited = process.env) {
+  return engine === "claude" ? { ...withoutRunScopedVariables(inherited), ...declared } : { ...inherited, ...declared };
 }
 
 // src/app-server.ts
@@ -20396,33 +20461,35 @@ import { randomUUID as randomUUID4 } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { access as access2, mkdtemp as mkdtemp3, readFile as readFile7, readdir as readdir6, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
 import { hostname as hostname3 } from "node:os";
-import path15 from "node:path";
+import path16 from "node:path";
 
 // src/engine-resources.ts
 import { createHash as createHash3 } from "node:crypto";
 import { homedir as homedir3 } from "node:os";
-import path14 from "node:path";
+import path15 from "node:path";
 function codexResources(env) {
-  const declared = env.worker.CODEX_HOME;
-  const home = declared !== void 0 && declared.length > 0 ? { path: path14.resolve(env.cwd, declared), from: "CODEX_HOME" } : { path: path14.resolve(env.cwd, homeOf(env.worker), ".codex"), from: "default: $HOME/.codex" };
-  return [{ owner: "codex", role: "Codex home", path: home.path, access: "create-entries", resolvedFrom: home.from }];
+  const declared = env.written.CODEX_HOME;
+  const home = declared ? declaredDirectory(readSetting("CODEX_HOME", declared, env.cwd)) : defaultDirectory({ rule: "$HOME/.codex", movedBy: "CODEX_HOME" }, homeRoot(env.written, env.cwd), ".codex");
+  return [{ owner: "codex", role: "Codex home", access: "create-entries", ...home }];
 }
 function claudeResources(env) {
   const config = claudeConfigDirectory(env.worker, env.cwd);
   const uid = process.getuid?.() ?? 0;
-  const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path14.join(env.worker.PREFIX, "tmp") : "/tmp";
-  const daemon = path14.join(daemonRoot, `cc-daemon-${uid}`, createHash3("sha256").update(config).digest("hex").slice(0, 8));
-  const configFrom = env.worker.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "default: $HOME/.claude";
-  const scratch = temporaryDirectory(env.launcher, process.cwd());
-  const valve = claudeValveDirectory(env.launcher);
-  const workerScratch = env.worker.CLAUDE_CODE_TMPDIR ? { path: path14.resolve(env.cwd, env.worker.CLAUDE_CODE_TMPDIR), from: "CLAUDE_CODE_TMPDIR" } : temporaryDirectory(env.worker, env.cwd);
+  const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path15.join(env.worker.PREFIX, "tmp") : "/tmp";
+  const daemon = path15.join(daemonRoot, `cc-daemon-${uid}`, createHash3("sha256").update(config).digest("hex").slice(0, 8));
+  const homeLocation = env.written.CLAUDE_CONFIG_DIR ? declaredDirectory(readSetting("CLAUDE_CONFIG_DIR", env.written.CLAUDE_CONFIG_DIR, process.cwd())).location : defaultDirectory({ rule: "$HOME/.claude", movedBy: "CLAUDE_CONFIG_DIR" }, homeRoot(env.written, env.cwd), ".claude").location;
+  const home = { path: config, location: homeLocation };
+  const global = env.written.CLAUDE_CONFIG_DIR ? home : defaultDirectory({ rule: "$HOME (.claude.json)", movedBy: "CLAUDE_CONFIG_DIR" }, homeRoot(env.written, env.cwd));
+  const scratch = temporaryLocation(env.launcher, process.cwd(), "launcher ");
+  const valve = env.launcher.TMUX_TMPDIR ? declaredDirectory(readSetting("launcher TMUX_TMPDIR", env.launcher.TMUX_TMPDIR, process.cwd())) : defaultDirectory({ rule: "/tmp", movedBy: "launcher TMUX_TMPDIR" }, "/tmp");
+  const workerScratch = env.written.CLAUDE_CODE_TMPDIR ? declaredDirectory(readSetting("CLAUDE_CODE_TMPDIR", env.written.CLAUDE_CODE_TMPDIR, env.cwd), `claude-${uid}`) : temporaryLocation(env.written, env.cwd, "", `claude-${uid}`);
   return [
-    { owner: "claude", role: "Claude home", path: config, access: "create-entries", resolvedFrom: configFrom },
-    { owner: "claude", role: "Claude global configuration", path: env.worker.CLAUDE_CONFIG_DIR ? config : path14.resolve(env.cwd, homeOf(env.worker)), access: "create-entries", resolvedFrom: env.worker.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "HOME (.claude.json)" },
-    { owner: "claude", role: "daemon sockets", path: daemon, access: "bind-socket", resolvedFrom: `${configFrom}; daemon default: ${daemonRoot}/cc-daemon-<uid>/<config hash>` },
-    { owner: "claude", role: "dispatch settings scratch files", path: scratch.path, access: "create-entries", resolvedFrom: `launcher ${scratch.from}` },
-    { owner: "claude", role: "reply valve sockets", path: valve, access: "bind-socket", resolvedFrom: env.launcher.TMUX_TMPDIR ? "launcher TMUX_TMPDIR" : "launcher default: /tmp" },
-    { owner: "claude", role: "Claude scratch files", path: path14.join(workerScratch.path, `claude-${uid}`), access: "create-entries", resolvedFrom: workerScratch.from }
+    { owner: "claude", role: "Claude home", access: "create-entries", ...home },
+    { owner: "claude", role: "Claude global configuration", access: "create-entries", ...global },
+    { owner: "claude", role: "daemon sockets", access: "bind-socket", ...fixedDirectory(`${daemonRoot}/cc-daemon-<uid>/<config hash>`, daemon) },
+    { owner: "claude", role: "dispatch settings scratch files", access: "create-entries", ...scratch },
+    { owner: "claude", role: "reply valve sockets", access: "bind-socket", ...valve },
+    { owner: "claude", role: "Claude scratch files", access: "create-entries", ...workerScratch }
   ];
 }
 function openCodeResources(env) {
@@ -20432,29 +20499,30 @@ function openCodeResources(env) {
     ["XDG_STATE_HOME", ".local/state", "state"],
     ["XDG_CACHE_HOME", ".cache", "cache"]
   ];
-  const scratch = temporaryDirectory(env.worker, env.cwd);
   return [
     ...homes.map(([key, fallback, role]) => ({
       owner: "opencode",
       role: `opencode ${role}`,
       access: "create-entries",
-      path: path14.resolve(env.cwd, env.worker[key] || path14.join(homeOf(env.worker), fallback), "opencode"),
-      resolvedFrom: env.worker[key] ? key : `default: $HOME/${fallback}`
+      ...env.written[key] ? declaredDirectory(readSetting(key, env.written[key], env.cwd), "opencode") : defaultDirectory({ rule: `$HOME/${fallback}`, movedBy: key }, homeRoot(env.written, env.cwd), fallback, "opencode")
     })),
-    { owner: "opencode", role: "opencode scratch files", path: path14.join(scratch.path, "opencode"), access: "create-entries", resolvedFrom: scratch.from }
+    { owner: "opencode", role: "opencode scratch files", access: "create-entries", ...temporaryLocation(env.written, env.cwd, "", "opencode") }
   ];
 }
 function claudeConfigDirectory(env, cwd) {
-  return path14.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path14.join(homeOf(env), ".claude")).normalize("NFC"));
+  return path15.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path15.join(homeOf(env), ".claude")).normalize("NFC"));
 }
 function claudeValveDirectory(env) {
-  return path14.resolve(env.TMUX_TMPDIR || "/tmp");
+  return path15.resolve(env.TMUX_TMPDIR || "/tmp");
 }
 function temporaryDirectory(env, cwd) {
+  return temporaryLocation(env, cwd);
+}
+function temporaryLocation(env, cwd, qualifier = "", ...below) {
   for (const key of ["TMPDIR", "TMP", "TEMP"]) {
-    if (env[key]) return { path: path14.resolve(cwd, env[key]), from: key };
+    if (env[key]) return declaredDirectory(readSetting(`${qualifier}${key}`, env[key], cwd), ...below);
   }
-  return { path: "/tmp", from: "default: /tmp" };
+  return defaultDirectory({ rule: "/tmp", movedBy: `${qualifier}TMPDIR` }, "/tmp", ...below);
 }
 var ENGINE_RESOURCE_RESOLVERS = {
   codex: codexResources,
@@ -20462,7 +20530,15 @@ var ENGINE_RESOURCE_RESOLVERS = {
   opencode: openCodeResources
 };
 function engineResourceRequirements(engine, declared, cwd, launcher = process.env) {
-  return ENGINE_RESOURCE_RESOLVERS[engine]({ worker: launchEnvironment(engine, declared, launcher), launcher, cwd });
+  return ENGINE_RESOURCE_RESOLVERS[engine]({
+    worker: launchEnvironment(engine, declared, launcher),
+    written: writtenEnvironment(engine, declared, launcher),
+    launcher,
+    cwd
+  });
+}
+function homeRoot(env, base) {
+  return env.HOME ? readSetting("HOME", env.HOME, base) : homedir3();
 }
 function homeOf(env) {
   return env.HOME !== void 0 && env.HOME.length > 0 ? env.HOME : homedir3();
@@ -20834,7 +20910,7 @@ var ClaudeCliControlPlane = class {
     this.#holdScope = options.holdScope === void 0 ? resolveHoldScope(void 0, process.env) : options.holdScope;
     this.#env = launchEnvironment("claude", this.#workerEnv);
     const configDir = claudeConfigDirectory(this.#env, process.cwd());
-    this.#projectsDir = options.projectsDir ?? path15.join(configDir, "projects");
+    this.#projectsDir = options.projectsDir ?? path16.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#commandBounds = options.commandBounds ?? DEFAULT_COMMAND_BOUNDS;
     this.#reclaimTimeoutMs = options.reclaimTimeoutMs ?? 3e4;
@@ -20970,7 +21046,7 @@ var ClaudeCliControlPlane = class {
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
     const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.settingsEnv);
-    args.push("--settings", path15.join(settingsDir, "settings.json"));
+    args.push("--settings", path16.join(settingsDir, "settings.json"));
     let registered = null;
     let candidate = null;
     const dispatch = { result: null };
@@ -21152,10 +21228,10 @@ var ClaudeCliControlPlane = class {
     };
     const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
 `;
-    const dir = await mkdtemp3(path15.join(temporaryDirectory(process.env, process.cwd()).path, `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
+    const dir = await mkdtemp3(path16.join(temporaryDirectory(process.env, process.cwd()).path, `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
-      await writeFile5(path15.join(dir, OWNER_FILENAME), owner, { mode: 384 });
-      await writeFile5(path15.join(dir, "settings.json"), `${JSON.stringify(settings)}
+      await writeFile5(path16.join(dir, OWNER_FILENAME), owner, { mode: 384 });
+      await writeFile5(path16.join(dir, "settings.json"), `${JSON.stringify(settings)}
 `, {
         mode: 384
       });
@@ -21194,9 +21270,9 @@ var ClaudeCliControlPlane = class {
       if (!entry.isDirectory() || !entry.name.startsWith(SETTINGS_DIR_PREFIX)) {
         continue;
       }
-      const dir = path15.join(root, entry.name);
+      const dir = path16.join(root, entry.name);
       try {
-        const owner = JSON.parse(await readFile7(path15.join(dir, OWNER_FILENAME), "utf8"));
+        const owner = JSON.parse(await readFile7(path16.join(dir, OWNER_FILENAME), "utf8"));
         if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
           await this.#removeSettingsDir(dir);
         }
@@ -21239,7 +21315,7 @@ var ClaudeCliControlPlane = class {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path15.join(this.#projectsDir, dir, filename);
+      const candidate = path16.join(this.#projectsDir, dir, filename);
       try {
         await access2(candidate);
         return candidate;
@@ -21259,17 +21335,17 @@ var ClaudeCliControlPlane = class {
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
     let socketDir;
     try {
-      socketDir = await mkdtemp3(path15.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+      socketDir = await mkdtemp3(path16.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
       return { submitted: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
     }
-    const server = ["-S", path15.join(socketDir, "tmux.sock")];
+    const server = ["-S", path16.join(socketDir, "tmux.sock")];
     let submitAttempted = false;
     try {
-      const payload = path15.join(socketDir, "prompt.txt");
-      const editor = path15.join(socketDir, "editor.cjs");
-      const copied = path15.join(socketDir, "copied");
+      const payload = path16.join(socketDir, "prompt.txt");
+      const editor = path16.join(socketDir, "editor.cjs");
+      const copied = path16.join(socketDir, "copied");
       await writeFile5(payload, message, { mode: 384 });
       await writeFile5(editor, `#!${process.execPath}
         const fs = require("node:fs");
@@ -21556,7 +21632,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile7(path15.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile7(path16.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -21718,14 +21794,14 @@ function enteredWorktrees(entries) {
   }
   return worktrees;
 }
-async function readTranscriptFile(path20) {
+async function readTranscriptFile(path21) {
   let text;
   try {
-    text = await readFile8(path20, "utf8");
+    text = await readFile8(path21, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path20}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path21}`, { cause: error });
   }
-  return { path: path20, text, entries: parseTranscriptText(text) };
+  return { path: path21, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -22710,13 +22786,13 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle, observers) {
-    const path20 = await this.#controlPlane.transcriptPath(handle);
-    if (path20 === null) {
+    const path21 = await this.#controlPlane.transcriptPath(handle);
+    if (path21 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    const transcript = await readTranscriptFile(path20);
+    const transcript = await readTranscriptFile(path21);
     try {
-      observers?.onTranscriptPath?.(path20);
+      observers?.onTranscriptPath?.(path21);
     } catch {
     }
     return transcript;
@@ -24045,14 +24121,14 @@ function describeSchemaErrors(errors) {
 }
 function findLocalReferenceCycle(schema) {
   const seenObjects = /* @__PURE__ */ new Set();
-  const visit = (value, path20) => {
+  const visit = (value, path21) => {
     if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
     seenObjects.add(value);
     const object = value;
     if (typeof object.$ref === "string") {
-      const seenRefs = /* @__PURE__ */ new Set([path20]);
+      const seenRefs = /* @__PURE__ */ new Set([path21]);
       let current2 = object;
-      let currentPath = path20;
+      let currentPath = path21;
       while (typeof current2.$ref === "string") {
         const targetPath = current2.$ref;
         const target = localPointerTarget(schema, targetPath);
@@ -24064,7 +24140,7 @@ function findLocalReferenceCycle(schema) {
       }
     }
     for (const [key, child] of Object.entries(object)) {
-      const cycle = visit(child, `${path20}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      const cycle = visit(child, `${path21}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
       if (cycle !== null) return cycle;
     }
     return null;
@@ -24089,14 +24165,14 @@ function normaliseForCodexOutputSchema(schema) {
 function assertAcyclicSchemaObject(schema) {
   const active = /* @__PURE__ */ new Map();
   const visited = /* @__PURE__ */ new Set();
-  const walk = (value, path20) => {
+  const walk = (value, path21) => {
     if (typeof value !== "object" || value === null) return;
     const firstSeenAt = active.get(value);
-    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path20, firstSeenAt);
+    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path21, firstSeenAt);
     if (visited.has(value)) return;
-    active.set(value, path20);
+    active.set(value, path21);
     for (const [key, child] of Object.entries(value)) {
-      walk(child, `${path20}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      walk(child, `${path21}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
     }
     active.delete(value);
     visited.add(value);
@@ -25276,7 +25352,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
       validateEngineDefaults(engine.name, options, engine.modelRegistry);
     }
     const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
-    this.budget.assertCanStart(engine.name);
+    const dispatchPhase = options.phase ?? this.progress.snapshot().currentPhase;
+    const dispatchContext = [
+      ...options.label !== void 0 ? [`label ${JSON.stringify(options.label)}`] : [],
+      ...dispatchPhase !== null ? [`phase ${JSON.stringify(dispatchPhase)}`] : []
+    ];
+    this.budget.assertCanStart(
+      engine.name,
+      dispatchContext.length > 0 ? `dispatch (${dispatchContext.join(", ")})` : "dispatch"
+    );
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
       engine: engine.name,
@@ -25641,20 +25725,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
         const worktree = await this.#placement.close(placement);
         if (worktree !== null) {
           this.worktrees.push(worktree);
-          this.#emitEvent({
-            method: "worktree/finished",
-            params: {
-              path: worktree.path,
-              branch: worktree.branch,
-              changed: worktree.changed,
-              removed: worktree.removed
-            },
-            receivedAt: Date.now()
-          });
+          this.#emitWorktreeFinished(worktree);
         }
       } catch (error) {
         if (placement.worktree !== void 0) {
-          this.worktrees.push({ ...placement.worktree, tipCommit: null, changed: true, removed: false });
+          this.worktrees.push(unknownWorktreeRecord(placement.worktree));
           this.#emitEvent({
             method: "worktree/finalisationFailed",
             params: {
@@ -26077,21 +26152,21 @@ var EnsembleRuntime = class _EnsembleRuntime {
         },
         ...engine === "codex" && recorder !== null ? {
           onTranscriptEvent: (event) => enqueue(async () => {
-            const path20 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
-            if (path20 != null) this.progress.noteAgentTranscript(agentId, path20);
+            const path21 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            if (path21 != null) this.progress.noteAgentTranscript(agentId, path21);
           })
         } : engine === "claude" ? {
-          onTranscriptPath: (path20) => {
-            if (path20 === transcriptPath || !active) return;
-            transcriptPath = path20;
+          onTranscriptPath: (path21) => {
+            if (path21 === transcriptPath || !active) return;
+            transcriptPath = path21;
             if (recorder === null) {
-              this.progress.noteAgentTranscript(agentId, path20);
+              this.progress.noteAgentTranscript(agentId, path21);
               return;
             }
             enqueue(async () => {
               try {
-                await recorder.recordClaudeTranscript(agentId, context.attempt, path20);
-                this.progress.noteAgentTranscript(agentId, path20);
+                await recorder.recordClaudeTranscript(agentId, context.attempt, path21);
+                this.progress.noteAgentTranscript(agentId, path21);
               } catch (error) {
                 transcriptPath = void 0;
                 throw error;
@@ -26420,25 +26495,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
           const worktree = await this.#placement.close(placement);
           if (worktree !== null) {
             this.#publishWorktree(agentRecord, worktree);
-            this.#emitEvent({
-              method: "worktree/finished",
-              params: {
-                path: worktree.path,
-                branch: worktree.branch,
-                changed: worktree.changed,
-                removed: worktree.removed
-              },
-              receivedAt: Date.now()
-            });
+            this.#emitWorktreeFinished(worktree);
           }
         } catch (error) {
           if (placement.worktree !== void 0) {
-            const worktree = {
-              ...placement.worktree,
-              tipCommit: null,
-              changed: true,
-              removed: false
-            };
+            const worktree = unknownWorktreeRecord(placement.worktree);
             this.#publishWorktree(agentRecord, worktree);
             this.#emitEvent({
               method: "worktree/finalisationFailed",
@@ -26477,10 +26538,30 @@ var EnsembleRuntime = class _EnsembleRuntime {
     agentRecord.worktree = {
       branch: worktree.branch,
       baseCommit: worktree.baseCommit,
+      state: worktree.state,
       tipCommit: worktree.tipCommit,
       changed: worktree.changed,
       removed: worktree.removed
     };
+  }
+  /**
+   * The one `worktree/finished` shape, for an agent call's worktree and a
+   * held session's alike. A failed finalisation raises
+   * `worktree/finalisationFailed` instead, so `state` here is never
+   * `unknown`.
+   */
+  #emitWorktreeFinished(worktree) {
+    this.#emitEvent({
+      method: "worktree/finished",
+      params: {
+        path: worktree.path,
+        branch: worktree.branch,
+        state: worktree.state,
+        changed: worktree.changed,
+        removed: worktree.removed
+      },
+      receivedAt: Date.now()
+    });
   }
   /**
    * The bounded-attempt loop for a text call on one target: the trimmed
@@ -27235,7 +27316,7 @@ import vm from "node:vm";
 import { createHash as createHash5 } from "node:crypto";
 import { readFile as readFile10 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
-import path17 from "node:path";
+import path18 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -32935,7 +33016,7 @@ var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 import { constants as constants2 } from "node:fs";
 import { access as access3, readdir as readdir7, readFile as readFile9 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
-import path16 from "node:path";
+import path17 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
 };
 var NestedWorkflowError = class extends WorkflowResolutionError {
@@ -32944,10 +33025,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path16.join(homedir4(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path17.join(homedir4(), ".local", "share");
   return {
-    project: path16.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path16.join(dataHome2, "ensemble", "workflows")
+    project: path17.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path17.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -32957,7 +33038,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path16.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path17.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access3(scriptPath, constants2.R_OK);
   } catch (error) {
@@ -33030,7 +33111,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path16.join(dir, entry.name);
+    const scriptPath = path17.join(dir, entry.name);
     try {
       const source = await readFile9(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
@@ -33095,14 +33176,14 @@ function assertJsonSerialisable(value, label, pathRoot) {
     throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
   }
 }
-function findUnserialisable(value, path20, ancestors, honourToJson) {
+function findUnserialisable(value, path21, ancestors, honourToJson) {
   switch (typeof value) {
     case "function":
-      return `${path20} is a function`;
+      return `${path21} is a function`;
     case "symbol":
-      return `${path20} is a symbol`;
+      return `${path21} is a symbol`;
     case "bigint":
-      return `${path20} is a BigInt`;
+      return `${path21} is a BigInt`;
     case "object":
       break;
     default:
@@ -33113,16 +33194,16 @@ function findUnserialisable(value, path20, ancestors, honourToJson) {
   }
   const toJson = value.toJSON;
   if (honourToJson && typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path20, ancestors, false);
+    return findUnserialisable(toJson.call(value), path21, ancestors, false);
   }
   if (ancestors.has(value)) {
-    return `${path20} closes a cycle`;
+    return `${path21} closes a cycle`;
   }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path20}[${index}]`, ancestors, true);
+        const offence = findUnserialisable(value[index], `${path21}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -33130,7 +33211,7 @@ function findUnserialisable(value, path20, ancestors, honourToJson) {
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path20}.${key}`, ancestors, true);
+      const offence = findUnserialisable(entry, `${path21}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -33173,8 +33254,8 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
-  const resolvedFilename = path17.resolve(options.filename);
-  const cwd = options.cwd ?? path17.dirname(resolvedFilename);
+  const resolvedFilename = path18.resolve(options.filename);
+  const cwd = options.cwd ?? path18.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -34249,13 +34330,13 @@ async function runEnsembleCli(argv, options = {}) {
     return 2;
   }
   const configuredRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
-  const runRecordDir = configuredRecordDir ? path18.resolve(configuredRecordDir) : configuredRecordDir;
+  const runRecordDir = configuredRecordDir ? path19.resolve(configuredRecordDir) : configuredRecordDir;
   const configuredSentinelDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
-  const sentinelStoreDir = configuredSentinelDir ? path18.resolve(configuredSentinelDir) : configuredSentinelDir;
+  const sentinelStoreDir = configuredSentinelDir ? path19.resolve(configuredSentinelDir) : configuredSentinelDir;
   let prepared;
   try {
     prepared = await prepareRun(invocation, cwd);
-    await judgeResources(launcherResourceRequirements(runRecordDir, options.runRecordDir !== void 0, ambientSettings), env);
+    await judgeResources(launcherResourceRequirements(configuredRecordDir, options.runRecordDir !== void 0, ambientSettings, env), env);
   } catch (error) {
     stderr.write(`${presentOperationalError(error) ?? formatError2(error)}
 `);
@@ -34518,16 +34599,11 @@ async function runEnsembleCli(argv, options = {}) {
       }
       const worktreePath = typeof event.params.path === "string" ? event.params.path : "<unknown>";
       const branch = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
-      if (invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree") {
-        const outcome = event.params.changed === true ? "changed" : "unchanged and removed";
-        stderr.write(`[worktree] ${outcome} ${worktreePath} (${branch})
-`);
+      const reportUnchanged = invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree";
+      if (!reportUnchanged && event.params.changed !== true) {
         return;
       }
-      if (event.params.changed !== true) {
-        return;
-      }
-      stderr.write(`[worktree] changed ${worktreePath} (${branch})
+      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${branch})
 `);
     });
     const runnerOptions = {
@@ -34694,7 +34770,7 @@ function workflowName(meta) {
 async function prepareRun(invocation, cwd) {
   if (invocation.kind === "agent") {
     if (invocation.agentOptions.cwd !== void 0) {
-      const requestedCwd = path18.resolve(cwd, invocation.agentOptions.cwd);
+      const requestedCwd = path19.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
         isDirectory2 = (await stat6(requestedCwd)).isDirectory();
@@ -34706,7 +34782,7 @@ async function prepareRun(invocation, cwd) {
       }
     }
     return {
-      workflowPath: path18.join(cwd, "<ensemble-agent>"),
+      workflowPath: path19.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
       runnerArgs: [],
       recordArgs: {
@@ -34718,7 +34794,7 @@ async function prepareRun(invocation, cwd) {
   if (invocation.scriptArg === void 0) {
     throw new Error("workflow invocation has no script path");
   }
-  const workflowPath = path18.resolve(cwd, invocation.scriptArg);
+  const workflowPath = path19.resolve(cwd, invocation.scriptArg);
   return {
     workflowPath,
     source: await readWorkflowScript(workflowPath),
@@ -34726,26 +34802,18 @@ async function prepareRun(invocation, cwd) {
     recordArgs: invocation.args
   };
 }
-function launcherResourceRequirements(recordDir, injectedRecordDir, settings) {
+function launcherResourceRequirements(recordDir, injectedRecordDir, settings, env) {
   if (recordDir === null || recordDir.length === 0) {
     return [];
   }
-  const from = injectedRecordDir ? "the runRecordDir option" : settingSource(settings.runRecordDir.layer, RUN_RECORD_DIR_ENV, "run_record.dir", settings.configFile);
-  return [
-    { owner: "launcher", role: "run record store", path: recordDir, access: "create-entries", resolvedFrom: from }
-  ];
-}
-function settingSource(layer, envKey, fileKey, configFile) {
-  switch (layer) {
-    case "flag":
-      return "the command line";
-    case "env":
-      return envKey;
-    case "config-file":
-      return `${fileKey} in ${configFile}`;
-    case "default":
-      return `the default; ${envKey}, or ${fileKey} in ${configFile}, moves it`;
-  }
+  const layer = settings.runRecordDir.layer;
+  const setting = injectedRecordDir ? "the runRecordDir option" : layer === "config-file" ? `run_record.dir in ${settings.configFile}` : RUN_RECORD_DIR_ENV;
+  const directory = !injectedRecordDir && layer === "default" ? defaultDirectory(
+    { rule: "$XDG_DATA_HOME/ensemble (else ~/.local/share/ensemble)", movedBy: RUN_RECORD_DIR_ENV },
+    env.XDG_DATA_HOME ? readSetting("XDG_DATA_HOME", env.XDG_DATA_HOME, process.cwd()) : path19.join(homedir5(), ".local", "share"),
+    "ensemble"
+  ) : declaredDirectory(readSetting(setting, recordDir, process.cwd()));
+  return [{ owner: "launcher", role: "run record store", access: "create-entries", ...directory }];
 }
 function singleAgentWorkflowSource(invocation) {
   const meta = {
@@ -35057,7 +35125,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
       assertCompilableSchema(schema);
     } catch (error) {
       if (!(error instanceof InvalidAgentSchemaError)) throw error;
-      const source = parsed.values.schema.startsWith("@") ? path18.resolve(cwd, parsed.values.schema.slice(1)) : "the inline argument";
+      const source = parsed.values.schema.startsWith("@") ? path19.resolve(cwd, parsed.values.schema.slice(1)) : "the inline argument";
       throw new CliUsageError(`--schema from ${source}: ${error.message}`);
     }
   }
@@ -35298,7 +35366,7 @@ async function parseJsonValue(value, cwd, flagName) {
     if (filename.length === 0) {
       throw new CliUsageError(`${flagName} @file requires a file path`);
     }
-    const filePath = path18.resolve(cwd, filename);
+    const filePath = path19.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
       source = await readFile11(filePath, "utf8");
@@ -35536,7 +35604,7 @@ function programNameFor(scriptPath) {
   if (scriptPath === void 0 || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
-  const absolutePath = path18.resolve(scriptPath);
+  const absolutePath = path19.resolve(scriptPath);
   const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : quoteShellArgument(absolutePath);
   return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
 }
@@ -35622,6 +35690,20 @@ function wrapTokens(lead, tokens, indent, separator) {
   lines.push(line);
   return lines;
 }
+function worktreeStatePhrase(state) {
+  switch (state) {
+    case "unchanged":
+      return "unchanged and removed";
+    case "uncommitted":
+      return "uncommitted";
+    case "committed":
+      return "committed";
+    case "committed-and-uncommitted":
+      return "committed with uncommitted edits";
+    default:
+      return "state unknown";
+  }
+}
 function serialiseResult(result) {
   try {
     const json = JSON.stringify(result);
@@ -35648,7 +35730,7 @@ function isError(error) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path19.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path20.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
 function flushed(stream) {
   return new Promise((resolve) => {
     stream.write("", () => resolve());

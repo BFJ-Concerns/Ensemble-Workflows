@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -16,6 +16,7 @@ import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeou
 import { StatusFileWriter } from "./status-file.js";
 import { resolveRunId, RunRecordWriter } from "./run-record.js";
 import { assertCompilableSchema } from "./schema.js";
+import { declaredDirectory, defaultDirectory, readSetting } from "./resource-location.js";
 import { judgeResources } from "./resource-preflight.js";
 
 import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
@@ -23,7 +24,7 @@ import { defaultWorkflowRegistryDirs, listSavedWorkflows } from "./workflow-regi
 import { harnessVersion } from "./harness-version.js";
 
 import type { WorkerScopeGrouping } from "./worker-scopes.js";
-import type { AmbientSettings, SettingLayer } from "./ambient-settings.js";
+import type { AmbientSettings } from "./ambient-settings.js";
 import type { ResourceRequirement } from "./resource-preflight.js";
 import type { RunProgress } from "./progress.js";
 import type { CompletedAgentOutput, EnsembleRuntime, ShutdownTally, UnfinishedLeg } from "./runtime.js";
@@ -327,7 +328,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let prepared: PreparedRun;
   try {
     prepared = await prepareRun(invocation, cwd);
-    await judgeResources(launcherResourceRequirements(runRecordDir, options.runRecordDir !== undefined, ambientSettings), env);
+    await judgeResources(launcherResourceRequirements(configuredRecordDir, options.runRecordDir !== undefined, ambientSettings, env), env);
   } catch (error) {
     stderr.write(`${presentOperationalError(error) ?? formatError(error)}\n`);
     return 2;
@@ -632,15 +633,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       }
       const worktreePath = typeof event.params.path === "string" ? event.params.path : "<unknown>";
       const branch = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
-      if (invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree") {
-        const outcome = event.params.changed === true ? "changed" : "unchanged and removed";
-        stderr.write(`[worktree] ${outcome} ${worktreePath} (${branch})\n`);
+      const reportUnchanged = invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree";
+      if (!reportUnchanged && event.params.changed !== true) {
         return;
       }
-      if (event.params.changed !== true) {
-        return;
-      }
-      stderr.write(`[worktree] changed ${worktreePath} (${branch})\n`);
+      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${branch})\n`);
     });
     const runnerOptions = {
       source: prepared.source,
@@ -1017,31 +1014,20 @@ async function prepareRun(invocation: ParsedInvocation, cwd: string): Promise<Pr
 function launcherResourceRequirements(
   recordDir: string | null,
   injectedRecordDir: boolean,
-  settings: AmbientSettings
+  settings: AmbientSettings,
+  env: NodeJS.ProcessEnv
 ): ResourceRequirement[] {
   if (recordDir === null || recordDir.length === 0) {
     return [];
   }
-  const from = injectedRecordDir
-    ? "the runRecordDir option"
-    : settingSource(settings.runRecordDir.layer, RUN_RECORD_DIR_ENV, "run_record.dir", settings.configFile);
-  return [
-    { owner: "launcher", role: "run record store", path: recordDir, access: "create-entries", resolvedFrom: from }
-  ];
-}
-
-/** Where a resolved ambient setting came from, as a refusal names it. */
-function settingSource(layer: SettingLayer, envKey: string, fileKey: string, configFile: string): string {
-  switch (layer) {
-    case "flag":
-      return "the command line";
-    case "env":
-      return envKey;
-    case "config-file":
-      return `${fileKey} in ${configFile}`;
-    case "default":
-      return `the default; ${envKey}, or ${fileKey} in ${configFile}, moves it`;
-  }
+  const layer = settings.runRecordDir.layer;
+  const setting = injectedRecordDir ? "the runRecordDir option"
+    : layer === "config-file" ? `run_record.dir in ${settings.configFile}` : RUN_RECORD_DIR_ENV;
+  const directory = !injectedRecordDir && layer === "default"
+    ? defaultDirectory({ rule: "$XDG_DATA_HOME/ensemble (else ~/.local/share/ensemble)", movedBy: RUN_RECORD_DIR_ENV },
+      env.XDG_DATA_HOME ? readSetting("XDG_DATA_HOME", env.XDG_DATA_HOME, process.cwd()) : path.join(homedir(), ".local", "share"), "ensemble")
+    : declaredDirectory(readSetting(setting, recordDir, process.cwd()));
+  return [{ owner: "launcher", role: "run record store", access: "create-entries", ...directory }];
 }
 
 function singleAgentWorkflowSource(invocation: ParsedAgentInvocation): string {
@@ -2230,6 +2216,16 @@ function wrapTokens(lead: string, tokens: readonly string[], indent: string, sep
   });
   lines.push(line);
   return lines;
+}
+
+function worktreeStatePhrase(state: unknown): string {
+  switch (state) {
+    case "unchanged": return "unchanged and removed";
+    case "uncommitted": return "uncommitted";
+    case "committed": return "committed";
+    case "committed-and-uncommitted": return "committed with uncommitted edits";
+    default: return "state unknown";
+  }
 }
 
 function serialiseResult(result: unknown): string {

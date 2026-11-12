@@ -19,6 +19,14 @@ a single run. `README.md` gives the overview; `docs/` is the usage reference.
   gate. Legs that need a model read `ENSEMBLE_LIVE_CODEX_MODEL` or
   `ENSEMBLE_LIVE_OPENCODE_MODEL` and skip while it is unset.
 
+A live run through `scripts/run-test-suite.mjs` (`ENSEMBLE_LIVE=1`, the whole
+suite or one file) first settles the daemon serving the machine's Claude
+config home, once, in `test/live/suite-setup.ts`. A live test that depends on
+that daemon reads the published record with `suiteClaudeDaemon()`
+(`test/live/suite-claude-daemon.ts`); it never starts or stops that home's
+daemon, and never takes a first identity of it for itself. A proof of daemon
+startup uses a private config home, which the suite leaves alone.
+
 The test suite needs a systemd user session (some tests bound child processes
 with `systemd-run --user --scope`) and `codex` on `PATH` (some tests ask it for
 the app-server protocol schema).

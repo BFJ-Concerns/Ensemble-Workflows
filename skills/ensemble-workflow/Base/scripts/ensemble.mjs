@@ -15876,6 +15876,15 @@ function addUsageSummary(target, delta) {
 }
 
 // src/cost-rollup.ts
+var TOKEN_ABSENCE_PRECEDENCE = [
+  "record-unsettled",
+  "worker-interrupted",
+  "worker-timed-out",
+  "engine-reported-no-usage"
+];
+function leafTokenAbsence(unobserved) {
+  return TOKEN_ABSENCE_PRECEDENCE.find((reason) => unobserved.some((entry) => entry.reason === reason)) ?? "substrate-never-started";
+}
 var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
   "CodexSubstrateRefusedError",
   "ClaudeDispatchError"
@@ -15952,18 +15961,16 @@ function buildCostRollup(agents) {
         measured: summary === null ? "none" : "partial"
       });
     }
-    if (agent.attempts.length === 0 || agent.mayHaveUnlistedAttempt) {
+    if (agent.mayHaveUnlistedAttempt) {
       const bucket = bucketFor(agent.engine, "unresolved");
-      if (agent.mayHaveUnlistedAttempt) {
-        bucket.unobserved.push({ agent: agent.id, attempt: null, reason: "record-unsettled", measured: "none" });
-      }
+      bucket.unobserved.push({ agent: agent.id, attempt: null, reason: "record-unsettled", measured: "none" });
     }
   }
   const rollup = {};
   for (const bucket of buckets.values()) {
     const engineLeaves = rollup[bucket.engine] ??= {};
     engineLeaves[bucket.model] = {
-      tokens: bucket.tokens ?? { unavailable: "no-usage-reported" },
+      tokens: bucket.tokens ?? { unavailable: leafTokenAbsence(bucket.unobserved) },
       cost: publishedCost(bucket.cost),
       complete: bucket.unobserved.length === 0,
       unobserved: bucket.unobserved
@@ -16002,7 +16009,7 @@ function addProviderCost(target, event) {
 
 // src/run-record.ts
 var execFileAsync = promisify(execFile);
-var SCHEMA_VERSION = 5;
+var SCHEMA_VERSION = 6;
 var MANIFEST_PATH = "manifest.json";
 function abandonedAttemptEntry(live) {
   return {

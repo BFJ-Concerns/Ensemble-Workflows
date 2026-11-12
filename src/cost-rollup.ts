@@ -25,8 +25,11 @@ export type CostRollup = Record<string, Record<string, CostRollupLeaf>>;
  * booked under it ran a worker.
  */
 export interface CostRollupLeaf {
-  /** Summary usage in the declared vocabulary, or why there is none. */
-  tokens: UsageSummary | { unavailable: "no-usage-reported" };
+  /**
+   * Summary usage in the declared vocabulary, or why there is none: the
+   * reason `leafTokenAbsence` gives for the leaf's `unobserved` entries.
+   */
+  tokens: UsageSummary | { unavailable: TokenAbsenceReason };
   /**
    * Money, in the same absence-with-a-reason idiom: the reported form only
    * where an engine reported cost with its usage. The harness prices
@@ -90,6 +93,49 @@ export type UnobservedSpendReason =
   | "worker-interrupted"
   | "worker-timed-out"
   | "engine-reported-no-usage";
+
+/**
+ * Why a leaf has no token figures: one word from the agent record's
+ * `usage.unavailable` vocabulary, never a word of the roll-up's own. The
+ * unobserved reasons apply when an attempt booked under the leaf ran
+ * without reporting usage; `substrate-never-started` applies when every
+ * attempt booked there was refused before a worker existed. The agent
+ * record's `no-attempt-ran` never appears, because an agent that ran no
+ * attempt books no leaf.
+ */
+export type TokenAbsenceReason = UnobservedSpendReason | "substrate-never-started";
+
+/**
+ * Which reason a leaf with no figures publishes when its attempts ended in
+ * different ways, most uncertain first. The leaf states the least it
+ * knows: unknown spend (`record-unsettled`, then the two kinds of cut-short
+ * attempt) outranks an engine's own account of no usage, so the leaf reads
+ * `engine-reported-no-usage` only when every attempt with spend to account
+ * for settled on its engine's account without usage. The order otherwise
+ * follows the agent record's own reasons. The full account stays in
+ * `unobserved`, one entry per attempt.
+ */
+const TOKEN_ABSENCE_PRECEDENCE: readonly UnobservedSpendReason[] = [
+  "record-unsettled",
+  "worker-interrupted",
+  "worker-timed-out",
+  "engine-reported-no-usage"
+];
+
+/**
+ * The `tokens.unavailable` word for a leaf with no figures, from the
+ * leaf's `unobserved` entries alone: the first reason in
+ * `TOKEN_ABSENCE_PRECEDENCE` that any entry carries. With no entries, every
+ * attempt booked under the leaf was refused before a worker existed, so
+ * the leaf reads `substrate-never-started`. That holds only because an
+ * agent with no attempt, and no possible unlisted one, books no leaf: the
+ * builder creates a leaf for an attempt, listed or possible, never for an
+ * agent alone.
+ */
+export function leafTokenAbsence(unobserved: readonly UnobservedSpend[]): TokenAbsenceReason {
+  return TOKEN_ABSENCE_PRECEDENCE.find((reason) => unobserved.some((entry) => entry.reason === reason)) ??
+    "substrate-never-started";
+}
 
 /**
  * How one attempt ended, as far as its spend is concerned:
@@ -167,9 +213,8 @@ function isRunEndingFailureKind(kind: string): kind is RunEndingFailureKind {
 export interface RollupAgentView {
   id: number;
   /**
-   * The engine the call asked for. An agent with no attempts books under it,
-   * and so does an attempt the record may not list, since nothing recorded
-   * which target that attempt ran on.
+   * The engine the call asked for. An attempt the record may not list books
+   * under it, since nothing recorded which target that attempt ran on.
    */
   engine: EngineName;
   /** The agent-level served model: last write wins across attempts. */
@@ -249,9 +294,13 @@ const UNOBSERVED_REASON: Record<Exclude<AttemptEnding, "settled" | "refused">, U
 /**
  * Builds the roll-up from every agent the run recorded. Spend is booked
  * under the engine and served model of each attempt — never the requested
- * pin. An agent that lists no attempt books under its engine's
- * `"unresolved"` model, complete unless it may have run one unlisted, and
- * an attempt it may not list books there too.
+ * pin. Leaves exist for attempts, never for agents: every listed attempt,
+ * refused ones included, books under exactly one leaf, and an attempt the
+ * record may not list (`mayHaveUnlistedAttempt`) books under its engine's
+ * `"unresolved"` model. An agent that lists no attempt and may not have run
+ * one books nothing, so a run that dispatched no worker has an empty
+ * roll-up. A leaf with no figures publishes `leafTokenAbsence` of its
+ * `unobserved` entries.
  */
 export function buildCostRollup(agents: readonly RollupAgentView[]): CostRollup {
   const buckets = new Map<string, Bucket>();
@@ -295,11 +344,9 @@ export function buildCostRollup(agents: readonly RollupAgentView[]): CostRollup 
         measured: summary === null ? "none" : "partial"
       });
     }
-    if (agent.attempts.length === 0 || agent.mayHaveUnlistedAttempt) {
+    if (agent.mayHaveUnlistedAttempt) {
       const bucket = bucketFor(agent.engine, "unresolved");
-      if (agent.mayHaveUnlistedAttempt) {
-        bucket.unobserved.push({ agent: agent.id, attempt: null, reason: "record-unsettled", measured: "none" });
-      }
+      bucket.unobserved.push({ agent: agent.id, attempt: null, reason: "record-unsettled", measured: "none" });
     }
   }
 
@@ -307,7 +354,7 @@ export function buildCostRollup(agents: readonly RollupAgentView[]): CostRollup 
   for (const bucket of buckets.values()) {
     const engineLeaves = (rollup[bucket.engine] ??= {});
     engineLeaves[bucket.model] = {
-      tokens: bucket.tokens ?? { unavailable: "no-usage-reported" },
+      tokens: bucket.tokens ?? { unavailable: leafTokenAbsence(bucket.unobserved) },
       cost: publishedCost(bucket.cost),
       complete: bucket.unobserved.length === 0,
       unobserved: bucket.unobserved

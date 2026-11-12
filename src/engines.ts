@@ -220,17 +220,33 @@ export interface EngineAdapter {
    * cancelling the worker, and never waits for the registry's shared
    * resources to end it: the registry closes those only after every
    * adapter's close has settled, so an adapter waiting on them — on a pipe a
-   * contained descendant holds open, say — would never settle. It reports
-   * no stop result: the containment's own close, which follows, names every
-   * command whose end the run could not establish.
+   * contained descendant holds open, say — would never settle. A stop made
+   * here is the run's teardown, and the adapter reports nothing for it: the
+   * containment's own close, which follows, names every command whose end
+   * the run could not establish. What a stop made earlier, for one attempt,
+   * could not establish rides that attempt's result instead
+   * (`unestablishedStopDiagnostics`).
    */
+  close(): Promise<void>;
+}
+
+/** A resource the engines share and the registry therefore owns. */
+export interface SharedEngineResource {
+  /**
+   * The run has begun to end and is about to cancel its workers: whatever
+   * the resource does for an engine from here on is done for the run's
+   * teardown, not for an attempt of a script still running. Synchronous, so
+   * it holds before the first cancellation; may be called more than once.
+   * A resource that draws no such line omits it.
+   */
+  runEnding?(): void;
   close(): Promise<void>;
 }
 
 export class EngineRegistry {
   #engines = new Map<EngineName, EngineAdapter>();
-  /** Resources the engines share and the registry therefore owns, closed after every engine has, in the order given. */
-  #shared: readonly { close(): Promise<void> }[];
+  /** Closed after every engine has, in the order given. */
+  #shared: readonly SharedEngineResource[];
 
   /** What each engine needs at the attempt's resolved placement, judged before dispatch (`EngineResourceGate`). */
   #resources: (name: EngineName, cwd: string) => readonly ResourceRequirement[];
@@ -244,7 +260,7 @@ export class EngineRegistry {
    */
   constructor(
     engines: EngineAdapter[],
-    shared: readonly { close(): Promise<void> }[] = [],
+    shared: readonly SharedEngineResource[] = [],
     resources: (name: EngineName, cwd: string) => readonly ResourceRequirement[] = () => []
   ) {
     for (const engine of engines) {
@@ -266,7 +282,21 @@ export class EngineRegistry {
     return [...this.#engines.keys()];
   }
 
+  /**
+   * Tell the shared resources the run has begun to end
+   * (`SharedEngineResource.runEnding`). Whoever ends the run calls this
+   * before it cancels any worker by any route — a held session closed ahead
+   * of the engines included — and `close()` calls it for a caller that
+   * cancels through the registry alone.
+   */
+  runEnding(): void {
+    for (const resource of this.#shared) {
+      resource.runEnding?.();
+    }
+  }
+
   async close(): Promise<void> {
+    this.runEnding();
     // allSettled first: one adapter's close failure must not stop the
     // caller waiting for — and therefore observing — the others' teardown.
     // The failures are then rethrown together, once every adapter has

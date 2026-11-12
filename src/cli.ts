@@ -601,6 +601,25 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         );
         return;
       }
+      if (event.method.endsWith("/attemptStopUnestablished")) {
+        const engine = event.method.slice(0, -"/attemptStopUnestablished".length);
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const attempt = typeof event.params.attempt === "number" ? event.params.attempt : "?";
+        const stops = Array.isArray(event.params.stops) ? event.params.stops : [];
+        const accounts = stops.map((value: unknown) => {
+          const stop = value as { owner?: unknown; reason?: unknown };
+          const owner = typeof stop.owner === "string" ? boundedEvidence(stop.owner) : "an unnamed command";
+          const reason = typeof stop.reason === "string" ? boundedEvidence(stop.reason) : "no account";
+          return `${owner} (${reason})`;
+        });
+        // A report, not a failure: the worker's own outcome is announced
+        // where it settles, and the run ends as the script leaves it.
+        stderr.write(
+          `[${engine}] agent ${agentId}${label} attempt ${attempt} stopped a command and could not establish that everything it started has ended: ${accounts.join("; ")}\n`
+        );
+        return;
+      }
       if (event.method === "worktree/finalisationFailed") {
         const worktreePath = typeof event.params.path === "string" ? event.params.path : "<unknown>";
         const branch = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";

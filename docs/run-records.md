@@ -847,6 +847,17 @@ The fields present throughout a record's lifetime are:
     are `null`. Any transcript is retained in the attempt's transcript
     references. The dispatch command's exit is separate from `worker_exit`,
     which describes the worker process itself.
+    An attempt that stopped a command of its own while the script was still
+    running, and could not establish that everything the command had started
+    was gone, supplies `diagnostics.unestablishedStops`: one
+    `{ owner, reason }` per command, where `owner` names the systemd scope
+    unit or process group and `reason` says what was observed. Either
+    processes there outlived SIGTERM and SIGKILL, or the command was cut
+    short where no scope held it, so a process it had started outside its
+    process group was never visible. The key is absent when the attempt has
+    no such stop. It does not change the attempt's `status` or the run's
+    outcome. A command the run's own ending cut short is reported by the
+    completion sentinel's `teardown_error` instead.
   - `app_server_diagnostic`: Codex's own account of the failure,
     `{ code, http_status_code, message, payload }`. `code` is the condition
     Codex named; `http_status_code` is the provider status Codex forwarded

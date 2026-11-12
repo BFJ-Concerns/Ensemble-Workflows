@@ -1015,6 +1015,35 @@ test("a blocked worker is recovered with a bounded nudge through the valve", asy
   );
 });
 
+test("a blocked roster waits for the opening transcript before taking the nudge's receipt boundary", async () => {
+  await withControlPlane([{ outcome: "blocked" }, { assistant: { text: '{"ok":true}' } }], async (controlPlane) => {
+    const transcriptPath = controlPlane.transcriptPath.bind(controlPlane);
+    let hiddenReads = 2;
+    controlPlane.transcriptPath = async () => hiddenReads-- > 0 ? null : transcriptPath();
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    try {
+      assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
+      assert.equal(controlPlane.dispatchCount, 1);
+      assert.equal(controlPlane.steerCount, 1);
+      assert.equal(controlPlane.stopCount, 1);
+    } finally { await runtime.close(); }
+  });
+});
+
+test("waiting for a blocked opening transcript honours the attempt deadline", async () => {
+  await withControlPlane([{ outcome: "blocked" }], async (plane) => {
+    plane.transcriptPath = async () => null;
+    const adapter = new ClaudeEngineAdapter({ controlPlane: plane, config: { ...fastConfig, firstLifeTimeoutMs: 150 } });
+    const invocation = adapter.createInvocation("decide", { timeoutMs: 10 });
+    try {
+      const result = await invocation.runAttempt({ attempt: 1 });
+      assert.equal(result.attemptFailure?.kind, "claude-poll-timeout");
+      assert.match(result.attemptFailure?.message ?? "", /within 10ms/);
+      assert.equal(plane.steerCount, 0);
+    } finally { await invocation.close?.(); await adapter.close(); }
+  });
+});
+
 for (const altered of [false, true]) {
   for (const rejected of [false, true]) {
     test(`an opening first seen after a blocked poll ${altered ? "rejects altered delivery" : "verifies delivery"} before collecting ${rejected ? "a diagnostic" : "an answer"}`, async () => {
@@ -1082,6 +1111,141 @@ test("blocked recovery stops after a failed steer instead of claiming the nudge 
     },
     { steerSucceeds: false }
   );
+});
+
+for (const held of [false, true]) {
+  test(`a refused blocked nudge is retried unchanged within maxAttempts, held ${held}`, async () => {
+    await withControlPlane(
+      [{ outcome: "blocked" }, { assistant: { text: '{"ok":true}' } }],
+      async (controlPlane) => {
+        const steer = controlPlane.steer.bind(controlPlane);
+        let refused: string | null = null;
+        controlPlane.steer = async (handle, message) => {
+          if (refused === null) {
+            refused = message;
+            // A native dialog can finish cancelling while no nudge is sent.
+            const transcript = await controlPlane.transcriptPath();
+            assert.ok(transcript);
+            await appendFile(transcript, `${submissionRow("[Request interrupted by user]")}\n`);
+            return { submitted: false, reason: "prompt editor did not finish copying within 30000ms" };
+          }
+          return steer(handle, message);
+        };
+        const runtime = makeRuntime(controlPlane, { maxAttempts: 2 });
+        const records: RuntimeAgentRecord[] = [];
+        runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+        try {
+          const options = { engine: "claude" as const, schema: okSchema };
+          const session = held ? runtime.createWorkerSession({ engine: "claude" }) : null;
+          const result = session === null ? await runtime.agent("decide", options) : await session.send("decide", { schema: okSchema });
+          assert.deepEqual(result, { ok: true });
+          assert.equal(controlPlane.dispatchCount, 1, "refusing a nudge must not restart the task");
+          assert.equal(controlPlane.steerCount, 1);
+          assert.equal(controlPlane.steered[0], refused, "the retry must send the same nudge");
+          assert.match(refused ?? "", /waiting for input/);
+          assert.equal(records.at(-1)?.attempts.length, 2);
+          assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "claude-valve-error");
+          assert.equal(records.at(-1)?.attempts[1]?.failure, null);
+          await session?.close();
+          assert.equal(controlPlane.stopCount, 1);
+        } finally { await runtime.close(); }
+      }
+    );
+  });
+}
+
+for (const rejected of [false, true]) {
+  test(`a turn settling after a refused nudge is collected without resending, rejected ${rejected}`, async () => {
+    await withControlPlane([{ outcome: "blocked" }], async (plane) => {
+      let nudges = 0;
+      plane.steer = async () => {
+        nudges += 1;
+        const transcript = await plane.transcriptPath();
+        assert.ok(transcript);
+        await appendFile(transcript, `${assistantLine({
+          text: "late native reply",
+          ...(rejected ? { model: "<synthetic>", stop: "stop_sequence" } : {})
+        })}\n`);
+        return { submitted: false, reason: "prompt editor did not finish copying within 30000ms" };
+      };
+      const adapter = new ClaudeEngineAdapter({ controlPlane: plane, config: fastConfig });
+      const invocation = adapter.createInvocation("decide", {});
+      try {
+        assert.equal((await invocation.runAttempt({ attempt: 1 })).attemptFailure?.kind, "claude-valve-error");
+        const result = await invocation.runAttempt({ attempt: 2 });
+        assert.equal(nudges, 1, "a settled or rejected request must not receive another nudge");
+        assert.equal(result.attemptFailure?.kind, rejected ? "claude-worker-diagnostic" : undefined);
+        assert.equal(result.text, rejected ? "" : "late native reply");
+        if (rejected) assert.match(result.attemptFailure?.message ?? "", /late native reply/);
+      } finally { await invocation.close?.(); await adapter.close(); }
+    });
+  });
+}
+
+test("a persistently refused blocked nudge exhausts maxAttempts and stops its session", async () => {
+  await withControlPlane([{ outcome: "blocked" }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 2 });
+    try {
+      assert.equal(await runtime.agent("decide", { engine: "claude" }), null);
+      assert.equal(controlPlane.dispatchCount, 1);
+      assert.equal(controlPlane.steerCount, 2);
+      assert.equal(controlPlane.steered[0], controlPlane.steered[1]);
+      assert.equal(controlPlane.stopCount, 1);
+    } finally { await runtime.close(); }
+  }, { steerSucceeds: false });
+});
+
+for (const unavailable of ["session", "valve"] as const) {
+  for (const held of [false, true]) {
+    test(`a refused nudge with unavailable ${unavailable} redispatches only a one-shot call, held ${held}`, async () => {
+      await withControlPlane([{ outcome: "blocked" }, { assistant: { text: "recovered" } }], async (controlPlane) => {
+        let refused = false;
+        const poll = controlPlane.poll.bind(controlPlane);
+        controlPlane.poll = async () => refused && unavailable === "session" && controlPlane.dispatchCount === 1
+          ? { status: "absent", state: "unknown", present: false } : poll();
+        controlPlane.tmuxAvailable = async () => !(refused && unavailable === "valve");
+        controlPlane.steer = async (_handle, message) => {
+          refused = true;
+          controlPlane.steerCount += 1;
+          controlPlane.steered.push(message);
+          return { submitted: false, reason: unavailable === "session" ? "the session is no longer in the daemon's roster" : "tmux is unavailable" };
+        };
+        const runtime = makeRuntime(controlPlane, { maxAttempts: 2 });
+        try {
+          const session = held ? runtime.createWorkerSession({ engine: "claude" }) : null;
+          const result = session === null ? await runtime.agent("decide", { engine: "claude" }) : await session.send("decide");
+          assert.equal(result, held ? null : "recovered");
+          assert.equal(controlPlane.dispatchCount, held ? 1 : 2);
+          assert.equal(controlPlane.steerCount, held ? 2 : 1);
+          if (!held) assert.match(controlPlane.dispatched[1]?.prompt ?? "", /previous attempt failed \(claude-valve-error\)/);
+          await session?.close();
+          assert.equal(controlPlane.stopCount, held ? 1 : 2);
+        } finally { await runtime.close(); }
+      });
+    });
+  }
+}
+
+test("a refused schema correction retries that correction without collecting the earlier invalid answer", async () => {
+  await withControlPlane([{ assistant: { text: "nope" } }, { assistant: { text: '{"ok":true}' } }], async (controlPlane) => {
+    const steer = controlPlane.steer.bind(controlPlane);
+    let refused: string | null = null;
+    controlPlane.steer = async (handle, message) => {
+      if (refused === null) {
+        refused = message;
+        return { submitted: false, reason: "fake valve refused" };
+      }
+      return steer(handle, message);
+    };
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 3 });
+    try {
+      assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
+      assert.equal(controlPlane.dispatchCount, 1);
+      assert.equal(controlPlane.steered[0], refused);
+      assert.match(refused ?? "", /not valid JSON/);
+      assert.equal(controlPlane.stopCount, 1);
+    } finally { await runtime.close(); }
+  });
 });
 
 test("blocked recovery requires a receipt before another nudge", async () => {

@@ -212,8 +212,12 @@ Logs and diagnostics go to stderr. These lines are written there:
   output failure, left declared entries untried. The line names the failure's
   class and matching rule, if any; only availability failures advance the chain.
 - `[codex] app-server (pid <pid>) scope placement refused: <reason>` — the
-  app-server could not be moved; its threads still dispatch, with the refusal
-  also available through `codex/workerScopePlacement` runtime events.
+  app-server could not be moved into its scope. Placement is best-effort: a
+  live app-server can still dispatch threads, but the process may have exited
+  before or during placement, as the reason states. The notice does not
+  establish app-server health; startup or worker failures are reported
+  separately. The refusal is also available through
+  `codex/workerScopePlacement` runtime events.
 - `[claude] worker <name> (pid <pid>) scope placement refused; retrying: <reason>`
   — the worker could not be moved into its scope. Ensemble retries within the
   registration window and on later roster polls; repeated identical refusals
@@ -225,12 +229,24 @@ Logs and diagnostics go to stderr. These lines are written there:
 - `[teardown] stopping workers and their commands` — emitted before waiting
   for teardown when workers are still active or queued, including after a
   script throw, a whole-run timeout, or an early return.
+- `[<engine>] agent <id> (<label>) attempt <n> stopped a command and could not establish that everything it started has ended: <owner> (<reason>); …`
+  — a worker's command was stopped while the script was still running, by its
+  turn's deadline for example, and Ensemble could not confirm that everything
+  the command had started was gone. Each `<owner>` names a systemd scope unit
+  or a process group, and `<reason>` says what was observed there. The line
+  is a report, not a failure. The attempt ends as it otherwise would, and the
+  script receives the worker's result or failure as usual. A script that
+  handles it and returns still ends `complete` with exit code 0. The attempt's
+  record keeps the same entries under
+  [`diagnostics.unestablishedStops`](run-records.md#agent-records).
 - `[teardown] …` — the script returned while a worker it started was still
   running, or tried to end the process after returning.
 - `[teardown] the run failed to end cleanly: run-owned processes may still be running: <owner> (<reason>); …`
   — the run could not confirm that processes it owns had ended. Each
   `<owner>` names a systemd scope unit or a process group, and `<reason>`
-  says what was observed there. The run ends `failed` with exit code 1, and
+  says what was observed there. It names the commands the run's own ending
+  cut short, and any command an attempt had stopped earlier that was still
+  running when the run closed. The run ends `failed` with exit code 1, and
   the completion sentinel carries the line as its
   [`teardown_error`](run-records.md#completion-sentinel).
 

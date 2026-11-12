@@ -4836,7 +4836,7 @@ test("workflow lean flags obey placement, reject inline values and pass through 
 });
 
 test("common invocation mistakes give a one-line repair using the invoked launcher", async () => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/cli-refusals-");
+  const directory = await mkdtemp(path.join(tmpdir(), "cli-refusals-"));
   const program = "node '/opt/operator launcher.mjs'";
   try {
     const cases = [
@@ -4884,7 +4884,7 @@ test("common invocation mistakes give a one-line repair using the invoked launch
 
 test("chain exhaustion separates pre-spawn refusals from answered attempts", async () => {
   for (const terminalRefuses of [false, true]) {
-    const directory = await mkdtemp("/mnt/ai-data/scratch/cli-chain-counts-");
+    const directory = await mkdtemp(path.join(tmpdir(), "cli-chain-counts-"));
     try {
       const script = path.join(directory, "workflow.js");
       await writeFile(script, `export const meta = { name: "count-exhaustion" };
@@ -4911,7 +4911,7 @@ test("chain exhaustion separates pre-spawn refusals from answered attempts", asy
 });
 
 test("built launcher refusal repairs preserve the invoked symlink path", async () => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/cli-built-refusals-");
+  const directory = await mkdtemp(path.join(tmpdir(), "cli-built-refusals-"));
   const launcher = fileURLToPath(new URL("../../../skills/ensemble-workflow/Base/scripts/ensemble.mjs", import.meta.url));
   const invoked = path.join(directory, "operator's launcher.mjs");
   try {

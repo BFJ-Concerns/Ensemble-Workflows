@@ -24661,7 +24661,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
       validateEngineDefaults(engine.name, options, engine.modelRegistry);
     }
     const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
-    this.budget.assertCanStart(engine.name);
+    const dispatchPhase = options.phase ?? this.progress.snapshot().currentPhase;
+    const dispatchContext = [
+      ...options.label !== void 0 ? [`label ${JSON.stringify(options.label)}`] : [],
+      ...dispatchPhase !== null ? [`phase ${JSON.stringify(dispatchPhase)}`] : []
+    ];
+    this.budget.assertCanStart(
+      engine.name,
+      dispatchContext.length > 0 ? `dispatch (${dispatchContext.join(", ")})` : "dispatch"
+    );
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
       engine: engine.name,

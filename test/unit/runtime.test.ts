@@ -1004,6 +1004,49 @@ test("Codex budget records Codex tokenUsage.last deltas and blocks later Codex c
   await assert.rejects(() => runtime.agent("blocked", { engine: "codex" }), BudgetExceededError);
 });
 
+test("ordinary budget refusals locate the call without admitting a worker", async () => {
+  const cases: Array<{ options: Partial<AgentOptions>; currentPhase?: string; admission: string }> = [
+    { options: { label: 'review "exports"' }, admission: String.raw`dispatch (label "review \"exports\"")` },
+    { options: { phase: "verify" }, admission: 'dispatch (phase "verify")' },
+    { options: {}, currentPhase: "build", admission: 'dispatch (phase "build")' },
+    {
+      options: { label: "review", phase: "verify" }, currentPhase: "build",
+      admission: 'dispatch (label "review", phase "verify")'
+    },
+    {
+      options: { label: "review" }, currentPhase: "build",
+      admission: 'dispatch (label "review", phase "build")'
+    },
+    { options: {}, admission: "dispatch" }
+  ];
+  for (const ceiling of [0, 5]) {
+    for (const { options, currentPhase, admission } of cases) {
+      const transport = new FakeTransport([]);
+      const runtime = new EnsembleRuntime({ transport, budgetCeilings: { codex: ceiling }, defaultMaxAttempts: 1 });
+      if (currentPhase !== undefined) runtime.notePhase(currentPhase);
+      if (ceiling > 0) {
+        runtime.budget.record("codex", {
+          threadId: "earlier-thread", turnId: "earlier-turn",
+          last: usage(7), total: usage(7), raw: {}
+        });
+      }
+      await assert.rejects(runtime.agent("private prompt", { engine: "codex", ...options }), (error: unknown) => {
+        assert.ok(error instanceof BudgetExceededError);
+        assert.equal(error.engine, "codex");
+        assert.equal(error.total, ceiling);
+        assert.equal(error.spent, ceiling === 0 ? 0 : 7);
+        const reason = ceiling === 0
+          ? "Token budget for codex is 0, which admits no dispatch"
+          : "Token budget exhausted for codex: spent 7 of 5 tokens";
+        assert.equal(error.message, `${reason}; refused ${admission}`);
+        return true;
+      });
+      assert.deepEqual(transport.openedThreads, []);
+      assert.deepEqual(runtime.progress.snapshot().agents, []);
+    }
+  }
+});
+
 test("an active Codex record retains a decode diagnostic without failing its worker", async () => {
   class DecodeFailureTransport extends FakeTransport {
     #runtime: (() => EnsembleRuntime | null) | undefined;

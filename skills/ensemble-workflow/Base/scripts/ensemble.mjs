@@ -14159,10 +14159,9 @@ var OpenCodeModelNotRegisteredError = class extends AgentOptionRejectedError {
 };
 function registeredOpenCodeModels(registry) {
   const registered = registry.names();
-  if (registered.length > 0) {
-    return `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`;
-  }
-  return registry.source.kind === "machine-config" ? `no opencode models are declared; declare them under opencode_models in the machine configuration (${registry.source.file})` : "no opencode models are declared; supply model entries through openCodeModels or the adapter's modelRegistry";
+  const choices = registered.length > 0 ? `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}` : "no opencode models are declared";
+  const remedy = registry.source.kind === "machine-config" ? `declare them under opencode_models in the machine configuration (${registry.source.file})` : "supply model entries through openCodeModels or the adapter's modelRegistry";
+  return `${choices}; ${remedy}`;
 }
 function renderDiagnostic(value) {
   try {
@@ -15695,7 +15694,7 @@ function sha256(text) {
 
 // src/run-record.ts
 import { createHash as createHash2 } from "node:crypto";
-import { appendFile, mkdir as mkdir3, readdir as readdir3, readFile as readFile4, realpath, rename as rename3, rm as rm2, stat as stat2, writeFile as writeFile3 } from "node:fs/promises";
+import { appendFile, mkdir as mkdir3, mkdtemp, readdir as readdir3, readFile as readFile4, realpath, rename as rename3, rm as rm2, stat as stat2, writeFile as writeFile3 } from "node:fs/promises";
 import os from "node:os";
 import path6 from "node:path";
 import { execFile } from "node:child_process";
@@ -16125,7 +16124,7 @@ var RunRecordWriter = class _RunRecordWriter {
           arch: os.arch()
         },
         node: process.version,
-        tools: await toolVersions()
+        tools: await toolVersions(archiveDir)
       },
       harness: {
         package_name: packageInfo.name,
@@ -16976,14 +16975,27 @@ async function findHarnessRoot() {
     current2 = parent;
   }
 }
-async function toolVersions() {
+async function toolVersions(archiveDir) {
   const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
     commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
-    commandVersion("opencode", ["--version"])
+    queryOpenCodeVersion(archiveDir)
   ]);
   return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
+}
+async function queryOpenCodeVersion(archiveDir) {
+  const scratch = await mkdtemp(path6.join(archiveDir, ".opencode-version-"));
+  try {
+    const env = { ...process.env };
+    for (const key of ["XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR", "TMP", "TEMP"]) {
+      env[key] = path6.join(scratch, key);
+      await mkdir3(env[key]);
+    }
+    return await commandVersion("opencode", ["--version"], env);
+  } finally {
+    await rm2(scratch, { recursive: true, force: true });
+  }
 }
 async function commandVersion(command, args, env) {
   try {
@@ -18241,7 +18253,7 @@ function rank(state) {
 
 // src/resource-preflight.ts
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm as rm4, stat as stat4 } from "node:fs/promises";
+import { mkdtemp as mkdtemp2, rm as rm4, stat as stat4 } from "node:fs/promises";
 import { createServer } from "node:net";
 import path10 from "node:path";
 var CALLER_SANDBOX_RULES = [
@@ -18306,7 +18318,7 @@ async function probeResource(requirement) {
 async function probeEntryCreation(requirement, dir) {
   let scratch;
   try {
-    scratch = await mkdtemp(path10.join(dir, ".ensemble-probe-"));
+    scratch = await mkdtemp2(path10.join(dir, ".ensemble-probe-"));
   } catch (error) {
     return denialOf(requirement, dir, error);
   }
@@ -19586,7 +19598,7 @@ function itemTypeFromItem(item) {
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID3 } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { access, mkdtemp as mkdtemp2, readFile as readFile6, readdir as readdir5, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
+import { access, mkdtemp as mkdtemp3, readFile as readFile6, readdir as readdir5, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
 import { hostname as hostname3 } from "node:os";
 import path14 from "node:path";
 
@@ -20609,7 +20621,7 @@ var ClaudeCliControlPlane = class {
     };
     const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
 `;
-    const dir = await mkdtemp2(path14.join(temporaryDirectory(process.env, process.cwd()).path, `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
+    const dir = await mkdtemp3(path14.join(temporaryDirectory(process.env, process.cwd()).path, `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
       await writeFile5(path14.join(dir, OWNER_FILENAME), owner, { mode: 384 });
       await writeFile5(path14.join(dir, "settings.json"), `${JSON.stringify(settings)}
@@ -20716,7 +20728,7 @@ var ClaudeCliControlPlane = class {
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
     let socketDir;
     try {
-      socketDir = await mkdtemp2(path14.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+      socketDir = await mkdtemp3(path14.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
       return { submitted: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };

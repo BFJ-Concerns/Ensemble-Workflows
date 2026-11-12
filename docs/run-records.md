@@ -512,6 +512,9 @@ families with their own schema versions (`3` and `3`), described above.
   outside a git repository.
 - `environment`: OS architecture, platform and release, Node version, and the
   versions of `claude`, `codex`, `git`, and `opencode` where available.
+  The opencode version query uses temporary XDG and scratch directories in
+  the run archive and removes them after the query; it does not initialise
+  opencode's configured homes.
 - `harness`: package name, version, and the git commit of the Ensemble
   checkout. `commit_unavailable` is `null` when the commit is known; a
   launcher copied outside an Ensemble checkout carries

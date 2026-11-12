@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 
-import { CommandContainment, type ContainedCommand } from "./contained-command.js";
+import { CommandContainment, unestablishedStopDiagnostics, type CommandStop, type ContainedCommand } from "./contained-command.js";
 import { launchEnvironment } from "./engine-environment.js";
 import {
   EngineShutdownError,
   TurnTimeoutError,
   attachFailedTurnResult,
   attachPartialWorkerText,
-  attachWorkerExitStatus
+  attachWorkerExitStatus,
+  failedTurnResultOf,
+  partialWorkerTextOf
 } from "./errors.js";
 import { subtractUsage } from "./usage-summary.js";
 import { createWorkerScopes, DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
@@ -23,7 +25,7 @@ import type { EngineTranscriptArtifact, RuntimeEvent, TokenUsageBreakdown, Token
 
 export interface OpenCodeRunner {
   run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult>;
-  exportSession(sessionId: string, cwd: string, signal?: AbortSignal): Promise<OpenCodeSessionExportResult>;
+  exportSession(sessionId: string, cwd: string, signal?: AbortSignal, onCommandStop?: (stop: CommandStop) => void): Promise<OpenCodeSessionExportResult>;
 }
 
 export type OpenCodeSessionExportResult =
@@ -48,6 +50,8 @@ export interface OpenCodeRunOptions {
   onFirstData?: () => void;
   /** Receives each stdout chunk so live accounting can advance before exit. */
   onData?: (chunk: string) => void;
+  /** Every command stop, including one followed by a thrown runner failure. */
+  onCommandStop?: (stop: CommandStop) => void;
 }
 
 export interface OpenCodeRunResult {
@@ -151,12 +155,13 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
       this.#killGraceMs,
       options.signal,
       options.onFirstData,
-      options.onData
+      options.onData,
+      options.onCommandStop
     );
   }
 
-  async exportSession(sessionId: string, cwd: string, signal?: AbortSignal): Promise<OpenCodeSessionExportResult> {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, this.#commands, 30_000, this.#killGraceMs, signal);
+  async exportSession(sessionId: string, cwd: string, signal?: AbortSignal, onCommandStop?: (stop: CommandStop) => void): Promise<OpenCodeSessionExportResult> {
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, this.#commands, 30_000, this.#killGraceMs, signal, undefined, undefined, onCommandStop);
     if (result.exitCode !== 0) {
       return {
         status: "command-failed",
@@ -198,7 +203,25 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
   runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     // close() must be able to await a live attempt so cancellation is not
     // "torn down under a caller still running": track the settlement.
-    const settlement = this.#runAttempt(context);
+    const stops: CommandStop[] = [];
+    const startedAt = Date.now();
+    const settlement = this.#runAttempt(context, (stop) => stops.push(stop)).then(
+      (result) => ({ ...result, diagnostics: { ...result.diagnostics, ...unestablishedStopDiagnostics(stops) } }),
+      (error: unknown) => {
+        if (error instanceof Error && stops.some((stop) => stop.attemptAccount !== null)) {
+          // Preserve a timeout's complete evidence. A runner/export failure
+          // without a result still carries the stops observed before it threw.
+          const text = partialWorkerTextOf(error) ?? "";
+          const result = failedTurnResultOf(error) ?? {
+            text, deltaText: text, durationMs: Date.now() - startedAt,
+            firstDeltaMs: null, items: {}, tokenUsageEvents: []
+          };
+          result.diagnostics = { ...result.diagnostics, ...unestablishedStopDiagnostics(stops) };
+          attachFailedTurnResult(error, result);
+        }
+        throw error;
+      }
+    );
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#settlement === settlement) {
@@ -207,7 +230,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     });
   }
 
-  async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
+  async #runAttempt(context: EngineAttemptContext, onCommandStop: (stop: CommandStop) => void): Promise<EngineAttemptResult> {
     this.#reportedUsage = null;
     let streamBuffer = "";
     const streamEvents: unknown[] = [];
@@ -234,6 +257,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {}),
       ...(context.onLiveEvidence !== undefined ? { onFirstData: context.onLiveEvidence } : {}),
       onData,
+      onCommandStop,
       signal: this.#abortController.signal
     });
     const parsedRun = parseRunEvents(run.stdout);
@@ -278,7 +302,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     } else {
       let exportResult: OpenCodeSessionExportResult;
       try {
-        exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd, this.#abortController.signal);
+        exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd, this.#abortController.signal, onCommandStop);
       } catch (error) {
         if (error instanceof Error) {
           attachPartialWorkerText(error, fallback);
@@ -514,7 +538,8 @@ async function runProcess(
   killGraceMs: number,
   abortSignal?: AbortSignal,
   onFirstData?: () => void,
-  onData?: (chunk: string) => void
+  onData?: (chunk: string) => void,
+  onCommandStop?: (stop: CommandStop) => void
 ): Promise<OpenCodeRunResult> {
   const startedAt = Date.now();
   if (abortSignal?.aborted) {
@@ -528,7 +553,7 @@ async function runProcess(
     const command = await containment.contain(`opencode ${args[0]}`, file, args, {
       cwd, env, stdio: ["ignore", "pipe", "pipe"]
     });
-    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData);
+    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop);
   } finally {
     if (scopes !== undefined) {
       try {
@@ -548,7 +573,8 @@ function collectProcess(
   killGraceMs: number,
   abortSignal?: AbortSignal,
   onFirstData?: () => void,
-  onData?: (chunk: string) => void
+  onData?: (chunk: string) => void,
+  onCommandStop?: (stop: CommandStop) => void
 ): Promise<OpenCodeRunResult> {
   return new Promise((resolve, reject) => {
     const child = command.child;
@@ -574,7 +600,7 @@ function collectProcess(
       child.stdout?.destroy();
       child.stderr?.destroy();
       // An unconfirmed stop must not leave the child's handle holding up the
-      // run's diagnostic. The containment's close reports that uncertainty.
+      // run's diagnostic. The attempt or run accounts for the stop.
       child.unref();
       if (processError !== undefined) {
         reject(processError);
@@ -584,7 +610,10 @@ function collectProcess(
       }
     };
     const stop = (): void => {
-      stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then(() => {
+      stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then((observation) => {
+        // Delivery precedes settlement, so errors and ordinary results alike
+        // retain the account. The engine passes an attempt-local collector.
+        onCommandStop?.(observation);
         stopped = true;
         // Even an unavailable/refused scope or an unconfirmed stop cannot
         // let an escaped pipe holder block the run's teardown report.

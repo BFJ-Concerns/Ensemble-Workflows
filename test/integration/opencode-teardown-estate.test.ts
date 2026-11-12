@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -107,4 +107,68 @@ ${ending === "throw" ? "throw new Error('FIXTURE_THROW');" : ending === "timeout
     if (commandPid > 0 && isLive(commandPid)) process.kill(commandPid, "SIGKILL");
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+for (const retry of [false, true]) {
+  test(`built opencode no-manager timeout ${retry ? "retries successfully" : "returns a handled null"} and leaves the run complete`, async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-handled-timeout-"));
+    const config = path.join(directory, "config/ensemble");
+    const records = path.join(directory, "records");
+    const marker = path.join(directory, "first-attempt");
+    try {
+      await mkdir(config, { recursive: true });
+      await writeFile(path.join(config, "config.json"), JSON.stringify({ schema_version: 1, opencode_models: { fixture: { provider_model: "fixture/model" } } }));
+      const fixture = path.join(directory, "opencode");
+      await writeFile(fixture, `#!/bin/sh
+if [ "$1" = "--version" ]; then echo fixture; exit 0; fi
+if [ -f '${marker}' ]; then
+  printf '%s\\n' '{"type":"text","part":{"type":"text","text":"recovered"}}'
+  exit 0
+fi
+printf started > '${marker}'
+printf '%s\\n' '{"type":"text","part":{"type":"text","text":"waiting"}}'
+exec sleep 120
+`);
+      await chmod(fixture, 0o755);
+      const workflow = path.join(directory, "workflow.js");
+      await writeFile(workflow, `export const meta = { name: 'handled-opencode-timeout' };
+const answer = await agent('fixture', { engine: 'opencode', model: 'fixture', timeoutMs: 5000, maxAttempts: ${retry ? 2 : 1} });
+return { handled: answer === null, answer };
+`);
+      const result = await runNode([launcher, workflow], {
+        PATH: `${directory}:${process.env.PATH ?? ""}`,
+        XDG_CONFIG_HOME: path.join(directory, "config"),
+        ENSEMBLE_RUN_RECORD_DIR: records, ENSEMBLE_STATUS: "off",
+        DBUS_SESSION_BUS_ADDRESS: `unix:path=${directory}/no-bus`, XDG_RUNTIME_DIR: path.join(directory, "no-runtime")
+      }, 60_000);
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), { handled: !retry, answer: retry ? "recovered" : null });
+      const announcement = result.stderr.match(/^\[sentinel\] will write (.+) when the run ends$/m)?.[1];
+      assert.ok(announcement, result.stderr);
+      const sentinel = JSON.parse(await readFile(announcement, "utf8")) as { outcome: string; exit_code: number; teardown_error: unknown };
+      assert.deepEqual([sentinel.outcome, sentinel.exit_code, sentinel.teardown_error], ["complete", 0, null]);
+      const agentPath = (await readdir(records, { recursive: true })).find((entry) => path.basename(entry) === "agent.json");
+      assert.ok(agentPath);
+      const agent = JSON.parse(await readFile(path.join(records, agentPath), "utf8")) as {
+        attempts: Array<{ failure: { kind: string } | null; diagnostics: { unestablishedStops?: Array<{ owner: string; reason: string }> } | null }>
+      };
+      assert.equal(agent.attempts.length, retry ? 2 : 1);
+      assert.equal(agent.attempts[0]?.failure?.kind, "TurnTimeoutError");
+      const stops = agent.attempts[0]?.diagnostics?.unestablishedStops;
+      assert.equal(stops?.length, 1);
+      assert.match(stops[0]!.owner, /^opencode run in process group /);
+      assert.match(stops[0]!.reason, /cut short without a scope/);
+      const notices = result.stderr.split("\n").filter((line) => line.includes("stopped a command and could not establish"));
+      assert.equal(notices.length, 1, result.stderr);
+      assert.ok(notices[0]!.includes(stops[0]!.owner), result.stderr);
+      assert.match(notices[0]!, /\[opencode\] agent 1 attempt 1 stopped a command/);
+      assert.doesNotMatch(result.stderr, /failed to end cleanly/);
+      if (retry) {
+        assert.equal(agent.attempts[1]?.failure, null);
+        assert.equal(agent.attempts[1]?.diagnostics?.unestablishedStops, undefined, "a retry must not inherit its predecessor's stop account");
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 }

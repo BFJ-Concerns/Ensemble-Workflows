@@ -18116,6 +18116,10 @@ function unitSafe(text) {
 
 // src/contained-command.ts
 var UNESTABLISHED_STOPS_DIAGNOSTIC = "unestablishedStops";
+function unestablishedStopDiagnostics(stops) {
+  const accounts = stops.flatMap((stop) => stop.attemptAccount === null ? [] : [{ ...stop.attemptAccount }]);
+  return accounts.length === 0 ? {} : { [UNESTABLISHED_STOPS_DIAGNOSTIC]: accounts };
+}
 function unestablishedStopsOf(diagnostics) {
   const carried = diagnostics?.[UNESTABLISHED_STOPS_DIAGNOSTIC];
   if (!Array.isArray(carried)) {
@@ -23126,11 +23130,12 @@ var OpenCodeCliRunner = class {
       this.#killGraceMs,
       options.signal,
       options.onFirstData,
-      options.onData
+      options.onData,
+      options.onCommandStop
     );
   }
-  async exportSession(sessionId, cwd, signal) {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, this.#commands, 3e4, this.#killGraceMs, signal);
+  async exportSession(sessionId, cwd, signal, onCommandStop) {
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, this.#commands, 3e4, this.#killGraceMs, signal, void 0, void 0, onCommandStop);
     if (result.exitCode !== 0) {
       return {
         status: "command-failed",
@@ -23167,7 +23172,27 @@ var OpenCodeEngineInvocation = class {
     this.#onClose = options.onClose;
   }
   runAttempt(context) {
-    const settlement = this.#runAttempt(context);
+    const stops = [];
+    const startedAt = Date.now();
+    const settlement = this.#runAttempt(context, (stop) => stops.push(stop)).then(
+      (result) => ({ ...result, diagnostics: { ...result.diagnostics, ...unestablishedStopDiagnostics(stops) } }),
+      (error) => {
+        if (error instanceof Error && stops.some((stop) => stop.attemptAccount !== null)) {
+          const text = partialWorkerTextOf(error) ?? "";
+          const result = failedTurnResultOf(error) ?? {
+            text,
+            deltaText: text,
+            durationMs: Date.now() - startedAt,
+            firstDeltaMs: null,
+            items: {},
+            tokenUsageEvents: []
+          };
+          result.diagnostics = { ...result.diagnostics, ...unestablishedStopDiagnostics(stops) };
+          attachFailedTurnResult(error, result);
+        }
+        throw error;
+      }
+    );
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#settlement === settlement) {
@@ -23175,7 +23200,7 @@ var OpenCodeEngineInvocation = class {
       }
     });
   }
-  async #runAttempt(context) {
+  async #runAttempt(context, onCommandStop) {
     this.#reportedUsage = null;
     let streamBuffer = "";
     const streamEvents = [];
@@ -23202,6 +23227,7 @@ var OpenCodeEngineInvocation = class {
       ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {},
       ...context.onLiveEvidence !== void 0 ? { onFirstData: context.onLiveEvidence } : {},
       onData,
+      onCommandStop,
       signal: this.#abortController.signal
     });
     const parsedRun = parseRunEvents(run.stdout);
@@ -23242,7 +23268,7 @@ var OpenCodeEngineInvocation = class {
     } else {
       let exportResult;
       try {
-        exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd, this.#abortController.signal);
+        exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd, this.#abortController.signal, onCommandStop);
       } catch (error) {
         if (error instanceof Error) {
           attachPartialWorkerText(error, fallback);
@@ -23422,7 +23448,7 @@ var OpenCodeEngineInvocation = class {
     return lines.join("\n");
   }
 };
-async function runProcess(file, args, cwd, env, commands, timeoutMs, killGraceMs, abortSignal, onFirstData, onData) {
+async function runProcess(file, args, cwd, env, commands, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop) {
   const startedAt = Date.now();
   if (abortSignal?.aborted) {
     return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
@@ -23435,7 +23461,7 @@ async function runProcess(file, args, cwd, env, commands, timeoutMs, killGraceMs
       env,
       stdio: ["ignore", "pipe", "pipe"]
     });
-    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData);
+    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop);
   } finally {
     if (scopes !== void 0) {
       try {
@@ -23446,7 +23472,7 @@ async function runProcess(file, args, cwd, env, commands, timeoutMs, killGraceMs
     }
   }
 }
-function collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData) {
+function collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop) {
   return new Promise((resolve, reject) => {
     const child = command.child;
     const stdout = [];
@@ -23484,7 +23510,8 @@ function collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal,
       }
     };
     const stop = () => {
-      stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then(() => {
+      stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then((observation) => {
+        onCommandStop?.(observation);
         stopped = true;
         if (!closed) {
           drainTimer = setTimeout(() => {

@@ -434,7 +434,7 @@ test("an opencode process that exited before its streams close is not timed out"
   const child = new ChildProcess();
   Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
   const commands = new CommandContainment(new NoWorkerScopes());
-  const stop = t.mock.fn(async () => ({ kind: "stopped" as const }));
+  const stop = t.mock.fn(async () => ({ outcome: { kind: "stopped" as const }, attemptAccount: null }));
   t.mock.method(commands, "contain", async () => ({ child, reach: { kind: "scope", unit: "fixture.scope" }, stop }));
   t.mock.timers.enable({ apis: ["setTimeout"] });
   try {

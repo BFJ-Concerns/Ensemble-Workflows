@@ -3,7 +3,7 @@ import { ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { CommandContainment } from "../../src/contained-command.js";
+import { CommandContainment, type CommandStop } from "../../src/contained-command.js";
 import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
 import { NoWorkerScopes } from "../../src/worker-scopes.js";
 
@@ -13,15 +13,17 @@ for (const ending of ["abort", "deadline", "exit", "export"] as const) {
     Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
     const commands = new CommandContainment(new NoWorkerScopes());
     let stopped!: () => void;
-    const stopping = new Promise<{ kind: "stopped" }>((resolve) => { stopped = () => resolve({ kind: "stopped" }); });
+    const observation: CommandStop = { outcome: { kind: "stopped" }, attemptAccount: { owner: "fixture worker", reason: "controlled incomplete reach" } };
+    const stopping = new Promise<CommandStop>((resolve) => { stopped = () => resolve(observation); });
+    const observed: CommandStop[] = [];
     const stop = t.mock.fn(() => stopping);
     const contain = t.mock.method(commands, "contain", async () => ({ child, reach: { kind: "scope", unit: "fixture.scope" }, stop }));
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const abort = new AbortController();
     const runner = new OpenCodeCliRunner(undefined, { commands });
     const pending = ending === "export"
-      ? runner.exportSession("fixture-session", process.cwd(), abort.signal)
-      : runner.run({ prompt: "fixture", cwd: process.cwd(), providerModel: "fixture/model", timeoutMs: 100, signal: abort.signal });
+      ? runner.exportSession("fixture-session", process.cwd(), abort.signal, (stop) => observed.push(stop))
+      : runner.run({ prompt: "fixture", cwd: process.cwd(), providerModel: "fixture/model", timeoutMs: 100, signal: abort.signal, onCommandStop: (stop) => observed.push(stop) });
     await new Promise<void>((resolve) => setImmediate(resolve));
     child.stdout!.emit("data", "partial output");
     child.stderr!.emit("data", "engine diagnostic");
@@ -36,6 +38,7 @@ for (const ending of ["abort", "deadline", "exit", "export"] as const) {
     assert.equal(settled, false, "pipe close alone cannot confirm the command's end");
     stopped();
     const result = await pending;
+    assert.deepEqual(observed, [observation]);
     assert.equal(stop.mock.callCount(), 1);
     assert.equal(contain.mock.calls[0]?.arguments[0], `opencode ${ending === "export" ? "export" : "run"}`);
     if ("deadlineExpired" in result) {
@@ -51,7 +54,7 @@ test("opencode bounds pipe drainage after an unconfirmed stop without losing col
   const child = new ChildProcess();
   Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
   const commands = new CommandContainment(new NoWorkerScopes());
-  const stop = t.mock.fn(async () => ({ kind: "unconfirmed" as const, reason: "controlled refusal" }));
+  const stop = t.mock.fn(async (): Promise<CommandStop> => ({ outcome: { kind: "unconfirmed", reason: "controlled refusal" }, attemptAccount: { owner: "fixture worker", reason: "controlled refusal" } }));
   t.mock.method(commands, "contain", async () => ({ child, reach: { kind: "scope", unit: "fixture.scope" }, stop }));
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const abort = new AbortController();

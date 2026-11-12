@@ -231,9 +231,11 @@ ownership.
 Opencode run and session-export commands each take a separate scope under
 either grouping. They enter that scope before executing, so commands they start
 inherit its ownership. An attempt can therefore stop its own commands without
-ending another worker. Without a scope, opencode uses a process group; a
-cut-short command there produces a teardown failure because descendants that
-left the group cannot be confirmed stopped.
+ending another worker. Without a scope, opencode uses a process group. A stop
+an attempt makes before the run ends discloses unconfirmed reach on the attempt
+record and stderr, without changing the attempt's or run's outcome. A command
+the run's own ending cuts short there produces a teardown failure because
+descendants that left the group cannot be confirmed stopped.
 
 Stopping a scope ends every process in it, including one a worker started in
 a session of its own or one reparented away from the worker. Each scope gets

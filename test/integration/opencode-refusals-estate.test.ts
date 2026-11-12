@@ -61,11 +61,14 @@ process.exit(${versionExitCode});
       }
       const envelope = JSON.parse(stdout) as { partial: boolean; error: { message: string } };
       assert.equal(envelope.partial, true);
-      assert.match(envelope.error.message, /opencode data \(from XDG_DATA_HOME\): ENOTDIR/);
+      assert.match(envelope.error.message, /opencode data \(from XDG_DATA_HOME="blocked"; relative to .*\): ENOTDIR/);
       const checked = /cannot create entries in ([^;]+?), the opencode/.exec(envelope.error.message)?.[1];
       assert.ok(checked, envelope.error.message);
       assert.ok(checked.startsWith(`${repo}.ensemble-workflows-worktrees/`), checked);
       assert.ok(checked.endsWith("/blocked/opencode"), checked);
+      assert.ok(envelope.error.message.includes(`relative to ${path.dirname(path.dirname(checked))}`), envelope.error.message);
+      assert.match(envelope.error.message, /set XDG_DATA_HOME to a writable directory/);
+      assert.doesNotMatch(envelope.error.message, /sandbox/);
       assert.deepEqual(await readdir(launchCwd), []);
       assert.equal(await readFile(path.join(directory, "calls"), "utf8"), "--version\n");
       const manifestPath = await findOnlyFile(path.join(directory, "records"), "manifest.json");

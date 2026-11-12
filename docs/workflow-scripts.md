@@ -460,10 +460,15 @@ cannot pass silently:
   separately. Unused engines are not checked. A denied
   resource refuses dispatches needing that resource with
   `ResourcePreflightRefusedError`, naming the directory, the setting it came
-  from and the error. Evidence identifying a Codex sandbox adds its name and
-  the `danger-full-access` mode that lifts it; without such evidence the
-  refusal says that no caller sandbox was identified. These checks exercise
-  current access and cannot guarantee later writes will succeed. A probe
+  from and the error, with a direct remedy such as “set XDG_DATA_HOME to a
+  writable directory”. Relative values appear as written alongside the
+  directory they were resolved against. Defaults name the setting that
+  moves the directory; fixed locations such as Claude daemon sockets ask
+  for access to that directory because no setting moves them. Socket
+  remedies require a directory that permits Unix socket binding. Evidence
+  identifying a Codex sandbox adds its name and the `danger-full-access`
+  mode that lifts it; otherwise the refusal mentions no sandbox. These checks
+  exercise current access and cannot guarantee later writes will succeed. A probe
   that cannot finish its own cleanup raises a substrate refusal with the
   cause retained; that failed check is not cached as a resource verdict.
 - The run's own ending — an interrupt or a whole-run timeout — which throws

@@ -36,28 +36,48 @@ export const SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
  * the machine configuration declares `CODEX_HOME`, `HOME` or the like for
  * that engine.
  *
- * Declared variables sit above inherited ones and everything undeclared
- * still inherits, so a configured parent keeps working unchanged. Claude's
- * processes additionally lose the run's own settings — a `claude` child can
- * start the per-user daemon, which must not be homed on this run's record or
- * status directories — and carry `SANDBOXED_WORKSPACE_VARIABLE` last, above
- * any declaration of the same name, because every `claude` launched must see
- * it or dispatch fails on trust.
+ * It is `writtenEnvironment` with two things changed for Claude's
+ * processes: they carry `SANDBOXED_WORKSPACE_VARIABLE`, above any
+ * declaration of the same name, because every `claude` launched must see it
+ * or dispatch fails on trust; and a relative `CLAUDE_CONFIG_DIR` is made
+ * absolute against the launcher's working directory.
  */
 export function launchEnvironment(
   engine: EngineName,
   declared: Readonly<Record<string, string>> | undefined,
   inherited: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
+  const env = writtenEnvironment(engine, declared, inherited);
   if (engine === "claude") {
-    const env: NodeJS.ProcessEnv = { ...withoutRunScopedVariables(inherited), ...declared, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
+    env[SANDBOXED_WORKSPACE_VARIABLE] = "1";
     // Dispatch runs in the worker's cwd; roster and stop commands run in
     // the launcher's. Keep a relative config directory on the same daemon
     // and transcript store across all those commands.
     if (env.CLAUDE_CONFIG_DIR) {
       env.CLAUDE_CONFIG_DIR = path.resolve(env.CLAUDE_CONFIG_DIR.normalize("NFC"));
     }
-    return env;
   }
-  return { ...inherited, ...declared };
+  return env;
+}
+
+/**
+ * The variables an engine's process is launched with, each value as the
+ * operator wrote it: what `launchEnvironment` starts from, before it
+ * rewrites anything. The resource preflight quotes a setting from here
+ * (`engine-resources.ts`), so a refusal shows a relative value as the
+ * relative value it was written as, not the absolute path it was launched
+ * with.
+ *
+ * Declared variables sit above inherited ones and everything undeclared
+ * still inherits, so a configured parent keeps working unchanged. Claude's
+ * processes additionally lose the run's own settings — a `claude` child can
+ * start the per-user daemon, which must not be homed on this run's record or
+ * status directories.
+ */
+export function writtenEnvironment(
+  engine: EngineName,
+  declared: Readonly<Record<string, string>> | undefined,
+  inherited: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  return engine === "claude" ? { ...withoutRunScopedVariables(inherited), ...declared } : { ...inherited, ...declared };
 }

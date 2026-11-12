@@ -14,7 +14,7 @@ import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { programNameFor, runEnsembleCli } from "../../src/cli.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
-import { AppServerExitedError, AppServerSystemError, CodexSubstrateRefusedError, EngineShutdownError } from "../../src/errors.js";
+import { AppServerExitedError, AppServerSystemError, CodexSubstrateRefusedError, EngineShutdownError, StopUnconfirmedError } from "../../src/errors.js";
 import { HoldManager, enumerateHolds } from "../../src/holds.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
@@ -952,6 +952,7 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
     exit_code: number;
     workers: unknown;
     error: { kind: string; message: string } | null;
+    teardown_error: { kind: string; message: string } | null;
     manifest: unknown;
     integrity: { algorithm: string; sentinel_sha256: string };
     ended_at: string;
@@ -960,7 +961,7 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
     await readFile(path.join(path.dirname(announced[1]!), "manifest.json"), "utf8")
   ) as { integrity: { manifest_sha256: string } };
   assert.deepEqual(sentinel, {
-    schema_version: 3,
+    schema_version: 4,
     kind: "completion_sentinel",
     outcome: "failed",
     exit_code: 1,
@@ -972,6 +973,8 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
       kind: "SingleAgentFailedError",
       message: "Agent failed without producing a result"
     },
+    // The run failed, and its teardown still ended cleanly.
+    teardown_error: null,
     // A failed run still seals its archive, so the sentinel can attest it.
     manifest: { sha256: sealed.integrity.manifest_sha256 },
     integrity: { algorithm: "sha256", recipe: DIGEST_RECIPE, sentinel_sha256: sentinel.integrity.sentinel_sha256 },
@@ -4068,6 +4071,50 @@ test("a teardown that fails after a clean body degrades the sentinel and the exi
   };
   assert.equal(manifest.status, "failed");
   assert.equal(sentinel.manifest.sha256, manifest.integrity.manifest_sha256);
+});
+
+test("a run that had already failed still says in the sentinel that teardown could not confirm its workers' commands stopped", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-unconfirmed-stop-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "unconfirmed-stop" };\nthrow new Error("the script's own failure");`);
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const runtime = fakeRuntime();
+  const unconfirmed = new StopUnconfirmedError([
+    { owner: "fixture worker in ensemble-1-command-1.scope", reason: "pids 4242 outlived SIGTERM by 2000ms and SIGKILL by 3000ms" }
+  ]);
+  runtime.close = (async () => {
+    throw unconfirmed;
+  }) as unknown as EnsembleRuntime["close"];
+
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir: path.join(directory, "records"),
+    createRuntime: async () => runtime
+  });
+
+  assert.equal(exitCode, 1, stderr.text());
+  // One clean line naming where the processes are, with no stack into the launcher.
+  assert.ok(
+    stderr.text().split("\n").includes(`[teardown] the run failed to end cleanly: ${unconfirmed.message}`),
+    stderr.text()
+  );
+
+  const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+  assert.ok(sentinelPath);
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+    outcome: string;
+    error: { kind: string; message: string } | null;
+    teardown_error: { kind: string; message: string } | null;
+  };
+  assert.equal(sentinel.outcome, "failed");
+  // What ended the run keeps its place, and the sentinel no longer reads
+  // as a failed run whose cut-short work stopped.
+  assert.deepEqual(sentinel.error, { kind: "Error", message: "the script's own failure" });
+  assert.deepEqual(sentinel.teardown_error, { kind: "StopUnconfirmedError", message: unconfirmed.message });
 });
 
 class AlwaysFailingEngine implements EngineAdapter {

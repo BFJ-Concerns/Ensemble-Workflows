@@ -17064,7 +17064,7 @@ function safeName(filename, suffix) {
 
 // src/completion-sentinel.ts
 var SENTINEL_FILENAME = "completion-sentinel.json";
-var SENTINEL_SCHEMA_VERSION = 3;
+var SENTINEL_SCHEMA_VERSION = 4;
 var CompletionSentinel = class {
   #path = null;
   #written = false;
@@ -17116,6 +17116,7 @@ var CompletionSentinel = class {
         unsettled: workers.unsettled
       },
       error: detail.error ?? null,
+      teardown_error: detail.teardownError ?? null,
       manifest: detail.manifest ?? { unavailable: "recording-disabled" },
       ended_at: (/* @__PURE__ */ new Date()).toISOString(),
       // Self-attestation, computed last over everything above it: the
@@ -34283,6 +34284,7 @@ async function runEnsembleCli(argv, options = {}) {
         await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
           workers: workerOutcomes(progress, runtime),
           error: terminalError ?? teardownError,
+          teardownError,
           // The sealed manifest's own digest, attested from outside the file
           // it covers. A missing writer or an unsealed archive says why no
           // digest can be attested rather than omitting the field.

@@ -3685,7 +3685,8 @@ test("a budget refusal names the fallback dispatch without denying the earlier t
         assert.equal(error.engine, "claude");
         assert.equal(error.total, ceiling);
         assert.equal(error.spent, ceiling);
-        assert.match(error.message, /; refused fallback dispatch for agent \d+$/);
+        assert.match(error.message, /; refused fallback dispatch for agent \d+; earlier refusals:/);
+        assert.match(error.message, /codex\/default \(codex.server-overloaded\): AppServerRequestError:.*serverOverloaded/);
         assert.doesNotMatch(error.message, /agent was not started/);
         if (ceiling === 0) {
           assert.match(error.message, /is 0, which admits no dispatch/);
@@ -3700,6 +3701,33 @@ test("a budget refusal names the fallback dispatch without denying the earlier t
     } finally {
       await runtime.close();
     }
+  }
+});
+
+test("a held session's first-turn fallback budget refusal keeps the primary substrate account", async () => {
+  const codex = new SessionChainEngine("codex", [async () => {
+    throw new CodexSubstrateRefusedError(undefined, new Error("primary handshake failed"));
+  }]);
+  const claude = new SessionChainEngine("claude", []);
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    budgetCeilings: { claude: 0 },
+    defaultMaxAttempts: 1
+  });
+  try {
+    const session = runtime.createWorkerSession({
+      engine: "codex", model: "primary",
+      fallback: [{ engine: "claude", model: "opus" }]
+    });
+    await assert.rejects(session.send("work"), (error: unknown) => {
+      assert.ok(error instanceof BudgetExceededError);
+      assert.match(error.message, /Token budget for claude is 0/);
+      assert.match(error.message, /codex\/primary \(codex.substrate-refused\):.*primary handshake failed/);
+      return true;
+    });
+    assert.equal(claude.dispatches.length, 0);
+  } finally {
+    await runtime.close();
   }
 });
 

@@ -13838,7 +13838,7 @@ import path19 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile10, stat as stat6 } from "node:fs/promises";
+import { readFile as readFile11, stat as stat6 } from "node:fs/promises";
 import { hostname as hostname4 } from "node:os";
 import path18 from "node:path";
 import { parseArgs } from "node:util";
@@ -17726,7 +17726,7 @@ function isJsonObject(value) {
 import { spawn as spawn2 } from "node:child_process";
 import { randomUUID as randomUUID3 } from "node:crypto";
 import { constants } from "node:fs";
-import { access, stat as stat4 } from "node:fs/promises";
+import { access, readFile as readFile6, readdir as readdir5, stat as stat4 } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import path11 from "node:path";
 
@@ -18391,15 +18391,15 @@ async function resolveExecutable(file, args, options) {
   });
 }
 async function stopProcessGroup(pgid, bounds) {
-  if (!groupLive(pgid)) {
+  if (!groupExists(pgid)) {
     return { kind: "stopped" };
   }
   signalGroup(pgid, "SIGTERM");
-  if (await waitUntil(() => !groupLive(pgid), bounds.stopGraceMs)) {
+  if (await waitUntil(async () => !await groupLive(pgid), bounds.stopGraceMs)) {
     return { kind: "stopped" };
   }
   signalGroup(pgid, "SIGKILL");
-  if (await waitUntil(() => !groupLive(pgid), bounds.confirmMs)) {
+  if (await waitUntil(async () => !await groupLive(pgid), bounds.confirmMs)) {
     return { kind: "stopped" };
   }
   return {
@@ -18408,7 +18408,7 @@ async function stopProcessGroup(pgid, bounds) {
   };
 }
 async function processGroupEnded(pgid, bounds) {
-  if (await waitUntil(() => !groupLive(pgid), bounds.confirmMs)) {
+  if (await waitUntil(async () => !await groupLive(pgid), bounds.confirmMs)) {
     return { kind: "stopped" };
   }
   return { kind: "unconfirmed", reason: `process group ${pgid} still held processes at the run's close, after the SIGKILL its attempt's stop sent` };
@@ -18420,13 +18420,33 @@ async function observed(stop) {
     return { kind: "unconfirmed", reason: error instanceof Error ? error.message : String(error) };
   }
 }
-function groupLive(pgid) {
+function groupExists(pgid) {
   try {
     process.kill(-pgid, 0);
     return true;
   } catch (error) {
     return error.code === "EPERM";
   }
+}
+async function groupLive(pgid) {
+  if (!groupExists(pgid)) return false;
+  let sawMember = false;
+  for (const name of await readdir5("/proc")) {
+    if (!/^\d+$/.test(name)) continue;
+    const info = await readFile6(`/proc/${name}/stat`, "utf8").catch((error) => {
+      if (error.code === "ENOENT" || error.code === "ESRCH") return null;
+      throw error;
+    });
+    if (info === null) continue;
+    const fields = info.slice(info.lastIndexOf(")") + 2).split(" ");
+    if (Number(fields[2]) !== pgid) continue;
+    sawMember = true;
+    if (fields[0] !== "Z" && fields[0] !== "X" || Number(fields[17]) > 1) return true;
+  }
+  if (!sawMember && groupExists(pgid)) {
+    throw new Error(`could not observe members of process group ${pgid} in /proc`);
+  }
+  return false;
 }
 function signalGroup(pgid, signal) {
   try {
@@ -20374,7 +20394,7 @@ function itemTypeFromItem(item) {
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID4 } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { access as access2, mkdtemp as mkdtemp3, readFile as readFile6, readdir as readdir5, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
+import { access as access2, mkdtemp as mkdtemp3, readFile as readFile7, readdir as readdir6, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
 import { hostname as hostname3 } from "node:os";
 import path15 from "node:path";
 
@@ -21056,7 +21076,7 @@ var ClaudeCliControlPlane = class {
       if (error instanceof Error) {
         const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id], cleanup).catch(() => null);
         const file = registered === null ? null : await this.transcriptPath(registered).catch(() => null);
-        const transcript = file === null ? null : await readFile6(file, "utf8").catch(() => null);
+        const transcript = file === null ? null : await readFile7(file, "utf8").catch(() => null);
         const diagnostics = { claudeLaunch: {
           failure: error.message,
           cleanupConfirmed: registered === null,
@@ -21168,7 +21188,7 @@ var ClaudeCliControlPlane = class {
    */
   async #sweepOrphanedSettingsDirs() {
     const root = temporaryDirectory(process.env, process.cwd()).path;
-    const entries = await readdir5(root, { withFileTypes: true }).catch(() => []);
+    const entries = await readdir6(root, { withFileTypes: true }).catch(() => []);
     const host = hostname3();
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name.startsWith(SETTINGS_DIR_PREFIX)) {
@@ -21176,7 +21196,7 @@ var ClaudeCliControlPlane = class {
       }
       const dir = path15.join(root, entry.name);
       try {
-        const owner = JSON.parse(await readFile6(path15.join(dir, OWNER_FILENAME), "utf8"));
+        const owner = JSON.parse(await readFile7(path15.join(dir, OWNER_FILENAME), "utf8"));
         if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
           await this.#removeSettingsDir(dir);
         }
@@ -21213,7 +21233,7 @@ var ClaudeCliControlPlane = class {
     const filename = `${handle.sessionId}.jsonl`;
     let projectDirs;
     try {
-      const entries = await readdir5(this.#projectsDir, { withFileTypes: true });
+      const entries = await readdir6(this.#projectsDir, { withFileTypes: true });
       projectDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     } catch {
       return null;
@@ -21521,7 +21541,7 @@ var ClaudeCliControlPlane = class {
     const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
     let entries;
     try {
-      entries = await readdir5(this.#procDir);
+      entries = await readdir6(this.#procDir);
     } catch {
       return [];
     }
@@ -21536,7 +21556,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile6(path15.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile7(path15.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -21650,7 +21670,7 @@ function delay(ms, signal) {
 import { createHash as createHash4, randomUUID as randomUUID5 } from "node:crypto";
 
 // src/claude-transcript.ts
-import { readFile as readFile7 } from "node:fs/promises";
+import { readFile as readFile8 } from "node:fs/promises";
 function submittedUserText(entry) {
   if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
   const content = entry.message?.content;
@@ -21701,7 +21721,7 @@ function enteredWorktrees(entries) {
 async function readTranscriptFile(path20) {
   let text;
   try {
-    text = await readFile7(path20, "utf8");
+    text = await readFile8(path20, "utf8");
   } catch (error) {
     throw new ClaudeTranscriptError(`could not read Claude transcript at ${path20}`, { cause: error });
   }
@@ -27212,7 +27232,7 @@ function describeWorkerFailure(error) {
 // src/script-runner.ts
 import vm from "node:vm";
 import { createHash as createHash5 } from "node:crypto";
-import { readFile as readFile9 } from "node:fs/promises";
+import { readFile as readFile10 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path17 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
@@ -32912,7 +32932,7 @@ var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 
 // src/workflow-registry.ts
 import { constants as constants2 } from "node:fs";
-import { access as access3, readdir as readdir6, readFile as readFile8 } from "node:fs/promises";
+import { access as access3, readdir as readdir7, readFile as readFile9 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
 import path16 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
@@ -32993,7 +33013,7 @@ async function resolveWorkflowName(name, options) {
 async function listRegistryDir(dir, scope, readMeta) {
   let directoryEntries;
   try {
-    directoryEntries = await readdir6(dir, { withFileTypes: true });
+    directoryEntries = await readdir7(dir, { withFileTypes: true });
   } catch (error) {
     if (isMissingDirectory(error)) {
       return { entries: [], notes: [] };
@@ -33011,7 +33031,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     }
     const scriptPath = path16.join(dir, entry.name);
     try {
-      const source = await readFile8(scriptPath, "utf8");
+      const source = await readFile9(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -33581,7 +33601,7 @@ function acornSyntaxErrorPosition(wrappedSource) {
 }
 async function readWorkflowScript(scriptPath) {
   try {
-    return await readFile9(scriptPath, "utf8");
+    return await readFile10(scriptPath, "utf8");
   } catch (error) {
     const code = error.code;
     const reason = code === "ENOENT" ? "no file exists at this path" : code === "EISDIR" ? "the path is a directory, not a script file" : code === "EACCES" ? "the file is not readable" : error instanceof Error ? error.message : String(error);
@@ -35280,7 +35300,7 @@ async function parseJsonValue(value, cwd, flagName) {
     const filePath = path18.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
-      source = await readFile10(filePath, "utf8");
+      source = await readFile11(filePath, "utf8");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new CliUsageError(`${flagName} could not read ${filePath}: ${message}`);

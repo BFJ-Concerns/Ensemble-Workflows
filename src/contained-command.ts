@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, stat } from "node:fs/promises";
+import { access, readFile, readdir, stat } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import path from "node:path";
 import type { Writable } from "node:stream";
@@ -503,21 +503,21 @@ async function resolveExecutable(file: string, args: readonly string[], options:
 }
 
 /**
- * End a process group and confirm it emptied: SIGTERM, the grace, SIGKILL,
+ * End a process group and confirm no executing member remains: SIGTERM, the grace, SIGKILL,
  * the confirmation window. The group's id stays allocated while any member
  * lives, so a signal sent while the group is observed live cannot reach an
  * unrelated group that recycled the id.
  */
 async function stopProcessGroup(pgid: number, bounds: StopBounds): Promise<StopOutcome> {
-  if (!groupLive(pgid)) {
+  if (!groupExists(pgid)) {
     return { kind: "stopped" };
   }
   signalGroup(pgid, "SIGTERM");
-  if (await waitUntil(() => !groupLive(pgid), bounds.stopGraceMs)) {
+  if (await waitUntil(async () => !(await groupLive(pgid)), bounds.stopGraceMs)) {
     return { kind: "stopped" };
   }
   signalGroup(pgid, "SIGKILL");
-  if (await waitUntil(() => !groupLive(pgid), bounds.confirmMs)) {
+  if (await waitUntil(async () => !(await groupLive(pgid)), bounds.confirmMs)) {
     return { kind: "stopped" };
   }
   return {
@@ -533,7 +533,7 @@ async function stopProcessGroup(pgid: number, bounds: StopBounds): Promise<StopO
  * group, and a kill already pending on a survivor needs no second one.
  */
 async function processGroupEnded(pgid: number, bounds: StopBounds): Promise<StopOutcome> {
-  if (await waitUntil(() => !groupLive(pgid), bounds.confirmMs)) {
+  if (await waitUntil(async () => !(await groupLive(pgid)), bounds.confirmMs)) {
     return { kind: "stopped" };
   }
   return { kind: "unconfirmed", reason: `process group ${pgid} still held processes at the run's close, after the SIGKILL its attempt's stop sent` };
@@ -548,14 +548,46 @@ async function observed(stop: () => Promise<StopOutcome>): Promise<StopOutcome> 
   }
 }
 
-/** Whether any process remains in the group; one the user may not signal still counts. */
-function groupLive(pgid: number): boolean {
+/** Whether the group still exists, including unreaped zombie metadata. */
+function groupExists(pgid: number): boolean {
   try {
     process.kill(-pgid, 0);
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/**
+ * Whether a group still has an executing process. A zombie answers a signal
+ * check until its parent reaps it, but has stopped executing and closed its
+ * files. Read membership and state together so zombie-only groups do not
+ * turn a handled attempt failure into an unconfirmed teardown.
+ */
+async function groupLive(pgid: number): Promise<boolean> {
+  if (!groupExists(pgid)) return false;
+  let sawMember = false;
+  for (const name of await readdir("/proc")) {
+    if (!/^\d+$/.test(name)) continue;
+    const info = await readFile(`/proc/${name}/stat`, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ESRCH") return null;
+      throw error;
+    });
+    if (info === null) continue;
+    // After the parenthesised command: state, ppid, process group.
+    const fields = info.slice(info.lastIndexOf(")") + 2).split(" ");
+    if (Number(fields[2]) !== pgid) continue;
+    sawMember = true;
+    // An exited thread-group leader can still have live worker threads.
+    // num_threads is field 20, index 17 after the command name.
+    if ((fields[0] !== "Z" && fields[0] !== "X") || Number(fields[17]) > 1) return true;
+  }
+  if (!sawMember && groupExists(pgid)) {
+    // A group that exists but whose membership is not visible cannot be
+    // declared stopped. observed() retains this as an unconfirmed account.
+    throw new Error(`could not observe members of process group ${pgid} in /proc`);
+  }
+  return false;
 }
 
 function signalGroup(pgid: number, signal: NodeJS.Signals): void {

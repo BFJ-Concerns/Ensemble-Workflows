@@ -1129,6 +1129,10 @@ test("opencode cache writes survive the engine path as a separate archive roll-u
       assert.equal(tokens.cacheReadTokens, 13);
       assert.equal(tokens.cacheCreationTokens, 5);
       assert.equal(tokens.totalTokens, 30);
+      // opencode supplies a scalar cost without a currency; it is not a priced charge.
+      assert.deepEqual(manifest.cost_rollup.opencode["openrouter/z-ai/glm-5.2"].cost, {
+        unavailable: "no-provider-cost-reported"
+      });
     `, writer.archiveDir]);
   } finally {
     await runtime.close();

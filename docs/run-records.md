@@ -641,6 +641,9 @@ The fields present throughout a record's lifetime are:
   engine reported it — Codex's `thread/start` answer, or the `model` and
   `effort` fields Claude Code writes on each assistant transcript entry —
   and `null` when the engine reported none, never an echo of the request.
+  A Codex `modelNotFound` rejection clears the thread's reported model and
+  effort: its configured model was not served. That attempt books under
+  `unresolved` in the cost roll-up.
   opencode reports no served identity, so its `resolved_model` is the
   configured `provider_model` the worker was launched with.
 - `fallback`: the fallback chain in force for this record
@@ -929,10 +932,16 @@ Each leaf has four fields:
   `unobserved` entries holds only refused attempts and reads
   `substrate-never-started`. Read `unobserved` for each attempt's own reason.
 - `cost`: `{ amount, currency, source: "provider-reported" }` — Ensemble never
-  estimates money — or a reason instead of an amount:
-  `{ "unavailable": "no-provider-cost-reported" }`, or
+  estimates money. An amount is finite and non-negative, with a non-blank
+  currency supplied by the provider. Zero with a currency is a reported
+  zero charge. A missing or unusable amount or currency on any usage event,
+  or a sum too large to represent, gives
+  `{ "unavailable": "no-provider-cost-reported" }` instead of an amount.
+  In particular, opencode's scalar cost without a currency, including zero,
+  is unavailable; it does not establish a free charge. A leaf with no usage
+  events also uses this reason. The other cost form is
   `{ "unavailable": "unlike-currencies" }` when attempts under one served model
-  reported different currencies.
+  reported usable prices in different currencies; this reason takes precedence.
 - `complete`: `true` only when the figures contain all the spend of every
   attempt booked under the leaf. Read `tokens` and `cost` as totals only when
   it is `true`; otherwise they are a lower bound.

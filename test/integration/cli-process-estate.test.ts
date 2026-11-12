@@ -2962,9 +2962,11 @@ interface RecordedMessage {
 }
 
 interface RecordedAgent {
+  resolved_model: string | null;
   status: "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
   parse_route: "direct" | "object-fallback" | "array-fallback" | "scalar-line" | null;
   attempts: Array<{
+    resolved_model: string | null;
     status: "complete" | "failed";
     failure: { kind: string; message: string } | null;
     classification: { class: string; rule: string | null } | null;
@@ -3198,6 +3200,13 @@ for (const diagnostic of [
       const agent = await loadOnlyAgentRecord(recordStore);
       assert.equal(agent.attempts.length, diagnostic.attempts);
       assert.deepEqual(envelope.error, agent.attempts.at(-1)?.failure);
+      if (diagnostic.name === "unknown-model") {
+        assert.equal(agent.resolved_model, null);
+        assert.deepEqual(agent.attempts.map(attempt => attempt.resolved_model), [null, null, null]);
+        const manifest = JSON.parse(await readFile(await findOnlyFile(recordStore, "manifest.json"), "utf8"));
+        assert.deepEqual(Object.keys(manifest.cost_rollup.codex), ["unresolved"]);
+        assert.deepEqual(manifest.cost_rollup.codex.unresolved.tokens, { unavailable: "engine-reported-no-usage" });
+      }
       if (diagnostic.name === "retrying-credentials") {
         for (const attempt of agent.attempts) {
           assert.equal(attempt.failure?.kind, "authentication-failure");

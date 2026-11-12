@@ -15933,7 +15933,7 @@ function buildCostRollup(agents) {
     const key = `${engine}\0${model}`;
     let bucket = buckets.get(key);
     if (bucket === void 0) {
-      bucket = { engine, model, tokens: null, cost: { amount: 0, currency: null, reported: false, unlike: false }, unobserved: [] };
+      bucket = { engine, model, tokens: null, cost: { amount: 0, currency: null, unpriced: false, unlike: false }, unobserved: [] };
       buckets.set(key, bucket);
     }
     return bucket;
@@ -15942,7 +15942,8 @@ function buildCostRollup(agents) {
     const lastReporter = agent.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.engine ?? agent.engine;
     for (const attempt of agent.attempts) {
       const borrowed = attempt.settled && attempt.engine === lastReporter ? agent.resolvedModel : null;
-      const bucket = bucketFor(attempt.engine, attempt.resolvedModel ?? borrowed ?? "unresolved");
+      const model = attempt.engine === "codex" && attempt.failureKind === "model-not-found" ? null : attempt.resolvedModel ?? borrowed;
+      const bucket = bucketFor(attempt.engine, model ?? "unresolved");
       const summary = summariseUsage(attempt.engine, attempt.tokenUsageEvents);
       if (summary !== null) {
         bucket.tokens = bucket.tokens === null ? summary : addUsageSummary(bucket.tokens, summary);
@@ -15982,7 +15983,7 @@ function publishedCost(accumulator) {
   if (accumulator.unlike) {
     return { unavailable: "unlike-currencies" };
   }
-  if (!accumulator.reported) {
+  if (accumulator.unpriced || accumulator.currency === null || !Number.isFinite(accumulator.amount)) {
     return { unavailable: "no-provider-cost-reported" };
   }
   return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
@@ -15992,17 +15993,17 @@ function addProviderCost(target, event) {
     return;
   }
   const cost = event.raw.cost;
-  if (typeof cost !== "number" || !Number.isFinite(cost)) {
+  const currency = typeof event.raw.currency === "string" && event.raw.currency.trim().length > 0 ? event.raw.currency : null;
+  if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0 || currency === null) {
+    target.unpriced = true;
     return;
   }
-  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
-  if (target.currency !== null && currency !== null && currency !== target.currency) {
+  if (target.currency !== null && currency !== target.currency) {
     target.unlike = true;
     return;
   }
   target.amount += cost;
-  target.reported = true;
-  if (currency !== null && target.currency === null) {
+  if (target.currency === null) {
     target.currency = currency;
   }
 }
@@ -19254,6 +19255,15 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
    */
   #rejectTurn(threadId, turn, error) {
     this.#turns.delete(threadId);
+    if (error instanceof AppServerRequestError && error.code === "modelNotFound") {
+      const identity = this.#transcripts.get(threadId);
+      if (identity !== void 0) {
+        identity.resolvedModel = null;
+        identity.resolvedEffort = null;
+        this.#threadIdentity.set(threadId, { resolvedModel: null, resolvedEffort: null });
+        this.#reportTurnIdentity(threadId, turn);
+      }
+    }
     if (turn.firstDeltaAt !== null) {
       attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
     }

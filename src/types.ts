@@ -322,14 +322,46 @@ export interface BackgroundTaskWait {
   endedAt: string | null;
 }
 
-/** What a live agent is waiting on right now, as the status snapshot shows it. */
-export interface AgentWaitSnapshot {
+/**
+ * A running worker waiting on a background task its session started. The
+ * worker's engine observes the wait and is the only thing that reports it.
+ */
+export interface BackgroundTaskWaitSnapshot {
   kind: "background-task";
   taskId: string;
   description: string;
   /** Epoch ms the wait was first observed. */
   sinceMs: number;
 }
+
+/**
+ * The limit holding a queued worker back. A worker both limits hold reads
+ * `engine-cap`: its engine's cap holds it whatever the ceiling does, and the
+ * snapshot's `agentCeiling` already says the ceiling is full. `agent-ceiling`
+ * therefore means its engine has a free slot the ceiling will not let it
+ * take.
+ */
+export type AdmissionGate = "engine-cap" | "agent-ceiling";
+
+/**
+ * A queued worker waiting for admission. Admission owns its queue and is the
+ * only thing that reports the wait.
+ */
+export interface AdmissionWaitSnapshot {
+  kind: "admission";
+  gate: AdmissionGate;
+  /**
+   * Epoch ms the worker began this wait for admission. It stays fixed while
+   * the gate changes; a fallback step to another engine starts a new wait.
+   */
+  sinceMs: number;
+}
+
+/**
+ * What a worker is waiting on right now, as the status snapshot shows it.
+ * Every variant carries `kind` and `sinceMs`; a reader switches on `kind`.
+ */
+export type AgentWaitSnapshot = BackgroundTaskWaitSnapshot | AdmissionWaitSnapshot;
 
 export interface TurnResult {
   text: string;

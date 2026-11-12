@@ -1,6 +1,6 @@
 import { EngineShutdownError } from "./errors.js";
 
-import type { EngineName } from "./types.js";
+import type { AdmissionGate, AdmissionWaitSnapshot, EngineName } from "./types.js";
 
 export type AdmissionEventKind = "queued" | "admitted" | "released" | "skipped";
 export type AdmissionSkipReason = "engine-cap";
@@ -20,11 +20,36 @@ export interface AdmissionControllerOptions {
   ceiling: number | null;
   caps: ReadonlyMap<EngineName, number>;
   onAdmission?: (event: AdmissionEvent) => void;
+  /**
+   * Called each time admission's account has changed and come to rest: once
+   * per `admit()`, once per release and once at `close()`, after the queue
+   * has been drained. A `snapshot()` taken from this callback never shows a
+   * worker waiting that the drain was about to admit. This is how a reader
+   * that publishes the account learns to read it again.
+   */
+  onChange?: () => void;
+  /** Injectable clock; defaults to `Date.now`. Stamps when each wait began. */
+  now?: () => number;
+}
+
+/** Admission's own account of the slots it has granted and the workers it holds back. */
+export interface AdmissionSnapshot {
+  /** Workers holding a ceiling slot: admitted and not yet released. */
+  ceilingActive: number;
+  /** Workers holding each engine's cap slot. */
+  engineActive: ReadonlyMap<EngineName, number>;
+  /**
+   * Every worker held in the queue, keyed by agent id in the order they
+   * asked, with the gate holding each. A worker leaves this map the moment
+   * it is admitted or the queue is closed; nothing else has to clear it.
+   */
+  waiting: ReadonlyMap<number, AdmissionWaitSnapshot>;
 }
 
 interface WaitingAdmission {
   engine: EngineName;
   agentId: number;
+  queuedAtMs: number;
   task: () => Promise<unknown>;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
@@ -44,6 +69,8 @@ export class AdmissionController {
   #engineActive = new Map<EngineName, number>();
   #waiting: WaitingAdmission[] = [];
   #onAdmission: ((event: AdmissionEvent) => void) | undefined;
+  #onChange: (() => void) | undefined;
+  #now: () => number;
   #eventSeq = 0;
   #closed = false;
 
@@ -59,6 +86,8 @@ export class AdmissionController {
     this.ceiling = options.ceiling;
     this.#caps = options.caps;
     this.#onAdmission = options.onAdmission;
+    this.#onChange = options.onChange;
+    this.#now = options.now ?? (() => Date.now());
   }
 
   admit<T>(engine: EngineName, agentId: number, task: () => Promise<T>): Promise<T> {
@@ -73,6 +102,7 @@ export class AdmissionController {
       this.#waiting.push({
         engine,
         agentId,
+        queuedAtMs: this.#now(),
         task: async () => task(),
         resolve: (value) => resolve(value as T),
         reject,
@@ -80,6 +110,7 @@ export class AdmissionController {
       });
       this.#emit("queued", engine, agentId);
       this.#drain();
+      this.#onChange?.();
     });
   }
 
@@ -99,18 +130,39 @@ export class AdmissionController {
     for (const entry of waiting) {
       entry.reject(new EngineShutdownError(entry.engine));
     }
+    this.#onChange?.();
   }
 
-  snapshot(): {
-    ceilingActive: number;
-    engineActive: ReadonlyMap<EngineName, number>;
-    waiting: number;
-  } {
+  /**
+   * The account as it stands. Every figure is admission's own counter or
+   * queue entry, so a reader never has to infer a held slot from how far a
+   * worker has got: a slot is taken before its worker starts executing and
+   * given back only after the worker has settled.
+   */
+  snapshot(): AdmissionSnapshot {
+    const waiting = new Map<number, AdmissionWaitSnapshot>();
+    for (const entry of this.#waiting) {
+      waiting.set(entry.agentId, {
+        kind: "admission",
+        gate: this.#gateFor(entry.engine),
+        sinceMs: entry.queuedAtMs
+      });
+    }
     return {
       ceilingActive: this.#ceilingActive,
       engineActive: new Map(this.#engineActive),
-      waiting: this.#waiting.length
+      waiting
     };
+  }
+
+  /**
+   * The gate holding a waiting worker on `engine`. Once the queue has been
+   * drained, every worker still in it is held by its engine's cap, the
+   * ceiling, or both, so one whose engine has a free slot is held by the
+   * ceiling alone. The engine's cap is named when both hold it.
+   */
+  #gateFor(engine: EngineName): AdmissionGate {
+    return this.#activeFor(engine) >= this.#capFor(engine) ? "engine-cap" : "agent-ceiling";
   }
 
   #drain(): void {
@@ -160,6 +212,7 @@ export class AdmissionController {
         if (!this.#closed) {
           this.#drain();
         }
+        this.#onChange?.();
       });
   }
 

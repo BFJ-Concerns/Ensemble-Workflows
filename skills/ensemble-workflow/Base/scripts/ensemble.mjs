@@ -17463,6 +17463,8 @@ var AdmissionController = class {
   #engineActive = /* @__PURE__ */ new Map();
   #waiting = [];
   #onAdmission;
+  #onChange;
+  #now;
   #eventSeq = 0;
   #closed = false;
   constructor(options) {
@@ -17477,6 +17479,8 @@ var AdmissionController = class {
     this.ceiling = options.ceiling;
     this.#caps = options.caps;
     this.#onAdmission = options.onAdmission;
+    this.#onChange = options.onChange;
+    this.#now = options.now ?? (() => Date.now());
   }
   admit(engine, agentId, task) {
     if (this.#closed) {
@@ -17489,6 +17493,7 @@ var AdmissionController = class {
       this.#waiting.push({
         engine,
         agentId,
+        queuedAtMs: this.#now(),
         task: async () => task(),
         resolve: (value) => resolve(value),
         reject,
@@ -17496,6 +17501,7 @@ var AdmissionController = class {
       });
       this.#emit("queued", engine, agentId);
       this.#drain();
+      this.#onChange?.();
     });
   }
   /**
@@ -17514,13 +17520,37 @@ var AdmissionController = class {
     for (const entry of waiting) {
       entry.reject(new EngineShutdownError(entry.engine));
     }
+    this.#onChange?.();
   }
+  /**
+   * The account as it stands. Every figure is admission's own counter or
+   * queue entry, so a reader never has to infer a held slot from how far a
+   * worker has got: a slot is taken before its worker starts executing and
+   * given back only after the worker has settled.
+   */
   snapshot() {
+    const waiting = /* @__PURE__ */ new Map();
+    for (const entry of this.#waiting) {
+      waiting.set(entry.agentId, {
+        kind: "admission",
+        gate: this.#gateFor(entry.engine),
+        sinceMs: entry.queuedAtMs
+      });
+    }
     return {
       ceilingActive: this.#ceilingActive,
       engineActive: new Map(this.#engineActive),
-      waiting: this.#waiting.length
+      waiting
     };
+  }
+  /**
+   * The gate holding a waiting worker on `engine`. Once the queue has been
+   * drained, every worker still in it is held by its engine's cap, the
+   * ceiling, or both, so one whose engine has a free slot is held by the
+   * ceiling alone. The engine's cap is named when both hold it.
+   */
+  #gateFor(engine) {
+    return this.#activeFor(engine) >= this.#capFor(engine) ? "engine-cap" : "agent-ceiling";
   }
   #drain() {
     let index = 0;
@@ -17560,6 +17590,7 @@ var AdmissionController = class {
       if (!this.#closed) {
         this.#drain();
       }
+      this.#onChange?.();
     });
   }
   #capFor(engine) {
@@ -17892,6 +17923,7 @@ var DISPOSITION_COUNTER = {
 var RunProgress = class {
   runId;
   #budget;
+  #admission;
   #now;
   #pid;
   #archiveDir = null;
@@ -17911,6 +17943,7 @@ var RunProgress = class {
   constructor(options) {
     this.runId = options.runId;
     this.#budget = options.budget;
+    this.#admission = options.admission;
     this.#now = options.now ?? (() => Date.now());
     this.#pid = options.pid ?? process.pid;
     this.#startedAt = this.#now();
@@ -18072,9 +18105,9 @@ var RunProgress = class {
     this.#touch();
   }
   /**
-   * Records what a live worker is waiting on — a background task its
-   * session started — or that it no longer is (`null`). Last write wins:
-   * the engine reports each change as it observes it.
+   * Records the background task a running worker is waiting on, or that it
+   * no longer waits on one (`null`). Last write wins: the engine reports
+   * each change as it observes it.
    */
   noteAgentWaiting(id, wait) {
     const record = this.#live.get(id);
@@ -18142,7 +18175,10 @@ var RunProgress = class {
     this.#reportedSpend.set(engine, spent);
     this.#touch();
   }
-  /** Refreshes the live snapshot without changing its modelled state. */
+  /**
+   * Refreshes the live snapshot without changing its modelled state: what
+   * a view the snapshot reads (the admission account) calls when it changes.
+   */
   markChanged() {
     this.#touch();
   }
@@ -18177,8 +18213,9 @@ var RunProgress = class {
       totals.cutShort += counters.cutShort;
       totals.unsettled += counters.unsettled;
     }
+    const admission = this.#admission.snapshot();
     return {
-      schema: 4,
+      schema: 5,
       runId: this.runId,
       pid: this.#pid,
       archiveDir: this.#archiveDir,
@@ -18189,6 +18226,7 @@ var RunProgress = class {
       finishedAt: this.#finishedAt,
       currentPhase: this.#currentPhase,
       totals,
+      agentCeiling: { limit: this.#admission.ceiling, active: admission.ceilingActive },
       engines,
       agents: this.#agents(),
       holds: [...this.#openHolds.values()]
@@ -24381,11 +24419,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     this.#strip = options.strip ?? [];
     this.budget = new TokenBudget(options.budgetCeilings);
-    this.progress = new RunProgress({
-      runId: options.runId ?? randomUUID7(),
-      budget: this.budget,
-      ...options.now !== void 0 ? { now: options.now } : {}
-    });
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 36e5;
@@ -24416,7 +24449,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#resourceGate = new EngineResourceGate((engine, cwd) => engines.resourceRequirements(engine, cwd));
     this.#admission = new AdmissionController({
       ceiling: options.agentCeiling ?? null,
-      caps: this.#engineCaps()
+      caps: this.#engineCaps(),
+      // The snapshot reads admission's account each time it is taken, so a
+      // change in that account only has to ask for a fresh one.
+      onChange: () => this.progress.markChanged(),
+      ...options.now !== void 0 ? { now: options.now } : {}
+    });
+    this.progress = new RunProgress({
+      runId: options.runId ?? randomUUID7(),
+      budget: this.budget,
+      admission: this.#admission,
+      ...options.now !== void 0 ? { now: options.now } : {}
     });
     this.#registerEngineCaps();
   }

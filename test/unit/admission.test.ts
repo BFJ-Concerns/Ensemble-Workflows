@@ -62,7 +62,7 @@ test("admission acquires both counters atomically and skips an ineligible waiter
       ["claude", 0],
       ["opencode", 0]
     ]),
-    waiting: 0
+    waiting: new Map()
   });
 });
 
@@ -140,7 +140,7 @@ test("close rejects waiting calls without acquiring their slots", async () => {
   assert.deepEqual(controller.snapshot(), {
     ceilingActive: 1,
     engineActive: new Map([["codex", 1]]),
-    waiting: 0
+    waiting: new Map()
   });
   await assert.rejects(waiting, EngineShutdownError);
   await assert.rejects(sameEngineWaiting, EngineShutdownError);
@@ -154,7 +154,7 @@ test("close rejects waiting calls without acquiring their slots", async () => {
   assert.deepEqual(controller.snapshot(), {
     ceilingActive: 0,
     engineActive: new Map([["codex", 0]]),
-    waiting: 0
+    waiting: new Map()
   });
 });
 
@@ -202,6 +202,40 @@ test("routine ceiling saturation does not emit an anti-starvation skip", async (
   activeGate.resolve(undefined);
   await Promise.all([active, waiting]);
   assert.equal(events.filter((event) => event.kind === "skipped").length, 0);
+});
+
+test("the snapshot names the gate holding each waiting worker, the engine's cap when both limits hold it", async () => {
+  let clock = 1_000;
+  const controller = new AdmissionController({
+    ceiling: 2,
+    caps: caps({ codex: 1, claude: 2 }),
+    now: () => (clock += 1)
+  });
+  const codexGate = deferred<void>();
+  const claudeGate = deferred<void>();
+
+  const codexActive = controller.admit("codex", 1, () => codexGate.promise);
+  const codexWaiting = controller.admit("codex", 2, async () => undefined);
+  // Codex is at its cap and the ceiling still has a slot.
+  assert.deepEqual(controller.snapshot().waiting, new Map([[2, { kind: "admission", gate: "engine-cap", sinceMs: 1_002 }]]));
+
+  const claudeActive = controller.admit("claude", 3, () => claudeGate.promise);
+  const claudeWaiting = controller.admit("claude", 4, async () => undefined);
+  // The ceiling is full now. Worker 2 is held by both limits and still
+  // reads its engine's cap; worker 4's engine has a free slot, so only the
+  // ceiling holds it.
+  assert.equal(controller.snapshot().ceilingActive, 2);
+  assert.deepEqual(
+    controller.snapshot().waiting,
+    new Map([
+      [2, { kind: "admission", gate: "engine-cap", sinceMs: 1_002 }],
+      [4, { kind: "admission", gate: "agent-ceiling", sinceMs: 1_004 }]
+    ])
+  );
+
+  codexGate.resolve(undefined);
+  claudeGate.resolve(undefined);
+  await Promise.all([codexActive, codexWaiting, claudeActive, claudeWaiting]);
 });
 
 function caps(values: Partial<Record<EngineName, number>>): ReadonlyMap<EngineName, number> {

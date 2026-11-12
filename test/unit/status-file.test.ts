@@ -14,7 +14,7 @@ import {
   statusFileName
 } from "../../src/status-file.js";
 
-import type { BudgetView, ProgressSnapshot } from "../../src/progress.js";
+import type { AdmissionView, BudgetView, ProgressSnapshot } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
 
 class StubBudget implements BudgetView {
@@ -27,9 +27,15 @@ class StubBudget implements BudgetView {
   }
 }
 
+/** A run with no ceiling whose admission holds nothing. */
+const idleAdmission: AdmissionView = {
+  ceiling: null,
+  snapshot: () => ({ ceilingActive: 0, waiting: new Map() })
+};
+
 function newProgress(runId = "run-x"): RunProgress {
   let clock = 1_000;
-  const progress = new RunProgress({ runId, budget: new StubBudget(), now: () => (clock += 1) });
+  const progress = new RunProgress({ runId, budget: new StubBudget(), admission: idleAdmission, now: () => (clock += 1) });
   progress.registerEngine("codex", 4);
   progress.registerEngine("claude", 8);
   progress.registerEngine("opencode", 2);
@@ -159,7 +165,7 @@ test("every published snapshot carries the writer's own liveness evidence and th
   try {
     const raw = await waitForFile(writer.path);
     const published = JSON.parse(raw) as { schema: number; owner?: { host: string; pid: number; start_ticks: string | null } };
-    assert.equal(published.schema, 4);
+    assert.equal(published.schema, 5);
     // The pid + start-ticks discipline the archive manifest's owner block
     // uses: a poller refutes a snapshot a killed run left behind instead of
     // trusting cleanup-by-cooperation.

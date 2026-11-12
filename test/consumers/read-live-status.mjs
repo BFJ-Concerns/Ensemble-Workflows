@@ -10,10 +10,10 @@ import { createAcknowledgementWriter } from "./archive-helpers.mjs";
 
 const spec = JSON.parse(await readFile(process.argv[2], "utf8"));
 const agentKeys = ["id", "attempt", "engine", "label", "phase", "state", "startedAtMs", "firstEvidenceAtMs", "lastEvidenceAtMs", "finishedAtMs", "waitingOn", "requestedModel", "requestedEffort", "resolvedModel", "resolvedEffort", "transcript", "worktree", "spent", "failure"].sort();
-// Schema 4 finishes every worker with one of four dispositions, each counted under its own total.
+// Every finished worker carries one of four dispositions, each counted under its own total.
 const finishedCounts = { done: "done", failed: "failed", "cut-short": "cutShort", unsettled: "unsettled" };
 const finishedStates = Object.keys(finishedCounts);
-const snapshotKeys = ["schema", "runId", "pid", "archiveDir", "workflow", "state", "startedAt", "updatedAt", "finishedAt", "currentPhase", "totals", "engines", "agents", "holds", "owner"].sort();
+const snapshotKeys = ["schema", "runId", "pid", "archiveDir", "workflow", "state", "startedAt", "updatedAt", "finishedAt", "currentPhase", "totals", "agentCeiling", "engines", "agents", "holds", "owner"].sort();
 const child = spawn(process.execPath, [spec.bundle, spec.workflow], {
   cwd: spec.cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"]
 });
@@ -52,7 +52,7 @@ try {
       throw error;
     }
     snapshot = current;
-    assert.equal(current.schema, 4);
+    assert.equal(current.schema, 5);
     assert.deepEqual(Object.keys(current).sort(), snapshotKeys);
     assert.match(announcement.run_id, /^cwd:[0-9a-f]{24}:[0-9a-f-]{36}$/);
     assert.equal(current.runId, announcement.run_id.split(":")[2]);

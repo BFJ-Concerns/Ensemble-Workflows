@@ -77,14 +77,23 @@ worker's subtotal at settlement.
 
 ### `ensemble.<run-uuid>.local.json` schema
 
-Schema 4 finishes every worker with one of four dispositions and counts each.
-Schema 3 finished workers as `done` or `failed` only, so a worker the run's
-ending tore down read as failed; schema 2 contains only live workers. Consumers
-must check the schema before interpreting the worker list or the counts.
+Read `schema` before anything else, and do not interpret a file whose number
+you were not built for. A number names exactly one shape: it rises by one with
+any change to what this section declares — a field added, removed or renamed,
+a field's type or meaning changed, or a value added to a set a reader switches
+on, such as a worker's `state`, the `kind` of what it waits on, or the `gate`
+of an admission wait. A run writes the current schema only.
+
+Schema 5 gives a queued worker an admission wait naming the limit holding it,
+and publishes the run-wide agent ceiling; in schema 4 a non-null wait was
+always a background task. Schema 4 finishes every worker with one of four
+dispositions and counts each. Schema 3 finished workers as `done` or `failed`
+only, so a worker the run's ending tore down read as failed; schema 2 contains
+only live workers.
 
 Each status file contains one JSON object with these fields:
 
-- `schema`: `4`.
+- `schema`: `5`.
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
 - `archiveDir`: string or `null`, the run archive directory when published.
@@ -99,6 +108,9 @@ Each status file contains one JSON object with these fields:
 - `currentPhase`: string or `null`.
 - `totals`: object with numeric `active`, `queued`, `done`, `failed`,
   `cutShort`, and `unsettled` counts.
+- `agentCeiling`: object with `limit`, the run-wide agent ceiling as a number,
+  or `null` when the run has none, and numeric `active`, the workers holding a
+  slot under it.
 - `engines`: object keyed by registered engine name (`codex`, `claude`, and
   `opencode`). Each entry has numeric `active`, `queued`, `done`, `failed`,
   `cutShort`, `unsettled`, and `spent`; `cap`, `ceiling`, and `remaining` are
@@ -110,6 +122,13 @@ Each status file contains one JSON object with these fields:
   `phase`, `requestedModel`, `requestedEffort`, `resolvedModel`,
   `resolvedEffort`, `transcript`, and `worktree`; nullable numeric `spent`, `startedAtMs`, `firstEvidenceAtMs`,
   `lastEvidenceAtMs`, and `finishedAtMs`; and nullable `failure` and `waitingOn`.
+
+The agent ceiling's active count and each engine's cap are what admission
+judges a queued worker against. Admission takes a worker's slots just before
+the worker starts running and gives them back just after it settles, so the
+ceiling's active count can briefly be higher than the `active` total, and an
+engine's cap can be full for a moment while its `active` count reads one
+below it. The ceiling's count is kept whether or not the run has a ceiling.
 
 Worker spend is cumulative across attempts and fallback targets; null means
 unobserved, not zero. Identity and paths are producer-supplied evidence, never
@@ -149,11 +168,30 @@ stamps, start time, served identity and transcript; spend and original requested
 identity persist. Same-target retries preserve the evidence stamps and spend
 and clear waitingOn. Each attempt clears its transcript reference until
 publication, and a fresh worker's served identity is unknown until observed.
-Queued and settled workers ignore output observations. waitingOn is null or the
-background-task object described by the engine (taskId, description, sinceMs).
+Queued and settled workers ignore output observations.
 Every worker remains listed until the run ends; neither live nor finished
 entries are evicted or omitted from the snapshot. Finished entries have
 a disposition state and no outstanding wait. Repeated settlement is inert.
+
+waitingOn is null or an object whose kind says what the worker waits on. Every
+kind carries sinceMs, the epoch milliseconds at which the wait began. Which
+kind a worker can carry follows from its state:
+
+A queued worker waits on `"admission"`. Its gate names the limit holding it:
+`"engine-cap"` when its engine has as many workers in flight as its cap
+allows, `"agent-ceiling"` when its engine has a free slot and the run-wide
+agent ceiling is full. A worker both limits hold reads `"engine-cap"`, and
+the ceiling's own figures show that it is full as well. The gate can change
+while the worker waits and sinceMs does not move with it; a fallback step to
+another engine begins a new wait. A queued worker reads null in the moments
+before it has asked for admission.
+
+A running worker waits on `"background-task"`, a task its session started
+and has not yet been woken for, described by its engine with a taskId and a
+description. It reads null while the worker is thinking, and on an engine
+whose sessions cannot background work.
+
+A finished worker waits on nothing.
 
 - `holds`: array of open decision holds, empty when the run is not waiting.
   Each object has string `id`, string `content` (cut to 500 characters plus
@@ -168,7 +206,7 @@ Example:
 
 ```json
 {
-  "schema": 4,
+  "schema": 5,
   "runId": "run-01HZY7V4Q8P2",
   "pid": 43122,
   "archiveDir": null,
@@ -178,12 +216,13 @@ Example:
   "updatedAt": 1766491214500,
   "finishedAt": null,
   "currentPhase": "Verify",
-  "totals": { "active": 1, "queued": 0, "done": 12, "failed": 1, "cutShort": 0, "unsettled": 0 },
+  "totals": { "active": 1, "queued": 1, "done": 12, "failed": 1, "cutShort": 0, "unsettled": 0 },
+  "agentCeiling": { "limit": 1, "active": 1 },
   "engines": {
     "codex": {
       "cap": 12,
       "active": 1,
-      "queued": 0,
+      "queued": 1,
       "done": 8,
       "failed": 0,
       "cutShort": 0,
@@ -238,6 +277,27 @@ Example:
       "spent": null,
       "failure": null,
       "waitingOn": null
+    },
+    {
+      "id": 18,
+      "engine": "codex",
+      "label": "scan",
+      "phase": "Verify",
+      "state": "queued",
+      "attempt": 1,
+      "startedAtMs": null,
+      "firstEvidenceAtMs": null,
+      "lastEvidenceAtMs": null,
+      "finishedAtMs": null,
+      "requestedModel": null,
+      "requestedEffort": null,
+      "resolvedModel": null,
+      "resolvedEffort": null,
+      "transcript": null,
+      "worktree": null,
+      "spent": null,
+      "failure": null,
+      "waitingOn": { "kind": "admission", "gate": "agent-ceiling", "sinceMs": 1766491209100 }
     }
   ],
   "holds": [],

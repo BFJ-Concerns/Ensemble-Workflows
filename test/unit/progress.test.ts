@@ -4,8 +4,8 @@ import test from "node:test";
 
 import { RunProgress, workerDisposition } from "../../src/progress.js";
 
-import type { BudgetView, DispositionEvidence, ShutdownStatus, WorkerDisposition } from "../../src/progress.js";
-import type { EngineName } from "../../src/types.js";
+import type { AdmissionView, BudgetView, DispositionEvidence, ShutdownStatus, WorkerDisposition } from "../../src/progress.js";
+import type { AdmissionWaitSnapshot, EngineName } from "../../src/types.js";
 
 class StubBudget implements BudgetView {
   spentByEngine: Partial<Record<EngineName, number>> = { codex: 0, claude: 0, opencode: 0 };
@@ -21,8 +21,23 @@ class StubBudget implements BudgetView {
   }
 }
 
-function progressAt(clock: () => number, budget: BudgetView = new StubBudget()): RunProgress {
-  const progress = new RunProgress({ runId: "run-1", budget, now: clock, pid: 4242 });
+/** Admission's account as a test sets it; the progress model reads it at each snapshot. */
+class StubAdmission implements AdmissionView {
+  ceiling: number | null = null;
+  ceilingActive = 0;
+  waiting = new Map<number, AdmissionWaitSnapshot>();
+
+  snapshot(): ReturnType<AdmissionView["snapshot"]> {
+    return { ceilingActive: this.ceilingActive, waiting: this.waiting };
+  }
+}
+
+function progressAt(
+  clock: () => number,
+  budget: BudgetView = new StubBudget(),
+  admission: AdmissionView = new StubAdmission()
+): RunProgress {
+  const progress = new RunProgress({ runId: "run-1", budget, admission, now: clock, pid: 4242 });
   progress.registerEngine("codex", 4);
   progress.registerEngine("claude", 8);
   progress.registerEngine("opencode", 2);
@@ -108,6 +123,10 @@ test("documented status file schema stays in sync with progress snapshots", () =
 
   assert.deepEqual(documentedTopLevelFields(section).sort(), sortedKeys(snapshot));
   assert.deepEqual(documentedNestedFields(section, "totals").sort(), sortedKeys(snapshot.totals));
+  assert.deepEqual(
+    documentedNestedFields(section, "agentCeiling").filter((field) => field !== "null").sort(),
+    sortedKeys(snapshot.agentCeiling)
+  );
   assert.deepEqual(["claude", "codex", "opencode"], sortedKeys(snapshot.engines));
   assert.deepEqual(
     documentedNestedFields(section, "engines")
@@ -167,6 +186,32 @@ test("snapshot reflects per-engine budget spend, ceiling, and remaining without 
   // Claude is unbounded: ceiling and remaining both serialise as null, not Infinity.
   assert.equal(snapshot.engines.claude?.ceiling, null);
   assert.equal(snapshot.engines.claude?.remaining, null);
+});
+
+test("the agent ceiling and its active count are admission's own, read afresh at each snapshot", () => {
+  const admission = new StubAdmission();
+  const progress = progressAt(() => 1_000, new StubBudget(), admission);
+  // No ceiling is published as a null limit, never by leaving the field out.
+  assert.deepEqual(progress.snapshot().agentCeiling, { limit: null, active: 0 });
+
+  admission.ceiling = 6;
+  admission.ceilingActive = 6;
+  const id = progress.queueAgent({ engine: "codex", label: null, phase: null });
+  progress.startAgent(id);
+  // Admission's count, not the model's: one worker is executing and six slots are held.
+  assert.equal(progress.snapshot().totals.active, 1);
+  assert.deepEqual(progress.snapshot().agentCeiling, { limit: 6, active: 6 });
+
+  // The model holds no copy: a change in admission's account shows at the
+  // next snapshot, and markChanged is what asks a writer to take one.
+  let changes = 0;
+  progress.onChange(() => {
+    changes += 1;
+  });
+  admission.ceilingActive = 5;
+  progress.markChanged();
+  assert.equal(changes, 1);
+  assert.deepEqual(progress.snapshot().agentCeiling, { limit: 6, active: 5 });
 });
 
 test("noteAttempt updates the live agent's attempt number", () => {
@@ -437,7 +482,7 @@ test("each disposition is published at settlement under its own state and count"
   progress.settleAgent(unsettled, "unsettled", runEnding);
   const snapshot = progress.snapshot();
 
-  assert.equal(snapshot.schema, 4);
+  assert.equal(snapshot.schema, 5);
   assert.deepEqual(snapshot.totals, { active: 0, queued: 0, done: 1, failed: 1, cutShort: 1, unsettled: 1 });
   const counts = (engine: EngineName) => {
     const entry = snapshot.engines[engine];

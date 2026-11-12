@@ -192,7 +192,12 @@ export { classifyAttemptFailure } from "./failure-classification.js";
 export type { AttemptFailureEvidence, FailureClass, FailureClassification } from "./failure-classification.js";
 export { summariseUsage } from "./usage-summary.js";
 export type { UsageSummary } from "./usage-summary.js";
-export type { IsolatedWorktree, IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
+export type {
+  IsolatedWorktree,
+  IsolatedWorktreeRecord,
+  WorktreeIsolationManager,
+  WorktreeState
+} from "./worktree-isolation.js";
 export { NoWorkerScopes, SystemdWorkerScopes, containingSlice, createWorkerScopes, parentSlice, processTree } from "./worker-scopes.js";
 export type { LaunchOptions, ScopePlacement, WorkerScopeGrouping, WorkerScopes } from "./worker-scopes.js";
 export type {

@@ -967,6 +967,7 @@ test("agent record includes resolved placement and the complete worktree outcome
     worktree: {
       branch: "ensemble-workflows/example",
       baseCommit: "0123456789abcdef",
+      state: "committed",
       tipCommit: "fedcba9876543210",
       changed: true,
       removed: false
@@ -985,6 +986,7 @@ test("agent record includes resolved placement and the complete worktree outcome
   assert.deepEqual(agent.worktree, {
     branch: "ensemble-workflows/example",
     base_commit: "0123456789abcdef",
+    state: "committed",
     tip_commit: "fedcba9876543210",
     changed: true,
     removed: false

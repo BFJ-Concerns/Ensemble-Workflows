@@ -267,12 +267,10 @@ class FakeWorktreeManager implements WorktreeIsolationManager {
 
   async finish(worktree: IsolatedWorktree): Promise<IsolatedWorktreeRecord> {
     this.finished.push(worktree);
-    return {
-      ...worktree,
-      tipCommit: `${worktree.baseCommit}-tip`,
-      changed: this.#changed,
-      removed: !this.#changed
-    };
+    const tipCommit = `${worktree.baseCommit}-tip`;
+    return this.#changed
+      ? { ...worktree, state: "committed", tipCommit, changed: true, removed: false }
+      : { ...worktree, state: "unchanged", tipCommit, changed: false, removed: true };
   }
 }
 
@@ -1234,7 +1232,7 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
     defaultMaxAttempts: 1,
     worktreeManager
   });
-  const events: string[] = [];
+  const events: Array<{ method: string; params: unknown }> = [];
   let recordedWorktree: unknown;
   runtime.setRunRecorder({
     recordAttemptStart: ignoreAttemptStart,
@@ -1244,7 +1242,7 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
     }
   } as RunRecordWriter);
   runtime.onEvent((event) => {
-    events.push(event.method);
+    events.push({ method: event.method, params: event.params });
   });
 
   const result = await runtime.agent("write", { engine: "codex", isolation: "worktree" });
@@ -1265,6 +1263,7 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
       path: "/fake/worktree-1",
       branch: "ensemble-workflows/fake-1",
       baseCommit: "fake-base-1",
+      state: "committed",
       tipCommit: "fake-base-1-tip",
       changed: true,
       removed: false
@@ -1277,11 +1276,23 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
   assert.deepEqual(recordedWorktree, {
     branch: "ensemble-workflows/fake-1",
     baseCommit: "fake-base-1",
+    state: "committed",
     tipCommit: "fake-base-1-tip",
     changed: true,
     removed: false
   });
-  assert.deepEqual(events, ["worktree/finished"]);
+  assert.deepEqual(events, [
+    {
+      method: "worktree/finished",
+      params: {
+        path: "/fake/worktree-1",
+        branch: "ensemble-workflows/fake-1",
+        state: "committed",
+        changed: true,
+        removed: false
+      }
+    }
+  ]);
 });
 
 test("one worktree stays open across every retry in one agent call", async () => {
@@ -1337,6 +1348,7 @@ test("a failed worker still finishes and records its changed worktree", async ()
   assert.deepEqual((records.at(-1) as { worktree: unknown }).worktree, {
     branch: "ensemble-workflows/fake-1",
     baseCommit: "fake-base-1",
+    state: "committed",
     tipCommit: "fake-base-1-tip",
     changed: true,
     removed: false
@@ -1383,10 +1395,13 @@ test("a missing worktree path remains discoverable and reports its finalisation 
     message: finalisationError.message
   });
   assert.deepEqual(worktreeManager.finished, [worktree]);
-  assert.deepEqual(runtime.worktrees, [{ ...worktree, tipCommit: null, changed: true, removed: false }]);
+  assert.deepEqual(runtime.worktrees, [
+    { ...worktree, state: "unknown", tipCommit: null, changed: true, removed: false }
+  ]);
   assert.deepEqual(records.at(-1)?.worktree, {
     branch: worktree.branch,
     baseCommit: worktree.baseCommit,
+    state: "unknown",
     tipCommit: null,
     changed: true,
     removed: false
@@ -1440,7 +1455,9 @@ test("a worker error remains primary when worktree finalisation also fails", asy
   // The worker's own failure is the attempt's account; the finalisation
   // failure that followed is reported as its event, not promoted over it.
   assert.equal(records.at(-1)?.attempts.at(-1)?.failure?.message, workerError.message);
-  assert.deepEqual(runtime.worktrees, [{ ...worktree, tipCommit: null, changed: true, removed: false }]);
+  assert.deepEqual(runtime.worktrees, [
+    { ...worktree, state: "unknown", tipCommit: null, changed: true, removed: false }
+  ]);
   assert.equal(records.at(-1)?.worktree?.branch, worktree.branch);
   assert.deepEqual(events, [
     {
@@ -1505,7 +1522,7 @@ test("invocation shutdown completes before worktree finalisation", async () => {
     }),
     finish: async (worktree) => {
       order.push("worktree-finish");
-      return { ...worktree, tipCommit: worktree.baseCommit, changed: false, removed: true };
+      return { ...worktree, state: "unchanged", tipCommit: worktree.baseCommit, changed: false, removed: true };
     }
   };
   const engine: EngineAdapter = {

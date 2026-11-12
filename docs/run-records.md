@@ -739,8 +739,14 @@ The fields present throughout a record's lifetime are:
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).
-- `worktree`: the isolated worktree's `branch`, `base_commit`, `tip_commit`,
-  `changed`, and `removed` — or `null`.
+- `worktree`: the isolated worktree's `branch`, `base_commit`, `state`,
+  `tip_commit`, `changed`, and `removed` — or `null`. `state` is
+  `"unchanged"`, `"uncommitted"`, `"committed"`,
+  `"committed-and-uncommitted"`, or `"unknown"`, as for a script's
+  [`worktrees`](workflow-scripts.md#budget-worktrees-and-args). `state` joined
+  the record within its schema version, so an agent record from an older
+  Ensemble checkout can lack it; read a missing `state` as unrecorded, and
+  rely on `changed` there.
 - `phase`: the explicit agent/session option, or the current run phase set by
   `phase(title)` when the agent or session turn queues; `null` if neither is
   set. Later phase changes do not alter an existing agent record.

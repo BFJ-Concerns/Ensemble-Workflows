@@ -1284,6 +1284,38 @@ test("--timeout above the 32-bit timer bound is a usage error, not a platform su
   assert.match(boundaryStderr.text(), /Could not read workflow script/);
 });
 
+test("invalid --schema identifies its inline or resolved file source before creating a runtime", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-schema-refusal-"));
+  try {
+    await writeFile(path.join(directory, "answer.json"), JSON.stringify({ properties: 42 }));
+    for (const engine of ["codex", "claude"]) {
+      for (const [schema, source, location, remedy] of [
+        ['{"type":123}', "the inline argument", "#/type", /"array", "boolean", "integer", "null", "number", "object", "string"/],
+        ["@answer.json", path.join(directory, "answer.json"), "#/properties", /replace this value with a JSON object/]
+      ] as const) {
+        const stdout = new CaptureStream();
+        const stderr = new CaptureStream();
+        let created = false;
+        const exitCode = await runEnsembleCli(["agent", "--engine", engine, "--schema", schema, "hello"], {
+          cwd: directory,
+          stdout,
+          stderr,
+          createRuntime: async () => { created = true; return fakeRuntime(); }
+        });
+        assert.equal(exitCode, 2);
+        assert.equal(created, false);
+        assert.equal(stdout.text(), "");
+        assert.ok(stderr.text().startsWith(`--schema from ${source}:`), stderr.text());
+        assert.ok(stderr.text().includes(`at ${location}:`), stderr.text());
+        assert.match(stderr.text(), remedy);
+        assert.equal(stderr.text().split("\n").length, 2);
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("ensemble agent reports option mistakes as stack-free usage errors", async () => {
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();

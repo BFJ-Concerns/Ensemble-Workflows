@@ -93,7 +93,7 @@ the prompt.
 | `--engine <engine>` | Required. `codex`, `claude`, or `opencode` |
 | `--model <model>` | Model to run. Required for opencode |
 | `--effort <effort>` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh`; on opencode, one of the model's declared variants |
-| `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed |
+| `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed. A schema Ensemble cannot compile is a usage error (exit 2), naming the inline argument or resolved file path, the invalid location and a correction |
 | `--identity` | Print the identified result `{ label, phase, output, failure }` instead of the bare output |
 | `--max-attempts N` | Attempt bound (default 3), as `maxAttempts` in a script |
 | `--cwd <path>` | Working directory for the worker; must be an existing directory |

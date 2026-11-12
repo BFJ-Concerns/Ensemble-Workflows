@@ -110,6 +110,38 @@ test("an unimplemented dialect is rejected pre-spawn, naming the supported diale
   );
 });
 
+test("malformed schema keywords name their location and an actionable replacement in both dialects", () => {
+  for (const dialect of [undefined, "https://json-schema.org/draft/2020-12/schema"]) {
+    for (const [invalid, location, remedy, repaired] of [
+      [{ type: 123 }, "#/type", /"array", "boolean", "integer", "null", "number", "object", "string"/, { type: "string" }],
+      [{ type: "strng" }, "#/type", /or an array of these type names/, { type: ["string", "null"] }],
+      [{ properties: 42 }, "#/properties", /replace this value with a JSON object/, { properties: {} }],
+      [{ properties: { "a/b": { type: 123 } } }, "#/properties/a~1b/type", /use one of/, { properties: { "a/b": { type: "integer" } } }],
+      [{ required: "name" }, "#/required", /replace this value with a JSON array/, { required: ["name"] }]
+    ] as const) {
+      const schema = { ...invalid, ...(dialect === undefined ? {} : { $schema: dialect }) };
+      assert.throws(() => assertCompilableSchema(schema), (error: unknown) => {
+        assert.ok(error instanceof InvalidAgentSchemaError);
+        assert.ok(error.message.includes(`at ${location}:`), error.message);
+        assert.match(error.message, remedy);
+        assert.doesNotMatch(error.message, /must match a schema in anyOf|data\//);
+        return true;
+      });
+      assert.doesNotThrow(() => assertCompilableSchema({ ...repaired, ...(dialect === undefined ? {} : { $schema: dialect }) }));
+    }
+  }
+});
+
+test("an unresolved schema reference preserves its cause with a correction", () => {
+  assert.throws(() => assertCompilableSchema({ $ref: "#/$defs/missing" }), (error: unknown) => {
+    assert.ok(error instanceof InvalidAgentSchemaError);
+    assert.match(error.message, /can't resolve reference #\/\$defs\/missing/);
+    assert.match(error.message, /ensure every \$ref points to an available schema/);
+    assert.ok(error.cause instanceof Error);
+    return true;
+  });
+});
+
 test("parseJsonFromText extracts direct and wrapped JSON", () => {
   assert.deepEqual(parseJsonFromText("{\"x\":1}"), { value: { x: 1 }, source: "direct" });
   assert.deepEqual(parseJsonFromText("Here: {\"x\":1}"), {

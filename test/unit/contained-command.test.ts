@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import fsPromises, { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
@@ -209,6 +210,64 @@ test("the run's close returns to a command an attempt's stop left running within
     left.child.kill("SIGKILL");
   }
 });
+
+for (const unreadable of ["stat", "listing"] as const) {
+  test(`a process-group stop still escalates when the proc ${unreadable} is unreadable`, async (t) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-contained-unreadable-"));
+    const ready = path.join(dir, "ready");
+    const commands = new CommandContainment(new NoWorkerScopes(), { stopBounds: { stopGraceMs: 1, confirmMs: 1 } });
+    const command = await commands.contain("TERM-resistant worker", "sh", [
+      "-c", 'trap "" TERM; : > "$1"; exec sleep infinity', "sh", ready
+    ], { stdio: ["ignore", "ignore", "ignore"] });
+    const exited = new Promise<void>((resolve) => command.child.once("exit", () => resolve()));
+    const originalReadFile = fsPromises.readFile;
+    const originalReaddir = fsPromises.readdir;
+    const originalKill = process.kill;
+    const signals: NodeJS.Signals[] = [];
+    try {
+      await waitFor(() => originalReadFile(ready).then(() => true, () => false), "the worker to ignore TERM");
+      const denied = Object.assign(new Error(`controlled EACCES reading proc ${unreadable}`), { code: "EACCES" });
+      t.mock.method(fsPromises, "readFile", (...args: Parameters<typeof readFile>) => {
+        if (String(args[0]) === "/proc/1/stat") return Promise.reject(denied);
+        return originalReadFile(...args);
+      });
+      t.mock.method(fsPromises, "readdir", (...args: Parameters<typeof readdir>) => {
+        if (String(args[0]) === "/proc") {
+          if (unreadable === "listing") return Promise.reject(denied);
+          // An unrelated inaccessible entry must not prevent escalation
+          // against the owned group; its order is controlled explicitly.
+          return Promise.resolve(["1"]);
+        }
+        return originalReaddir(...args);
+      });
+      t.mock.method(process, "kill", (pid: number, signal?: NodeJS.Signals | number) => {
+        if (pid === -command.child.pid!) {
+          // Keep group metadata observable after KILL, as with unreaped
+          // zombies. Its membership remains unreadable throughout stop.
+          if (signal === 0) return true;
+          if (typeof signal === "string") signals.push(signal);
+        }
+        return originalKill(pid, signal);
+      });
+      syncBuiltinESMExports();
+      const stop = await command.stop({ stopGraceMs: 1, confirmMs: 1 });
+      assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+      await exited;
+      assert.equal(command.child.signalCode, "SIGKILL", "escalation ends the real TERM-resistant child");
+      assert.equal(stop.outcome.kind, "unconfirmed");
+      assert.match(stop.attemptAccount?.reason ?? "", /controlled EACCES/);
+      await assert.rejects(commands.close(), /controlled EACCES/);
+      assert.deepEqual(signals, ["SIGTERM", "SIGKILL"], "close observes the earlier kill without signalling a reusable group ID again");
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      command.child.kill("SIGKILL");
+      await exited;
+      await commands.close().catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 test("a worker timeout the script handled ends the run complete at exit 0, its unestablished stop on the attempt record and on stderr", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-contained-"));

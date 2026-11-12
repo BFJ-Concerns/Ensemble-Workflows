@@ -513,17 +513,15 @@ async function stopProcessGroup(pgid: number, bounds: StopBounds): Promise<StopO
     return { kind: "stopped" };
   }
   signalGroup(pgid, "SIGTERM");
-  if (await waitUntil(async () => !(await groupLive(pgid)), bounds.stopGraceMs)) {
+  if ((await observeGroupEnd(pgid, bounds.stopGraceMs, `process group ${pgid} outlived SIGTERM`)).kind === "stopped") {
     return { kind: "stopped" };
   }
   signalGroup(pgid, "SIGKILL");
-  if (await waitUntil(async () => !(await groupLive(pgid)), bounds.confirmMs)) {
-    return { kind: "stopped" };
-  }
-  return {
-    kind: "unconfirmed",
-    reason: `process group ${pgid} outlived SIGTERM by ${bounds.stopGraceMs}ms and SIGKILL by ${bounds.confirmMs}ms`
-  };
+  return observeGroupEnd(
+    pgid,
+    bounds.confirmMs,
+    `process group ${pgid} outlived SIGTERM by ${bounds.stopGraceMs}ms and SIGKILL by ${bounds.confirmMs}ms`
+  );
 }
 
 /**
@@ -533,10 +531,25 @@ async function stopProcessGroup(pgid: number, bounds: StopBounds): Promise<StopO
  * group, and a kill already pending on a survivor needs no second one.
  */
 async function processGroupEnded(pgid: number, bounds: StopBounds): Promise<StopOutcome> {
-  if (await waitUntil(async () => !(await groupLive(pgid)), bounds.confirmMs)) {
-    return { kind: "stopped" };
-  }
-  return { kind: "unconfirmed", reason: `process group ${pgid} still held processes at the run's close, after the SIGKILL its attempt's stop sent` };
+  return observeGroupEnd(
+    pgid,
+    bounds.confirmMs,
+    `process group ${pgid} still held processes at the run's close, after the SIGKILL its attempt's stop sent`
+  );
+}
+
+/** Observation failures leave the end unconfirmed, but never interrupt the stop's escalation. */
+async function observeGroupEnd(pgid: number, boundMs: number, stillRunning: string): Promise<StopOutcome> {
+  let observationError: string | null = null;
+  const ended = await waitUntil(async () => {
+    try {
+      return !(await groupLive(pgid));
+    } catch (error) {
+      observationError = `could not observe process group ${pgid}: ${error instanceof Error ? error.message : String(error)}`;
+      return false;
+    }
+  }, boundMs);
+  return ended ? { kind: "stopped" } : { kind: "unconfirmed", reason: observationError ?? stillRunning };
 }
 
 /** Make a stop so that it never rejects: an error raised in making it is an observation that could not be made. */

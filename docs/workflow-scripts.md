@@ -563,9 +563,11 @@ pipes drain for at most one further second after the stop attempt; a descendant
 holding a pipe cannot indefinitely delay the run's teardown report.
 
 Without a reachable user manager, or when scope placement is refused, the
-command runs in its own process group. A process that leaves that group is
-outside Ensemble's reach. An attempt that stops a command there, including at
-its turn deadline, records that uncertainty in `diagnostics.unestablishedStops`
+command runs in its own process group. An unreadable process-membership list
+does not prevent escalation to SIGKILL after the grace period; if the group's
+end still cannot be observed, the stop reports the observation error as
+unconfirmed. A process that leaves that group is outside Ensemble's reach.
+An attempt that stops a command there, including at its turn deadline, records that uncertainty in `diagnostics.unestablishedStops`
 and reports it on stderr. Run and export commands share that attempt account,
 including when an export fails or throws. The attempt still returns its answer
 or consumes a retry as usual; a script that handles its null or a successful

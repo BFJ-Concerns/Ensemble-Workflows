@@ -18410,23 +18410,34 @@ async function stopProcessGroup(pgid, bounds) {
     return { kind: "stopped" };
   }
   signalGroup(pgid, "SIGTERM");
-  if (await waitUntil(async () => !await groupLive(pgid), bounds.stopGraceMs)) {
+  if ((await observeGroupEnd(pgid, bounds.stopGraceMs, `process group ${pgid} outlived SIGTERM`)).kind === "stopped") {
     return { kind: "stopped" };
   }
   signalGroup(pgid, "SIGKILL");
-  if (await waitUntil(async () => !await groupLive(pgid), bounds.confirmMs)) {
-    return { kind: "stopped" };
-  }
-  return {
-    kind: "unconfirmed",
-    reason: `process group ${pgid} outlived SIGTERM by ${bounds.stopGraceMs}ms and SIGKILL by ${bounds.confirmMs}ms`
-  };
+  return observeGroupEnd(
+    pgid,
+    bounds.confirmMs,
+    `process group ${pgid} outlived SIGTERM by ${bounds.stopGraceMs}ms and SIGKILL by ${bounds.confirmMs}ms`
+  );
 }
 async function processGroupEnded(pgid, bounds) {
-  if (await waitUntil(async () => !await groupLive(pgid), bounds.confirmMs)) {
-    return { kind: "stopped" };
-  }
-  return { kind: "unconfirmed", reason: `process group ${pgid} still held processes at the run's close, after the SIGKILL its attempt's stop sent` };
+  return observeGroupEnd(
+    pgid,
+    bounds.confirmMs,
+    `process group ${pgid} still held processes at the run's close, after the SIGKILL its attempt's stop sent`
+  );
+}
+async function observeGroupEnd(pgid, boundMs, stillRunning) {
+  let observationError = null;
+  const ended = await waitUntil(async () => {
+    try {
+      return !await groupLive(pgid);
+    } catch (error) {
+      observationError = `could not observe process group ${pgid}: ${error instanceof Error ? error.message : String(error)}`;
+      return false;
+    }
+  }, boundMs);
+  return ended ? { kind: "stopped" } : { kind: "unconfirmed", reason: observationError ?? stillRunning };
 }
 async function observed(stop) {
   try {

@@ -154,6 +154,8 @@ export type AttemptEnding = "settled" | "refused" | "interrupted" | "timed-out" 
  * worker process existed. Such an attempt spent nothing.
  */
 export const REFUSED_BEFORE_WORKER_KINDS: ReadonlySet<string> = new Set([
+  "SubstrateRefusedError",
+  "ResourcePreflightRefusedError",
   "CodexSubstrateRefusedError",
   "ClaudeDispatchError"
 ]);

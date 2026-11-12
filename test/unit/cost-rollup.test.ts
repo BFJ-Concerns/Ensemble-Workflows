@@ -125,6 +125,26 @@ test("a leaf with no figures names the least certain way its attempts ended", ()
   });
 });
 
+test("all pre-worker refusal kinds book complete absence on every engine", () => {
+  for (const engine of ["codex", "claude", "opencode"] as const) {
+    for (const failureKind of ["SubstrateRefusedError", "ResourcePreflightRefusedError", "CodexSubstrateRefusedError", "ClaudeDispatchError"]) {
+      const refused = attempt(1, { engine, failureKind, resolvedModel: null, tokenUsageEvents: [] });
+      const allRefused = agent(1, [refused, { ...refused, attempt: 2 }]);
+      assert.deepEqual(buildCostRollup([allRefused])[engine]?.unresolved, {
+        tokens: { unavailable: "substrate-never-started" },
+        cost: { unavailable: "no-provider-cost-reported" }, complete: true, unobserved: []
+      }, `${engine}/${failureKind}`);
+      // A refusal cannot turn an earlier worker's missing usage into
+      // evidence that the whole leaf spent nothing.
+      const ran = { ...refused, failureKind: "WorkerFailedError" };
+      const mixed = agent(1, [ran, { ...refused, attempt: 2 }]);
+      assert.deepEqual(buildCostRollup([mixed])[engine]?.unresolved?.unobserved, [
+        { agent: 1, attempt: 1, reason: "engine-reported-no-usage", measured: "none" }
+      ]);
+    }
+  }
+});
+
 test("a live retry with no served identity leaves earlier measured spend complete", () => {
   const rollup = buildCostRollup([agent(1, [
     attempt(1, { failureKind: "empty-output" }),

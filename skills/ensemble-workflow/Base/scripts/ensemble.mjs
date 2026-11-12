@@ -14716,7 +14716,8 @@ var StatusFileWriter = class {
   #procDir;
   constructor(options) {
     this.#progress = options.progress;
-    this.#target = path2.join(options.dir, statusFileName(options.progress.runId));
+    const directory = path2.resolve(options.dir);
+    this.#target = path2.join(directory, statusFileName(options.progress.runId));
     this.#onError = options.onError;
     this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
     const procDir = options.procDir ?? "/proc";
@@ -14729,9 +14730,9 @@ var StatusFileWriter = class {
     const fileOperations = this.#fileOperations;
     this.#initialSweep = (async () => {
       if (options.createDirectory === true) {
-        await fileOperations.mkdir(options.dir, { recursive: true });
+        await fileOperations.mkdir(directory, { recursive: true });
       }
-      await this.#sweepDeadRuns(options.dir);
+      await this.#sweepDeadRuns(directory);
       return true;
     })().catch((error) => {
       this.#reportError(error);
@@ -15912,6 +15913,8 @@ function leafTokenAbsence(unobserved) {
   return TOKEN_ABSENCE_PRECEDENCE.find((reason) => unobserved.some((entry) => entry.reason === reason)) ?? "substrate-never-started";
 }
 var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
+  "SubstrateRefusedError",
+  "ResourcePreflightRefusedError",
   "CodexSubstrateRefusedError",
   "ClaudeDispatchError"
 ]);
@@ -34811,11 +34814,7 @@ async function runEnsembleCli(argv, options = {}) {
   } catch (error) {
     const status = error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
     terminalError = error instanceof SingleAgentFailedError && error.failure !== null ? error.failure : describeError(error);
-    const partial = partialResult(runtime, status, terminalError);
-    const serialised = serialiseResult(partial);
-    stdout.write(`${serialised}
-`);
-    finalRecord = { status, exitCode: error instanceof WorkflowInterruptedError ? error.exitCode : 1, result: JSON.parse(serialised) };
+    finalRecord = { status, exitCode: error instanceof WorkflowInterruptedError ? error.exitCode : 1, result: null };
     const diagnosis = presentTerminalError(error, {
       archiveDir: runRecordWriter?.archiveDir ?? null,
       lastAgentRecord: runtime?.lastAgentRecord?.() ?? null
@@ -34847,6 +34846,12 @@ async function runEnsembleCli(argv, options = {}) {
         teardownError = describeError(error);
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError2(error)}
 `);
+      }
+      if (finalRecord !== null && finalRecord.status !== "complete" && terminalError !== null) {
+        const serialised = serialiseResult(partialResult(runtime, finalRecord.status, terminalError));
+        stdout.write(`${serialised}
+`);
+        finalRecord.result = JSON.parse(serialised);
       }
       if (statusWriter !== null) {
         await statusWriter.close();

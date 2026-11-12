@@ -38,8 +38,9 @@ entry. Explicit status directories must already exist. Writes
 are atomic, so a reader never sees a half-written file.
 
 After the first successful write and before workflow execution, the CLI prints
-`[status-file] {"run_id":…, "status_path":…}` on stderr. A supervisor can
-follow that path without knowing the working directory's layout or searching
+`[status-file] {"run_id":…, "status_path":…}` on stderr. `status_path` is
+absolute, including when `XDG_DATA_HOME` or `ENSEMBLE_STATUS_DIR` is relative.
+A supervisor can follow that path without knowing the working directory's layout or searching
 the archive. Its `run_id` is the public `cwd:<namespace-hash>:<run-uuid>`
 identity, identical to the archive announcement and manifest when recording is
 on, and namespaced the same way when recording is off. The snapshot's `runId`
@@ -663,8 +664,11 @@ handle. A run killed before it seals can have no result file. Its fields are:
 A partial-result envelope has `partial: true`, `reason` (`"failed"`,
 `"timed-out"`, or `"interrupted"`), `error` (`{ kind, message }`), and
 `completed`: an array of `{ id, engine, label, phase, output }` for workers
-that finished successfully, in completion order. `label` and `phase` can be
-`null`; `output` is the worker's validated value or text. The script's
+that finished successfully, in completion order, including those that settled
+during teardown on any engine. The CLI prints this envelope after worker
+teardown, so it includes the same successful workers the sentinel counts.
+`label` and `phase` can be `null`; `output` is the worker's validated value or
+text. The script's
 unfinished return value cannot be recovered from this envelope. A teardown
 failure after a successful body can leave that body's value in `value` while
 `status`, `exit_code` and `error` report the teardown failure. Use those
@@ -817,7 +821,8 @@ The fields present throughout a record's lifetime are:
   `in-progress`, or was abandoned after its run was killed — so the attempt
   in flight and its spend are unobserved), `"no-attempt-ran"`,
   `"substrate-never-started"` (every attempt was refused before a worker
-  existed), `"worker-interrupted"` or `"worker-timed-out"` (the run cut the
+  existed, including a resource-preflight refusal), `"worker-interrupted"` or
+  `"worker-timed-out"` (the run cut the
   worker short before usage was reported), or `"engine-reported-no-usage"`
   (a settled worker supplied no usage). Any usage the engine did report,
   including zero tokens, is retained as a summary instead of an absence reason.

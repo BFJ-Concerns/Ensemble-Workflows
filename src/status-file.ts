@@ -153,7 +153,8 @@ export class StatusFileWriter {
 
   constructor(options: StatusFileWriterOptions) {
     this.#progress = options.progress;
-    this.#target = path.join(options.dir, statusFileName(options.progress.runId));
+    const directory = path.resolve(options.dir);
+    this.#target = path.join(directory, statusFileName(options.progress.runId));
     this.#onError = options.onError;
     this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
     const procDir = options.procDir ?? "/proc";
@@ -166,9 +167,9 @@ export class StatusFileWriter {
     const fileOperations = this.#fileOperations;
     this.#initialSweep = (async () => {
       if (options.createDirectory === true) {
-        await fileOperations.mkdir(options.dir, { recursive: true });
+        await fileOperations.mkdir(directory, { recursive: true });
       }
-      await this.#sweepDeadRuns(options.dir);
+      await this.#sweepDeadRuns(directory);
       return true;
     })().catch((error) => {
       this.#reportError(error);

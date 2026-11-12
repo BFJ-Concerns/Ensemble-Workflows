@@ -1851,7 +1851,11 @@ test("a tool-surface probe fixes its provider route in settings, carries deny ru
     CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0"
   } });
   try {
-    const surface = await plane.probeToolSurface({ cwd: dir, permissionDenyRules: ["Agent"], settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_USE_VERTEX: "1", CLAUDE_CODE_USE_FOUNDRY: "1" }, signal: AbortSignal.timeout(10_000) });
+    const surface = await plane.probeToolSurface({ cwd: dir, lean: true, permissionDenyRules: ["Agent"], settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_USE_VERTEX: "1", CLAUDE_CODE_USE_FOUNDRY: "1" }, signal: AbortSignal.timeout(10_000) });
+    const leanArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+    const leanFlag = leanArgv.indexOf("--safe-mode");
+    assert.notEqual(leanFlag, -1);
+    assert.deepEqual(leanArgv.slice(leanFlag, leanFlag + LEAN_START_FLAGS.length), [...LEAN_START_FLAGS]);
     assert.equal(surface.cliVersion, "2.1.fixture");
     assert.deepEqual(surface.tools, [{ name: "Read", exposure: "loaded" }]);
     assert.equal(await readFile(actionsPath, "utf8"), "stop\nrm\n");
@@ -1862,6 +1866,8 @@ test("a tool-surface probe fixes its provider route in settings, carries deny ru
     assert.equal(settings[0]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "1");
     assert.deepEqual(settings[0]?.permissions?.deny, ["Agent"]);
     const handle = await plane.dispatch({ cwd: dir, name: "unstripped", prompt: "ordinary" });
+    const ordinaryArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+    assert.equal(ordinaryArgv.includes("--safe-mode"), false);
     await plane.stop(handle);
     assert.equal(settings[1]?.env.ANTHROPIC_BASE_URL, "https://worker.invalid");
     assert.equal(settings[1]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "0");

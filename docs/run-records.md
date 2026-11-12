@@ -783,6 +783,7 @@ The fields present throughout a record's lifetime are:
   expansion is not covered: a leading `/skill` line can still load a skill.
 - `lean`: `{ requested: true, route, detail }` for a lean worker, recording
   the dispatching engine's route, or `null` when no lean start was requested.
+  A missing `lean` field means the context mode is unrecorded.
 - `session`: the held session's run-scoped id and this record's turn number,
   or `null` for a one-shot call.
 - `transcript_capture`: what the engine's capture path observed for this turn —

@@ -24744,7 +24744,7 @@ var ClaudeEngineAdapter = class {
   /** Safe mode preserves native tools, authentication and permissions while disabling custom context. */
   leanStart = {
     route: "config",
-    detail: "claude --bg --safe-mode disables custom instructions, skills, plugins and MCP servers; native tools, authentication, permissions and per-dispatch settings remain enabled"
+    detail: "claude --bg --safe-mode disables custom instructions (including project instructions), installed skills, plugins, hooks and configured MCP servers; native tools and skills, authentication, permissions and per-dispatch settings remain enabled"
   };
   #scheduler;
   #cwd;

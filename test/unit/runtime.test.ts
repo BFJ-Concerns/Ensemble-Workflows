@@ -5808,3 +5808,77 @@ test("a lean fallback records and dispatches its own route while retaining lean 
     assert.deepEqual(runtime.lastAgentRecord()?.lean, { requested: true, route: "config", detail: "fallback route" });
   } finally { await runtime.close(); }
 });
+
+
+for (const held of [false, true]) {
+  test(`${held ? "held" : "one-shot"} strip preparation receives the effective lean context`, async () => {
+    const contexts: Array<{ lean?: boolean }> = [];
+    const engine: EngineAdapter = {
+      name: "claude", concurrency: 1,
+      leanStart: { route: "config", detail: "safe mode" },
+      capabilities: { skills: { route: "config", detail: "test strip" }, agents: { route: "config", detail: "test strip" } },
+      prepareStrip: async (requested, context) => {
+        contexts.push(context);
+        return { engine: "claude", requested, enforcement: { skills: { route: "config", detail: "prepared" } } };
+      },
+      schedule: async task => task(),
+      createInvocation: () => ({ runAttempt: async () => turn("done") }),
+      createSession: () => ({ beginTurn: () => ({ runAttempt: async () => turn("done") }), close: async () => {} }),
+      close: async () => {}
+    };
+    const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1, lean: true });
+    try {
+      const options = { engine: "claude" as const, lean: false, strip: ["skills" as const] };
+      if (held) {
+        const session = runtime.createWorkerSession(options);
+        assert.equal(await session.send("first"), "done");
+        assert.equal(await session.send("second"), "done");
+        await session.close();
+      } else {
+        assert.equal(await runtime.agent("go", options), "done");
+      }
+      assert.equal(contexts.length, 1);
+      assert.equal(contexts[0]?.lean, true);
+    } finally { await runtime.close(); }
+  });
+}
+
+test("a lean held session refuses an unsupported fallback before creating a worker", async () => {
+  const claude = Object.assign(new SessionEngine("claude", []), {
+    leanStart: { route: "config" as const, detail: "primary route" }
+  });
+  const codex = new SessionEngine("codex", []);
+  const { runtime, records } = chainRuntime([claude, codex], 1);
+  try {
+    assert.throws(() => runtime.createWorkerSession({
+      engine: "claude", lean: true, fallback: [{ engine: "codex", model: "test" }]
+    }), LeanStartUnsupportedError);
+    assert.deepEqual(claude.sessionsCreated, []);
+    assert.deepEqual(codex.sessionsCreated, []);
+    assert.deepEqual(records, []);
+  } finally { await runtime.close(); }
+});
+
+test("a lean held session retains its fallback context route on later turns", async () => {
+  const claude = Object.assign(new SessionEngine("claude", [claudeRefusal(429, "rate_limit_error")]), {
+    leanStart: { route: "config" as const, detail: "primary route" }
+  });
+  const codex = Object.assign(new SessionEngine("codex", [answers("first"), answers("second")]), {
+    leanStart: { route: "config" as const, detail: "fallback route" }
+  });
+  const { runtime, records } = chainRuntime([claude, codex], 1);
+  const session = runtime.createWorkerSession({
+    engine: "claude", lean: true, fallback: [{ engine: "codex", model: "test" }]
+  });
+  try {
+    assert.equal(await session.send("first"), "first");
+    assert.equal(await session.send("second"), "second");
+    const complete = records.filter(record => record.status === "complete");
+    assert.equal(complete.length, 2);
+    for (const record of complete) {
+      assert.equal(record.session?.id, complete[0]?.session?.id);
+      assert.deepEqual(record.lean, { requested: true, route: "config", detail: "fallback route" });
+    }
+    assert.equal(codex.sessionsCreated.length, 1);
+  } finally { await runtime.close(); }
+});

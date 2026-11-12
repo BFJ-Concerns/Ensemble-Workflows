@@ -634,11 +634,15 @@ says so.
 ### Claude dispatch
 
 Claude workers use `--dangerously-skip-permissions`. Before the first
-dispatch, run `claude --dangerously-skip-permissions` interactively and accept
-the bypass-permissions disclaimer in the Claude configuration home the
-workers will use. This is a one-time prerequisite for that home; a fresh or
+dispatch, run `CLAUDE_CONFIG_DIR='/absolute/claude-home' claude
+--dangerously-skip-permissions` interactively and accept the bypass-permissions
+disclaimer. Use the resolved configuration home the workers will use:
+`CLAUDE_CONFIG_DIR`, resolved from the launcher's working directory if relative,
+or `$HOME/.claude` from the worker environment when unset or empty. This is a
+one-time prerequisite for that home; a fresh or
 isolated Claude configuration home needs its own acceptance. Ensemble does
-not accept the disclaimer on your behalf.
+not accept the disclaimer on your behalf. A dispatch refused for missing
+consent names that resolved home and gives an interactive command scoped to it.
 
 Every Claude worker is launched with `CLAUDE_CODE_SANDBOXED` set, which tells
 Claude Code to skip its per-directory trust prompt. Once the bypass disclaimer

@@ -109,6 +109,12 @@ target and never advance the chain.
 - A step to the same engine keeps its concurrency slot; a step to another
   engine releases it and is admitted again under that engine's cap and
   budget.
+- Codex targets share one app-server for the run. Ensemble does not restart
+  it after it dies: a later Codex entry cannot answer that failure, even if
+  it names another model or follows an intervening engine. A declaration
+  that repeats Codex warns on stderr. Same-engine fallback can still recover
+  from a model's allowance or provider refusal while the app-server lives;
+  use another engine for recovery from its death.
 - A chain whose every target refuses fails with the last target's own
   failure.
 - An empty or malformed chain, an opencode entry, or an engine the run does

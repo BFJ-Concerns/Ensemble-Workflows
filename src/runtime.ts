@@ -843,6 +843,7 @@ export class EnsembleRuntime {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
     }
+    this.#warnSharedSubstrateFallback(engine.name, options);
     if (engine instanceof OpenCodeEngineAdapter) {
       if (options.model === undefined) {
         throw new OpenCodeModelRequiredError(engine.modelRegistry);
@@ -1002,6 +1003,7 @@ export class EnsembleRuntime {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
     }
+    this.#warnSharedSubstrateFallback(engine.name, options);
     const sessionOptions = strip.length > 0 ? { ...options, strip } : options;
 
     this.#sessionCounter += 1;
@@ -2813,6 +2815,22 @@ export class EnsembleRuntime {
     return classifyAttemptFailure({ engine, failure, appServerDiagnostic, diagnostics });
   }
 
+
+  /** A repeated Codex target shares the app-server, even across an intervening engine. */
+  #warnSharedSubstrateFallback(engine: EngineName, options: Partial<AgentOptions>): void {
+    let seenCodex = engine === "codex";
+    for (const [entry, target] of (options.fallback ?? []).entries()) {
+      if (target.engine !== "codex") continue;
+      if (seenCodex) {
+        this.#emitEvent({
+          method: "codex/sharedSubstrateFallback",
+          params: { entry, label: options.label ?? null },
+          receivedAt: Date.now()
+        });
+      }
+      seenCodex = true;
+    }
+  }
 
   #emitEvent(event: RuntimeEvent): void {
     for (const listener of this.#eventListeners) {

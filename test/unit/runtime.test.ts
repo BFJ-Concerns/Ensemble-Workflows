@@ -54,6 +54,7 @@ import type {
   EngineName,
   JsonSchema,
   RuntimeTransport,
+  RuntimeEvent,
   ThreadStartOptions,
   TurnResult,
   TurnStartOptions
@@ -3690,6 +3691,39 @@ test("attempt records distinguish absent output from an empty worker answer acro
   }
 
   assert.deepEqual(observed, cases.map(({ engine, expected }) => ({ engine, attempt: expected, agent: expected })));
+});
+
+test("repeated Codex fallback declarations warn for calls and held sessions", async () => {
+  for (const held of [false, true]) {
+    for (const primary of ["codex", "claude"] as const) {
+      const { runtime } = chainRuntime([
+        new SessionChainEngine("codex", [answers("answer"), answers("again")]),
+        new SessionChainEngine("claude", [answers("answer"), answers("again")])
+      ], 1);
+      const events: RuntimeEvent[] = [];
+      runtime.onEvent(event => events.push(event));
+      const options = {
+        engine: primary, label: "scan",
+        fallback: [{ engine: "codex" as const, model: "first" },
+          { engine: "claude" as const, model: "other" },
+          { engine: "codex" as const, model: "last" }]
+      };
+      try {
+        if (held) {
+          const session = runtime.createWorkerSession(options);
+          await session.send("work");
+          await session.send("more work");
+          await session.close();
+        } else {
+          await runtime.agent("work", options);
+        }
+        assert.deepEqual(events.filter(event => event.method === "codex/sharedSubstrateFallback").map(event => event.params),
+          (primary === "codex" ? [0, 2] : [2]).map(entry => ({ entry, label: "scan" })));
+      } finally {
+        await runtime.close();
+      }
+    }
+  }
 });
 
 test("an availability refusal advances the chain to the next target on the same engine, costing no attempt", async () => {

@@ -503,6 +503,12 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         }
         return;
       }
+      if (event.method === "codex/sharedSubstrateFallback") {
+        const entry = typeof event.params.entry === "number" ? event.params.entry : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        stderr.write(`[codex] fallback entry ${entry}${label} shares the run's app-server — it cannot answer after that substrate dies; Ensemble does not restart it within the run. Use a different engine to recover from substrate death\n`);
+        return;
+      }
       if (event.method === "claude/unpinnedModel") {
         const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";

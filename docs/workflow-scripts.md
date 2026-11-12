@@ -109,6 +109,12 @@ target and never advance the chain.
 - A step to the same engine keeps its concurrency slot; a step to another
   engine releases it and is admitted again under that engine's cap and
   budget.
+- Codex targets share one app-server for the run. Ensemble does not restart
+  it after it dies: a later Codex entry cannot answer that failure, even if
+  it names another model or follows an intervening engine. A declaration
+  that repeats Codex warns on stderr. Same-engine fallback can still recover
+  from a model's allowance or provider refusal while the app-server lives;
+  use another engine for recovery from its death.
 - A chain whose every target refuses fails with the last target's own
   failure.
 - An empty or malformed chain, an opencode entry, or an engine the run does
@@ -369,7 +375,11 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   The agent record's enforcement detail names the deny rules and `env`
   variables, the Claude Code version that was probed, and which tools were
   denied or left in place. For `skills`, it also states this follow-up boundary.
-- **opencode** rejects any strip before the worker spawns.
+- **opencode** rejects any strip before the worker spawns. Its permission
+  overlay was inspected on opencode 1.18.4: `OPENCODE_CONFIG_CONTENT` merged
+  `permission.skill=deny` and `permission.task=deny`, but the live workers
+  timed out before demonstrating that these denies took effect. This is
+  historical configuration evidence, not proof about the installed version.
 
 Each agent record lists the requested strips and how each was enforced.
 

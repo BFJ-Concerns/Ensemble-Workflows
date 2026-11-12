@@ -24821,25 +24821,15 @@ var ClaudeEngineAdapter = class {
 var OpenCodeEngineAdapter = class {
   name = "opencode";
   concurrency;
-  /**
-   * Measured 2026-08-27 against opencode 1.18.4: its schema exposes
-   * `permission.task` and `permission.skill`, and
-   * `OPENCODE_CONFIG_CONTENT` is a per-process merge overlay. The surface
-   * measurement is not worker-boundary proof, though: the available live
-   * dispatches timed out before producing output, so this unit has not shown
-   * that either explicit deny stops a worker. Both capabilities therefore
-   * fail loud pre-spawn rather than dispatch a worker under a restriction the
-   * author believes is in force. A successful deny witness re-opens this
-   * judgement.
-   */
+  /** A strip refuses before dispatch until its worker-boundary enforcement is established. */
   capabilities = {
     skills: {
       route: "unsupported",
-      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.skill=deny, but worker-boundary enforcement is unproven"
+      detail: "worker-boundary enforcement of permission.skill=deny through OPENCODE_CONFIG_CONTENT is unproven"
     },
     agents: {
       route: "unsupported",
-      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.task=deny, but worker-boundary enforcement is unproven"
+      detail: "worker-boundary enforcement of permission.task=deny through OPENCODE_CONFIG_CONTENT is unproven"
     }
   };
   leanStart = {
@@ -25439,6 +25429,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
+    this.#warnSharedSubstrateFallback(engine.name, options);
     if (engine instanceof OpenCodeEngineAdapter) {
       if (options.model === void 0) {
         throw new OpenCodeModelRequiredError(engine.modelRegistry);
@@ -25571,6 +25562,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
+    this.#warnSharedSubstrateFallback(engine.name, options);
     const sessionOptions = strip.length === 0 && !lean ? options : withOptionOverrides(options, { ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} });
     this.#sessionCounter += 1;
     const state = {
@@ -27002,6 +26994,21 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /** One classification call for every failed attempt, so the archive's class always came from the same table. */
   #classify(engine, failure, appServerDiagnostic, diagnostics) {
     return classifyAttemptFailure({ engine, failure, appServerDiagnostic, diagnostics });
+  }
+  /** A repeated Codex target shares the app-server, even across an intervening engine. */
+  #warnSharedSubstrateFallback(engine, options) {
+    let seenCodex = engine === "codex";
+    for (const [entry, target] of (options.fallback ?? []).entries()) {
+      if (target.engine !== "codex") continue;
+      if (seenCodex) {
+        this.#emitEvent({
+          method: "codex/sharedSubstrateFallback",
+          params: { entry, label: options.label ?? null },
+          receivedAt: Date.now()
+        });
+      }
+      seenCodex = true;
+    }
   }
   #emitEvent(event) {
     for (const listener of this.#eventListeners) {
@@ -34501,10 +34508,24 @@ async function runEnsembleCli(argv, options = {}) {
     const runtimeRunId = progress?.runId ?? "unknown-run";
     const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
     if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
-      const sentinelPath = await sentinel.prepare(
-        { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
-        reportSentinelError
-      );
+      let sentinelPath = null;
+      try {
+        if (!recordingEnabled) {
+          await judgeResources(launcherResourceRequirements(
+            sentinelStoreDir,
+            options.runRecordDir !== void 0,
+            ambientSettings,
+            env,
+            "completion sentinel store"
+          ), env);
+        }
+        sentinelPath = await sentinel.prepare(
+          { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
+          reportSentinelError
+        );
+      } catch (error) {
+        reportSentinelError(new Error(`no sentinel will be written for this run \u2014 ${presentOperationalError(error) ?? formatError2(error)}`));
+      }
       if (sentinelPath !== null) {
         stderr.write(`[sentinel] will write ${sentinelPath} when the run ends
 `);
@@ -34600,6 +34621,13 @@ async function runEnsembleCli(argv, options = {}) {
           stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement recovered in ${boundedEvidence(String(event.params.unit ?? "unknown scope"))}
 `);
         }
+        return;
+      }
+      if (event.method === "codex/sharedSubstrateFallback") {
+        const entry = typeof event.params.entry === "number" ? event.params.entry : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        stderr.write(`[codex] fallback entry ${entry}${label} shares the run's app-server \u2014 it cannot answer after that substrate dies; Ensemble does not restart it within the run. Use a different engine to recover from substrate death
+`);
         return;
       }
       if (event.method === "claude/unpinnedModel") {
@@ -34925,18 +34953,18 @@ async function prepareRun(invocation, cwd) {
     recordArgs: invocation.args
   };
 }
-function launcherResourceRequirements(recordDir, injectedRecordDir, settings, env) {
+function launcherResourceRequirements(recordDir, injectedRecordDir, settings, env, role = "run record store") {
   if (recordDir === null || recordDir.length === 0) {
     return [];
   }
-  const layer = settings.runRecordDir.layer;
+  const layer = settings.runRecordStoreDir.layer;
   const setting = injectedRecordDir ? "the runRecordDir option" : layer === "config-file" ? `run_record.dir in ${settings.configFile}` : RUN_RECORD_DIR_ENV;
   const directory = !injectedRecordDir && layer === "default" ? defaultDirectory(
     { rule: "$XDG_DATA_HOME/ensemble (else ~/.local/share/ensemble)", movedBy: RUN_RECORD_DIR_ENV },
     env.XDG_DATA_HOME ? readSetting("XDG_DATA_HOME", env.XDG_DATA_HOME, process.cwd()) : path19.join(homedir5(), ".local", "share"),
     "ensemble"
   ) : declaredDirectory(readSetting(setting, recordDir, process.cwd()));
-  return [{ owner: "launcher", role: "run record store", access: "create-entries", ...directory }];
+  return [{ owner: "launcher", role, access: "create-entries", ...directory }];
 }
 function singleAgentWorkflowSource(invocation) {
   const meta = {

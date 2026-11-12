@@ -293,6 +293,9 @@ exception that lands while the archive is being sealed is reflected only in
 the sentinel and the process's exit code.
 
 The launcher checks its own required record store before accepting the run.
+With recording off, an unavailable sentinel store produces one diagnostic
+and the run continues without a sentinel. An identified caller sandbox is
+named with its remedy in either diagnostic.
 Engine homes and scratch directories are checked just before that engine's
 first attempt, because a script's engines are known only as it runs; a new
 worker placement with different resolved resources is checked separately.

@@ -406,10 +406,22 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // library caller opting out of the store entirely — and skips the
     // sentinel with it.
     if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
-      const sentinelPath = await sentinel.prepare(
-        { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
-        reportSentinelError
-      );
+      let sentinelPath: string | null = null;
+      try {
+        // Recording-on runs already judged this store before acceptance.
+        // The optional sentinel still needs that diagnosis when recording
+        // is off, but its unavailable store must never refuse the run.
+        if (!recordingEnabled) {
+          await judgeResources(launcherResourceRequirements(sentinelStoreDir, options.runRecordDir !== undefined,
+            ambientSettings, env, "completion sentinel store"), env);
+        }
+        sentinelPath = await sentinel.prepare(
+          { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
+          reportSentinelError
+        );
+      } catch (error) {
+        reportSentinelError(new Error(`no sentinel will be written for this run — ${presentOperationalError(error) ?? formatError(error)}`));
+      }
       if (sentinelPath !== null) {
         // The interrupt watch is already armed, so the published path is
         // honoured on every signal from the moment it is announced.
@@ -503,6 +515,12 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         } else if (event.params.kind === "placed") {
           stderr.write(`[claude] worker ${name} (pid ${pid}) scope placement recovered in ${boundedEvidence(String(event.params.unit ?? "unknown scope"))}\n`);
         }
+        return;
+      }
+      if (event.method === "codex/sharedSubstrateFallback") {
+        const entry = typeof event.params.entry === "number" ? event.params.entry : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        stderr.write(`[codex] fallback entry ${entry}${label} shares the run's app-server — it cannot answer after that substrate dies; Ensemble does not restart it within the run. Use a different engine to recover from substrate death\n`);
         return;
       }
       if (event.method === "claude/unpinnedModel") {
@@ -1019,19 +1037,20 @@ function launcherResourceRequirements(
   recordDir: string | null,
   injectedRecordDir: boolean,
   settings: AmbientSettings,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  role = "run record store"
 ): ResourceRequirement[] {
   if (recordDir === null || recordDir.length === 0) {
     return [];
   }
-  const layer = settings.runRecordDir.layer;
+  const layer = settings.runRecordStoreDir.layer;
   const setting = injectedRecordDir ? "the runRecordDir option"
     : layer === "config-file" ? `run_record.dir in ${settings.configFile}` : RUN_RECORD_DIR_ENV;
   const directory = !injectedRecordDir && layer === "default"
     ? defaultDirectory({ rule: "$XDG_DATA_HOME/ensemble (else ~/.local/share/ensemble)", movedBy: RUN_RECORD_DIR_ENV },
       env.XDG_DATA_HOME ? readSetting("XDG_DATA_HOME", env.XDG_DATA_HOME, process.cwd()) : path.join(homedir(), ".local", "share"), "ensemble")
     : declaredDirectory(readSetting(setting, recordDir, process.cwd()));
-  return [{ owner: "launcher", role: "run record store", access: "create-entries", ...directory }];
+  return [{ owner: "launcher", role, access: "create-entries", ...directory }];
 }
 
 function singleAgentWorkflowSource(invocation: ParsedAgentInvocation): string {

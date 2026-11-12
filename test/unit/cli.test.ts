@@ -3813,6 +3813,34 @@ async function runChainScript(
   return { exitCode, stdout: stdout.text(), stderr: stderr.text() };
 }
 
+test("a repeated Codex declaration warns that fallback cannot recover a dead app-server", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fallback-warning-"));
+  try {
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, `
+      export const meta = { name: "shared-substrate-warning" };
+      return await agent("work", { engine: "codex", model: "first", label: "scan",
+        fallback: [{ engine: "codex", model: "second" }] });
+    `);
+    const stderr = new CaptureStream();
+    const stdout = new CaptureStream();
+    const exit = await runEnsembleCli([script], {
+      cwd: directory, stdout, stderr, runRecordDir: null, statusDir: null,
+      createRuntime: async () => new EnsembleRuntime({
+        defaultMaxAttempts: 1,
+        engines: new EngineRegistry([new ChainEngine("codex", [async () => turn("answer")])])
+      })
+    });
+    assert.equal(exit, 0, stderr.text());
+    assert.equal(stdout.text(), '"answer"\n');
+    assert.match(stderr.text(), /\[codex\] fallback entry 0 \(scan\) shares the run's app-server/);
+    assert.match(stderr.text(), /cannot answer after that substrate dies; Ensemble does not restart it within the run/);
+    assert.match(stderr.text(), /Use a different engine/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("an answer from a fallback entry is announced naming the refused declared target and its bounded refusal", async () => {
   const result = await runChainScript(
     `
@@ -4683,6 +4711,41 @@ test("relative record stores use the launcher directory for preflight, archive a
       assert.ok(refusedErr.text().includes(`${setting}=${JSON.stringify(relativeStore)}; relative to ${process.cwd()}`), refusedErr.text());
       assert.ok(refusedErr.text().includes(`set ${setting} to a writable directory`), refusedErr.text());
       assert.doesNotMatch(refusedErr.text(), /sandbox/);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("an identified sandbox gets one store diagnosis before any raw sentinel failure", { skip: process.platform !== "linux" }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-sandbox-sentinel-"));
+  try {
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "sandbox-sentinel" }; return "complete";');
+    for (const recording of [true, false]) {
+      const stderr = new CaptureStream();
+      const stdout = new CaptureStream();
+      const exit = await runEnsembleCli([script], {
+        cwd: directory, stdout, stderr, statusDir: null,
+        env: {
+          XDG_CONFIG_HOME: directory, ENSEMBLE_RUN_RECORD: recording ? "1" : "0",
+          ENSEMBLE_RUN_RECORD_DIR: `/sys/ensemble-sentinel-${process.pid}`,
+          CODEX_SANDBOX_NETWORK_DISABLED: "1"
+        },
+        createRuntime: async () => fakeRuntime()
+      });
+      assert.equal(exit, recording ? 2 : 0, stderr.text());
+      const lines = stderr.text().trim().split("\n");
+      assert.equal(lines.length, 1, stderr.text());
+      assert.match(lines[0]!, /inside the Codex sandbox/);
+      assert.match(lines[0]!, /danger-full-access/);
+      assert.doesNotMatch(lines[0]!, /ENOENT|no such file or directory/);
+      if (!recording) {
+        assert.match(lines[0]!, /\[sentinel\] no sentinel will be written/);
+        assert.match(lines[0]!, /completion sentinel store/);
+        assert.equal(stdout.text(), '"complete"\n');
+      }
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -339,7 +339,7 @@ cannot handle (SIGKILL) leaves no sentinel, so a supervisor should keep a
 fallback timer behind its file watch.
 
 The sentinel has `kind: "completion_sentinel"` and its own `schema_version`
-(currently `4`; version 3 had no `teardown_error`), and carries:
+(currently `4`), and carries:
 
 - `outcome`, `exit_code`, and `ended_at`.
 - `error`: the `{ kind, message }` that ended the run, or `null`.

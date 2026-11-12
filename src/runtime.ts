@@ -4,6 +4,8 @@ import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
+import { effectiveLean, resolveLeanStart } from "./lean-start.js";
+import type { DischargedLeanStart } from "./lean-start.js";
 import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure } from "./failure-classification.js";
@@ -32,6 +34,7 @@ import {
   FallbackTargetRejectedError,
   firstDeltaMsOf,
   HoldRejectedError,
+  InvalidAgentOptionValueError,
   isRunEnding,
   markRunEnding,
   MissingEngineError,
@@ -252,6 +255,38 @@ interface UnsettledAgentRecord {
 }
 
 /**
+ * The author's options with a few properties settled by the runtime — the
+ * effective strip, the lean start — laid over them. A view over the
+ * author's object, not a copy, for the reason `optionsForTarget` gives: a
+ * copy would drop options an author's accessor or Proxy trap supplies. The
+ * overrides answer `get`, `has`, `ownKeys` and property descriptors alike,
+ * so a spread or an `in` test downstream sees them as own properties.
+ */
+function withOptionOverrides<T extends object>(options: T, overrides: Record<string, unknown>): T {
+  // The empty target permits overrides even when the caller's object is
+  // frozen. Proxy invariants must not tie the effective values to its
+  // non-configurable properties.
+  return new Proxy({} as T, {
+    get(_target, property, receiver) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) ? overrides[property] : Reflect.get(options, property, receiver);
+    },
+    has(_target, property) {
+      return (typeof property === "string" && Object.hasOwn(overrides, property)) || Reflect.has(options, property);
+    },
+    ownKeys() {
+      return [...new Set([...Reflect.ownKeys(options), ...Object.keys(overrides)])];
+    },
+    getOwnPropertyDescriptor(_target, property) {
+      if (typeof property === "string" && Object.hasOwn(overrides, property)) {
+        return { value: overrides[property], writable: true, enumerable: true, configurable: true };
+      }
+      const descriptor = Reflect.getOwnPropertyDescriptor(options, property);
+      return descriptor === undefined ? undefined : { ...descriptor, configurable: true };
+    }
+  });
+}
+
+/**
  * The promise `agent()` hands the script — the exact object, so marking it
  * handled reaches what the script holds. Null until the call is created:
  * `agent()` starts the leg's async settlement and only then has the
@@ -352,6 +387,8 @@ interface WorkerSessionState {
   id: number;
   options: WorkerSessionOptions;
   engine: EngineAdapter;
+  /** The lean route the dispatching engine arranged, re-resolved on a chain advance; null when the session is not lean. */
+  leanRoute: DischargedLeanStart | null;
   /**
    * The served identity learned when this held session first reaches its
    * engine. Codex keeps one thread across turns, so later records inherit
@@ -479,6 +516,8 @@ export class EnsembleRuntime {
   #defaultMaxAttempts: number;
   /** Run-wide capability strip, united with each call's own list. */
   #strip: StrippableCapability[];
+  /** The run-wide lean start: every worker begins without the operator's interactive context. */
+  #lean: boolean;
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
@@ -540,6 +579,7 @@ export class EnsembleRuntime {
     defaultTurnTimeoutMs?: number;
     defaultMaxAttempts: number;
     strip?: StrippableCapability[];
+    lean?: boolean;
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     holdsDir?: string;
@@ -555,6 +595,10 @@ export class EnsembleRuntime {
       assertValidStripOption(options.strip);
     }
     this.#strip = options.strip ?? [];
+    if (options.lean !== undefined && typeof options.lean !== "boolean") {
+      throw new InvalidAgentOptionValueError("lean", options.lean, "a boolean");
+    }
+    this.#lean = options.lean === true;
     this.budget = new TokenBudget(options.budgetCeilings);
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
@@ -669,6 +713,7 @@ export class EnsembleRuntime {
       ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {}),
       ...(options.holdPollIntervalMs !== undefined ? { holdPollIntervalMs: options.holdPollIntervalMs } : {}),
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
+      ...(options.lean !== undefined ? { lean: options.lean } : {}),
       ...(options.claudeSessionStaleAfterMs !== undefined
         ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs }
         : {}),
@@ -837,10 +882,15 @@ export class EnsembleRuntime {
     // cannot enforce must not surface on the day the chain first advances.
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? this.#stripRoutesFor(engine, strip) : null;
+    const lean = effectiveLean(this.#lean, options.lean);
+    const leanRoute = lean ? resolveLeanStart(engine.name, engine.leanStart) : null;
     for (const target of options.fallback ?? []) {
       const targetEngine = this.#chainEngineFor(target);
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
+      }
+      if (lean) {
+        resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
     this.#warnSharedSubstrateFallback(engine.name, options);
@@ -850,7 +900,8 @@ export class EnsembleRuntime {
       }
       validateEngineDefaults(engine.name, options, engine.modelRegistry);
     }
-    const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
+    const dispatchOptions = strip.length === 0 && !lean ? options :
+      withOptionOverrides(options, { ...(strip.length > 0 ? { strip } : {}), ...(lean ? { lean: true } : {}) });
     // The per-engine budget is an admission boundary, judged once per
     // agent() call, synchronously here — so the outcome depends only on
     // the script's dispatch order, never on how usage events interleave
@@ -888,7 +939,7 @@ export class EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(
-      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, fallbackSource, stripRoutes
+      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, fallbackSource, stripRoutes, leanRoute
     );
     const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
@@ -992,8 +1043,11 @@ export class EnsembleRuntime {
     }
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? this.#stripRoutesFor(engine, strip) : null;
+    const lean = effectiveLean(this.#lean, options.lean);
+    const leanRoute = lean ? resolveLeanStart(engine.name, engine.leanStart) : null;
     // The creating turn's chain targets are dispatches of their own:
-    // each must hold sessions and enforce the strip, judged now.
+    // each must hold sessions, enforce the strip and arrange the lean
+    // start, judged now.
     for (const target of options.fallback ?? []) {
       const targetEngine = this.#chainEngineFor(target);
       if (targetEngine.createSession === undefined) {
@@ -1002,9 +1056,15 @@ export class EnsembleRuntime {
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
+      if (lean) {
+        resolveLeanStart(targetEngine.name, targetEngine.leanStart);
+      }
     }
     this.#warnSharedSubstrateFallback(engine.name, options);
-    const sessionOptions = strip.length > 0 ? { ...options, strip } : options;
+    const sessionOptions =
+      strip.length === 0 && !lean
+        ? options
+        : withOptionOverrides(options, { ...(strip.length > 0 ? { strip } : {}), ...(lean ? { lean: true } : {}) });
 
     this.#sessionCounter += 1;
     const state: WorkerSessionState = {
@@ -1014,6 +1074,7 @@ export class EnsembleRuntime {
       resolvedModel: null,
       resolvedEffort: null,
       stripRoutes,
+      leanRoute,
       fallbackSource,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
@@ -1102,14 +1163,15 @@ export class EnsembleRuntime {
         ...(options.label !== undefined ? { label: options.label } : {}),
         ...(phase !== null ? { phase } : {}),
         ...(turn.schema !== undefined ? { schema: turn.schema } : {}),
-        ...(options.strip !== undefined ? { strip: options.strip } : {})
+        ...(options.strip !== undefined ? { strip: options.strip } : {}),
+        ...(options.lean === true ? { lean: true } : {})
       };
       // The creating turn records the session's chain and its source; a
       // later turn records none, and says why, so it never reads as a call
       // that declared nothing or switched its chain off.
       const fallbackSource: FallbackSource = state.turnCount === 0 ? state.fallbackSource : { kind: "later-turn" };
       const agentRecord = this.#newAgentRecord(
-        agentId, engine.name, prompt, recordOptions, fallbackSource, state.stripRoutes
+        agentId, engine.name, prompt, recordOptions, fallbackSource, state.stripRoutes, state.leanRoute
       );
       // The engine exposes the served model and effort when its held worker
       // first starts. Every later turn is still on that worker, so carry the
@@ -1196,6 +1258,7 @@ export class EnsembleRuntime {
     const options = state.options;
     if (state.engineSession === null) {
       state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
+      state.leanRoute = this.#recordLeanRouteFor(agentRecord, targetEngine, options.lean);
     }
     // Placement is the session's, opened once at its first turn and closed
     // with the session — a worktree session works one tree for its life.
@@ -2263,6 +2326,7 @@ export class EnsembleRuntime {
     this.progress.noteAgentWorktree(agentId, placement.worktree?.path ?? null);
     agentRecord.isolation = options.isolation ?? null;
     this.#recordStripRoutesFor(agentRecord, engine, options.strip);
+    this.#recordLeanRouteFor(agentRecord, engine, options.lean);
     let invocation: EngineInvocation | undefined;
     let completion: AgentExecutionCompletion | undefined;
     const attempts = { target, ledger, chainRemains };
@@ -2773,7 +2837,8 @@ export class EnsembleRuntime {
     if (options.strip === undefined || options.strip.length === 0 || engine.prepareStrip === undefined) return undefined;
     const prepared = await engine.prepareStrip(options.strip, {
       cwd,
-      ...(options.model !== undefined ? { model: options.model } : {})
+      ...(options.model !== undefined ? { model: options.model } : {}),
+      ...(options.lean === true ? { lean: true } : {})
     });
     record.strip = { requested: [...options.strip], enforcement: prepared.enforcement };
     return prepared;
@@ -2803,6 +2868,20 @@ export class EnsembleRuntime {
   #stripRoutesFor(engine: EngineAdapter, strip: readonly StrippableCapability[]): Partial<Record<StrippableCapability, DischargedEnforcement>> {
     const declared = resolveStripEnforcement(engine.name, engine.capabilities, strip);
     return engine.prepareStrip === undefined ? declared : {};
+  }
+
+  /**
+   * The lean route the archive records is the *dispatching* engine's, as
+   * the strip routes are: a chain step onto another engine re-resolves it
+   * (judged enforceable pre-spawn, so this cannot newly throw).
+   */
+  #recordLeanRouteFor(record: RuntimeAgentRecord, engine: EngineAdapter, lean: boolean | undefined): DischargedLeanStart | null {
+    if (lean !== true) {
+      return null;
+    }
+    const route = resolveLeanStart(engine.name, engine.leanStart);
+    record.lean = { requested: true, ...route };
+    return route;
   }
 
   /** One classification call for every failed attempt, so the archive's class always came from the same table. */
@@ -2922,6 +3001,7 @@ export class EnsembleRuntime {
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.strip !== undefined && options.strip.length > 0 ? { strip: options.strip } : {}),
+      ...(options.lean === true ? { lean: true } : {}),
       cwd
     };
   }
@@ -2932,7 +3012,8 @@ export class EnsembleRuntime {
     prompt: string,
     options: Partial<AgentOptions>,
     fallbackSource: FallbackSource,
-    stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null
+    stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null,
+    leanRoute: DischargedLeanStart | null = null
   ): RuntimeAgentRecord {
     return {
       id,
@@ -2964,6 +3045,7 @@ export class EnsembleRuntime {
         stripRoutes === null || options.strip === undefined
           ? null
           : { requested: [...options.strip], enforcement: stripRoutes },
+      lean: leanRoute === null ? null : { requested: true, ...leanRoute },
       session: null,
       transcriptCapture: null,
       parseRoute: null,

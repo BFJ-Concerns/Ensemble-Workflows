@@ -4751,3 +4751,86 @@ test("an identified sandbox gets one store diagnosis before any raw sentinel fai
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("--lean reaches the runtime as the run-wide lean start on both invocation forms", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-cli-lean-"));
+  try {
+    const workflowPath = path.join(dir, "lean.workflow.js");
+    await writeFile(workflowPath, 'export const meta = { name: "lean-probe" };\nreturn await agent("go", { engine: "codex" });\n');
+    const captured: boolean[] = [];
+    const engine = new FixedResponseEngine("codex", "done");
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(["--lean", workflowPath], {
+      cwd: dir, runRecordDir: path.join(dir, "workflow-records"), statusDir: null,
+      stdout: new CaptureStream(),
+      stderr,
+      createRuntime: async (options = {}) => {
+        captured.push(options.lean === true);
+        return new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1, ...(options.lean !== undefined ? { lean: options.lean } : {}) });
+      }
+    });
+    // The fixed engine declares no lean route, so the run-wide lean fails
+    // the dispatch loud — proof it reached agent() itself.
+    assert.equal(exitCode, 1);
+    assert.deepEqual(captured, [true]);
+    assert.equal(engine.attempts, 0);
+    assert.match(stderr.text(), /cannot arrange a lean start/);
+
+    const agentStderr = new CaptureStream();
+    const agentExit = await runEnsembleCli(["agent", "--engine=codex", "--lean", "go"], {
+      cwd: dir, runRecordDir: path.join(dir, "agent-records"), statusDir: null,
+      stdout: new CaptureStream(),
+      stderr: agentStderr,
+      createRuntime: async (options = {}) => {
+        captured.push(options.lean === true);
+        return new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1, ...(options.lean !== undefined ? { lean: options.lean } : {}) });
+      }
+    });
+    assert.equal(agentExit, 1);
+    assert.deepEqual(captured, [true, true]);
+    assert.match(agentStderr.text(), /cannot arrange a lean start/);
+    for (const output of [stderr, agentStderr]) {
+      const archive = announcedRunRecord(output.text());
+      const manifest = JSON.parse(await readFile(path.join(archive.archive_path, "manifest.json"), "utf8")) as {
+        cli_flags: { lean?: boolean }
+      };
+      assert.equal(manifest.cli_flags.lean, true);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("workflow lean flags obey placement, reject inline values and pass through only after --", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-lean-placement-"));
+  try {
+    const script = path.join(dir, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "lean-placement" }; return args;');
+    for (const flag of ["--lean", "--lean=true", "--lean=false"]) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      assert.equal(await runEnsembleCli([script, flag], {
+        cwd: dir, stdout, stderr, runRecordDir: null, statusDir: null,
+        createRuntime: async () => { assert.fail("misplaced lean created a runtime"); }
+      }), 2);
+      assert.equal(stdout.text(), "");
+      assert.ok(stderr.text().includes(`Tuning flag ${flag} appears after the script path`), stderr.text());
+    }
+    for (const flag of ["--lean=true", "--lean=false"]) {
+      const stderr = new CaptureStream();
+      assert.equal(await runEnsembleCli([flag, script], {
+        cwd: dir, stdout: new CaptureStream(), stderr, runRecordDir: null, statusDir: null,
+        createRuntime: async () => { assert.fail("inline lean created a runtime"); }
+      }), 2);
+      assert.match(stderr.text(), /--lean.*does not take an argument/);
+    }
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    assert.equal(await runEnsembleCli(["--", script, "--lean=true"], {
+      cwd: dir, stdout, stderr, runRecordDir: null, statusDir: null,
+      createRuntime: async () => fakeRuntime()
+    }), 0, stderr.text());
+    assert.deepEqual(JSON.parse(stdout.text()), ["--lean=true"]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

@@ -19889,7 +19889,8 @@ function enforcementDetail(derived, capability, confirmation) {
     `${capability} members offered: ${JSON.stringify(classes[capability])}`,
     `unclassified and denied: ${JSON.stringify(classes.unclassified)}`,
     `operator MCP tools left in place: ${JSON.stringify(classes.operator)}`,
-    `a second probe under these settings offered none of them and kept every unrelated tool (${confirmation.tools.length} tools)`
+    `a second probe under these settings offered none of them and kept every unrelated tool (${confirmation.tools.length} tools)`,
+    ...capability === "skills" ? ["follow-up slash-command expansion is not covered; a leading /skill line can still load a skill"] : []
   ].join("; ");
 }
 

@@ -348,9 +348,13 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   each working directory,
   model and strip, until a worker reports serving a different Claude Code
   version. Unstripped workers are never probed.
+  A `skills` strip denies the `Skill` tool; follow-up slash-command expansion
+  is not covered. A follow-up whose text begins with a `/skill` line can
+  still load that skill through Claude Code's native command handling. Avoid
+  forwarding such text verbatim when skill loading is unwanted.
   The agent record's enforcement detail names the deny rules and `env`
   variables, the Claude Code version that was probed, and which tools were
-  denied or left in place.
+  denied or left in place. For `skills`, it also states this follow-up boundary.
 - **opencode** rejects any strip before the worker spawns.
 
 Each agent record lists the requested strips and how each was enforced.
@@ -772,7 +776,8 @@ await builder.close();
   the opening's collision-free task tags, preserving the caller's text inside
   the message boundary. Redelivery repeats that framed copy. Tasks without
   edge whitespace arrive as ordinary typed text, so a leading `/skill` line
-  expands. Ensemble overrides `VISUAL` and `EDITOR` only for that attach client and removes its files and tmux server after delivery.
+  expands, including under a `skills` strip. Ensemble overrides `VISUAL` and
+  `EDITOR` only for that attach client and removes its files and tmux server after delivery.
   It loads no tmux configuration and does not appear among your own sessions.
   Delivery requires a new native user row equal to the message sent (or the
   matching command name and arguments for a slash command). Roster activity

@@ -48,7 +48,9 @@ async function fixture(watchMs = 60_000) {
   class Plane extends ClaudeCliControlPlane {
     steers = 0;
     pending = false;
-    override async steer(_handle: ClaudeSessionHandle, message: string) {
+    handle: ClaudeSessionHandle | undefined;
+    override async steer(handle: ClaudeSessionHandle, message: string) {
+      this.handle = handle;
       this.steers++;
       await appendFile(transcript, JSON.stringify({ type: "user", message: { content: message } }) + "\n");
       if (!this.pending) await appendFile(transcript, JSON.stringify({ type: "assistant", message: {
@@ -152,6 +154,43 @@ test("a send that discovers Claude missing reports loss before returning and nev
     await writeFile(f.mode, "absent");
     assert.equal(await held.send("second"), null);
     assert.equal(held.lost, true);
+    assert.equal(f.plane.steers, 1);
+  } finally { await runtime.close(); await f.dispose(); }
+});
+
+test("loss during preflight delay leaves the unsent turn's archived output empty", { timeout: 10_000 }, async () => {
+  const f = await fixture();
+  const runtime = new EnsembleRuntime({ defaultMaxAttempts: 3,
+    engines: new EngineRegistry([new ClaudeEngineAdapter({ controlPlane: f.plane, config: { pollIntervalMs: 60_000 } })]) });
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({ recordAgent: async record => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  const held = runtime.createWorkerSession({ engine: "claude" });
+  try {
+    assert.equal(await held.send("first"), "done");
+    const handle = f.plane.handle;
+    assert.ok(handle);
+    const poll = f.plane.poll.bind(f.plane);
+    const preflight = Promise.withResolvers<void>();
+    f.plane.poll = async current => {
+      const status = await poll(current);
+      if (!status.present) preflight.resolve();
+      return status;
+    };
+    await writeFile(f.mode, "absent");
+    const pending = held.send("second");
+    await preflight.promise;
+    // Let the engine enter its poll delay, then supply the two remaining
+    // observations through the watch's real presence accounting.
+    await new Promise<void>(setImmediate);
+    await poll(handle);
+    await poll(handle);
+    assert.equal(await pending, null);
+    assert.equal(held.lost, true);
+    const record = records.at(-1)!;
+    assert.equal(record.attempts.length, 1);
+    assert.equal(record.attempts[0]?.failure?.kind, "session-lost");
+    assert.equal(record.attempts[0]?.rawOutput, null);
+    assert.equal(record.rawOutput, null);
     assert.equal(f.plane.steers, 1);
   } finally { await runtime.close(); await f.dispose(); }
 });

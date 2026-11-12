@@ -497,7 +497,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         });
       }
       const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex, error) : null;
+      // Before a held turn submits anything, the saved transcript belongs
+      // to earlier turns. A loss during preflight must not publish their
+      // answer as the unsent turn's partial output.
+      const unsentHeldTurn = this.#multiTurn && this.#handle !== null && this.#turn === "unsent" && this.#pending === null;
+      const evidence = error instanceof Error && !preparedInterruption && !unsentHeldTurn
+        ? await this.#tryFailureEvidence(fromIndex, error) : null;
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }

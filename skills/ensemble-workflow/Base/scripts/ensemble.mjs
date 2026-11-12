@@ -22536,7 +22536,8 @@ var ClaudeEngineInvocation = class {
         });
       }
       const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex, error) : null;
+      const unsentHeldTurn = this.#multiTurn && this.#handle !== null && this.#turn === "unsent" && this.#pending === null;
+      const evidence = error instanceof Error && !preparedInterruption && !unsentHeldTurn ? await this.#tryFailureEvidence(fromIndex, error) : null;
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }

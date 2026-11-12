@@ -695,6 +695,8 @@ The fields present throughout a record's lifetime are:
 - `strip`: requested capability names and how each was enforced. For an
   engine that prepares a live strip, `enforcement` is empty until preparation
   succeeds; a refused preparation claims no enforcement or live inventory.
+  Claude's `skills` enforcement detail states that follow-up slash-command
+  expansion is not covered: a leading `/skill` line can still load a skill.
 - `session`: the held session's run-scoped id and this record's turn number,
   or `null` for a one-shot call.
 - `transcript_capture`: what the engine's capture path observed for this turn —

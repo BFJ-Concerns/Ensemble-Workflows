@@ -22058,6 +22058,9 @@ var ClaudeEngineInvocation = class {
       if (status.state === "blocked") {
         if (!sawLife && opening !== void 0) {
           await this.#pollDelay();
+          if (Date.now() >= deadline) {
+            throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
+          }
           continue;
         }
         const canNudge = this.#nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();

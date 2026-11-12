@@ -1030,6 +1030,20 @@ test("a blocked roster waits for the opening transcript before taking the nudge'
   });
 });
 
+test("waiting for a blocked opening transcript honours the attempt deadline", async () => {
+  await withControlPlane([{ outcome: "blocked" }], async (plane) => {
+    plane.transcriptPath = async () => null;
+    const adapter = new ClaudeEngineAdapter({ controlPlane: plane, config: { ...fastConfig, firstLifeTimeoutMs: 150 } });
+    const invocation = adapter.createInvocation("decide", { timeoutMs: 10 });
+    try {
+      const result = await invocation.runAttempt({ attempt: 1 });
+      assert.equal(result.attemptFailure?.kind, "claude-poll-timeout");
+      assert.match(result.attemptFailure?.message ?? "", /within 10ms/);
+      assert.equal(plane.steerCount, 0);
+    } finally { await invocation.close?.(); await adapter.close(); }
+  });
+});
+
 for (const altered of [false, true]) {
   for (const rejected of [false, true]) {
     test(`an opening first seen after a blocked poll ${altered ? "rejects altered delivery" : "verifies delivery"} before collecting ${rejected ? "a diagnostic" : "an answer"}`, async () => {

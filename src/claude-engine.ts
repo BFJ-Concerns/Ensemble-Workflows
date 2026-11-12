@@ -917,6 +917,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // can take a later boundary; otherwise the opening acknowledges it.
         if (!sawLife && opening !== undefined) {
           await this.#pollDelay();
+          if (Date.now() >= deadline) {
+            throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
+          }
           continue;
         }
         // The request can settle while the roster poll is in flight. Read

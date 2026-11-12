@@ -1077,7 +1077,7 @@ test("a dispatch Claude Code refuses is a ClaudeDispatchError naming the directo
 
 for (const home of ["relative", "absolute", "default", "empty"] as const) {
   test(`missing bypass consent gives an executable command for the resolved ${home} Claude home`, async () => {
-    const dir = await mkdtemp("/mnt/ai-data/scratch/ensemble-claude-consent-");
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-consent-"));
     try {
       const workerCwd = path.join(dir, "worker-worktree");
       await mkdir(workerCwd);

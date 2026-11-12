@@ -8,13 +8,14 @@ import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
-import { describeError, HoldTimeoutError, PreSpawnAuthorError } from "./errors.js";
+import { describeError, HoldTimeoutError, InvalidAgentSchemaError, PreSpawnAuthorError } from "./errors.js";
 import { answerHold, defaultHoldsDirectory, enumerateHolds, holdListingState, resolveHoldScope } from "./holds.js";
 import { boundedEvidence, presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { resolveRunId, RunRecordWriter } from "./run-record.js";
+import { assertCompilableSchema } from "./schema.js";
 import { judgeResources } from "./resource-preflight.js";
 
 import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
@@ -567,14 +568,19 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
         const answeredBy = event.params.answeredBy as { entry?: unknown; engine?: unknown; model?: unknown } | undefined;
         const entry = typeof answeredBy?.entry === "number" ? answeredBy.entry : "?";
-        const refusal = event.params.refusal as { kind?: unknown; message?: unknown } | null | undefined;
-        const kind = typeof refusal?.kind === "string" ? refusal.kind : "unknown";
-        const message = typeof refusal?.message === "string" ? boundedEvidence(refusal.message) : "";
-        const targetsRefused = typeof event.params.targetsRefused === "number" ? event.params.targetsRefused : 1;
-        const further =
-          targetsRefused > 1 ? `; ${targetsRefused - 1} further chain entr${targetsRefused === 2 ? "y was" : "ies were"} refused too` : "";
+        const refusals = Array.isArray(event.params.refusals) ? event.params.refusals : [];
+        const accounts = refusals.map((value: unknown) => {
+          const refusal = value as { target?: unknown; failure?: { kind?: unknown; message?: unknown }; classification?: { rule?: unknown } };
+          const kind = typeof refusal.failure?.kind === "string" ? boundedEvidence(refusal.failure.kind) : "unknown";
+          const rule = typeof refusal.classification?.rule === "string" ? boundedEvidence(refusal.classification.rule) : "unmatched";
+          // The app-server's stderr tail is context, not an attribution of
+          // its exit to whichever warning happened to be printed last.
+          const raw = typeof refusal.failure?.message === "string" ? refusal.failure.message : "";
+          const message = boundedEvidence(raw.replace(/Recent stderr:/g, "Engine stderr context:"));
+          return `${targetName(refusal.target)} (${rule}): ${kind}: ${message}`;
+        });
         stderr.write(
-          `[${engine}] agent ${agentId}${label} answered by fallback entry ${entry} (${targetName(answeredBy)}) — the declared target ${targetName(event.params.refused)} was refused: ${kind}: ${message}${further}\n`
+          `[${engine}] agent ${agentId}${label} answered by fallback entry ${entry} (${targetName(answeredBy)}) — refused targets: ${accounts.join("; ")}\n`
         );
         return;
       }
@@ -586,9 +592,12 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         const failure = event.params.failure as { kind?: unknown; message?: unknown } | null | undefined;
         const kind = typeof failure?.kind === "string" ? failure.kind : "unknown";
         const message = typeof failure?.message === "string" ? boundedEvidence(failure.message) : "";
+        const classification = event.params.classification as { class?: unknown; rule?: unknown } | undefined;
+        const failureClass = classification?.class === "output" ? "output" : "unclassified";
+        const rule = typeof classification?.rule === "string" ? `; rule ${boundedEvidence(classification.rule)}` : "";
         const entries = typeof event.params.chainEntries === "number" ? event.params.chainEntries : 0;
         stderr.write(
-          `[${engine}] agent ${agentId}${label} fallback chain not consulted — attempt ${attempt} on ${targetName(event.params.target)} failed unclassified (${kind}: ${message}); the declared chain (${entries} entr${entries === 1 ? "y" : "ies"}) advances on availability failures only\n`
+          `[${engine}] agent ${agentId}${label} fallback chain not consulted — attempt ${attempt} on ${targetName(event.params.target)} failed ${failureClass} (${kind}: ${message}${rule}); the declared chain (${entries} entr${entries === 1 ? "y" : "ies"}) advances on availability failures only\n`
         );
         return;
       }
@@ -1464,6 +1473,17 @@ async function parseAgentInvocation(
     parsed.values.schema === undefined
       ? undefined
       : ((await parseJsonValue(parsed.values.schema, cwd, "--schema")) as JsonSchema);
+  if (schema !== undefined) {
+    try {
+      assertCompilableSchema(schema);
+    } catch (error) {
+      if (!(error instanceof InvalidAgentSchemaError)) throw error;
+      const source = parsed.values.schema!.startsWith("@")
+        ? path.resolve(cwd, parsed.values.schema!.slice(1))
+        : "the inline argument";
+      throw new CliUsageError(`--schema from ${source}: ${error.message}`);
+    }
+  }
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
   const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");

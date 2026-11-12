@@ -51,8 +51,7 @@ for (const engine of ["claude", "codex"] as const) {
       const observation = new AbortController();
       const runProcess = runNode([bundle, workflow], {
         ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: store, ENSEMBLE_STATUS: "0",
-        ENSEMBLE_CONCURRENCY_CODEX: "1", ENSEMBLE_CONCURRENCY_CLAUDE: "1",
-        XDG_CONFIG_HOME: path.join(directory, "config")
+        ENSEMBLE_CONCURRENCY_CODEX: "1", ENSEMBLE_CONCURRENCY_CLAUDE: "1"
       }, 1_100_000).finally(() => { settled = true; });
       void runProcess.then(
         (result) => observation.abort(new Error(`workflow settled while its probe was held: ${result.code}\n${result.stderr}`)),

@@ -53,7 +53,7 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
   }
   // An explicit status outranks incidental error words in a gateway message.
   const authentication = status != null ? status === 401 :
-    apiError?.code === "authentication_error" || apiError?.code === "invalid_api_key" ||
+    apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" ||
     /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
     const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude"
@@ -62,6 +62,11 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
   }
   if (engine === "codex" && appServerDiagnostic?.code === "modelNotFound") {
     return { kind: "model-not-found", message: `Codex modelNotFound: choose a model available to your account (run \`codex\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
+  }
+  if (engine === "claude" && failure.kind === "claude-worker-diagnostic" &&
+      (status == null || status === 400 || status === 404) &&
+      /\bunknown provider for model\s+\S+/i.test(failure.message)) {
+    return { kind: "model-not-found", message: `Claude model not found: choose a model available to your account (run \`claude\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
   }
   return failure;
 }

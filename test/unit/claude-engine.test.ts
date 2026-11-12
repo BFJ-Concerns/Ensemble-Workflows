@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
@@ -14,6 +15,7 @@ import {
   failedTurnResultOf,
   partialWorkerTextOf
 } from "../../src/errors.js";
+import { runEnsembleCli } from "../../src/cli.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { parallel, pipeline } from "../../src/hooks.js";
 import { usageSince } from "../../src/claude-transcript.js";
@@ -529,11 +531,75 @@ test("an initial-dispatch interruption retains transcript evidence before teardo
         assert.equal(failedTurnResultOf(error)?.resolvedModel, "claude-raced");
         return true;
       });
-      assert.equal(closeCompletedBeforeDispatchReleased, true, "close must not wait for the in-flight dispatch");
+      assert.equal(closeCompletedBeforeDispatchReleased, false, "close must wait for the in-flight dispatch and its teardown");
       assert.equal(controlPlane.stopCount, 1);
     },
     { dispatchGate: { arrived: () => dispatchArrived?.(), release: dispatchReleased } }
   );
+});
+
+test("SIGTERM during Claude dispatch stops the worker before scopes close and seals the run", async () => {
+  let releaseDispatch!: () => void;
+  const dispatchReleased = new Promise<void>((resolve) => { releaseDispatch = resolve; });
+  let dispatchArrived!: () => void;
+  const arrived = new Promise<void>((resolve) => { dispatchArrived = resolve; });
+  await withControlPlane([{ busyPolls: Number.MAX_SAFE_INTEGER }], async (controlPlane) => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-sigterm-dispatch-"));
+    try {
+      const script = path.join(directory, "workflow.js");
+      await writeFile(script, 'export const meta = { name: "sigterm-dispatch" }; await agent("work", { engine: "claude" });');
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      let output = "";
+      let diagnostics = "";
+      stdout.on("data", (chunk) => { output += String(chunk); });
+      stderr.on("data", (chunk) => { diagnostics += String(chunk); });
+      let scopesClosed = false;
+      let stoppedAfterScopesClosed: boolean | undefined;
+      const stop = controlPlane.stop.bind(controlPlane);
+      controlPlane.stop = async () => {
+        stoppedAfterScopesClosed = scopesClosed;
+        await stop();
+      };
+      const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+      const registry = new EngineRegistry([adapter], [{ close: async () => { scopesClosed = true; } }]);
+      const run = runEnsembleCli([script], {
+        cwd: directory, stdout, stderr,
+        env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
+        runRecordDir: path.join(directory, "records"),
+        createRuntime: async () => new EnsembleRuntime({ engines: registry, defaultMaxAttempts: 1 })
+      });
+      await Promise.race([arrived, run.then(() => { throw new Error(diagnostics); })]);
+      process.emit("SIGTERM");
+      // Let the signal's shutdown reach the adapter while dispatch remains
+      // blocked. No timing threshold is needed: the dispatch is ours to release.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const closedDuringDispatch = scopesClosed;
+      releaseDispatch();
+      assert.equal(await run, 143, diagnostics);
+      assert.equal(closedDuringDispatch, false, "shared scopes must remain open for late worker teardown");
+      assert.equal(stoppedAfterScopesClosed, false);
+      assert.equal(controlPlane.stopCount, 1);
+      assert.equal(scopesClosed, true);
+      assert.equal(JSON.parse(output).reason, "interrupted");
+      const sentinelPath = diagnostics.match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+      assert.ok(sentinelPath, diagnostics);
+      const archive = JSON.parse(diagnostics.match(/\[run-record-archive\] (.+)/)![1]!).archive_path as string;
+      const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8"));
+      assert.equal(manifest.status, "interrupted");
+      assert.ok(manifest.ended_at);
+      const sentinel = JSON.parse(await readFile(sentinelPath, "utf8"));
+      assert.equal(sentinel.outcome, "interrupted");
+      assert.equal(sentinel.exit_code, 143);
+      assert.deepEqual(sentinel.workers, { done: 0, failed: 0, cut_short: 1, unsettled: 0 });
+      const record = JSON.parse(await readFile(path.join(archive, "agents", "000001", "agent.json"), "utf8"));
+      assert.equal(record.status, "interrupted");
+      assert.equal(record.termination_cause.kind, "run-interrupted");
+    } finally {
+      releaseDispatch();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, { dispatchGate: { arrived: dispatchArrived, release: dispatchReleased } });
 });
 
 test("Claude interruption retains transcript-proved turn evidence in the archive", async () => {
@@ -852,6 +918,81 @@ test("schema agent returns null after the bounded attempts when correction never
   );
 });
 
+// Native API failures can land while the roster query is in flight. The
+// transcript read before poll then contains only the submitted user row.
+for (const refusal of [
+  { code: "authentication_failed", text: "Not logged in · Please run /login", status: undefined, kind: "authentication-failure" },
+  { code: "invalid_request", text: "Prompt is too long · the request exceeds the context limit", status: 400, kind: "claude-worker-diagnostic" }
+]) {
+  for (const arrival of ["opening", "blocked-poll", "valve-check", "follow-up"] as const) {
+    test(`Claude ${refusal.code} at ${arrival} keeps the diagnostic without sending a nudge`, async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-refusal-"));
+      class RefusingPlane extends FakeControlPlane {
+        handle: ClaudeSessionHandle | undefined;
+        wroteRefusal = false;
+        async reject(): Promise<void> {
+          if (this.wroteRefusal) return;
+          this.wroteRefusal = true;
+          const file = await super.transcriptPath();
+          assert.ok(file);
+          await appendFile(file, `${JSON.stringify({
+            type: "assistant", isApiErrorMessage: true, error: refusal.code,
+            ...(refusal.status === undefined ? {} : { apiErrorStatus: refusal.status }),
+            message: { role: "assistant", model: "<synthetic>", stop_reason: "stop_sequence",
+              content: [{ type: "text", text: refusal.text }] }
+          })}\n`);
+        }
+        override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+          this.handle = await super.dispatch(options);
+          if (arrival === "opening") await this.reject();
+          return this.handle;
+        }
+        override async tmuxAvailable(): Promise<boolean> {
+          if (arrival === "valve-check") await this.reject();
+          return super.tmuxAvailable();
+        }
+        override async poll(): Promise<ClaudeSessionStatus> {
+          if (arrival === "blocked-poll" || (arrival === "follow-up" && this.steerCount > 0)) await this.reject();
+          return super.poll();
+        }
+      }
+      const plane = new RefusingPlane(dir, [...(arrival === "follow-up" ? [{ assistant: { text: "first answer" } }] : []), { outcome: "blocked" }]);
+      const runtime = makeRuntime(plane, { maxAttempts: 1 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+      try {
+        if (arrival === "follow-up") {
+          const session = runtime.createWorkerSession({ engine: "claude" });
+          assert.equal(await session.send("first"), "first answer");
+          assert.equal(await session.send("second"), null);
+          await session.close();
+        } else {
+          assert.equal(await runtime.agent("decide", { engine: "claude" }), null);
+        }
+        const attempt = records.at(-1)?.attempts[0];
+        assert.equal(attempt?.failure?.kind, refusal.kind);
+        assert.ok(attempt?.failure?.message.includes(refusal.text));
+        if (refusal.kind === "authentication-failure") {
+          assert.match(attempt?.failure?.message ?? "", /claude auth login/);
+          assert.deepEqual(attempt?.classification, { class: "unclassified", rule: "claude.authentication-failure" });
+        }
+        assert.deepEqual(attempt?.diagnostics?.apiError, { status: refusal.status ?? null, code: refusal.code });
+        assert.equal(attempt?.rawOutput, null);
+        assert.equal(plane.steerCount, arrival === "follow-up" ? 1 : 0);
+        assert.ok(plane.handle);
+        const file = await plane.transcriptPath();
+        assert.ok(file);
+        const rows = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line) as TranscriptEntry);
+        assert.deepEqual(rows.filter(row => row.type === "user").map(row => row.message?.content),
+          [plane.dispatched[0]?.prompt, ...plane.steered]);
+      } finally {
+        await runtime.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
 test("a blocked worker is recovered with a bounded nudge through the valve", async () => {
   await withControlPlane(
     [
@@ -885,6 +1026,57 @@ test("a blocked roster waits for the opening transcript before taking the nudge'
       assert.equal(controlPlane.dispatchCount, 1);
       assert.equal(controlPlane.steerCount, 1);
       assert.equal(controlPlane.stopCount, 1);
+    } finally { await runtime.close(); }
+  });
+});
+
+for (const altered of [false, true]) {
+  for (const rejected of [false, true]) {
+    test(`an opening first seen after a blocked poll ${altered ? "rejects altered delivery" : "verifies delivery"} before collecting ${rejected ? "a diagnostic" : "an answer"}`, async () => {
+      await withControlPlane([{
+        outcome: "blocked", assistant: { text: "native reply", ...(rejected ? { model: "<synthetic>", stop: "stop_sequence" } : {}) }
+      }], async (plane) => {
+        const lookup = plane.transcriptPath.bind(plane);
+        let reads = 0;
+        plane.transcriptPath = async () => ++reads === 1 ? null : lookup();
+        const adapter = new ClaudeEngineAdapter({ controlPlane: plane, config: fastConfig });
+        const invocation = adapter.createInvocation("complete opening", {});
+        try {
+          const result = await invocation.runAttempt({ attempt: 1 });
+          if (altered || rejected) {
+            assert.equal(result.attemptFailure?.kind, altered ? "claude-delivery-error" : "claude-worker-diagnostic");
+          } else {
+            assert.equal(result.attemptFailure, undefined);
+            assert.equal(result.text, "native reply");
+          }
+          assert.equal(plane.steerCount, 0);
+        } finally { await invocation.close?.(); await adapter.close(); }
+      }, { openingArrival: sent => altered ? sent.slice(0, -1) : sent });
+    });
+  }
+}
+
+test("blocked recovery never submits against an unreadable transcript boundary", async () => {
+  await withControlPlane([{ outcome: "blocked" }], async (plane) => {
+    const poll = plane.poll.bind(plane);
+    const lookup = plane.transcriptPath.bind(plane);
+    let unreadable = false;
+    plane.poll = async () => {
+      unreadable = true;
+      return poll();
+    };
+    plane.transcriptPath = async () => {
+      if (unreadable) {
+        unreadable = false;
+        return null;
+      }
+      return lookup();
+    };
+    const runtime = makeRuntime(plane, { maxAttempts: 1 });
+    try {
+      assert.equal(await runtime.agent("decide", { engine: "claude" }), null);
+      assert.equal(plane.steerCount, 0, "a missing boundary reused the opening's row for a nudge");
+      assert.match(runtime.lastAgentRecord()?.attempts[0]?.failure?.message ?? "", /no transcript found/);
     } finally { await runtime.close(); }
   });
 });
@@ -945,6 +1137,34 @@ for (const held of [false, true]) {
         } finally { await runtime.close(); }
       }
     );
+  });
+}
+
+for (const rejected of [false, true]) {
+  test(`a turn settling after a refused nudge is collected without resending, rejected ${rejected}`, async () => {
+    await withControlPlane([{ outcome: "blocked" }], async (plane) => {
+      let nudges = 0;
+      plane.steer = async () => {
+        nudges += 1;
+        const transcript = await plane.transcriptPath();
+        assert.ok(transcript);
+        await appendFile(transcript, `${assistantLine({
+          text: "late native reply",
+          ...(rejected ? { model: "<synthetic>", stop: "stop_sequence" } : {})
+        })}\n`);
+        return { submitted: false, reason: "prompt editor did not finish copying within 30000ms" };
+      };
+      const adapter = new ClaudeEngineAdapter({ controlPlane: plane, config: fastConfig });
+      const invocation = adapter.createInvocation("decide", {});
+      try {
+        assert.equal((await invocation.runAttempt({ attempt: 1 })).attemptFailure?.kind, "claude-valve-error");
+        const result = await invocation.runAttempt({ attempt: 2 });
+        assert.equal(nudges, 1, "a settled or rejected request must not receive another nudge");
+        assert.equal(result.attemptFailure?.kind, rejected ? "claude-worker-diagnostic" : undefined);
+        assert.equal(result.text, rejected ? "" : "late native reply");
+        if (rejected) assert.match(result.attemptFailure?.message ?? "", /late native reply/);
+      } finally { await invocation.close?.(); await adapter.close(); }
+    });
   });
 }
 
@@ -1583,8 +1803,10 @@ test("a client diagnostic in place of a model reply is archived as a failure, no
         assert.equal(result, null);
         const settled = records.at(-1);
         assert.equal(settled?.status, "failed");
-        assert.equal(settled?.attempts[0]?.failure?.kind, "claude-worker-diagnostic");
+        assert.equal(settled?.attempts[0]?.failure?.kind, "model-not-found");
+        assert.deepEqual(settled?.attempts[0]?.classification, { class: "unclassified", rule: "claude.model-not-found" });
         assert.match(settled?.attempts[0]?.failure?.message ?? "", /unknown provider/);
+        assert.match(settled?.attempts[0]?.failure?.message ?? "", /use \/model/);
         // The placeholder Claude Code writes on its own diagnostic is not a
         // served model: recording it would name a model that never ran.
         assert.equal(settled?.resolvedModel, null);
@@ -1696,7 +1918,7 @@ test("a client diagnostic in place of a model reply still keeps the transcript a
       try {
         assert.equal(await runtime.agent("decide", { engine: "claude", model: "definitely-not-a-model", schema: okSchema }), null);
         const attempt = records.at(-1)?.attempts[0];
-        assert.equal(attempt?.failure?.kind, "claude-worker-diagnostic");
+        assert.equal(attempt?.failure?.kind, "model-not-found");
         // The turn really happened and left a transcript; dropping it would
         // make the archive report that the engine produced none.
         assert.equal(attempt?.transcripts.length, 1);
@@ -2319,7 +2541,7 @@ test("an opening the session received altered stays on its target: each session 
         const attempts = records.at(-1)?.attempts ?? [];
         assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind), ["claude-delivery-error", "claude-delivery-error", "claude-delivery-error"]);
         assert.deepEqual(attempts.map((attempt) => attempt.classification), Array(3).fill({ class: "unclassified", rule: "claude.delivery" }));
-        assert.deepEqual(attempts.map((attempt) => attempt.chainDecision), ["retried-in-place", "retried-in-place", "exhausted"]);
+        assert.deepEqual(attempts.map((attempt) => attempt.chainDecision), ["chain-not-consulted", "chain-not-consulted", "chain-not-consulted"]);
         assert.deepEqual(attempts.map((attempt) => attempt.rawOutput), Array(3).fill("reply to the cut prompt"));
         assert.match(
           attempts[0]?.failure?.message ?? "",

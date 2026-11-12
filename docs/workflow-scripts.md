@@ -254,7 +254,9 @@ Schemas are JSON Schema draft-07 (the default when `$schema` is omitted) or
 draft 2020-12 (declare `"$schema": "https://json-schema.org/draft/2020-12/schema"`).
 Any other dialect is rejected before a worker spawns. A schema object that
 refers to itself is refused with the cycle's location; recursive `$ref`
-schemas that compile are accepted.
+schemas that compile are accepted. Malformed schema keywords are refused before
+dispatch with their JSON Pointer location and a correction: an invalid `type`
+lists the accepted type names, and invalid `properties` asks for a JSON object.
 
 ### Per-engine behaviour
 
@@ -482,6 +484,9 @@ failure. A retained launch whose cleanup is unconfirmed remains an
 unclassified delivery failure even without a transcript, so it cannot advance
 fallback.
 A model context rejection after exact delivery retains its own diagnostic.
+Claude client rejections, including rejected credentials and context limits,
+end the request without a blocked-worker nudge, even when the roster reports
+that the worker is awaiting input.
 
 Ensemble encloses the opening task in boundary tags chosen to be absent from
 its text. The caller's text stays literal, including leading and trailing
@@ -535,7 +540,9 @@ A tool error followed by a recovered answer does not fail the attempt.
 
 A message Ensemble sends into a live Claude session — a follow-up turn, a
 correction, a nudge to a blocked worker — counts as delivered only when the
-session's transcript shows it received exactly the text sent. Two failures
+session's transcript shows it received exactly the text sent. Each receipt
+is read from the transcript boundary before its own submission; an earlier
+opening, follow-up or nudge cannot acknowledge a later message. Two failures
 are told apart:
 
 - `claude-valve-error`: the message was never submitted. Nothing reached the

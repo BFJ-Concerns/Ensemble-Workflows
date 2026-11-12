@@ -85,7 +85,7 @@ test(
         ["the archived agent output is the reply received", () => assert.equal(archive.agents[0]?.raw_output?.trim(), output.admitted)],
         ["the archived run result holds the reply received", () => assert.equal(archive.result.value.admitted, output.admitted)]
       ]);
-      assert.equal(archive.manifest.schema_version, 5);
+      assert.equal(archive.manifest.schema_version, 6);
       assert.deepEqual(archive.manifest.meta.task, {
         id: "budget-ordering-live-proof",
         family: "budget-ordering"

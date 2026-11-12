@@ -15876,6 +15876,15 @@ function addUsageSummary(target, delta) {
 }
 
 // src/cost-rollup.ts
+var TOKEN_ABSENCE_PRECEDENCE = [
+  "record-unsettled",
+  "worker-interrupted",
+  "worker-timed-out",
+  "engine-reported-no-usage"
+];
+function leafTokenAbsence(unobserved) {
+  return TOKEN_ABSENCE_PRECEDENCE.find((reason) => unobserved.some((entry) => entry.reason === reason)) ?? "substrate-never-started";
+}
 var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
   "CodexSubstrateRefusedError",
   "ClaudeDispatchError"
@@ -15952,18 +15961,16 @@ function buildCostRollup(agents) {
         measured: summary === null ? "none" : "partial"
       });
     }
-    if (agent.attempts.length === 0 || agent.mayHaveUnlistedAttempt) {
+    if (agent.mayHaveUnlistedAttempt) {
       const bucket = bucketFor(agent.engine, "unresolved");
-      if (agent.mayHaveUnlistedAttempt) {
-        bucket.unobserved.push({ agent: agent.id, attempt: null, reason: "record-unsettled", measured: "none" });
-      }
+      bucket.unobserved.push({ agent: agent.id, attempt: null, reason: "record-unsettled", measured: "none" });
     }
   }
   const rollup = {};
   for (const bucket of buckets.values()) {
     const engineLeaves = rollup[bucket.engine] ??= {};
     engineLeaves[bucket.model] = {
-      tokens: bucket.tokens ?? { unavailable: "no-usage-reported" },
+      tokens: bucket.tokens ?? { unavailable: leafTokenAbsence(bucket.unobserved) },
       cost: publishedCost(bucket.cost),
       complete: bucket.unobserved.length === 0,
       unobserved: bucket.unobserved
@@ -16002,7 +16009,7 @@ function addProviderCost(target, event) {
 
 // src/run-record.ts
 var execFileAsync = promisify(execFile);
-var SCHEMA_VERSION = 5;
+var SCHEMA_VERSION = 6;
 var MANIFEST_PATH = "manifest.json";
 function abandonedAttemptEntry(live) {
   return {
@@ -17668,13 +17675,16 @@ function diagnoseAttemptFailure(evidence) {
   if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
     return failure;
   }
-  const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
+  const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
     const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude" ? "Run `claude auth login`." : "Run `opencode auth login` for the provider you selected.";
     return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${failure.message}` };
   }
   if (engine === "codex" && appServerDiagnostic?.code === "modelNotFound") {
     return { kind: "model-not-found", message: `Codex modelNotFound: choose a model available to your account (run \`codex\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
+  }
+  if (engine === "claude" && failure.kind === "claude-worker-diagnostic" && (status == null || status === 400 || status === 404) && /\bunknown provider for model\s+\S+/i.test(failure.message)) {
+    return { kind: "model-not-found", message: `Claude model not found: choose a model available to your account (run \`claude\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
   }
   return failure;
 }
@@ -21651,9 +21661,12 @@ var ClaudeEngineInvocation = class {
       if (this.#refused !== null && this.#handle !== null) {
         const handle = this.#handle;
         const pending = this.#pending;
-        const submission = { ...this.#refused, mark: (await this.#readTranscript(handle, context)).entries.length };
+        const latest = await this.#readTranscript(handle, context);
+        const submission = { ...this.#refused, mark: latest.entries.length };
         fromIndex = submission.carriesTurn ? submission.mark : this.#collectionMark;
-        await this.#deliver(handle, submission, context);
+        const settled = !submission.carriesTurn && (endsInSyntheticReply(latest.entries, fromIndex) || turnComplete(latest.entries, fromIndex) && outstandingBackgroundTasks(latest.entries, fromIndex).length === 0);
+        if (settled) this.#refused = null;
+        else await this.#deliver(handle, submission, context);
         if (pending !== null) {
           this.#pending = pending;
           const answered = await this.#accountForPending(handle, pending, context);
@@ -21728,10 +21741,8 @@ var ClaudeEngineInvocation = class {
       this.#closed = true;
       this.#abortController.abort();
       try {
-        if (this.#handle !== null) {
-          await this.#settlement?.catch(() => void 0);
-          await this.#teardown();
-        }
+        await this.#settlement?.catch(() => void 0);
+        await this.#teardown();
       } finally {
         this.#onClose?.(this);
       }
@@ -22009,6 +22020,7 @@ var ClaudeEngineInvocation = class {
           } catch {
           }
         }
+        if (endsInSyntheticReply(transcript.entries, fromIndex)) return transcript;
         const outstanding = outstandingBackgroundTasks(transcript.entries, fromIndex);
         const current2 = this.#noteWaits(outstanding);
         awaitingTask = current2 !== null;
@@ -22049,11 +22061,19 @@ var ClaudeEngineInvocation = class {
           continue;
         }
         const canNudge = this.#nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
+        const latest = await this.#readTranscript(handle, observers);
+        if (!sawLife && opening !== void 0) {
+          await this.#requireReceipt(handle, opening, observers);
+        }
+        sawLife = true;
+        if (endsInSyntheticReply(latest.entries, fromIndex) || turnComplete(latest.entries, fromIndex) && outstandingBackgroundTasks(latest.entries, fromIndex).length === 0) {
+          return latest;
+        }
         if (!canNudge) {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         this.#nudges += 1;
-        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
+        const mark = latest.entries.length;
         const message = this.#blockedNudge(status.waitingFor);
         await this.#deliver(handle, { message, mark, what: "the blocked-worker nudge", carriesTurn: false }, observers);
         continue;
@@ -23361,7 +23381,11 @@ function validateJsonSchema(value, schema) {
 function assertCompilableSchema(schema) {
   assertAcyclicSchemaObject(schema);
   try {
-    compileSchema(schema);
+    const compiler = compilerFor(schema);
+    if (!compiler.validateSchema(schema)) {
+      throw new InvalidAgentSchemaError(describeSchemaErrors(compiler.errors ?? []), { offending: schema });
+    }
+    compiler.compile(schema);
   } catch (error) {
     if (error instanceof InvalidAgentSchemaError) {
       throw error;
@@ -23372,11 +23396,43 @@ function assertCompilableSchema(schema) {
         throw new CyclicAgentSchemaError(cycle.at, cycle.back, "reference");
       }
     }
-    throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), {
+    throw new InvalidAgentSchemaError(`${error instanceof Error ? error.message : String(error)}; check the schema keywords and ensure every $ref points to an available schema`, {
       cause: error,
       offending: schema
     });
   }
+}
+function describeSchemaErrors(errors) {
+  const byLocation = /* @__PURE__ */ new Map();
+  for (const error of errors) {
+    if (error.keyword === "anyOf") continue;
+    const group = byLocation.get(error.instancePath) ?? [];
+    group.push(error);
+    byLocation.set(error.instancePath, group);
+  }
+  return [...byLocation].map(([location, group]) => {
+    const at2 = `at #${location}`;
+    const choices = group.find((error) => error.keyword === "enum");
+    if (choices !== void 0) {
+      const values = choices.params.allowedValues.map((value) => JSON.stringify(value)).join(", ");
+      const typeUnion = location.endsWith("/type") ? ", or an array of these type names" : "";
+      return `${at2}: use one of ${values}${typeUnion}`;
+    }
+    const types2 = [...new Set(group.filter((error) => error.keyword === "type").flatMap((error) => error.params.type))];
+    const messages = types2.length === 0 ? [] : [`${at2}: replace this value with a JSON ${types2.join(" or ")}`];
+    return [...messages, ...group.filter((error) => error.keyword !== "type").map((error) => {
+      switch (error.keyword) {
+        case "required":
+          return `${at2}: add the required ${JSON.stringify(error.params.missingProperty)} key`;
+        case "minItems":
+          return `${at2}: supply at least ${String(error.params.limit)} item(s)`;
+        case "uniqueItems":
+          return `${at2}: remove duplicate items`;
+        default:
+          return `${at2}: ${error.message ?? `invalid ${error.keyword}`}; correct this schema value to satisfy ${error.keyword}`;
+      }
+    })].join("; ");
+  }).join("; ");
 }
 function findLocalReferenceCycle(schema) {
   const seenObjects = /* @__PURE__ */ new Set();
@@ -25239,6 +25295,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
         refused: declared.target,
         refusal: declared.failure,
         targetsRefused: advancesOf(agentRecord).length,
+        refusals: advancesOf(agentRecord).map((attempt) => ({
+          target: attempt.target,
+          failure: attempt.failure,
+          classification: attempt.classification
+        })),
         answeredBy
       },
       receivedAt: Date.now()
@@ -25265,6 +25326,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         attempt: attempt.attempt,
         target: attempt.target,
         failure: attempt.failure,
+        classification: attempt.classification,
         chainEntries: record.fallback?.length ?? 0
       },
       receivedAt: Date.now()
@@ -26222,7 +26284,7 @@ function chainDecisionAfter(attempts, classification, retries) {
   if (attempts.chainRemains && classification.class === "availability") {
     return "advanced";
   }
-  if (attempts.chainRemains && classification.class === "unclassified" && classification.rule === null) {
+  if (attempts.chainRemains && (classification.class === "unclassified" || !retries)) {
     return "chain-not-consulted";
   }
   return retries ? "retried-in-place" : "exhausted";
@@ -33733,13 +33795,17 @@ async function runEnsembleCli(argv, options = {}) {
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
         const answeredBy = event.params.answeredBy;
         const entry = typeof answeredBy?.entry === "number" ? answeredBy.entry : "?";
-        const refusal = event.params.refusal;
-        const kind = typeof refusal?.kind === "string" ? refusal.kind : "unknown";
-        const message = typeof refusal?.message === "string" ? boundedEvidence(refusal.message) : "";
-        const targetsRefused = typeof event.params.targetsRefused === "number" ? event.params.targetsRefused : 1;
-        const further = targetsRefused > 1 ? `; ${targetsRefused - 1} further chain entr${targetsRefused === 2 ? "y was" : "ies were"} refused too` : "";
+        const refusals = Array.isArray(event.params.refusals) ? event.params.refusals : [];
+        const accounts = refusals.map((value) => {
+          const refusal = value;
+          const kind = typeof refusal.failure?.kind === "string" ? boundedEvidence(refusal.failure.kind) : "unknown";
+          const rule = typeof refusal.classification?.rule === "string" ? boundedEvidence(refusal.classification.rule) : "unmatched";
+          const raw = typeof refusal.failure?.message === "string" ? refusal.failure.message : "";
+          const message = boundedEvidence(raw.replace(/Recent stderr:/g, "Engine stderr context:"));
+          return `${targetName(refusal.target)} (${rule}): ${kind}: ${message}`;
+        });
         stderr.write(
-          `[${engine}] agent ${agentId}${label} answered by fallback entry ${entry} (${targetName(answeredBy)}) \u2014 the declared target ${targetName(event.params.refused)} was refused: ${kind}: ${message}${further}
+          `[${engine}] agent ${agentId}${label} answered by fallback entry ${entry} (${targetName(answeredBy)}) \u2014 refused targets: ${accounts.join("; ")}
 `
         );
         return;
@@ -33752,9 +33818,12 @@ async function runEnsembleCli(argv, options = {}) {
         const failure = event.params.failure;
         const kind = typeof failure?.kind === "string" ? failure.kind : "unknown";
         const message = typeof failure?.message === "string" ? boundedEvidence(failure.message) : "";
+        const classification = event.params.classification;
+        const failureClass = classification?.class === "output" ? "output" : "unclassified";
+        const rule = typeof classification?.rule === "string" ? `; rule ${boundedEvidence(classification.rule)}` : "";
         const entries = typeof event.params.chainEntries === "number" ? event.params.chainEntries : 0;
         stderr.write(
-          `[${engine}] agent ${agentId}${label} fallback chain not consulted \u2014 attempt ${attempt} on ${targetName(event.params.target)} failed unclassified (${kind}: ${message}); the declared chain (${entries} entr${entries === 1 ? "y" : "ies"}) advances on availability failures only
+          `[${engine}] agent ${agentId}${label} fallback chain not consulted \u2014 attempt ${attempt} on ${targetName(event.params.target)} failed ${failureClass} (${kind}: ${message}${rule}); the declared chain (${entries} entr${entries === 1 ? "y" : "ies"}) advances on availability failures only
 `
         );
         return;
@@ -34301,6 +34370,15 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   const engine = parseEngineName(rawEngine, "--engine");
   const isolation = parseIsolation(parsed.values.isolation);
   const schema = parsed.values.schema === void 0 ? void 0 : await parseJsonValue(parsed.values.schema, cwd, "--schema");
+  if (schema !== void 0) {
+    try {
+      assertCompilableSchema(schema);
+    } catch (error) {
+      if (!(error instanceof InvalidAgentSchemaError)) throw error;
+      const source = parsed.values.schema.startsWith("@") ? path17.resolve(cwd, parsed.values.schema.slice(1)) : "the inline argument";
+      throw new CliUsageError(`--schema from ${source}: ${error.message}`);
+    }
+  }
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
   const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");

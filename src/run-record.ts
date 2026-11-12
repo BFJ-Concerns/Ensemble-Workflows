@@ -39,16 +39,12 @@ import type { UsageSummary } from "./usage-summary.js";
 
 const execFileAsync = promisify(execFile);
 /**
- * 5: an agent record's `attempts` lists every attempt that demonstrably
- * ran, so an abandoned record carries the attempt its writer died with as
- * an entry with status `abandoned` and null outcome fields, where version 4
- * listed settled attempts only and promised a non-null duration on each;
- * and every `cost_rollup` leaf is one object carrying `complete` and
- * `unobserved` beside its figures, where version 4 published either a
- * summary or a bare absence. A version-4 reader would read the abandoned
- * entry as settled and a lower bound as a total, so the version moves.
+ * Run-record documents share a versioned vocabulary. A figureless cost
+ * leaf names its attempts' absence reason, and agents known to have run
+ * no attempt book no leaf. Readers must check this version before
+ * interpreting the documents; abandonment reconciles only this version.
  */
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const MANIFEST_PATH = "manifest.json";
 
 /**
@@ -126,9 +122,9 @@ export interface EffectiveRunSettingsRecord {
  *   call moved to that entry and the attempt spent none of the bound.
  * - `retried-in-place` — the call stays on this target for another attempt.
  * - `exhausted` — nothing remains to try: the call settles on this failure.
- * - `chain-not-consulted` — the classifier recognised nothing (`rule:
- *   null`) while a later entry remained, so the chain, which advances on
- *   availability alone, was not asked; any further attempt stays in place.
+ * - `chain-not-consulted` — an unclassified failure, or an output failure
+ *   with no retry remaining, left a later entry untried. The chain advances
+ *   on availability alone; any further attempt stays in place.
  */
 export type ChainDecision = "advanced" | "retried-in-place" | "exhausted" | "chain-not-consulted";
 
@@ -523,7 +519,7 @@ interface AbandonmentRecord {
 }
 
 interface Manifest {
-  schema_version: 5;
+  schema_version: 6;
   kind: "run_manifest";
   run_id: string;
   run_uuid: string;

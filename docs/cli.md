@@ -11,6 +11,9 @@ alias ensemble='node /path/to/Ensemble-Workflows/skills/ensemble-workflow/Base/s
 
 ## Synopsis
 
+Unknown agent or run options are refused in one line naming the launcher by its
+absolute invoked path (preserving a symlink’s name).
+
 Running the launcher with no arguments prints this usage text on stderr. It
 names the launcher by the absolute path it was invoked through, preserving a
 symlink path. Script paths include `node`; executable shims name themselves.

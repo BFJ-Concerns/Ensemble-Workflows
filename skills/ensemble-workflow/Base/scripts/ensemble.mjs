@@ -34244,7 +34244,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const unknown = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ? unknownAgentOption(argv) : void 0;
-    throw new CliUsageError(unknown === void 0 ? message : unknownAgentOptionMessage(unknown));
+    throw new CliUsageError(unknown === void 0 ? message : `${program} agent: ${unknownAgentOptionMessage(unknown)}`);
   }
   if (parsed.positionals.length > 1) {
     throw new CliUsageError(`${program} agent accepts exactly one prompt argument, or reads the prompt from stdin`);
@@ -34395,7 +34395,7 @@ function splitTuningFlags(argv, program) {
       continue;
     }
     if (value.startsWith("-")) {
-      throw new CliUsageError(`Unknown option before script path: ${value}`);
+      throw new CliUsageError(`${program}: Unknown option before script path: ${value}`);
     }
     const scriptArgs = argv.slice(index + 1);
     const misplacedTuningFlag = scriptArgs.find((argument) => isKnownOption(argument) || isKnownInlineOption(argument));

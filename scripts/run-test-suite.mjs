@@ -57,9 +57,18 @@ const recordStoreDirectory = path.join(suiteDirectory, "run-records");
 // context marker prevents an ambient variable from replacing the gate child.
 const suiteTestChildProgram =
   process.env.ENSEMBLE_SUITE_TEST_CONTEXT === "1" ? process.env.ENSEMBLE_SUITE_TEST_CHILD_PROGRAM : undefined;
+// A live run shares fixtures no single test file can own. Node's test runner
+// evaluates the suite setup module once, in the process that spawns the test
+// files: before the first starts and after the last ends.
+const liveSuiteSetup =
+  process.env.ENSEMBLE_LIVE === "1"
+    ? [`--test-global-setup=${path.resolve(import.meta.dirname, "../dist/test/live/suite-setup.js")}`]
+    : [];
 const child = spawn(
   process.execPath,
-  suiteTestChildProgram === undefined ? ["--test", "--test-reporter=tap", testGlob] : [suiteTestChildProgram],
+  suiteTestChildProgram === undefined
+    ? ["--test", "--test-reporter=tap", ...liveSuiteSetup, testGlob]
+    : [suiteTestChildProgram],
   {
   env: {
     ENSEMBLE_RUN_RECORD_DIR: recordStoreDirectory,

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { assertFixedClaudeVersion, classifyClaudeVersion, classifySupervisorTransition, selectClaudeExecutable, supervisorSnapshot, supervisorLifecycle, type SupervisorIdentity } from "../live/claude-proof-support.js";
+import { waitForCondition } from "../wait-for-condition.js";
 
 const exec = promisify(execFile);
 const before: SupervisorIdentity = { pid: 101, startTicks: "123", cgroup: "0::/old", version: "2.1.318" };
@@ -224,5 +225,83 @@ fi
     } finally {
       await selected.dispose();
     }
+  });
+});
+
+test("a startup between the status and log reads cannot leave a null baseline beside its serving daemon", async () => {
+  await fixture(async root => {
+    const executable = path.join(root, "claude.mjs");
+    const observed = path.join(root, "status-read");
+    const release = path.join(root, "release");
+    await writeFile(executable, `#!${process.execPath}
+import { access, readFile, writeFile } from 'node:fs/promises';
+const exists = file => access(file).then(() => true, () => false);
+if (process.argv[2] === '--version') {
+  console.log('2.1.318 (Claude Code)');
+} else {
+  const pid = await readFile(${JSON.stringify(path.join(root, "daemon.pid"))}, 'utf8').catch(() => null);
+  if (!(await exists(${JSON.stringify(observed)}))) {
+    await writeFile(${JSON.stringify(observed)}, '');
+    const deadline = Date.now() + 20_000;
+    while (!(await exists(${JSON.stringify(release)}))) {
+      if (Date.now() >= deadline) throw new Error('status barrier was never released');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  }
+  console.log(pid === null ? 'not running' : 'pid: ' + pid);
+  process.exitCode = pid === null ? 1 : 0;
+}
+`, { mode: 0o755 });
+    const env = { ...process.env, CLAUDE_CONFIG_DIR: root };
+    const pending = supervisorSnapshot(executable, env, "current");
+    try {
+      // The first CLI has already observed absence. Publish a serving
+      // identity and its log before that CLI returns its saved result.
+      await waitForCondition(() => access(observed).then(() => true, () => false), "the first status read", 20_000);
+      await writeFile(path.join(root, "daemon.log"), start({ ...before, pid: process.pid }));
+      await writeFile(path.join(root, "daemon.pid"), String(process.pid));
+    } finally {
+      await writeFile(release, "");
+    }
+    const baseline = await pending;
+    const later = await supervisorSnapshot(executable, env, baseline.offset);
+    assert.equal(baseline.identity.pid, process.pid);
+    assert.equal(baseline.lifecycle.filter(row => row.event === "start").length, 1);
+    assert.equal(assertFixedClaudeVersion(baseline, later, "startup barrier"), "unchanged");
+  });
+});
+
+test("snapshot log discovery follows the worker HOME when CLAUDE_CONFIG_DIR is unset", async () => {
+  await fixture(async root => {
+    await mkdir(path.join(root, ".claude"));
+    const executable = path.join(root, "claude");
+    await writeFile(executable, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '2.1.318 (Claude Code)\\n'
+else
+  printf 'pid: ${process.pid}\\n'
+fi
+`, { mode: 0o755 });
+    await writeFile(path.join(root, ".claude/daemon.log"), start({ ...before, pid: process.pid }));
+    const snapshot = await supervisorSnapshot(executable, { ...process.env, HOME: root, CLAUDE_CONFIG_DIR: undefined }, "current");
+    assert.equal(snapshot.identity.version, before.version);
+    assert.equal(snapshot.versionEvidence, "matching");
+  });
+});
+
+test("both supervisor boundary proofs name an unavailable suite daemon before selecting an executable", async () => {
+  await fixture(async root => {
+    const record = path.join(root, "suite.json");
+    await writeFile(record, JSON.stringify({
+      home: root, origin: "unavailable",
+      attempt: { reason: "fixture startup refused", status: { code: 1, pid: null, stdout: "not running", stderr: "" }, exit: { code: 3, signal: null, error: null } }
+    }));
+    const result = await exec(process.execPath, ["--test", "--test-reporter=tap", path.resolve("dist/test/live/claude-supervisor-boundary.live.test.js")], {
+      env: { ...process.env, PATH: root, NODE_TEST_CONTEXT: undefined, ENSEMBLE_LIVE: "1", ENSEMBLE_LIVE_SUITE_CLAUDE_DAEMON: record }
+    }).then(() => assert.fail("the missing shared daemon must refuse both proofs"), (error: unknown) => error as { stdout: string });
+    assert.match(result.stdout, /# fail 2/);
+    assert.match(result.stdout, /UNPROVEN: shared Claude daemon unavailable/);
+    assert.match(result.stdout, /fixture startup refused/);
+    assert.doesNotMatch(result.stdout, /hookFailed|ENOENT|not found on PATH/);
   });
 });

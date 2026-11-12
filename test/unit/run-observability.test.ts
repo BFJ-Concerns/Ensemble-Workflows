@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
@@ -161,3 +161,40 @@ test("resource preflight refusals on every engine record known absence and compl
   }
 });
 
+for (const setting of ["XDG_DATA_HOME", "ENSEMBLE_STATUS_DIR"] as const) {
+  test(`status announcement is absolute and readable with relative ${setting}`, async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-relative-status-"));
+    try {
+      const stdout = new Capture();
+      const stderr = new Capture();
+      const relative = path.relative(process.cwd(), path.join(directory, "relative"));
+      await mkdir(path.join(directory, "relative"));
+      let observed = false;
+      const engine: EngineAdapter = {
+        name: "codex", concurrency: 1, schedule: async (run) => run(),
+        createInvocation: () => ({ runAttempt: async () => {
+          const file = announcement(stderr, "[status-file] ").status_path!;
+          assert.equal(path.isAbsolute(file), true, file);
+          const snapshot = JSON.parse(await readFile(file, "utf8"));
+          assert.equal(typeof snapshot.runId, "string");
+          observed = true;
+          return answer("done");
+        } }),
+        close: async () => {}
+      };
+      const script = path.join(directory, "workflow.js");
+      await writeFile(script, 'export const meta = { name: "relative-status" }; return await agent("read status", { engine: "codex" });');
+      assert.equal(await runEnsembleCli([script], {
+        cwd: directory, stdout, stderr, runRecordDir: null,
+        env: { XDG_CONFIG_HOME: directory, XDG_DATA_HOME: path.join(directory, "data"), [setting]: relative },
+        createRuntime: async (options) => new EnsembleRuntime({ ...options, engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 })
+      }), 0, stderr.text);
+      assert.equal(observed, true, stderr.text);
+      const file = announcement(stderr, "[status-file] ").status_path!;
+      assert.equal(path.dirname(file), path.join(directory, "relative", ...(setting === "XDG_DATA_HOME" ? ["ensemble", "status"] : [])));
+      await assert.rejects(readFile(file));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}

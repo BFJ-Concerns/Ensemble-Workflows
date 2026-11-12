@@ -38,8 +38,9 @@ entry. Explicit status directories must already exist. Writes
 are atomic, so a reader never sees a half-written file.
 
 After the first successful write and before workflow execution, the CLI prints
-`[status-file] {"run_id":…, "status_path":…}` on stderr. A supervisor can
-follow that path without knowing the working directory's layout or searching
+`[status-file] {"run_id":…, "status_path":…}` on stderr. `status_path` is
+absolute, including when `XDG_DATA_HOME` or `ENSEMBLE_STATUS_DIR` is relative.
+A supervisor can follow that path without knowing the working directory's layout or searching
 the archive. Its `run_id` is the public `cwd:<namespace-hash>:<run-uuid>`
 identity, identical to the archive announcement and manifest when recording is
 on, and namespaced the same way when recording is off. The snapshot's `runId`

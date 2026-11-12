@@ -735,27 +735,17 @@ export interface OpenCodeEngineAdapterOptions {
 export class OpenCodeEngineAdapter implements EngineAdapter {
   readonly name = "opencode" satisfies EngineName;
   readonly concurrency: number;
-  /**
-   * Measured 2026-08-27 against opencode 1.18.4: its schema exposes
-   * `permission.task` and `permission.skill`, and
-   * `OPENCODE_CONFIG_CONTENT` is a per-process merge overlay. The surface
-   * measurement is not worker-boundary proof, though: the available live
-   * dispatches timed out before producing output, so this unit has not shown
-   * that either explicit deny stops a worker. Both capabilities therefore
-   * fail loud pre-spawn rather than dispatch a worker under a restriction the
-   * author believes is in force. A successful deny witness re-opens this
-   * judgement.
-   */
+  /** A strip refuses before dispatch until its worker-boundary enforcement is established. */
   readonly capabilities: EngineCapabilityTable = {
     skills: {
       route: "unsupported",
       detail:
-        "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.skill=deny, but worker-boundary enforcement is unproven"
+        "worker-boundary enforcement of permission.skill=deny through OPENCODE_CONFIG_CONTENT is unproven"
     },
     agents: {
       route: "unsupported",
       detail:
-        "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.task=deny, but worker-boundary enforcement is unproven"
+        "worker-boundary enforcement of permission.task=deny through OPENCODE_CONFIG_CONTENT is unproven"
     }
   };
 

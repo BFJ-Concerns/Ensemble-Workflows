@@ -886,7 +886,9 @@ test("opencode refuses unproven capability strips before the runner starts", asy
           assert.ok(error instanceof CapabilityStripUnsupportedError);
           assert.match(error.message, new RegExp(`cannot strip the "${capability}" capability`));
           assert.match(error.message, /OPENCODE_CONFIG_CONTENT/);
-          assert.match(error.message, /worker-boundary enforcement is unproven/);
+          assert.match(error.message, /worker-boundary enforcement .* is unproven/);
+          assert.match(error.message, /Remove the strip request, or use an engine that can enforce it/);
+          assert.doesNotMatch(error.message, /measured|2026-08-27|1\.18\.4/);
           return true;
         }
       );

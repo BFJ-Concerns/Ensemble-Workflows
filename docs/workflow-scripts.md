@@ -367,7 +367,11 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   The agent record's enforcement detail names the deny rules and `env`
   variables, the Claude Code version that was probed, and which tools were
   denied or left in place. For `skills`, it also states this follow-up boundary.
-- **opencode** rejects any strip before the worker spawns.
+- **opencode** rejects any strip before the worker spawns. Its permission
+  overlay was inspected on opencode 1.18.4: `OPENCODE_CONFIG_CONTENT` merged
+  `permission.skill=deny` and `permission.task=deny`, but the live workers
+  timed out before demonstrating that these denies took effect. This is
+  historical configuration evidence, not proof about the installed version.
 
 Each agent record lists the requested strips and how each was enforced.
 

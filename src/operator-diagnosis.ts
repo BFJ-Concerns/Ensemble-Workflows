@@ -6,6 +6,7 @@ import {
   HoldTimeoutError,
   PreSpawnAuthorError,
   RunRecordStartError,
+  StopUnconfirmedError,
   TurnTimeoutError,
   agentIdentityOf,
   appServerDiagnosticOf,
@@ -146,6 +147,12 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
     // leg was interrupted by teardown, not failed by its own work — a
     // stack here points into the author's parallel() call and lies.
     return [`${error.message} — this worker was interrupted by the run ending, not by its own failure`];
+  }
+  if (error instanceof StopUnconfirmedError) {
+    // The message already names each scope or process group and what was
+    // observed there; the operator needs those names, not a stack into the
+    // teardown that could not confirm them gone.
+    return [stripControl(error.message)];
   }
   if (error instanceof Error && error.name === "AppServerExitedError") {
     // Discriminate how the server died from the evidence the error already

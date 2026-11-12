@@ -8,6 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { StopUnconfirmedError } from "../../src/errors.js";
 import {
   NoWorkerScopes,
   SystemdWorkerScopes,
@@ -146,6 +147,58 @@ test("close stops a scope whose placement was still pending when close began", a
     member.kill("SIGKILL");
     await scopes.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("stop ends one group's scope, confirms it empty and releases the group, leaving every other group running", async () => {
+  const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `test-${process.pid}-stop` });
+  const stopped = sleeper();
+  const kept = sleeper();
+  try {
+    const first = await scopes.place("worker-1", [stopped.pid!]);
+    const second = await scopes.place("worker-2", [kept.pid!]);
+    assert.ok(first.kind === "placed" && second.kind === "placed", JSON.stringify([first, second]));
+
+    assert.deepEqual(await scopes.stop("worker-1"), { kind: "stopped" });
+    assert.equal(isLive(stopped.pid!), false, "stopped is an observation: the scope's process is gone when stop returns");
+    assert.equal(isLive(kept.pid!), true);
+    assert.equal(await cgroupUnit(kept.pid!), second.unit);
+    // A group with no scope has nothing of the manager's to stop, whether it was released or never placed.
+    assert.deepEqual(await scopes.stop("worker-1"), { kind: "stopped" });
+    assert.deepEqual(await scopes.stop("never-placed"), { kind: "stopped" });
+
+    await scopes.close();
+    assert.equal(isLive(kept.pid!), false, "close returns only once every scope is empty");
+  } finally {
+    for (const child of [stopped, kept]) {
+      child.kill("SIGKILL");
+    }
+    await scopes.close();
+  }
+});
+
+test("a scope whose emptiness cannot be observed is reported unconfirmed, stays owned, and fails close by name", async () => {
+  // `false` stands in for a systemctl that cannot reach the manager: the
+  // stop has no cgroup to read, and says so instead of assuming the best.
+  const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `test-${process.pid}-unconfirmed`, systemctlBin: "false" });
+  const member = sleeper();
+  try {
+    const placed = await scopes.place("worker-1", [member.pid!]);
+    assert.ok(placed.kind === "placed", JSON.stringify(placed));
+
+    const outcome = await scopes.stop("worker-1", { stopGraceMs: 50, confirmMs: 50 });
+    assert.equal(outcome.kind, "unconfirmed", JSON.stringify(outcome));
+    assert.ok(outcome.kind === "unconfirmed");
+    assert.match(outcome.reason, new RegExp(`^the manager did not report the processes of ${placed.unit.replaceAll(".", "\\.")}: `));
+    assert.equal(isLive(member.pid!), true, "nothing was signalled on the strength of a guess");
+
+    await assert.rejects(scopes.close(), (error: unknown) => {
+      assert.ok(error instanceof StopUnconfirmedError);
+      assert.deepEqual(error.unconfirmed.map(({ owner }) => owner), [placed.unit]);
+      return true;
+    });
+  } finally {
+    member.kill("SIGKILL");
   }
 });
 

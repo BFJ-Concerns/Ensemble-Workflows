@@ -345,10 +345,14 @@ cannot handle (SIGKILL) leaves no sentinel, so a supervisor should keep a
 fallback timer behind its file watch.
 
 The sentinel has `kind: "completion_sentinel"` and its own `schema_version`
-(currently `3`), and carries:
+(currently `4`), and carries:
 
 - `outcome`, `exit_code`, and `ended_at`.
 - `error`: the `{ kind, message }` that ended the run, or `null`.
+- `teardown_error`: the `{ kind, message }` saying why the run failed to end
+  cleanly, or `null` when its teardown ended cleanly. A `StopUnconfirmedError`
+  here means the run could not confirm that processes it owns had ended; the
+  message names each scope unit or process group and what was observed there.
 - `workers`: `{ done, failed, cut_short, unsettled }`, or `null` when the
   launcher never got far enough to count any. The tally partitions the run's
   workers: `done` and `failed` count workers that settled on their own,
@@ -365,9 +369,11 @@ The sentinel has `kind: "completion_sentinel"` and its own `schema_version`
 - `integrity.sentinel_sha256`: the sentinel's own digest, computed by the same
   recipe as the manifest's (below).
 
-A teardown that fails after a clean script body is a failed ending — workers
-may be left alive or the archive unsealed — so the sentinel reports
-`outcome: "failed"` with the teardown error, and the process exits non-zero.
+A teardown that fails is a failed ending — workers or their commands may be
+left alive, or the archive unsealed — so the sentinel reports
+`outcome: "failed"` with the reason in `teardown_error`, and the process exits
+non-zero. After a clean script body `error` carries the same reason. A run
+that had already failed keeps what ended it in `error`.
 
 ## Durable run record
 
@@ -512,7 +518,7 @@ carries:
   `agent_record`.
 
 The completion sentinel and the live status file are separate artefact
-families with their own schema versions (`3` and `5`), described above.
+families with their own schema versions (`4` and `5`), described above.
 
 ### Manifest
 
@@ -855,6 +861,17 @@ The fields present throughout a record's lifetime are:
     are `null`. Any transcript is retained in the attempt's transcript
     references. The dispatch command's exit is separate from `worker_exit`,
     which describes the worker process itself.
+    An attempt that stopped a command of its own while the script was still
+    running, and could not establish that everything the command had started
+    was gone, supplies `diagnostics.unestablishedStops`: one
+    `{ owner, reason }` per command, where `owner` names the systemd scope
+    unit or process group and `reason` says what was observed. Either
+    processes there outlived SIGTERM and SIGKILL, or the command was cut
+    short where no scope held it, so a process it had started outside its
+    process group was never visible. The key is absent when the attempt has
+    no such stop. It does not change the attempt's `status` or the run's
+    outcome. A command the run's own ending cut short is reported by the
+    completion sentinel's `teardown_error` instead.
   - `app_server_diagnostic`: Codex's own account of the failure,
     `{ code, http_status_code, message, payload }`. `code` is the condition
     Codex named; `http_status_code` is the provider status Codex forwarded

@@ -1,15 +1,18 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+import { CommandContainment, unestablishedStopDiagnostics, type CommandStop, type ContainedCommand } from "./contained-command.js";
 import { launchEnvironment } from "./engine-environment.js";
 import {
   EngineShutdownError,
   TurnTimeoutError,
   attachFailedTurnResult,
   attachPartialWorkerText,
-  attachWorkerExitStatus
+  attachWorkerExitStatus,
+  failedTurnResultOf,
+  partialWorkerTextOf
 } from "./errors.js";
 import { subtractUsage } from "./usage-summary.js";
+import { createWorkerScopes, DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
 
 import type {
   EngineAttemptContext,
@@ -22,7 +25,7 @@ import type { EngineTranscriptArtifact, RuntimeEvent, TokenUsageBreakdown, Token
 
 export interface OpenCodeRunner {
   run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult>;
-  exportSession(sessionId: string, cwd: string, signal?: AbortSignal): Promise<OpenCodeSessionExportResult>;
+  exportSession(sessionId: string, cwd: string, signal?: AbortSignal, onCommandStop?: (stop: CommandStop) => void): Promise<OpenCodeSessionExportResult>;
 }
 
 export type OpenCodeSessionExportResult =
@@ -41,12 +44,14 @@ export interface OpenCodeRunOptions {
   // Omitted → the run subprocess is not killed on a deadline (unbounded).
   timeoutMs?: number;
   variant?: string;
-  /** Aborting terminates the subprocess (SIGTERM, escalating to SIGKILL). */
+  /** Aborting stops the command's containment (SIGTERM, escalating to SIGKILL). */
   signal?: AbortSignal;
   /** Called once, on the run's first stdout chunk — the earliest observable sign of worker output. */
   onFirstData?: () => void;
   /** Receives each stdout chunk so live accounting can advance before exit. */
   onData?: (chunk: string) => void;
+  /** Every command stop, including one followed by a thrown runner failure. */
+  onCommandStop?: (stop: CommandStop) => void;
 }
 
 export interface OpenCodeRunResult {
@@ -114,11 +119,13 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
   #bin: string;
   #killGraceMs: number;
   #env: NodeJS.ProcessEnv;
+  #commands: CommandContainment | undefined;
 
-  constructor(bin = "opencode", options: { killGraceMs?: number; workerEnv?: Record<string, string> } = {}) {
+  constructor(bin = "opencode", options: { killGraceMs?: number; workerEnv?: Record<string, string>; commands?: CommandContainment } = {}) {
     this.#bin = bin;
-    this.#killGraceMs = options.killGraceMs ?? 5_000;
+    this.#killGraceMs = options.killGraceMs ?? DEFAULT_STOP_BOUNDS.stopGraceMs;
     this.#env = launchEnvironment("opencode", options.workerEnv);
+    this.#commands = options.commands;
   }
 
   async run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult> {
@@ -143,16 +150,18 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
       args,
       options.cwd,
       this.#env,
+      this.#commands,
       options.timeoutMs,
       this.#killGraceMs,
       options.signal,
       options.onFirstData,
-      options.onData
+      options.onData,
+      options.onCommandStop
     );
   }
 
-  async exportSession(sessionId: string, cwd: string, signal?: AbortSignal): Promise<OpenCodeSessionExportResult> {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, 30_000, this.#killGraceMs, signal);
+  async exportSession(sessionId: string, cwd: string, signal?: AbortSignal, onCommandStop?: (stop: CommandStop) => void): Promise<OpenCodeSessionExportResult> {
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, this.#commands, 30_000, this.#killGraceMs, signal, undefined, undefined, onCommandStop);
     if (result.exitCode !== 0) {
       return {
         status: "command-failed",
@@ -194,7 +203,25 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
   runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     // close() must be able to await a live attempt so cancellation is not
     // "torn down under a caller still running": track the settlement.
-    const settlement = this.#runAttempt(context);
+    const stops: CommandStop[] = [];
+    const startedAt = Date.now();
+    const settlement = this.#runAttempt(context, (stop) => stops.push(stop)).then(
+      (result) => ({ ...result, diagnostics: { ...result.diagnostics, ...unestablishedStopDiagnostics(stops) } }),
+      (error: unknown) => {
+        if (error instanceof Error && stops.some((stop) => stop.attemptAccount !== null)) {
+          // Preserve a timeout's complete evidence. A runner/export failure
+          // without a result still carries the stops observed before it threw.
+          const text = partialWorkerTextOf(error) ?? "";
+          const result = failedTurnResultOf(error) ?? {
+            text, deltaText: text, durationMs: Date.now() - startedAt,
+            firstDeltaMs: null, items: {}, tokenUsageEvents: []
+          };
+          result.diagnostics = { ...result.diagnostics, ...unestablishedStopDiagnostics(stops) };
+          attachFailedTurnResult(error, result);
+        }
+        throw error;
+      }
+    );
     this.#settlement = settlement;
     return settlement.finally(() => {
       if (this.#settlement === settlement) {
@@ -203,7 +230,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     });
   }
 
-  async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
+  async #runAttempt(context: EngineAttemptContext, onCommandStop: (stop: CommandStop) => void): Promise<EngineAttemptResult> {
     this.#reportedUsage = null;
     let streamBuffer = "";
     const streamEvents: unknown[] = [];
@@ -230,6 +257,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {}),
       ...(context.onLiveEvidence !== undefined ? { onFirstData: context.onLiveEvidence } : {}),
       onData,
+      onCommandStop,
       signal: this.#abortController.signal
     });
     const parsedRun = parseRunEvents(run.stdout);
@@ -274,7 +302,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     } else {
       let exportResult: OpenCodeSessionExportResult;
       try {
-        exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd, this.#abortController.signal);
+        exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd, this.#abortController.signal, onCommandStop);
       } catch (error) {
         if (error instanceof Error) {
           attachPartialWorkerText(error, fallback);
@@ -500,111 +528,152 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
   }
 }
 
-function runProcess(
-  command: string,
+async function runProcess(
+  file: string,
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
+  commands: CommandContainment | undefined,
   timeoutMs: number | undefined,
-  killGraceMs = 5_000,
+  killGraceMs: number,
   abortSignal?: AbortSignal,
   onFirstData?: () => void,
-  onData?: (chunk: string) => void
+  onData?: (chunk: string) => void,
+  onCommandStop?: (stop: CommandStop) => void
+): Promise<OpenCodeRunResult> {
+  const startedAt = Date.now();
+  if (abortSignal?.aborted) {
+    return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
+  }
+  // The default registry supplies run-owned containment. A standalone runner
+  // owns the same machinery for this command and closes it before returning.
+  const scopes = commands === undefined ? await createWorkerScopes() : undefined;
+  const containment = commands ?? new CommandContainment(scopes!);
+  try {
+    const command = await containment.contain(`opencode ${args[0]}`, file, args, {
+      cwd, env, stdio: ["ignore", "pipe", "pipe"]
+    });
+    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop);
+  } finally {
+    if (scopes !== undefined) {
+      try {
+        await containment.close();
+      } finally {
+        await scopes.close();
+      }
+    }
+  }
+}
+
+/** Stop ownership before waiting for pipes: a descendant may hold them open. */
+function collectProcess(
+  command: ContainedCommand,
+  startedAt: number,
+  timeoutMs: number | undefined,
+  killGraceMs: number,
+  abortSignal?: AbortSignal,
+  onFirstData?: () => void,
+  onData?: (chunk: string) => void,
+  onCommandStop?: (stop: CommandStop) => void
 ): Promise<OpenCodeRunResult> {
   return new Promise((resolve, reject) => {
-    const startedAt = Date.now();
-    const child = spawn(command, args, {
-      cwd,
-      env,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
+    const child = command.child;
     const stdout: string[] = [];
     const stderr: string[] = [];
     let settled = false;
-    let exited = false;
+    // Placement is asynchronous. The command may have exited and its pipes
+    // closed before containment handed it back, so events alone are not a
+    // complete lifecycle account.
+    let exited = child.exitCode !== null || child.signalCode !== null;
+    let closed = exited && (child.stdout?.closed ?? true) && (child.stderr?.closed ?? true);
+    let stopped = false;
     let deadlineExpired = false;
-    let killEscalation: NodeJS.Timeout | undefined;
-    // Shared by the deadline and the abort signal: SIGTERM first, and a
-    // worker that ignores it is SIGKILLed after the grace period.
-    const terminate = (): void => {
-      if (settled || exited || killEscalation !== undefined) {
-        return;
+    let stopping: Promise<void> | undefined;
+    let drainTimer: NodeJS.Timeout | undefined;
+    let processError: Error | undefined;
+    let exitCode: number | null = child.exitCode;
+    let exitSignal: NodeJS.Signals | null = child.signalCode;
+
+    const settle = (): void => {
+      if (settled || !stopped || !closed) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(drainTimer);
+      abortSignal?.removeEventListener("abort", terminate);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      // An unconfirmed stop must not leave the child's handle holding up the
+      // run's diagnostic. The attempt or run accounts for the stop.
+      child.unref();
+      if (processError !== undefined) {
+        reject(processError);
+      } else {
+        resolve({ exitCode, signal: exitSignal, stdout: stdout.join(""), stderr: stderr.join(""),
+          durationMs: Date.now() - startedAt, deadlineExpired });
       }
-      child.kill("SIGTERM");
-      killEscalation = setTimeout(() => {
-        child.kill("SIGKILL");
-      }, killGraceMs);
-      killEscalation.unref();
     };
-    // No timeoutMs → the subprocess is not killed on a deadline; it runs to completion.
-    const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
+    const stop = (): void => {
+      stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then((observation) => {
+        // Delivery precedes settlement, so errors and ordinary results alike
+        // retain the account. The engine passes an attempt-local collector.
+        onCommandStop?.(observation);
+        stopped = true;
+        // Even an unavailable/refused scope or an unconfirmed stop cannot
+        // let an escaped pipe holder block the run's teardown report.
+        if (!closed) {
+          drainTimer = setTimeout(() => { closed = true; settle(); }, 1_000);
+        }
+        settle();
+      });
+    };
+    const terminate = (): void => {
+      if (!settled) stop();
+    };
+    // Exit ends execution time; draining a completed process is not a timeout.
+    const timeout = timeoutMs === undefined || exited ? undefined : setTimeout(() => {
       if (!settled && !exited) {
         deadlineExpired = true;
-        terminate();
+        stop();
       }
     }, timeoutMs);
 
-    if (abortSignal?.aborted === true) {
-      terminate();
-    } else {
-      abortSignal?.addEventListener("abort", terminate, { once: true });
-    }
-
     let firstDataSeen = false;
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
       if (!firstDataSeen) {
         firstDataSeen = true;
-        // Liveness reporting is observability; it must never fail the run.
-        try {
-          onFirstData?.();
-        } catch {
-          // Swallowed deliberately.
-        }
+        try { onFirstData?.(); } catch { /* Observability cannot fail a worker. */ }
       }
-      try {
-        onData?.(chunk);
-      } catch {
-        // Live accounting is observability; it must never affect the worker.
-      }
+      try { onData?.(chunk); } catch { /* Live accounting cannot fail a worker. */ }
       stdout.push(chunk);
     });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => stderr.push(chunk));
     child.on("error", (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
+      processError = error;
       clearTimeout(timeout);
-      clearTimeout(killEscalation);
-      abortSignal?.removeEventListener("abort", terminate);
-      reject(error);
+      stop();
     });
-    // Exit ends the execution deadline. Close can arrive later while pipes
-    // drain, and must not turn an already completed process into a timeout.
-    child.on("exit", () => {
+    child.on("exit", (code, signal) => {
       exited = true;
+      exitCode = code;
+      exitSignal = signal;
       clearTimeout(timeout);
-      clearTimeout(killEscalation);
+      // A normally exited engine can leave live shell commands behind too.
+      stop();
     });
-    child.on("close", (exitCode, signal) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
+    child.on("close", (code, signal) => {
+      closed = true;
+      exitCode = code;
+      exitSignal = signal;
       clearTimeout(timeout);
-      clearTimeout(killEscalation);
-      abortSignal?.removeEventListener("abort", terminate);
-      resolve({
-        exitCode,
-        signal,
-        stdout: stdout.join(""),
-        stderr: stderr.join(""),
-        durationMs: Date.now() - startedAt,
-        deadlineExpired
-      });
+      stop();
+      settle();
     });
+    abortSignal?.addEventListener("abort", terminate, { once: true });
+    if (exited) stop();
+    // Containment setup is asynchronous; cancellation can race the hand-off.
+    if (abortSignal?.aborted) terminate();
   });
 }
 

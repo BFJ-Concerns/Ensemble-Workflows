@@ -1038,7 +1038,7 @@ test("ordinary budget refusals locate the call without admitting a worker", asyn
         const reason = ceiling === 0
           ? "Token budget for codex is 0, which admits no dispatch"
           : "Token budget exhausted for codex: spent 7 of 5 tokens";
-        assert.equal(error.message, `${reason}; refused ${admission}`);
+        assert.equal(error.message, `${reason}; remaining 0; refused ${admission}`);
         return true;
       });
       assert.deepEqual(transport.openedThreads, []);

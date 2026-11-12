@@ -3630,7 +3630,7 @@ test("the durable surfaces name what ended a failed run, discriminating one caus
       name: "budget-refusal",
       source: `export const meta = { name: "cause-budget" };\nawait agent("hi", { engine: "codex" });`,
       kind: "BudgetExceededError",
-      message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
+      message: /Token budget for codex is 0, which admits no dispatch; remaining 0; refused dispatch/
     },
     {
       name: "budget-refusal-parallel",
@@ -3638,7 +3638,7 @@ test("the durable surfaces name what ended a failed run, discriminating one caus
 await parallel([() => agent("hi", { engine: "codex", label: "blocked", identity: true })]);
 return { continuedAfterBudgetRefusal: true };`,
       kind: "BudgetExceededError",
-      message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
+      message: /Token budget for codex is 0, which admits no dispatch; remaining 0; refused dispatch/
     },
     {
       name: "budget-refusal-pipeline",
@@ -3646,7 +3646,7 @@ return { continuedAfterBudgetRefusal: true };`,
 await pipeline(["hi"], (prompt) => agent(prompt, { engine: "codex", label: "blocked" }));
 return { continuedAfterBudgetRefusal: true };`,
       kind: "BudgetExceededError",
-      message: /Token budget for codex is 0, which admits no dispatch; refused dispatch/
+      message: /Token budget for codex is 0, which admits no dispatch; remaining 0; refused dispatch/
     }
   ] as const;
 

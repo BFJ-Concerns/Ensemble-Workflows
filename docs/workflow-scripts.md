@@ -157,8 +157,9 @@ several of a call's options fail the option check, one error names them all).
 
 A budget refusal (`BudgetExceededError`) also propagates when a dispatch or
 session turn is not admitted. If uncaught, it fails the run; the manifest and
-completion sentinel record the refusal as the run's error. When a fallback
-engine's budget refuses re-admission, the error also names every earlier
+completion sentinel record the refusal as the run's error. The message names
+the refused call, spend, ceiling and remaining amount (zero when exhausted).
+When a fallback engine's budget refuses re-admission, the error also names every earlier
 refused target, its classification rule and a bounded diagnostic. These
 accounts reach the partial envelope and stderr, so the budget refusal stays
 legible beside the failures that advanced the chain.

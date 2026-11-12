@@ -15,6 +15,17 @@ before workflow execution.
 Where these files live, and how to turn them off, is covered in
 [Configuration](configuration.md).
 
+## Schema versions
+
+Each artefact family is versioned independently. These are the versions the
+runtime writes:
+
+| Artefact family | Version field | Current version |
+|---|---|---|
+| [Durable run records](#run-record-schema) | `schema_version` | `6` |
+| [Completion sentinel](#completion-sentinel) | `schema_version` | `4` |
+| [Live status](#ensemblerun-uuidlocaljson-schema) | `schema` | `5` |
+
 ## Live status
 
 While a run is active it publishes a JSON snapshot of what it is doing —
@@ -82,10 +93,11 @@ you were not built for. A number names exactly one shape: it rises by one with
 any change to what this section declares — a field added, removed or renamed,
 a field's type or meaning changed, or a value added to a set a reader switches
 on, such as a worker's `state`, the `kind` of what it waits on, or the `gate`
-of an admission wait. A run writes the current schema only.
+of an admission wait. A run writes only the live status version in
+[Schema versions](#schema-versions).
 
-Schema 5 gives a queued worker an admission wait naming the limit holding it,
-and publishes the run-wide agent ceiling; in schema 4 a non-null wait was
+The current schema gives a queued worker an admission wait naming the limit
+holding it, and publishes the run-wide agent ceiling; in schema 4 a non-null wait was
 always a background task. Schema 4 finishes every worker with one of four
 dispositions and counts each. Schema 3 finished workers as `done` or `failed`
 only, so a worker the run's ending tore down read as failed; schema 2 contains
@@ -93,7 +105,7 @@ only live workers.
 
 Each status file contains one JSON object with these fields:
 
-- `schema`: `5`.
+- `schema`: the live status version in [Schema versions](#schema-versions).
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
 - `owner`: object with string `host`, the publishing host name; numeric `pid`,
@@ -210,9 +222,11 @@ A finished worker waits on nothing.
 
 Example:
 
+This illustrative payload omits `schema`; its value is the live status
+version in [Schema versions](#schema-versions).
+
 ```json
 {
-  "schema": 5,
   "runId": "run-01HZY7V4Q8P2",
   "pid": 43122,
   "archiveDir": null,
@@ -345,7 +359,7 @@ cannot handle (SIGKILL) leaves no sentinel, so a supervisor should keep a
 fallback timer behind its file watch.
 
 The sentinel has `kind: "completion_sentinel"` and its own `schema_version`
-(currently `4`), and carries:
+from [Schema versions](#schema-versions), and carries:
 
 - `outcome`, `exit_code`, and `ended_at`.
 - `error`: the `{ kind, message }` that ended the run, or `null`.
@@ -508,8 +522,9 @@ Every record document — the JSON files described below, as opposed to the
 archived workflow source, canonical arguments, transcripts, and diffs —
 carries:
 
-- `schema_version`: currently `6`. A reader built for an earlier version should
-  not read a version-6 record as one: version 6 gives a `cost_rollup` leaf with
+- `schema_version`: the durable run record version in [Schema versions](#schema-versions).
+  A reader built for an earlier version should not interpret a current record
+  as one: the current version gives a `cost_rollup` leaf with
   no figures the absence reason its attempts' entries call for, and books no
   leaf for an agent that ran no attempt. Version 5 introduced listing an
   abandoned attempt in `attempts` and marking each `cost_rollup` leaf complete
@@ -518,13 +533,13 @@ carries:
   `agent_record`.
 
 The completion sentinel and the live status file are separate artefact
-families with their own schema versions (`4` and `5`), described above.
+families; their versions are listed in [Schema versions](#schema-versions).
 
 ### Manifest
 
 `manifest.json` has these top-level fields:
 
-- `schema_version`: `6`.
+- `schema_version`: the durable run record version in [Schema versions](#schema-versions).
 - `kind`: `"run_manifest"`.
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.
@@ -621,7 +636,7 @@ The root's `args.json` and each composed child's
 
 | Field | Root (`run_args`) | Child (`workflow_args`) |
 |---|---|---|
-| `schema_version` | `6` | `6` |
+| `schema_version` | Durable run record version ([table](#schema-versions)) | Durable run record version ([table](#schema-versions)) |
 | `kind` | `"run_args"` | `"workflow_args"` |
 | `value` | For a workflow, a positional string array or the JSON value supplied with `--json-args`; for a direct `agent` invocation, `{ prompt, options }` with the prompt string and parsed agent options | The JSON value passed as the child's arguments to `workflow()` |
 
@@ -638,7 +653,7 @@ handle. A run killed before it seals can have no result file. Its fields are:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | `6` |
+| `schema_version` | Durable run record version ([table](#schema-versions)) |
 | `kind` | `"run_result"` |
 | `status` | `"complete"`, `"failed"`, `"timed-out"`, or `"interrupted"`: the run's outcome, independent of the archive's integrity |
 | `exit_code` | Numeric process exit code: normally `0` on success, `1` on failure or timeout, `130` on SIGINT, or `143` on SIGTERM |
@@ -699,7 +714,7 @@ settled manifest to verify final transcript integrity.
 
 The fields present throughout a record's lifetime are:
 
-- `schema_version`: `6`.
+- `schema_version`: the durable run record version in [Schema versions](#schema-versions).
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, and `concurrency_group` (the engine group of the
   last target admitted: initially the requested engine, and the answering

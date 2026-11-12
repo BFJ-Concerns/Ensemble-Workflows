@@ -159,7 +159,10 @@ Node module. The hooks it can call:
 | `budget`, `worktrees`, `args` | Token accounting, isolated worktrees, and the script's arguments |
 
 [Workflow scripts](docs/workflow-scripts.md) covers every hook and option,
-the differences between engines, and how failures are reported.
+the differences between engines, and how failures are reported. For fan-out,
+pass `identity: true` to agent calls and inspect each result's `failure` field
+to distinguish a failed worker from a genuine `null` answer; see
+[`parallel()` and `pipeline()`](docs/workflow-scripts.md#parallel-and-pipeline).
 
 ## Command line
 
@@ -201,7 +204,9 @@ every run also leaves an archive under `~/.local/share/ensemble/runs/` holding t
 source and arguments, each agent's prompt, attempts, outputs, transcripts,
 and token usage, and a manifest with integrity hashes. A completion sentinel
 file tells a supervising process when, and how, the run ended. See
-[Run records and live status](docs/run-records.md).
+[Run records and live status](docs/run-records.md). Its
+[Token usage and cost](docs/run-records.md#token-usage-and-cost) section defines
+the usage token classes and how each engine's native counts map to them.
 
 ## Documentation
 

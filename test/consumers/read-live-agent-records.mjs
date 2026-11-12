@@ -15,6 +15,18 @@ const expectedKeys = JSON.parse(await readFile(new URL("../fixtures/run-record/v
 const observed = new Map();
 const deadline = Date.now() + Number(timeout);
 const { acknowledge } = createAcknowledgementWriter(acknowledgements);
+const archives = path.join(store, "runs");
+
+async function archiveEntries() {
+  try {
+    // Resource preflight creates and removes probe directories beside runs.
+    // Only enter the archive tree, which may not exist before the run starts.
+    return await readdir(archives, { recursive: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+}
 
 async function readJson(file) {
   try {
@@ -31,15 +43,15 @@ for (;;) {
   // The observer can fail before every expected agent exists. Its cleanup
   // stops this reader without waiting for an archive that cannot complete.
   if (controls.includes("stop")) process.exit(0);
-  const entries = await readdir(store, { recursive: true });
+  const entries = await archiveEntries();
   const manifests = entries.filter((entry) => path.basename(entry) === "manifest.json");
   for (const relative of manifests) {
-    const archive = path.dirname(path.join(store, relative));
+    const archive = path.dirname(path.join(archives, relative));
     const manifest = await readJson(path.join(archive, "manifest.json"));
     if (manifest === null) continue;
-    const agents = entries.filter((entry) => path.basename(entry) === "agent.json" && path.join(store, entry).startsWith(archive + path.sep));
+    const agents = entries.filter((entry) => path.basename(entry) === "agent.json" && path.join(archives, entry).startsWith(archive + path.sep));
     for (const entry of agents) {
-      const file = path.join(store, entry);
+      const file = path.join(archives, entry);
       const agent = await readJson(file);
       if (agent === null) continue;
       const observation = observed.get(file) ?? { id: agent.id, label: agent.label, queued: false, attempts: new Map() };
@@ -93,7 +105,7 @@ for (;;) {
     if (manifest.status === "in-progress" || agents.length !== Number(expectedCount)) continue;
     assert.equal(manifest.status, "complete", "expected the workflow to finish normally");
     for (const entry of agents) {
-      const file = path.join(store, entry);
+      const file = path.join(archives, entry);
       const agent = await readJson(file);
       assert.ok(agent !== null);
       assert.equal(agent.current_attempt, undefined);

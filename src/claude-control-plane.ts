@@ -1190,7 +1190,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       const created = await this.#launch(this.#tmuxBin, [
         ...server, "-f", "/dev/null", "new-session", "-d", "-s", name,
         `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
-      ], { input: null, env: { ...this.#env, [WORKER_MARKER_VARIABLE]: handle.name }, ...(signal === undefined ? {} : { signal }) });
+      ], { input: null, env: this.#env, ...(signal === undefined ? {} : { signal }) });
       if (!created.ok) throw new ClaudeDispatchError(`Claude keep-alive attachment failed: ${boundedEvidence(created.stderr)}`);
       await delay(this.#valveAttachSettleMs, signal);
       const alive = await this.#run(this.#tmuxBin, [...server, "has-session", "-t", name], signal);

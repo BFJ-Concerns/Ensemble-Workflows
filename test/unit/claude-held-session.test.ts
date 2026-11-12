@@ -39,6 +39,7 @@ async function fixture(watchMs = 60_000) {
     const a=process.argv.slice(2), marker=a[1]+'.attached';
     if(a.includes('new-session')) {
       await writeFile(marker,'alive'); await appendFile(${JSON.stringify(actions)},marker+'\\n');
+      await writeFile(${JSON.stringify(mode)}+'.attachment-env',JSON.stringify({worker:process.env.ENSEMBLE_CLAUDE_WORKER??null}));
       if((await readFile(${JSON.stringify(mode)}+'.attachment','utf8').catch(()=>''))==='hold') setInterval(()=>{},1000);
     }
     if(a.includes('has-session')) { try {await access(marker);} catch {process.exit(1);} }
@@ -98,6 +99,9 @@ test("held Claude keeps its attachment, repairs a dead client between turns and 
   const markers = async () => (await readFile(f.actions, "utf8")).trim().split("\n");
   try {
     const first = (await markers())[0]!;
+    assert.deepEqual(JSON.parse(await readFile(f.mode + ".attachment-env", "utf8")), {
+      worker: process.env.ENSEMBLE_CLAUDE_WORKER ?? null
+    }, "an attach client that can start the shared daemon must not receive this session's ownership tag");
     assert.equal((await readFile(first, "utf8")), "alive");
     await rm(first);
     await waitForCondition(async () => (await markers()).length === 2, "idle client to be reattached", 10_000, 10);

@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { createRuntime } from "../../src/index.js";
+import { createRuntime, resolveAmbientSettings } from "../../src/index.js";
 import { validateJsonSchema } from "../../src/schema.js";
 import { archivedAgent, archivedAgents, assertEach, runLauncher } from "./launcher.js";
 import { liveCodexOptions, liveCodexScriptOptions } from "./live-models.js";
@@ -101,6 +101,7 @@ test("live schema agent returns a client-validated nested enum object", liveOpti
 
 test("live one-process runtime runs at least eight turns concurrently", liveOptions, async () => {
   const runtime = await createRuntime({
+    workerEnvironment: resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment,
     concurrencyCaps: { codex: 8 },
     defaultTurnTimeoutMs: 180_000,
     defaultMaxAttempts: 1
@@ -265,6 +266,7 @@ test("live worktree isolation gives autonomous writable agents separate git work
 test("live library runtime raises no server requests to an autonomous writable worker", liveOptions, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-requests-"));
   const runtime = await createRuntime({
+    workerEnvironment: resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment,
     cwd: directory,
     concurrencyCaps: { codex: 1 },
     defaultTurnTimeoutMs: 180_000,

@@ -362,9 +362,37 @@ environment variable:
 | `codexSessionStaleAfterMs` | 60 minutes | When a held Codex session is marked stale |
 | `workerScope` | `worker` | Systemd scope grouping (`worker` or `run`); the library uses the explicit option or its default |
 | `holdScope` | None | Hold scope for the runtime's runs; overrides `ENSEMBLE_HOLD_SCOPE` |
+| `workerEnvironment` | None | Per-engine variables injected above inherited values; pass the resolved `worker_environment` map explicitly |
 | `openCodeModels` | None | The models opencode workers may name, in the registry entry shape; the library reads no machine configuration, so without this option every opencode call is refused |
 | `openCodeModelSource` | `{ kind: "caller" }` | Where `openCodeModels` were declared: `{ kind: "machine-config", file }` for models taken from a machine configuration file, `{ kind: "caller" }` otherwise. An opencode refusal draws on it to say where models are declared |
 
 `firstOutputTimeoutMs` is satisfied by any output-bearing turn frame, not only
 an agent-message delta; the run record's `first_delta_ms` still measures the
 time to the first agent-message delta.
+
+The library inherits the launching process's environment. It reads no machine
+configuration automatically: setting `HOME` or `XDG_CONFIG_HOME` alone does not
+inject variables declared in `worker_environment`. To use those declarations,
+resolve them and pass the map to the runtime:
+
+```js
+import { createRuntime, resolveAmbientSettings } from "./dist/src/index.js";
+
+const cwd = process.cwd();
+const ambient = resolveAmbientSettings({ env: process.env, cwd });
+const runtime = await createRuntime({
+  cwd,
+  workerEnvironment: ambient.workerEnvironment
+});
+try {
+  const reply = await runtime.agent("Reply with one sentence.", { engine: "codex" });
+  console.log(reply);
+} finally {
+  await runtime.close();
+}
+```
+
+Run this example from a built source checkout. The CLI forwards this map
+itself. A library worker reporting a missing credential variable while the
+CLI succeeds from the same home can indicate that the library caller omitted
+`workerEnvironment`. Resolve and forward the map without logging its contents.

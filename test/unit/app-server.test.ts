@@ -3,12 +3,13 @@ import type { RuntimeEvent } from "../../src/types.js";
 import { SystemdWorkerScopes, createWorkerScopes, type WorkerScopes } from "../../src/worker-scopes.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { CodexAppServerTransport, LazyCodexAppServerTransport, appServerErrorFromPayload } from "../../src/app-server.js";
+import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { createDefaultEngineRegistry } from "../../src/engines.js";
 import { createRuntime, EnsembleRuntime } from "../../src/runtime.js";
 import { RunRecordWriter } from "../../src/run-record.js";
@@ -547,6 +548,49 @@ test("the default registry does not leak a Claude worker environment into Codex"
   } finally {
     restoreEnv("ENSEMBLE_TEST_SCOPED", savedScoped);
     await registry.close();
+  }
+});
+
+test("library workers inherit variables and use machine declarations only when forwarded", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-library-worker-env-"));
+  const savedConfigHome = process.env.XDG_CONFIG_HOME;
+  const savedScoped = process.env.ENSEMBLE_TEST_SCOPED;
+  try {
+    const configDirectory = path.join(directory, "ensemble");
+    await mkdir(configDirectory);
+    await writeFile(path.join(configDirectory, "config.json"), JSON.stringify({
+      schema_version: 1,
+      worker_environment: {
+        codex: { ENSEMBLE_TEST_SCOPED: "machine-declared" },
+        claude: { ENSEMBLE_TEST_SCOPED: "other-engine" }
+      }
+    }));
+    process.env.XDG_CONFIG_HOME = directory;
+    const envPath = path.join(directory, "observed.txt");
+    const codexBin = await fakeCodexTurnServer({ envCapturePath: envPath });
+    for (const scenario of ["bare", "inherited", "forwarded"] as const) {
+      delete process.env.ENSEMBLE_TEST_SCOPED;
+      if (scenario !== "bare") process.env.ENSEMBLE_TEST_SCOPED = "inherited";
+      const runtime = await createRuntime({
+        cwd: directory,
+        codexBin,
+        ...(scenario === "forwarded" ? {
+          workerEnvironment: resolveAmbientSettings({ env: process.env, cwd: directory }).workerEnvironment
+        } : {})
+      });
+      try {
+        assert.equal(await runtime.agent("hello", { engine: "codex", maxAttempts: 1 }), "hello");
+        assert.equal(await readFile(envPath, "utf8"), {
+          bare: "__ABSENT__", inherited: "inherited", forwarded: "machine-declared"
+        }[scenario], scenario);
+      } finally {
+        await runtime.close();
+      }
+    }
+  } finally {
+    restoreEnv("XDG_CONFIG_HOME", savedConfigHome);
+    restoreEnv("ENSEMBLE_TEST_SCOPED", savedScoped);
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

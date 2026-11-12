@@ -36,6 +36,7 @@ import {
 import { isPreparedClaudeStrip } from "./claude-tool-surface.js";
 import { subtractUsage } from "./usage-summary.js";
 import { CANONICAL_EFFORT_DOMAIN } from "./engine-option-validation.js";
+import { CLAUDE_ROSTER_ABSENCE_BOUND, CLAUDE_ROSTER_LOSS_REASON } from "./claude-control-plane.js";
 
 import type { CanonicalEffort } from "./engine-option-validation.js";
 import type { ClaudeControlPlane, ClaudeDispatchOptions, ClaudeSessionHandle } from "./claude-control-plane.js";
@@ -47,6 +48,8 @@ import type {
   EngineAttemptResult,
   EngineInvocation,
   EngineSessionTurn,
+  EngineSessionObserver,
+  EngineSessionLoss,
   EngineTurnOptions,
   EngineWorkerSession
 } from "./engines.js";
@@ -106,6 +109,7 @@ export interface ClaudeEngineInvocationOptions {
    * from a different session than the one created, a continuity failure.
    */
   multiTurn?: boolean;
+  sessionObserver?: EngineSessionObserver;
   onEvent?: (event: RuntimeEvent) => void;
   /** Invalidate prepared surfaces when native evidence reports a different served CLI. */
   onVersion?: (version: string) => void;
@@ -163,10 +167,6 @@ export function claudeNativeEffort(effort: string | undefined): string | undefin
 }
 
 let dispatchCounter = 0;
-
-// A worker can briefly drop out of the roster while parking/respawning; only a
-// run of misses is treated as genuine absence (each poll is one roster query).
-const MAX_CONSECUTIVE_ABSENCES = 3;
 
 // How many consecutive polls the daemon must report the session settled
 // (idle/done) while the transcript still fails to prove the turn complete
@@ -274,6 +274,11 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #nudges = 0;
 
   #multiTurn: boolean;
+  /** A worker can fail for first life only until its opening transcript appears. */
+  #nativeLifeObserved = false;
+  #sessionObserver: EngineSessionObserver | undefined;
+  #lost: EngineSessionLoss | null = null;
+  #lossController = new AbortController();
   /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
   #turnPrompt: string;
   /** The current turn's schema — the one thing a session varies per turn. */
@@ -318,6 +323,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#turnPrompt = options.prompt;
     this.#turnSchema = options.options.schema;
     this.#multiTurn = options.multiTurn ?? false;
+    this.#sessionObserver = options.sessionObserver;
     this.#cwd = options.cwd;
     this.#options = options.options;
     this.#controlPlane = options.controlPlane;
@@ -382,12 +388,31 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     this.#assertOpen();
+    if (this.#lost !== null) return this.#lostResult();
     this.#reportedUsage = null;
     this.#usageAtSettlement = null;
     this.#waits = [];
     this.#nudges = 0;
-    let fromIndex = 0;
+    // An existing held session has no evidence window for this attempt
+    // until it starts collecting a pending turn or reads a new input mark.
+    let fromIndex: number | null = this.#multiTurn && this.#handle !== null ? null : 0;
     try {
+      if (this.#multiTurn && this.#nativeLifeObserved && this.#handle !== null && this.#pending === null) {
+        // A send can beat the watch to a disappearance. Confirm the same
+        // three successful absences before touching the valve or transcript.
+        for (let misses = 0; misses < CLAUDE_ROSTER_ABSENCE_BOUND; misses++) {
+          const status = await this.#controlPlane.poll(this.#handle);
+          this.#assertOpen();
+          if (this.#lost !== null) return this.#lostResult();
+          if (status.present) break;
+          if (misses === CLAUDE_ROSTER_ABSENCE_BOUND - 1) {
+            this.#noteLost({ nativeSession: this.#handle.sessionId,
+              reason: CLAUDE_ROSTER_LOSS_REASON, observedAt: Date.now() });
+            return this.#lostResult();
+          }
+          await this.#pollDelay();
+        }
+      }
       const previousFailure = context.previousFailure;
 
       if (this.#refused !== null && this.#handle !== null) {
@@ -476,9 +501,16 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         });
       }
       const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex, error) : null;
-      if (error instanceof Error && evidence !== null) {
+      // Preflight has no collection window. Draining a pending turn does,
+      // even if this turn's prompt is still unsent and the pending state
+      // has been cleared before its delivery failure reaches this catch.
+      const evidence = error instanceof Error && !preparedInterruption && fromIndex !== null
+        ? await this.#tryFailureEvidence(fromIndex, error) : null;
+      if (error instanceof Error && evidence !== null && fromIndex !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
+      }
+      if (this.#lost !== null && !(error instanceof EngineShutdownError)) {
+        return this.#lostResult(evidence, fromIndex ?? 0);
       }
       if (error instanceof EngineShutdownError && evidence !== null) {
         // Interruption remains a rejection — it must neither settle as an
@@ -497,7 +529,11 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // remain available.
         // Other one-shot operational failures end their session. Held-session
         // teardown belongs to close(): redispatch would lose continuity.
-        if (!this.#multiTurn) {
+        if (this.#multiTurn && !this.#nativeLifeObserved && error instanceof ClaudeFirstLifeTimeoutError) {
+          // Nothing ever established this worker. A creating-turn retry
+          // must dispatch afresh rather than keep its dead pending opening.
+          await this.#teardown();
+        } else if (!this.#multiTurn) {
           const keepSession = error instanceof ClaudeValveError && this.#refused !== null && this.#handle !== null &&
             (await this.#controlPlane.poll(this.#handle)).present && await this.#controlPlane.tmuxAvailable();
           if (!keepSession) await this.#teardown();
@@ -525,6 +561,24 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     await this.#closePromise;
   }
 
+  #noteLost(loss: EngineSessionLoss): void {
+    if (!this.#multiTurn || !this.#nativeLifeObserved || this.#closed || this.#lost !== null) return;
+    this.#lost = loss;
+    this.#lossController.abort();
+    try { this.#sessionObserver?.onLost(loss); }
+    catch { /* Observability cannot fail a turn or stop the roster watch. */ }
+  }
+
+  #lostResult(evidence: FailureEvidence | null = null, fromIndex = 0): EngineAttemptResult {
+    const message = this.#lost?.reason ?? "the held Claude worker is gone";
+    const error = new ClaudePollTimeoutError(message);
+    if (evidence !== null) this.#attachWorkerText(error, evidence, fromIndex);
+    return {
+      ...failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)),
+      attemptFailure: { kind: "session-lost", message }
+    };
+  }
+
   async #dispatchAndCollect(
     previousFailure: PreviousAttemptFailure | undefined,
     observers: AttemptObservers
@@ -544,6 +598,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
+      ...(this.#multiTurn ? { keepAlive: true, lossReady: () => this.#nativeLifeObserved,
+        onLost: (loss: EngineSessionLoss) => this.#noteLost(loss) } : {}),
       ...stripSettings,
       ...(this.#options.lean === true ? { lean: true } : {})
     });
@@ -624,6 +680,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * pending.
    */
   async #deliver(handle: ClaudeSessionHandle, submission: Submission, observers: AttemptObservers): Promise<void> {
+    if (this.#lost !== null) throw new ClaudePollTimeoutError(this.#lost.reason);
     if (submission.carriesTurn) this.#collectionMark = submission.mark;
     const outcome = await this.#controlPlane.steer(handle, submission.message);
     if (!outcome.submitted) {
@@ -800,7 +857,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    *
    * `state: blocked` still drives bounded valve recovery, and a transient
    * roster-query failure reports `present: false` only after
-   * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
+   * `CLAUDE_ROSTER_ABSENCE_BOUND`, so a parking/respawning blip does not kill a
    * live worker.
    */
   async #runToCompletion(
@@ -830,6 +887,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null) {
+        // First life establishes the worker even while its opening turn
+        // is unfinished or its receipt is still being checked.
+        this.#nativeLifeObserved = true;
         if (!sawLife && opening !== undefined) {
           // A new session's first life, and the first moment its opening
           // prompt's receipt can be read: nothing the session writes is
@@ -901,7 +961,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 
       if (!status.present) {
         absences += 1;
-        if (absences >= MAX_CONSECUTIVE_ABSENCES) {
+        if (absences >= CLAUDE_ROSTER_ABSENCE_BOUND) {
+          this.#noteLost({ nativeSession: handle.sessionId,
+            reason: CLAUDE_ROSTER_LOSS_REASON, observedAt: Date.now() });
           if (!sawLife && opening !== undefined) {
             throw this.#firstLifeFailure(handle, "worker left the roster before writing an opening transcript");
           }
@@ -998,7 +1060,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 
   /** A poll gap that ends early — by rejecting — the moment close() aborts. */
   #pollDelay(): Promise<void> {
-    return delay(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
+    return delay(this.#pollIntervalMs, AbortSignal.any([this.#abortController.signal, this.#lossController.signal]),
+      () => this.#closed || this.#lost === null ? new EngineShutdownError("claude") : new ClaudePollTimeoutError(this.#lost.reason));
   }
 
   #assertOpen(): void {
@@ -1206,6 +1269,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #teardown(): Promise<void> {
     const handle = this.#handle;
     this.#handle = null;
+    this.#nativeLifeObserved = false;
     // A stopped session runs nothing, so nothing submitted to it is pending,
     // and the turn's prompt is in no session: the next launch submits it anew.
     this.#pending = null;

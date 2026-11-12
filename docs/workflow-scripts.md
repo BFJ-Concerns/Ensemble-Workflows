@@ -571,7 +571,8 @@ and model context still bound prompt size.
 
 ### Retries
 
-Except for Codex output-schema rejections, each
+Except for Codex output-schema rejections and a session's lost worker
+(`session-lost`), each
 attempt that fails is retried, up to `maxAttempts`, with the failure fed
 back to the worker. Claude corrects in the same session through the prompt
 editor. If tmux becomes unavailable, a one-shot correction starts a fresh session, whose
@@ -714,7 +715,10 @@ engine's own diagnostic:
   `other`; this is recognised by `codex.provider-request-rejected`, retried
   in place within `maxAttempts`, and never advances a chain. A recognised
   schema rejection instead keeps `codex.schema-rejected` and settles without
-  retrying, including when forwarded in this envelope. A diagnostic that no
+  retrying, including when forwarded in this envelope. A session turn whose
+  engine found the session's worker gone records `session-lost` under
+  `session.lost` on every engine: one attempt, no retry, and no chain step,
+  since no other target holds the session's context. A diagnostic that no
   rule recognised is recorded with `rule: null`.
 
 With a chain declared, a failure that matches no rule leaves the chain
@@ -838,7 +842,7 @@ await builder.close();
   cache, so a change of model means a new session.
 - **Per turn:** only `schema`. Each turn has the same contract as a one-shot
   `agent()` call — a validated value, the reply text, or `null` — and a failed
-  turn leaves the session usable. Creating a session spawns nothing; the
+  turn leaves the session usable unless its worker was lost. Creating a session spawns nothing; the
   worker starts at the first `send()`. opencode sessions throw before any
   worker spawns.
 - **Identified turns:** `identity: true` at creation makes every `send()`
@@ -851,7 +855,7 @@ await builder.close();
 - **Turns are sequential:** calling `send()` while a previous send is
   unsettled throws, as does `send()` after `close()` or after the run ends.
 - **Concurrency and budget are per turn:** a turn holds its engine slot from
-  dispatch to settlement, an idle session holds nothing, and each turn's
+  dispatch to settlement, an idle session holds no execution slot, and each turn's
   budget check happens at its own dispatch.
 - **Prompt caching:** Claude Code fixes the subscription prompt-cache TTL at
   one hour. Ensemble does not request a TTL for Claude workers. That lifetime
@@ -871,6 +875,33 @@ await builder.close();
   including before the first turn. `handle.staleAfterMs` gives the active
   threshold, or `null` when marking is disabled. A Claude session below this
   idle threshold may still miss the prompt cache.
+- **Claude idle lifetime:** Ensemble keeps a private, input-free attach
+  client for the held worker's lifetime and repairs that attachment if the
+  client exits. Repair failures are reported per session and do not stop
+  observations or repairs for other held workers. It sends no keep-alive
+  model turns. Claude Code 2.1.322
+  retires eligible unattached, settled background sessions after a one-hour
+  grace, checked once a minute; memory pressure can reduce the grace to one
+  minute. Attached clients exempt the worker from that retirement. A daemon
+  crash, external removal or another native failure can still lose the
+  session; an attachment preserves the live conversation, not a backup of it.
+- **Lost workers:** `handle.lost` becomes `true` once the session's engine
+  has found its worker gone for good — not closed by the script or the run.
+  The run says so on stderr when the engine observes it and records a
+  `lost` entry in the manifest's `session_events`, whether or not a turn was
+  running. A send to a lost session still dispatches, fails on one
+  `session-lost` attempt without a retry, and resolves `null`; the context
+  the worker held is gone, so start a fresh session and brief it again.
+  `false` means only that no loss has been observed.
+  On Claude, loss watching starts when the opening transcript appears. A worker
+  that disappears before producing its opening transcript retains
+  `claude-first-life-timeout`, so the creating send can retry or use its
+  fallback chain.
+  On Claude, the roster watch confirms loss after three consecutive
+  successful reads without the worker, then reports it immediately,
+  including between turns. A failed query is not absence, a returning
+  worker resets the count, and intentional close is not loss. The same
+  confirmation applies when a send discovers the missing worker first.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.
@@ -885,7 +916,9 @@ await builder.close();
   the message boundary. Redelivery repeats that framed copy. Tasks without
   edge whitespace arrive as ordinary typed text, so a leading `/skill` line
   expands, including under a `skills` strip. Ensemble overrides `VISUAL` and
-  `EDITOR` only for that attach client and removes its files and tmux server after delivery.
+  `EDITOR` only for that delivery client and removes its files and tmux server
+  after delivery. The separate, input-free lifetime attachment remains until
+  the held session closes.
   It loads no tmux configuration and does not appear among your own sessions.
   Delivery requires a new native user row equal to the message sent (or the
   matching command name and arguments for a slash command). Roster activity

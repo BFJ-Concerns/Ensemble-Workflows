@@ -488,8 +488,24 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         })}\n`);
         return;
       }
+      if (event.method === "session/lost") {
+        // The loss is announced when it is observed, which may be long
+        // before the script's next send learns of it as a failed turn.
+        const engine = typeof event.params.engine === "string" ? event.params.engine : "session";
+        const sessionId = typeof event.params.sessionId === "number" ? event.params.sessionId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const when =
+          typeof event.params.turnInFlight === "number"
+            ? `during turn ${event.params.turnInFlight}`
+            : `while idle after turn ${typeof event.params.turnsSettled === "number" ? event.params.turnsSettled : "?"}`;
+        stderr.write(
+          `[${engine}] session ${sessionId}${label} lost its worker ${when}: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}; ` +
+          "its context is gone and each later send fails with session-lost\n"
+        );
+        return;
+      }
       if (event.method === "claude/workerScopeWatchError") {
-        stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
+        stderr.write(`[claude] session roster watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
         return;
       }
       if (event.method === "claude/launchUnreclaimed") {

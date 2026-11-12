@@ -40,9 +40,46 @@ export interface AttemptFailureEvidence {
   diagnostics: JsonObject | undefined;
 }
 
+/**
+ * The failure kind of a held worker its engine has established is gone
+ * (`EngineAttemptFailure`). One name on every engine, so it is spelt here
+ * once, for the two tables below that read it.
+ */
+const SESSION_LOST_KIND = "session-lost";
+
+/**
+ * The failed-attempt kinds that settle their call at once: the attempt is
+ * recorded and spent like any other, no further attempt runs, and the call
+ * resolves its ordinary failed value. A kind belongs here only when a retry
+ * would meet the same failure by construction, whatever the worker did.
+ */
+const SETTLING_FAILURE_KINDS: ReadonlySet<string> = new Set([
+  // Codex refused the authored schema before generation, and a retry sends the same schema.
+  "CodexSchemaSubsetUnsupportedError",
+  // The held worker no longer exists, and a retry would address the same absent session.
+  SESSION_LOST_KIND
+]);
+
+/**
+ * Whether a failed attempt settles its call without another attempt. The
+ * attempt loops ask this of the failure as the engine raised it — a returned
+ * failure's kind, a thrown error's class name — before diagnosis rewords it
+ * for the operator, and only of a failure that stays on its target: an
+ * availability failure a later chain entry takes has already left.
+ */
+export function settlesWithoutRetry(failure: { kind: string }): boolean {
+  return SETTLING_FAILURE_KINDS.has(failure.kind);
+}
+
 /** Preserve the provider's cause and add the engine's recovery step. */
 export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): AttemptFailureEvidence["failure"] {
   const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
+  // The engine's own observation of its held worker, with no provider
+  // diagnostic behind it to re-read: it keeps its kind whatever its message
+  // or the session's last transcript row says.
+  if (failure.kind === SESSION_LOST_KIND) {
+    return failure;
+  }
   const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
   const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
   // Substrate failures may quote credential errors from recent stderr.
@@ -215,6 +252,13 @@ export function classifyAttemptFailure(evidence: AttemptFailureEvidence): Failur
   }
   if (kind === "ResourcePreflightRefusedError") {
     return { class: "availability", rule: "preflight.resource-denied" };
+  }
+  // A held worker its engine established is gone: the same on every engine.
+  // Recognised, and judged neither class. Availability would start the
+  // turn's prompt on another target, and what the turn lost is the context
+  // the held worker carried, which no other target has.
+  if (kind === SESSION_LOST_KIND) {
+    return { class: "unclassified", rule: "session.lost" };
   }
   switch (evidence.engine) {
     case "codex":

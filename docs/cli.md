@@ -247,6 +247,10 @@ Logs and diagnostics go to stderr. These lines are written there:
 - `[claude] worker scope watch failed; retrying: <reason>` — an unexpected
   background roster-watch error. The watch continues across idle turns and
   retries while Ensemble owns a Claude session.
+- `[<engine>] session <id> (<label>) lost its worker while idle after turn <n>: <reason>; …`
+  — a session's engine found its worker gone for good, reported when the
+  engine observes it; `during turn <n>` replaces the idle clause when a turn
+  was running. See [lost workers](workflow-scripts.md#multi-turn-sessions).
 - `[teardown] stopping workers and their commands` — emitted before waiting
   for teardown when workers are still active or queued, including after a
   script throw, a whole-run timeout, or an early return.

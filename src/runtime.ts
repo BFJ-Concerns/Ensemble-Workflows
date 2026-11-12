@@ -8,7 +8,7 @@ import { effectiveLean, resolveLeanStart } from "./lean-start.js";
 import type { DischargedLeanStart } from "./lean-start.js";
 import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
-import { classifyAttemptFailure, diagnoseAttemptFailure } from "./failure-classification.js";
+import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } from "./failure-classification.js";
 import { fallbackSourceOf } from "./fallback-source.js";
 
 import type { DischargedEnforcement, PreparedStrip } from "./capability-stripping.js";
@@ -27,7 +27,6 @@ import {
   AppServerExitedError,
   attachAgentIdentity,
   BudgetExceededError,
-  CodexSchemaSubsetUnsupportedError,
   describeError,
   EngineShutdownError,
   failedTurnResultOf,
@@ -95,6 +94,7 @@ import type {
   PreviousAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
+  EngineSessionLoss,
   EngineTurnOptions,
   EngineWorkerSession
 } from "./engines.js";
@@ -106,6 +106,7 @@ import type {
   RunRecordWriter,
   RuntimeAgentAttemptRecord,
   RuntimeAgentRecord,
+  SessionEventRecord,
   TerminalErrorRecord
 } from "./run-record.js";
 import { unknownWorktreeRecord } from "./worktree-isolation.js";
@@ -410,6 +411,8 @@ interface WorkerSessionState {
   /** The unsettled send, so close() can await it before finalising the placement. */
   pendingTurn: Promise<unknown> | null;
   closed: boolean;
+  /** The engine's report that the held worker is gone (`EngineSessionObserver.onLost`); null while none has arrived. */
+  lost: EngineSessionLoss | null;
 }
 
 /**
@@ -486,6 +489,18 @@ export class WorkerSession<Identified extends boolean = false> {
       return false;
     }
     return this.#now() - state.lastTurnEndedAt >= state.stalenessThresholdMs;
+  }
+
+  /**
+   * True once the session's engine has reported its held worker gone for
+   * good. A send to a lost session still dispatches and resolves its
+   * ordinary failed value on one `session-lost` attempt; the context the
+   * worker held is gone with it, so the script's remedy is a fresh session.
+   * False is not proof of a live worker: it says only that no loss has been
+   * observed, and an engine observes what its own watch can see.
+   */
+  get lost(): boolean {
+    return this.#state.lost !== null;
   }
 
   send(prompt: string, turn: SessionTurnOptions & { schema: JsonSchema }): Promise<Identified extends true ? IdentifiedAgentResult : unknown | null>;
@@ -1088,7 +1103,8 @@ export class EnsembleRuntime {
       lastTurnEndedAt: null,
       inFlight: false,
       pendingTurn: null,
-      closed: false
+      closed: false,
+      lost: null
     };
     const session = new WorkerSession<boolean>({
       state,
@@ -1300,13 +1316,26 @@ export class EnsembleRuntime {
     if (createSession === undefined) {
       throw new MultiTurnUnsupportedError(state.engine.name);
     }
-    state.engineSession ??= createSession.call(
-      state.engine,
-      {
-        ...this.#engineTurnOptions(options, state.placement.cwd),
-        ...(preparedStrip !== undefined ? { preparedStrip } : {})
-      }
-    );
+    if (state.engineSession === null) {
+      // The observer is this engine session's own: a chain step replaces the
+      // session, and a report from the one it replaced is nobody's loss.
+      const opened: { session: EngineWorkerSession | null } = { session: null };
+      opened.session = createSession.call(
+        state.engine,
+        {
+          ...this.#engineTurnOptions(options, state.placement.cwd),
+          ...(preparedStrip !== undefined ? { preparedStrip } : {})
+        },
+        {
+          onLost: (loss) => {
+            if (opened.session !== null && state.engineSession === opened.session) {
+              this.#noteSessionLost(state, loss);
+            }
+          }
+        }
+      );
+      state.engineSession = opened.session;
+    }
     const turnInvocation = state.engineSession.beginTurn(prompt, {
       ...(turn.schema !== undefined ? { schema: turn.schema } : {})
     });
@@ -1360,6 +1389,50 @@ export class EnsembleRuntime {
       };
     }
     return outcome;
+  }
+
+  /**
+   * A held worker's engine reported it lost. From here the session's handle
+   * reads `lost`, and the event is archived and announced now, whether or
+   * not one of its turns is executing. Nothing here blocks a send: the
+   * engine fails the session's later turns itself (`session-lost`), each
+   * on its own agent record. A report for a session already closed, or one
+   * arriving as the run ends, is that ending seen late and is dropped.
+   */
+  #noteSessionLost(state: WorkerSessionState, loss: EngineSessionLoss): void {
+    if (state.lost !== null || state.closed || this.#closed) {
+      return;
+    }
+    state.lost = loss;
+    const event: SessionEventRecord = {
+      sessionId: state.id,
+      engine: state.engine.name,
+      event: "lost",
+      nativeSession: loss.nativeSession,
+      turnsSettled: state.turnCount,
+      turnInFlight: state.inFlight ? state.turnCount + 1 : null,
+      reason: loss.reason,
+      observedAt: loss.observedAt
+    };
+    void this.#recordSessionEventSafely(event);
+    this.#emitEvent({
+      method: "session/lost",
+      params: { ...event, label: state.options.label ?? null },
+      receivedAt: loss.observedAt
+    });
+  }
+
+  /** Same observability contract as agent-record writes: failures surface as events, never as a session's failure. */
+  async #recordSessionEventSafely(event: SessionEventRecord): Promise<void> {
+    try {
+      await this.#runRecorder?.recordSessionEvent(event);
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: { sessionEvent: event.event, message: error instanceof Error ? error.message : String(error) },
+        receivedAt: Date.now()
+      });
+    }
   }
 
   async #closeWorkerSession(state: WorkerSessionState): Promise<void> {
@@ -2495,6 +2568,11 @@ export class EnsembleRuntime {
           if (operationalFailure.refused) {
             return { status: "refused" };
           }
+          if (operationalFailure.settles) {
+            // A failure no retry can change: the call settles on it, the
+            // attempt just recorded carrying its account.
+            return { status: "failed", value: null };
+          }
           previousFailure = operationalFailure.failure;
           continue;
         }
@@ -2520,9 +2598,9 @@ export class EnsembleRuntime {
         if (this.#crossesSpawnBoundary(error)) {
           throw error;
         }
-        if (error instanceof CodexSchemaSubsetUnsupportedError) {
-          // The backend rejected the schema before generation: the contract
-          // exempts this failure from retries.
+        if (thrown.settles) {
+          // A failure no retry can change: the call settles on it, with
+          // this throw as its cause.
           return { status: "failed", value: null, cause: error };
         }
         // A dispatched worker's thrown failure — a deadline, a transport
@@ -2578,6 +2656,11 @@ export class EnsembleRuntime {
           if (operationalFailure.refused) {
             return { status: "refused" };
           }
+          if (operationalFailure.settles) {
+            // A failure no retry can change: the call settles on it, the
+            // attempt just recorded carrying its account.
+            return { status: "failed", value: null };
+          }
           previousFailure = operationalFailure.failure;
           continue;
         }
@@ -2627,9 +2710,9 @@ export class EnsembleRuntime {
         if (this.#crossesSpawnBoundary(error)) {
           throw error;
         }
-        if (error instanceof CodexSchemaSubsetUnsupportedError) {
-          // The backend rejected the schema before generation: the contract
-          // exempts this failure from retries.
+        if (thrown.settles) {
+          // A failure no retry can change: the call settles on it, with
+          // this throw as its cause.
           return { status: "failed", value: null, cause: error };
         }
         // A dispatched worker's thrown failure — a deadline, a transport
@@ -2691,7 +2774,9 @@ export class EnsembleRuntime {
    * An engine-classified operational failure riding a returned result (the
    * Claude and opencode adapters' shape). Recorded with its class; an
    * availability class with a chain entry remaining reports `refused` and
-   * consumes no attempt — the worker never answered.
+   * consumes no attempt — the worker never answered. A failure that stays on
+   * its target and that no retry can change reports `settles`
+   * (`settlesWithoutRetry`): its attempt is spent, and the loop runs no other.
    */
   #recordOperationalFailure(
     record: RuntimeAgentRecord,
@@ -2699,7 +2784,7 @@ export class EnsembleRuntime {
     startedAt: number,
     result: EngineAttemptResult,
     attempts: TargetAttempts
-  ): { failure: PreviousAttemptFailure; refused: boolean } | undefined {
+  ): { failure: PreviousAttemptFailure; refused: boolean; settles: boolean } | undefined {
     if (result.attemptFailure === undefined) {
       return undefined;
     }
@@ -2714,6 +2799,7 @@ export class EnsembleRuntime {
     if (!refused) {
       attempts.ledger.answered += 1;
     }
+    const settles = !refused && settlesWithoutRetry(result.attemptFailure);
     this.#pushFailedAttempt(
       record,
       attemptRecord(
@@ -2731,10 +2817,10 @@ export class EnsembleRuntime {
         null,
         null,
         classification,
-        chainDecisionAfter(attempts, classification, !refused && boundRemains(attempts.ledger))
+        chainDecisionAfter(attempts, classification, !refused && !settles && boundRemains(attempts.ledger))
       )
     );
-    return { failure, refused };
+    return { failure, refused, settles };
   }
 
   /**
@@ -2749,7 +2835,7 @@ export class EnsembleRuntime {
     error: unknown,
     startedAt: number,
     attempts: TargetAttempts
-  ): { refused: boolean; failure: PreviousAttemptFailure } {
+  ): { refused: boolean; failure: PreviousAttemptFailure; settles: boolean } {
     const observed = diagnoseAttemptFailure({
       engine: attempts.target.engine,
       failure: failureFromError(error),
@@ -2792,12 +2878,13 @@ export class EnsembleRuntime {
           }
         : null);
     // The loop's own next step, read from the same facts it acts on: a
-    // boundary throw leaves, a rejected schema settles, anything else
-    // retries while the bound lasts. A run ending decides nothing.
+    // boundary throw leaves, a failure no retry can change settles, anything
+    // else retries while the bound lasts. A run ending decides nothing.
+    const settles = settlesWithoutRetry(failureFromError(error));
     const retries =
       !refused &&
       !this.#crossesSpawnBoundary(error) &&
-      !(error instanceof CodexSchemaSubsetUnsupportedError) &&
+      !settles &&
       boundRemains(attempts.ledger);
     this.#pushFailedAttempt(
       record,
@@ -2817,7 +2904,7 @@ export class EnsembleRuntime {
         settlement === null ? chainDecisionAfter(attempts, classification, retries) : null
       )
     );
-    return { refused, failure: observed };
+    return { refused, failure: observed, settles };
   }
 
   /** A probe substrate refused before a requested worker could be constructed. */

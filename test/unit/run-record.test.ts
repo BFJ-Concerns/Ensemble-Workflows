@@ -110,6 +110,51 @@ test("a rejected hold event preserves its submitted verdict, or explicitly says 
   ]);
 });
 
+test("a session event lands in the manifest when it is recorded, with no agent record open", async () => {
+  const cwd = await gitRepo("ensemble-record-session-event-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-session-event-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-session-event",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  const readEvents = async (): Promise<unknown[]> =>
+    (JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as { session_events: unknown[] }).session_events;
+  assert.deepEqual(await readEvents(), []);
+
+  await writer.recordSessionEvent({
+    sessionId: 3,
+    engine: "claude",
+    event: "lost",
+    nativeSession: "8c0f3a52-session",
+    turnsSettled: 2,
+    turnInFlight: null,
+    reason: "the session left the daemon's roster",
+    observedAt: 0
+  });
+
+  // On disk before the run ends: a run killed after this still shows the loss.
+  const expected = [
+    {
+      session_id: 3,
+      engine: "claude",
+      event: "lost",
+      native_session: "8c0f3a52-session",
+      turns_settled: 2,
+      turn_in_flight: null,
+      reason: "the session left the daemon's roster",
+      at: new Date(0).toISOString()
+    }
+  ];
+  assert.deepEqual(await readEvents(), expected);
+  await writer.finish({ status: "complete", exitCode: 0, result: null });
+  assert.deepEqual(await readEvents(), expected);
+});
+
 test("the manifest attributes budget ceilings and the run timeout to their winning layers", async () => {
   const cwd = await gitRepo("ensemble-record-effective-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-effective-store-"));

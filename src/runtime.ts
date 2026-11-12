@@ -23,6 +23,7 @@ import {
   appServerDiagnosticOf,
   AppServerExitedError,
   attachAgentIdentity,
+  BudgetExceededError,
   CodexSchemaSubsetUnsupportedError,
   describeError,
   EngineShutdownError,
@@ -48,7 +49,7 @@ import {
   workerExitStatusOf
 } from "./errors.js";
 import { HoldManager, defaultHoldsDirectory, resolveHoldScope } from "./holds.js";
-import { presentOperationalError } from "./operator-diagnosis.js";
+import { boundedEvidence, presentOperationalError } from "./operator-diagnosis.js";
 import { RunProgress, workerDisposition } from "./progress.js";
 import { EngineResourceGate } from "./resource-preflight.js";
 
@@ -1485,6 +1486,22 @@ export class EnsembleRuntime {
         })
       );
     } catch (error) {
+      if (readmitting && error instanceof BudgetExceededError) {
+        // Re-admission has no attempt of its own. Carry the recorded
+        // refusals into the budget error so both a library caller and the
+        // CLI's terminal streams can explain why this engine was tried.
+        const refusals = advancesOf(agentRecord).map((attempt) => {
+          const { engine, model } = attempt.target;
+          const target = boundedEvidence(`${engine}/${model ?? "default"}`);
+          const rule = boundedEvidence(attempt.classification?.rule ?? "unmatched");
+          const kind = boundedEvidence(attempt.failure?.kind ?? "unknown");
+          const message = boundedEvidence((attempt.failure?.message ?? "").replace(/Recent stderr:/g, "Engine stderr context:"));
+          return `${target} (${rule}): ${kind}: ${message}`;
+        });
+        if (refusals.length > 0) {
+          error.message += `; earlier refusals: ${refusals.join("; ")}`;
+        }
+      }
       if (!started) {
         // The task never started, so this leg was still queued — its
         // termination record must not claim an in-flight turn. Times

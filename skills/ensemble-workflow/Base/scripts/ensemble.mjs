@@ -25095,6 +25095,19 @@ var EnsembleRuntime = class _EnsembleRuntime {
         })
       );
     } catch (error) {
+      if (readmitting && error instanceof BudgetExceededError) {
+        const refusals = advancesOf(agentRecord).map((attempt) => {
+          const { engine: engine2, model } = attempt.target;
+          const target = boundedEvidence(`${engine2}/${model ?? "default"}`);
+          const rule = boundedEvidence(attempt.classification?.rule ?? "unmatched");
+          const kind = boundedEvidence(attempt.failure?.kind ?? "unknown");
+          const message = boundedEvidence((attempt.failure?.message ?? "").replace(/Recent stderr:/g, "Engine stderr context:"));
+          return `${target} (${rule}): ${kind}: ${message}`;
+        });
+        if (refusals.length > 0) {
+          error.message += `; earlier refusals: ${refusals.join("; ")}`;
+        }
+      }
       if (!started) {
         this.#settleTerminalStatus(agentRecord, error, "queued");
         agentRecord.queuedMs += Math.max(0, Date.now() - queuedAt);

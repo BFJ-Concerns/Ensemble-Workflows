@@ -3861,6 +3861,59 @@ test("a fallback answer names every refusal and labels engine stderr as context"
   assert.doesNotMatch(result.stderr, /further chain entry|Recent stderr/);
 });
 
+test("a fallback budget refusal retains every earlier refusal in the envelope and stderr", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-fallback-budget-"));
+  try {
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, `
+      export const meta = { name: "fallback-budget-refusals" };
+      return await agent("work", { engine: "codex", model: "primary", fallback: [
+        { engine: "codex", model: "middle" }, { engine: "claude", model: "last" }
+      ] });
+    `);
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const claude = new ChainEngine("claude", []);
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory, stdout, stderr, runRecordDir: null, statusDir: null,
+      createRuntime: async () => new EnsembleRuntime({
+        defaultMaxAttempts: 1,
+        budgetCeilings: { claude: 0 },
+        engines: new EngineRegistry([
+          new ChainEngine("codex", [
+            async () => {
+              throw new CodexSubstrateRefusedError(undefined, new AppServerExitedError(
+                "exited\nRecent stderr:\n\u001b[31mwarning: PATH helper unavailable\u001b[0m"
+              ));
+            },
+            async () => {
+              throw new CodexSubstrateRefusedError(undefined, new Error("middle substrate unavailable"));
+            }
+          ]), claude
+        ])
+      })
+    });
+    assert.equal(exitCode, 1, stderr.text());
+    const envelope = JSON.parse(stdout.text()) as { partial: boolean; reason: string; error: { kind: string; message: string }; completed: unknown[] };
+    assert.equal(envelope.partial, true);
+    assert.equal(envelope.reason, "failed");
+    assert.deepEqual(envelope.completed, []);
+    for (const account of [envelope.error.message, stderr.text()]) {
+      assert.match(account, /Token budget for claude is 0/);
+      assert.match(account, /codex\/primary \(codex.substrate-refused\): CodexSubstrateRefusedError/);
+      assert.match(account, /Engine stderr context: warning: PATH helper unavailable/);
+      assert.match(account, /codex\/middle \(codex.substrate-refused\):.*middle substrate unavailable/);
+      assert.doesNotMatch(account, /Recent stderr/);
+      assert.equal(account.includes(String.fromCharCode(27)), false);
+      assert.ok(account.indexOf("codex/primary") < account.indexOf("codex/middle"));
+    }
+    assert.equal(claude.dispatches.length, 0);
+    assert.match(stderr.text(), /Raise the claude ceiling/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("an exhausted chain's failure notice names the last target's own failure and how many targets were tried", async () => {
   const result = await runChainScript(
     `

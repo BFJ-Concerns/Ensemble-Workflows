@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { createRuntime } from "../../src/index.js";
 import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths, waitForPath } from "./held-worker-probes.js";
 
@@ -27,6 +28,7 @@ for (const engine of ["claude", "codex"] as const) {
       const directory = await mkdtemp(path.join(tmpdir(), `ensemble-held-probe-${engine}-`));
       const runtime = await createRuntime({
         cwd: directory,
+        workerEnvironment: resolveAmbientSettings({ env: process.env, cwd: directory }).workerEnvironment,
         concurrencyCaps: { codex: 1, claude: 1, opencode: 1 },
         defaultTurnTimeoutMs: 600_000,
         defaultMaxAttempts: 1

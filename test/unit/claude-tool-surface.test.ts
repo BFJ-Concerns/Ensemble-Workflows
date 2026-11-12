@@ -193,3 +193,15 @@ for (const error of [new ClaudeDispatchError("substrate down"), new ClaudeRegist
     await assert.rejects(preparer.prepare({ strip: ["agents"], cwd: "/a" }), SubstrateRefusedError);
   });
 }
+
+test("lean and ordinary strips prepare separately and probe the context their worker uses", async () => {
+  const { calls, probe } = countingProbe(["Bash", "Skill", "ListAgents"]);
+  const preparer = new ClaudeStripPreparer({ probe });
+  const ordinary = await preparer.prepare({ strip: ["skills"], cwd: "/a" });
+  const lean = await preparer.prepare({ strip: ["skills"], cwd: "/a", lean: true });
+  assert.notEqual(ordinary, lean);
+  assert.deepEqual(calls.map(call => call.lean), [undefined, undefined, true, true]);
+  assert.equal(await preparer.prepare({ strip: ["skills"], cwd: "/a", lean: true }), lean);
+  assert.equal(await preparer.prepare({ strip: ["skills"], cwd: "/a", lean: false }), ordinary);
+  assert.equal(calls.length, 4);
+});

@@ -4641,3 +4641,43 @@ test("relative record stores use the launcher directory for preflight, archive a
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("--lean reaches the runtime as the run-wide lean start on both invocation forms", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-cli-lean-"));
+  try {
+    const workflowPath = path.join(dir, "lean.workflow.js");
+    await writeFile(workflowPath, 'export const meta = { name: "lean-probe" };\nreturn await agent("go", { engine: "codex" });\n');
+    const captured: boolean[] = [];
+    const engine = new FixedResponseEngine("codex", "done");
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(["--lean", workflowPath], {
+      stdout: new CaptureStream(),
+      stderr,
+      createRuntime: async (options = {}) => {
+        captured.push(options.lean === true);
+        return new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1, ...(options.lean !== undefined ? { lean: options.lean } : {}) });
+      }
+    });
+    // The fixed engine declares no lean route, so the run-wide lean fails
+    // the dispatch loud — proof it reached agent() itself.
+    assert.equal(exitCode, 1);
+    assert.deepEqual(captured, [true]);
+    assert.equal(engine.attempts, 0);
+    assert.match(stderr.text(), /cannot arrange a lean start/);
+
+    const agentStderr = new CaptureStream();
+    const agentExit = await runEnsembleCli(["agent", "--engine=codex", "--lean", "go"], {
+      stdout: new CaptureStream(),
+      stderr: agentStderr,
+      createRuntime: async (options = {}) => {
+        captured.push(options.lean === true);
+        return new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1, ...(options.lean !== undefined ? { lean: options.lean } : {}) });
+      }
+    });
+    assert.equal(agentExit, 1);
+    assert.deepEqual(captured, [true, true]);
+    assert.match(agentStderr.text(), /cannot arrange a lean start/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

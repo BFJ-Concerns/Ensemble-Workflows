@@ -544,7 +544,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
-      ...stripSettings
+      ...stripSettings,
+      ...(this.#options.lean === true ? { lean: true } : {})
     });
     this.#handle = handle;
     // The launch submitted the opening prompt, and like the valve it attests

@@ -2093,6 +2093,20 @@ const backgroundTaskRows = {
  * `workflow-short` follow the slow and short orderings with native Workflow
  * launch results and completion notifications.
  */
+test("a lean call reaches the control plane's dispatch as a lean request, and an ordinary call does not", async () => {
+  await withControlPlane([{ assistant: { text: "lean" } }, { assistant: { text: "ordinary" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    try {
+      assert.equal(await runtime.agent("go", { engine: "claude", lean: true }), "lean");
+      assert.equal(await runtime.agent("go", { engine: "claude" }), "ordinary");
+      assert.deepEqual(controlPlane.dispatched.map((options) => options.lean), [true, undefined]);
+      assert.equal(runtime.lastAgentRecord()?.lean, null);
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
 class BackgroundTaskControlPlane implements ClaudeControlPlane {
   pollCount = 0;
   readonly snapshots: Array<{ poll: number; waitingOn: unknown }> = [];

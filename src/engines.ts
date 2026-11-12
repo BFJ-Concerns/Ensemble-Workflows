@@ -31,6 +31,7 @@ import {
   defaultOpenCodeConcurrency
 } from "./concurrency-defaults.js";
 
+import type { LeanStartSupport } from "./lean-start.js";
 import type { EngineCapabilityTable, PreparedStrip, StrippableCapability } from "./capability-stripping.js";
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { WorkerExitStatus } from "./errors.js";
@@ -70,10 +71,14 @@ export interface EngineTurnOptions {
    * re-derived.
    */
   preparedStrip?: PreparedStrip;
+  /** Start without the operator's interactive context, using this adapter's declared route. */
+  lean?: boolean;
 }
 
 /** What a strip preparation is judged against: the dispatch's resolved inputs that can change the tool surface. */
 export interface StripPreparationContext {
+  /** Whether the worker starts without custom context, which changes its tool inventory. */
+  lean?: boolean;
   /** The attempt's resolved placement (a worktree's root under isolation). */
   cwd: string;
   model?: string;
@@ -178,6 +183,8 @@ export interface EngineAdapter {
    * stripping can never silently dispatch an unrestricted worker.
    */
   readonly capabilities?: EngineCapabilityTable;
+  /** Absent means a lean start cannot be arranged; requests refuse pre-spawn. */
+  readonly leanStart?: LeanStartSupport;
   /**
    * Settle one dispatch's strip against what is live, for an engine whose
    * declared table says only that a route exists. Optional: an adapter
@@ -383,6 +390,11 @@ export class CodexEngineAdapter implements EngineAdapter {
     }
   };
 
+  readonly leanStart: LeanStartSupport = {
+    route: "unsupported",
+    detail: "no supported per-thread route withholds Codex user instructions, skills and MCP servers"
+  };
+
   #transport: RuntimeTransport;
   #scheduler: Scheduler;
 
@@ -577,6 +589,12 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     agents: { route: "config", detail: CLAUDE_STRIP_ROUTE }
   };
 
+  /** Safe mode preserves native tools, authentication and permissions while disabling custom context. */
+  readonly leanStart: LeanStartSupport = {
+    route: "config",
+    detail: "claude --bg --safe-mode disables custom instructions, skills, plugins and MCP servers; native tools, authentication, permissions and per-dispatch settings remain enabled"
+  };
+
   #scheduler: Scheduler;
   #cwd: string;
   #controlPlane: ClaudeControlPlane;
@@ -709,6 +727,11 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
       detail:
         "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.task=deny, but worker-boundary enforcement is unproven"
     }
+  };
+
+  readonly leanStart: LeanStartSupport = {
+    route: "unsupported",
+    detail: "no supported route withholds opencode user instructions, skills and MCP servers"
   };
 
   #scheduler: Scheduler;

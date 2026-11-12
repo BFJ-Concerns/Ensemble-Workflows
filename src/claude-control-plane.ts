@@ -130,6 +130,7 @@ export interface ClaudeControlPlane {
 
 /** One probe: what the probe session is launched with, and the bound that tears it down. */
 export interface ClaudeToolSurfaceProbeRequest {
+  lean?: boolean;
   cwd: string;
   model?: string;
   /** Empty for the inventory probe; the derived rules for the confirming one. */
@@ -183,6 +184,8 @@ export interface ClaudeDispatchOptions {
    * declaration can give a stripped worker the tool back.
    */
   settingsEnv?: Readonly<Record<string, string>>;
+  /** Disable custom context while keeping permissions and built-in tools at launch. */
+  lean?: boolean;
   /**
    * Cancels the dispatch while it waits for its session — a caller's
    * deadline, or the engine closing. The launch command is ended within
@@ -193,6 +196,9 @@ export interface ClaudeDispatchOptions {
   signal?: AbortSignal;
 }
 
+
+/** The launch flags that withhold operator context while keeping built-in tools. */
+export const LEAN_START_FLAGS: readonly string[] = ["--safe-mode"];
 
 export interface ClaudeSessionHandle {
   /** Short daemon id — used to attach/steer/stop. */
@@ -492,6 +498,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         name: `ensemble-tool-surface-${nonce}`,
         cwd: request.cwd,
         ...(request.model !== undefined ? { model: request.model } : {}),
+        ...(request.lean === true ? { lean: true } : {}),
         permissionDenyRules: [...request.permissionDenyRules],
         settingsEnv: {
           ...request.settingsEnv, ANTHROPIC_BASE_URL: provider.origin,
@@ -564,6 +571,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
     if (options.effort !== undefined) {
       args.push("--effort", options.effort);
+    }
+    if (options.lean === true) {
+      args.push(...LEAN_START_FLAGS);
     }
     // The worker session runs under the per-user daemon, whose environment
     // predates this run — inheritance cannot deliver the declared variables

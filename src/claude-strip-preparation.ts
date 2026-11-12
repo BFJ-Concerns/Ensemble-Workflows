@@ -12,6 +12,8 @@ export interface ClaudeStripRequest {
   cwd: string;
   /** The worker's model pin, which the probes also carry. */
   model?: string;
+  /** The inventory and confirming probe use the worker's context mode. */
+  lean?: boolean;
 }
 
 export interface ClaudeStripPreparerOptions {
@@ -45,8 +47,8 @@ interface Entry {
  *   its placement is open, so an unstripped worker never pays for a probe.
  *   Retries reuse their call's preparation. A held session prepares at its
  *   creating turn. A chain step onto Claude prepares for its own target.
- * - Sharing: one preparation for each working directory, model and strip
- *   set, memoised as a promise, so concurrent dispatches share one in
+ * - Sharing: one preparation for each working directory, model, context
+ *   mode and strip set, memoised as a promise, so concurrent dispatches share one in
  *   flight. No shared table is mutated.
  * - Failure: no probe, an unreadable capture or a failed confirmation
  *   refuses the worker before it spawns (`CapabilityStripUnsupportedError`).
@@ -79,7 +81,7 @@ export class ClaudeStripPreparer {
       return Promise.reject(new EngineShutdownError("claude"));
     }
     const strip = [...new Set(request.strip)].sort();
-    const key = JSON.stringify([request.cwd, request.model ?? null, strip]);
+    const key = JSON.stringify([request.cwd, request.model ?? null, request.lean === true, strip]);
     const existing = this.#entries.get(key);
     if (existing !== undefined) return existing.promise;
     const entry: Entry = { promise: this.#prepare({ ...request, strip }), cliVersion: null };
@@ -112,7 +114,7 @@ export class ClaudeStripPreparer {
     // The timer and the run's shutdown abort the same probe, so a probe
     // still in flight is torn down whichever ends first.
     const signal = AbortSignal.any([this.#abort.signal, AbortSignal.timeout(this.#timeoutMs)]);
-    const base = { cwd: request.cwd, ...(request.model !== undefined ? { model: request.model } : {}), signal };
+    const base = { cwd: request.cwd, ...(request.lean === true ? { lean: true } : {}), ...(request.model !== undefined ? { model: request.model } : {}), signal };
     try {
       const inventory = await probe({ ...base, permissionDenyRules: [], settingsEnv: {} });
       const derived = deriveClaudeStrip(inventory, request.strip, this.#classification);

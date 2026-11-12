@@ -1117,14 +1117,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     if (this.#closeController.signal.aborted || this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
     this.#placementTimer = setTimeout(() => {
       this.#placementTimer = null;
-      this.#placementSweep = this.#refreshPlacements().catch((error: unknown) => {
-        if (this.#closeController.signal.aborted) return;
-        this.#onEvent?.({
-          method: "claude/workerScopeWatchError",
-          params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
-          receivedAt: Date.now()
-        });
-      }).finally(() => {
+      this.#placementSweep = this.#refreshPlacements().catch((error: unknown) => this.#reportWatchError(error)).finally(() => {
         this.#placementSweep = null;
         this.#schedulePlacementWatch();
       });
@@ -1132,18 +1125,40 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#placementTimer.unref();
   }
 
+  #reportWatchError(error: unknown, handle?: ClaudeSessionHandle): void {
+    if (this.#closeController.signal.aborted) return;
+    try {
+      this.#onEvent?.({
+        method: "claude/workerScopeWatchError",
+        params: {
+          reason: boundedEvidence(error instanceof Error ? error.message : String(error)),
+          ...(handle === undefined ? {} : { sessionId: handle.sessionId, name: handle.name })
+        },
+        receivedAt: Date.now()
+      });
+    } catch { /* Reporting cannot prevent the remaining sessions from being watched. */ }
+  }
+
   async #refreshPlacements(): Promise<void> {
     const signal = this.#closeController.signal;
     const roster = await this.#roster(signal);
     // An unavailable roster is not evidence that an owned session ended.
     if (!roster.ok) return;
-    for (const watched of this.#watchedSessions.values()) {
+    const observations = [...this.#watchedSessions.values()].map(watched => ({
+      watched, row: roster.rows.find(entry => matchesHandle(entry, watched.handle))
+    }));
+    // Account for every row before awaiting any session's repair work.
+    for (const { watched, row } of observations) this.#observePresence(watched.handle, row !== undefined);
+    for (const { watched, row } of observations) {
       const { handle } = watched;
-      const row = roster.rows.find((entry) => matchesHandle(entry, handle));
-      this.#observePresence(handle, row !== undefined);
       if (row === undefined || !this.#watchedSessions.has(handle.sessionId)) continue;
-      if (typeof row?.pid === "number") await this.#observePlacement(this.#place(handle, row.pid), signal);
-      if (watched.keepAlive && this.#watchedSessions.has(handle.sessionId)) await this.#ensureHeldAttachment(handle, signal);
+      try {
+        if (typeof row.pid === "number") await this.#observePlacement(this.#place(handle, row.pid), signal);
+        if (watched.keepAlive && this.#watchedSessions.has(handle.sessionId)) await this.#ensureHeldAttachment(handle, signal);
+      } catch (error) {
+        if (signal.aborted) return;
+        this.#reportWatchError(error, handle);
+      }
     }
   }
 

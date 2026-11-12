@@ -12,9 +12,10 @@ import { waitForCondition } from "../wait-for-condition.js";
 import type { ClaudeSessionHandle } from "../../src/claude-control-plane.js";
 import type { EngineSessionLoss } from "../../src/engines.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
+import type { RuntimeEvent } from "../../src/types.js";
 
 /** Real roster/watch/attachment ownership over controlled executable endpoints. */
-async function fixture(watchMs = 60_000) {
+async function fixture(watchMs = 60_000, multiple = false) {
   const dir = await mkdtemp(path.join(tmpdir(), "claude-held-"));
   const mode = path.join(dir, "mode");
   const actions = path.join(dir, "attachments");
@@ -22,22 +23,39 @@ async function fixture(watchMs = 60_000) {
   const cli = path.join(dir, "claude.mjs");
   const tmux = path.join(dir, "tmux.mjs");
   await writeFile(mode, "present");
+  await writeFile(mode + ".names", "[]");
   await writeFile(actions, "");
   await writeFile(cli, `#!${process.execPath}
-    import {readFile,writeFile} from 'node:fs/promises';
+    import {readFile,writeFile,rename} from 'node:fs/promises';
     const mode=${JSON.stringify(mode)};
-    if(process.argv[2]==='--bg') { await writeFile(mode+'.name',process.argv[process.argv.indexOf('--name')+1]); for await(const chunk of process.stdin) void chunk; }
+    const multiple=${JSON.stringify(multiple)};
+    const names=async()=>JSON.parse(await readFile(mode+'.names','utf8'));
+    const save=async values=>{await writeFile(mode+'.names-next',JSON.stringify(values));await rename(mode+'.names-next',mode+'.names');};
+    if(process.argv[2]==='--bg') {
+      const name=process.argv[process.argv.indexOf('--name')+1];
+      if(multiple) await save([...(await names()),name]); else await writeFile(mode+'.name',name);
+      for await(const chunk of process.stdin) void chunk;
+    }
     if(process.argv[2]==='agents') {
       const state=(await readFile(mode,'utf8')).trim();
       if(state==='unavailable') process.exit(1);
-      process.stdout.write(JSON.stringify(state==='absent'?[]:[{id:'held',sessionId:'native-held',name:await readFile(mode+'.name','utf8'),kind:'background',pid:process.pid,cwd:${JSON.stringify(dir)},status:'idle',state:'done'}]));
+      const hidden=JSON.parse(await readFile(mode+'.hidden','utf8').catch(()=>'[]'));
+      const listed=multiple?await names():[await readFile(mode+'.name','utf8')];
+      process.stdout.write(JSON.stringify(state==='absent'?[]:listed.filter(name=>!hidden.includes(name)).map(name=>({id:multiple?name:'held',sessionId:multiple?'native-'+name:'native-held',name,kind:'background',pid:process.pid,cwd:${JSON.stringify(dir)},status:'idle',state:'done'}))));
     }
-    if(['stop','rm'].includes(process.argv[2])) await writeFile(mode,'absent');
+    if(['stop','rm'].includes(process.argv[2])) {
+      if(multiple) await save((await names()).filter(name=>name!==process.argv[3])); else await writeFile(mode,'absent');
+    }
   `, { mode: 0o700 });
   await writeFile(tmux, `#!${process.execPath}
     import {access,appendFile,writeFile,unlink,readFile} from 'node:fs/promises';
     const a=process.argv.slice(2), marker=a[1]+'.attached';
     if(a.includes('new-session')) {
+      const name=a[a.indexOf('-s')+1];
+      await appendFile(${JSON.stringify(mode)}+'.attempts',name+'\\n');
+      if((await readFile(${JSON.stringify(mode)}+'.refused-attachment','utf8').catch(()=>''))===name) {
+        process.stderr.write('controlled attachment refusal'); process.exit(1);
+      }
       await writeFile(marker,'alive'); await appendFile(${JSON.stringify(actions)},marker+'\\n');
       await writeFile(${JSON.stringify(mode)}+'.attachment-env',JSON.stringify({worker:process.env.ENSEMBLE_CLAUDE_WORKER??null}));
       if((await readFile(${JSON.stringify(mode)}+'.attachment','utf8').catch(()=>''))==='hold') setInterval(()=>{},1000);
@@ -61,8 +79,10 @@ async function fixture(watchMs = 60_000) {
     override async transcriptPath() { return transcript; }
     override async tmuxAvailable() { return true; }
   }
-  const plane = new Plane({ claudeBin: cli, tmuxBin: tmux, placementWatchIntervalMs: watchMs, valveAttachSettleMs: 0 });
-  return { dir, mode, actions, plane, async dispose() { await plane.close(); await rm(dir, { recursive: true, force: true }); } };
+  const events: RuntimeEvent[] = [];
+  const plane = new Plane({ claudeBin: cli, tmuxBin: tmux, placementWatchIntervalMs: watchMs, valveAttachSettleMs: 0,
+    onEvent: event => events.push(event) });
+  return { dir, mode, actions, plane, events, async dispose() { await plane.close(); await rm(dir, { recursive: true, force: true }); } };
 }
 
 test("held Claude roster loss excludes failed queries, parking gaps and intentional close", async () => {
@@ -267,3 +287,33 @@ for (const closing of [false, true]) {
     } finally { controller.abort(); await f.dispose(); }
   });
 }
+
+test("a refused attachment repair cannot starve another worker's loss or client repair", { timeout: 15_000 }, async () => {
+  const f = await fixture(10, true);
+  const handles: ClaudeSessionHandle[] = [];
+  const losses: EngineSessionLoss[] = [];
+  try {
+    for (const name of ["first", "second", "third"]) handles.push(await f.plane.dispatch({
+      prompt: "first", name, cwd: f.dir, keepAlive: true, onLost: loss => losses.push(loss)
+    }));
+    const markers = (await readFile(f.actions, "utf8")).trim().split("\n");
+    assert.equal(markers.length, 3);
+    await writeFile(f.mode + ".refused-attachment", "ensemble-held-first");
+    await writeFile(f.mode + ".hidden", JSON.stringify(["second"]));
+    await rm(markers[0]!);
+    await rm(markers[2]!);
+    await waitForCondition(async () => (await readFile(f.mode + ".attempts", "utf8")).split("\n")
+      .filter(name => name === "ensemble-held-first").length >= 7,
+    "six unsuccessful first-client repairs", 10_000, 10);
+    assert.deepEqual(losses.map(loss => loss.nativeSession), ["native-second"],
+      "the first client's refusal starved the missing worker's observations");
+    const created = (await readFile(f.actions, "utf8")).trim().split("\n");
+    assert.equal(created.length, 4, "the third worker's dead client was not repaired");
+    assert.equal(await readFile(created[3]!, "utf8"), "alive");
+    assert.equal(f.plane.steers, 3, "repair submitted a model turn");
+    assert.ok(f.events.some(event => event.method === "claude/workerScopeWatchError" && event.params.sessionId === "native-first"));
+  } finally {
+    for (const handle of handles) await f.plane.stop(handle);
+    await f.dispose();
+  }
+});

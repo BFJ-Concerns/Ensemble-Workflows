@@ -877,7 +877,9 @@ await builder.close();
   idle threshold may still miss the prompt cache.
 - **Claude idle lifetime:** Ensemble keeps a private, input-free attach
   client for the held worker's lifetime and repairs that attachment if the
-  client exits. It sends no keep-alive model turns. Claude Code 2.1.322
+  client exits. Repair failures are reported per session and do not stop
+  observations or repairs for other held workers. It sends no keep-alive
+  model turns. Claude Code 2.1.322
   retires eligible unattached, settled background sessions after a one-hour
   grace, checked once a minute; memory pressure can reduce the grace to one
   minute. Attached clients exempt the worker from that retirement. A daemon

@@ -21557,31 +21557,46 @@ var ClaudeCliControlPlane = class {
     if (this.#closeController.signal.aborted || this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
     this.#placementTimer = setTimeout(() => {
       this.#placementTimer = null;
-      this.#placementSweep = this.#refreshPlacements().catch((error) => {
-        if (this.#closeController.signal.aborted) return;
-        this.#onEvent?.({
-          method: "claude/workerScopeWatchError",
-          params: { reason: boundedEvidence(error instanceof Error ? error.message : String(error)) },
-          receivedAt: Date.now()
-        });
-      }).finally(() => {
+      this.#placementSweep = this.#refreshPlacements().catch((error) => this.#reportWatchError(error)).finally(() => {
         this.#placementSweep = null;
         this.#schedulePlacementWatch();
       });
     }, this.#placementWatchIntervalMs);
     this.#placementTimer.unref();
   }
+  #reportWatchError(error, handle) {
+    if (this.#closeController.signal.aborted) return;
+    try {
+      this.#onEvent?.({
+        method: "claude/workerScopeWatchError",
+        params: {
+          reason: boundedEvidence(error instanceof Error ? error.message : String(error)),
+          ...handle === void 0 ? {} : { sessionId: handle.sessionId, name: handle.name }
+        },
+        receivedAt: Date.now()
+      });
+    } catch {
+    }
+  }
   async #refreshPlacements() {
     const signal = this.#closeController.signal;
     const roster = await this.#roster(signal);
     if (!roster.ok) return;
-    for (const watched of this.#watchedSessions.values()) {
+    const observations = [...this.#watchedSessions.values()].map((watched) => ({
+      watched,
+      row: roster.rows.find((entry) => matchesHandle(entry, watched.handle))
+    }));
+    for (const { watched, row } of observations) this.#observePresence(watched.handle, row !== void 0);
+    for (const { watched, row } of observations) {
       const { handle } = watched;
-      const row = roster.rows.find((entry) => matchesHandle(entry, handle));
-      this.#observePresence(handle, row !== void 0);
       if (row === void 0 || !this.#watchedSessions.has(handle.sessionId)) continue;
-      if (typeof row?.pid === "number") await this.#observePlacement(this.#place(handle, row.pid), signal);
-      if (watched.keepAlive && this.#watchedSessions.has(handle.sessionId)) await this.#ensureHeldAttachment(handle, signal);
+      try {
+        if (typeof row.pid === "number") await this.#observePlacement(this.#place(handle, row.pid), signal);
+        if (watched.keepAlive && this.#watchedSessions.has(handle.sessionId)) await this.#ensureHeldAttachment(handle, signal);
+      } catch (error) {
+        if (signal.aborted) return;
+        this.#reportWatchError(error, handle);
+      }
     }
   }
   #observePresence(handle, present) {

@@ -20547,8 +20547,13 @@ var ClaudeCliControlPlane = class {
         }
         if (dispatch.result !== null) {
           if (!dispatch.result.ok) {
+            const account = launchAccount(dispatch.result);
+            const configDir = claudeConfigDirectory(this.#env, process.cwd());
+            const consentAdvice = /bypassPermissions requires accepting the disclaimer/i.test(
+              dispatch.result.stderr + "\n" + dispatch.result.stdout
+            ) ? `; CLAUDE_CONFIG_DIR=${shellQuote(configDir)} lacks bypass-permissions consent. Run interactively: CLAUDE_CONFIG_DIR=${shellQuote(configDir)} ${shellQuote(this.#claudeBin)} --dangerously-skip-permissions; then retry.` : "";
             throw new ClaudeDispatchError(
-              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + launchAccount(dispatch.result)
+              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + account + consentAdvice
             );
           }
           deadline ??= Date.now() + this.#dispatchTimeoutMs;
@@ -20807,9 +20812,22 @@ var ClaudeCliControlPlane = class {
       ], { input: null, env: { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand } });
       if (!created.ok) return refused("tmux new-session", created);
       await delay(this.#valveAttachSettleMs, signal);
+      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
+      if (status.state === "blocked" && status.waitingFor !== void 0 && (await this.poll(handle)).waitingFor !== void 0) {
+        const cancelled = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Escape"]);
+        if (!cancelled.ok) return refused("tmux send-keys (cancel input)", cancelled);
+        for (; ; ) {
+          const current2 = await this.poll(handle);
+          if (!current2.present) return { submitted: false, reason: "the session left the daemon's roster while cancelling input" };
+          if (current2.state !== "unknown" && current2.waitingFor === void 0) break;
+          if (Date.now() >= copyDeadline) {
+            return { submitted: false, reason: `blocked input did not clear within ${this.#valveDeliveryTimeoutMs}ms` };
+          }
+          await delay(50, signal);
+        }
+      }
       const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
       if (!opened.ok) return refused("tmux send-keys (editor)", opened);
-      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
       for (; ; ) {
         try {
           await access(copied);
@@ -21618,6 +21636,8 @@ var ClaudeEngineInvocation = class {
   #acceptedTurnCopy = "";
   /** The submission the session accepted whose receipt has not verified, if any. Outlives the turn that made it. */
   #pending = null;
+  /** A message the valve refused before submission; the next attempt sends this exact copy. */
+  #refused = null;
   /** A differing receipt survives nudges until a fresh answer is requested. */
   #deliveryFailure = null;
   /** Start of the current answer's work; recovery-nudge receipts never move it. */
@@ -21667,6 +21687,7 @@ var ClaudeEngineInvocation = class {
     this.#turnSchema = turn.schema;
     this.#turn = "unsent";
     this.#deliveryFailure = null;
+    this.#refused = null;
     if (this.#pending !== null) {
       this.#pending = { ...this.#pending, answersTurn: false };
     }
@@ -21703,6 +21724,25 @@ var ClaudeEngineInvocation = class {
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
+      if (this.#refused !== null && this.#handle !== null) {
+        const handle = this.#handle;
+        const pending = this.#pending;
+        const latest = await this.#readTranscript(handle, context);
+        const submission = { ...this.#refused, mark: latest.entries.length };
+        fromIndex = submission.carriesTurn ? submission.mark : this.#collectionMark;
+        const settled = !submission.carriesTurn && (endsInSyntheticReply(latest.entries, fromIndex) || turnComplete(latest.entries, fromIndex) && outstandingBackgroundTasks(latest.entries, fromIndex).length === 0);
+        if (settled) this.#refused = null;
+        else await this.#deliver(handle, submission, context);
+        if (pending !== null) {
+          this.#pending = pending;
+          const answered = await this.#accountForPending(handle, pending, context);
+          if (answered !== null) return answered;
+        } else {
+          const transcript = await this.#runToCompletion(handle, fromIndex, context);
+          if (this.#deliveryFailure !== null) throw this.#deliveryFailure;
+          if (this.#turn === "verified") return this.#buildResult(handle, transcript, fromIndex);
+        }
+      }
       const held = this.#multiTurn ? this.#handle : null;
       if (held !== null) {
         const pending = this.#pending;
@@ -21754,7 +21794,8 @@ var ClaudeEngineInvocation = class {
       }
       if (error instanceof ClaudeWorkerError) {
         if (!this.#multiTurn) {
-          await this.#teardown();
+          const keepSession = error instanceof ClaudeValveError && this.#refused !== null && this.#handle !== null && (await this.#controlPlane.poll(this.#handle)).present && await this.#controlPlane.tmuxAvailable();
+          if (!keepSession) await this.#teardown();
         }
         return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
       }
@@ -21846,10 +21887,13 @@ var ClaudeEngineInvocation = class {
    * pending.
    */
   async #deliver(handle, submission, observers) {
+    if (submission.carriesTurn) this.#collectionMark = submission.mark;
     const outcome = await this.#controlPlane.steer(handle, submission.message);
     if (!outcome.submitted) {
+      this.#refused = submission;
       throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
     }
+    this.#refused = null;
     this.#accept(submission);
     await this.#requireReceipt(handle, submission, observers);
   }
@@ -22078,6 +22122,13 @@ var ClaudeEngineInvocation = class {
       }
       absences = 0;
       if (status.state === "blocked") {
+        if (!sawLife && opening !== void 0) {
+          await this.#pollDelay();
+          if (Date.now() >= deadline) {
+            throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
+          }
+          continue;
+        }
         const canNudge = this.#nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
         const latest = await this.#readTranscript(handle, observers);
         if (!sawLife && opening !== void 0) {
@@ -22314,6 +22365,7 @@ var ClaudeEngineInvocation = class {
     const handle = this.#handle;
     this.#handle = null;
     this.#pending = null;
+    this.#refused = null;
     this.#turn = "unsent";
     this.#deliveryFailure = null;
     this.#collectionMark = 0;

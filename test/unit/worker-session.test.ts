@@ -722,6 +722,8 @@ test("Claude staleness uses one hour unless the library option overrides it", as
 
 interface ScriptedClaudeTurn {
   text?: string;
+  /** Hold the native turn awaiting input until a subsequent steer takes over. */
+  blocked?: boolean;
   /** Script this turn as Claude Code's synthetic API refusal, annotated as the live transcript annotates it. */
   apiError?: { status: number; code: string };
   /**
@@ -782,6 +784,7 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
       return { status: "absent", state: "unknown", present: false };
     }
     if (this.#open !== null) {
+      if (this.#open.turn.blocked) return { status: "waiting", state: "blocked", present: true, waitingFor: "input needed" };
       this.#open.busyPolls -= 1;
       if (this.#open.busyPolls <= 0) {
         await this.#reply();
@@ -827,7 +830,7 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
     }
     await appendFile(this.#path, `${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`);
     this.#open = { turn, busyPolls: turn.busyPolls ?? 0 };
-    if (this.#open.busyPolls <= 0) {
+    if (this.#open.busyPolls <= 0 && !turn.blocked) {
       await this.#reply();
     }
   }
@@ -1202,6 +1205,37 @@ test("a follow-up the valve never submitted is sent again as it was", async () =
       assert.deepEqual(controlPlane.steered, ["now fix the tests", "now fix the tests"]);
       assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "claude-valve-error");
       await runtime.close();
+    }
+  );
+});
+
+test("a refused nudge while draining an earlier turn cannot answer a new unsent prompt", async () => {
+  await withClaudeRuntime(
+    [
+      { text: "first reply" },
+      { arrival: "withheld", blocked: true },
+      { arrival: "withheld", blocked: true },
+      { arrival: "withheld", blocked: true },
+      { arrival: "refused" },
+      { text: "earlier turn completed" },
+      { text: "current turn completed" }
+    ],
+    async (runtime, controlPlane) => {
+      const records = captureRecords(runtime);
+      const session = runtime.createWorkerSession({ engine: "claude", maxAttempts: 3 });
+      try {
+        assert.equal(await session.send("orient yourself"), "first reply");
+        assert.equal(await session.send("earlier task"), null);
+        await controlPlane.land();
+
+        assert.equal(await session.send("current task"), "current turn completed");
+        assert.equal(controlPlane.dispatchCount, 1);
+        assert.equal(controlPlane.steered.at(-1), "current task", "the current prompt must actually reach the held session");
+        assert.equal(controlPlane.steered[3], controlPlane.steered[4], "retry only the refused nudge");
+        const settled = records.at(-1);
+        assert.deepEqual(settled?.attempts.map(attempt => attempt.failure?.kind ?? null), ["claude-valve-error", "claude-delivery-error", null]);
+        assert.equal(settled?.attempts[1]?.rawOutput, "earlier turn completed", "keep the drained turn as failed-attempt evidence");
+      } finally { await runtime.close(); }
     }
   );
 });

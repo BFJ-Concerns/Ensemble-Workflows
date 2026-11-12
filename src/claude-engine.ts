@@ -289,6 +289,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #acceptedTurnCopy = "";
   /** The submission the session accepted whose receipt has not verified, if any. Outlives the turn that made it. */
   #pending: PendingSubmission | null = null;
+  /** A message the valve refused before submission; the next attempt sends this exact copy. */
+  #refused: Submission | null = null;
   /** A differing receipt survives nudges until a fresh answer is requested. */
   #deliveryFailure: ClaudeDeliveryError | null = null;
   /** Start of the current answer's work; recovery-nudge receipts never move it. */
@@ -343,6 +345,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#turnSchema = turn.schema;
     this.#turn = "unsent";
     this.#deliveryFailure = null;
+    this.#refused = null;
     if (this.#pending !== null) {
       // The turn that made it has settled without it: whatever reply it
       // still draws answers nothing the script is waiting on.
@@ -386,6 +389,33 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
+
+      if (this.#refused !== null && this.#handle !== null) {
+        const handle = this.#handle;
+        const pending = this.#pending;
+        // A refusal can span native input cancellation. Judge the retry's
+        // receipt after those rows while retaining the task's earlier work.
+        const latest = await this.#readTranscript(handle, context);
+        const submission = { ...this.#refused, mark: latest.entries.length };
+        fromIndex = submission.carriesTurn ? submission.mark : this.#collectionMark;
+        // A turn can settle while the valve is refusing its recovery nudge.
+        // Collect that answer or diagnostic before attempting more input.
+        const settled = !submission.carriesTurn && (endsInSyntheticReply(latest.entries, fromIndex) ||
+          (turnComplete(latest.entries, fromIndex) && outstandingBackgroundTasks(latest.entries, fromIndex).length === 0));
+        if (settled) this.#refused = null;
+        else await this.#deliver(handle, submission, context);
+        if (pending !== null) {
+          // The nudge's receipt says nothing about the submission whose work
+          // it resumed, particularly one belonging to an earlier held turn.
+          this.#pending = pending;
+          const answered = await this.#accountForPending(handle, pending, context);
+          if (answered !== null) return answered;
+        } else {
+          const transcript = await this.#runToCompletion(handle, fromIndex, context);
+          if (this.#deliveryFailure !== null) throw this.#deliveryFailure;
+          if (this.#turn === "verified") return this.#buildResult(handle, transcript, fromIndex);
+        }
+      }
 
       const held = this.#multiTurn ? this.#handle : null;
       if (held !== null) {
@@ -463,12 +493,14 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // too, and so is the usage it recorded: a result-less failure must
         // not un-learn spend the run has already paid for (failures carry
         // their evidence).
+        // A refused message can retry unchanged while its session and valve
+        // remain available.
+        // Other one-shot operational failures end their session. Held-session
+        // teardown belongs to close(): redispatch would lose continuity.
         if (!this.#multiTurn) {
-          // One-shot only: a held session survives its turn's operational
-          // failure — tearing it down would leave the retry with no handle
-          // and a silent fresh dispatch as the only path, a continuity
-          // failure. Session teardown belongs to close().
-          await this.#teardown();
+          const keepSession = error instanceof ClaudeValveError && this.#refused !== null && this.#handle !== null &&
+            (await this.#controlPlane.poll(this.#handle)).present && await this.#controlPlane.tmuxAvailable();
+          if (!keepSession) await this.#teardown();
         }
         return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
       }
@@ -591,10 +623,13 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * pending.
    */
   async #deliver(handle: ClaudeSessionHandle, submission: Submission, observers: AttemptObservers): Promise<void> {
+    if (submission.carriesTurn) this.#collectionMark = submission.mark;
     const outcome = await this.#controlPlane.steer(handle, submission.message);
     if (!outcome.submitted) {
+      this.#refused = submission;
       throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
     }
+    this.#refused = null;
     this.#accept(submission);
     await this.#requireReceipt(handle, submission, observers);
   }
@@ -877,6 +912,16 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       absences = 0;
 
       if (status.state === "blocked") {
+        // The native roster can report a question before the opening's
+        // transcript is flushed. Its receipt must verify before a nudge
+        // can take a later boundary; otherwise the opening acknowledges it.
+        if (!sawLife && opening !== undefined) {
+          await this.#pollDelay();
+          if (Date.now() >= deadline) {
+            throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
+          }
+          continue;
+        }
         // The request can settle while the roster poll is in flight. Read
         // again before recovery so a rejection never receives a nudge. A
         // readable transcript is also required to anchor this submission:
@@ -1163,6 +1208,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // A stopped session runs nothing, so nothing submitted to it is pending,
     // and the turn's prompt is in no session: the next launch submits it anew.
     this.#pending = null;
+    this.#refused = null;
     this.#turn = "unsent";
     this.#deliveryFailure = null;
     this.#collectionMark = 0;

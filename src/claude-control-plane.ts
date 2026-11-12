@@ -650,10 +650,18 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         }
         if (dispatch.result !== null) {
           if (!dispatch.result.ok) {
+            const account = launchAccount(dispatch.result);
+            const configDir = claudeConfigDirectory(this.#env, process.cwd());
+            const consentAdvice = /bypassPermissions requires accepting the disclaimer/i.test(
+              dispatch.result.stderr + "\n" + dispatch.result.stdout
+            )
+              ? `; CLAUDE_CONFIG_DIR=${shellQuote(configDir)} lacks bypass-permissions consent. ` +
+                `Run interactively: CLAUDE_CONFIG_DIR=${shellQuote(configDir)} ${shellQuote(this.#claudeBin)} --dangerously-skip-permissions; then retry.`
+              : "";
             throw new ClaudeDispatchError(
               `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} ` +
               `(workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` +
-              launchAccount(dispatch.result)
+              account + consentAdvice
             );
           }
           deadline ??= Date.now() + this.#dispatchTimeoutMs;
@@ -980,9 +988,27 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       if (!created.ok) return refused("tmux new-session", created);
 
       await delay(this.#valveAttachSettleMs, signal);
+      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
+      // Native input dialogs consume Ctrl+G instead of opening the editor.
+      // Decline the request for human input, then wait for the daemon to
+      // acknowledge that the dialog has closed before addressing the prompt.
+      if (status.state === "blocked" && status.waitingFor !== undefined && (await this.poll(handle)).waitingFor !== undefined) {
+        const cancelled = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Escape"]);
+        if (!cancelled.ok) return refused("tmux send-keys (cancel input)", cancelled);
+        for (;;) {
+          const current = await this.poll(handle);
+          if (!current.present) return { submitted: false, reason: "the session left the daemon's roster while cancelling input" };
+          // An empty native prompt can itself have state "blocked". The
+          // dialog is gone when its specific input request is gone.
+          if (current.state !== "unknown" && current.waitingFor === undefined) break;
+          if (Date.now() >= copyDeadline) {
+            return { submitted: false, reason: `blocked input did not clear within ${this.#valveDeliveryTimeoutMs}ms` };
+          }
+          await delay(50, signal);
+        }
+      }
       const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
       if (!opened.ok) return refused("tmux send-keys (editor)", opened);
-      const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
       for (;;) {
         try {
           await access(copied);

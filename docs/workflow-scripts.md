@@ -554,17 +554,29 @@ opening, follow-up or nudge cannot acknowledge a later message. Two failures
 are told apart:
 
 - `claude-valve-error`: the message was never submitted. Nothing reached the
-  worker, and the retry sends the same message again.
+  worker. While the session and valve remain available, the retry sends the
+  same message again in the same session, within the call's `maxAttempts`
+  limit. A one-shot call redispatches its task if the old session is gone or
+  the valve is unavailable; a held session is never restarted.
 - `claude-delivery-error`: the message was submitted, but the transcript
   shows the worker received different text, or shows no trace of it within
   the receipt deadline. The message names the sizes and SHA-256 digests of
   what was sent and what arrived. A reply to altered text is never returned
   as the turn's value.
 
+Ensemble verifies the opening prompt's receipt before nudging a Claude worker.
+For a worker awaiting native input, it cancels the input dialog and waits for
+the daemon to clear its input request.
+This exposes the normal prompt so Claude Code's external editor can load the
+nudge. An ordinary empty prompt needs no cancellation. If the input request
+does not clear, the valve refuses the message without submitting it.
+
 In a `session()`, a turn the worker took on altered text runs to its end
 before the attempt fails, with its text kept on the attempt record, so the
-session is between turns when the retry begins. A recovery nudge's matching
-receipt never verifies altered task or correction text. That delivery failure
+session is between turns when the retry begins. Work from an earlier turn
+cannot be returned as a later turn's value: the later turn's prompt must
+verify first. A recovery nudge's matching receipt never verifies altered task
+or correction text. That delivery failure
 survives nudges; a fresh task or correction submission must verify before
 its reply can succeed. Resuming a nudge still waits for the
 task's outstanding background work; an interim reply is not a final answer.
@@ -622,11 +634,15 @@ says so.
 ### Claude dispatch
 
 Claude workers use `--dangerously-skip-permissions`. Before the first
-dispatch, run `claude --dangerously-skip-permissions` interactively and accept
-the bypass-permissions disclaimer in the Claude configuration home the
-workers will use. This is a one-time prerequisite for that home; a fresh or
+dispatch, run `CLAUDE_CONFIG_DIR='/absolute/claude-home' claude
+--dangerously-skip-permissions` interactively and accept the bypass-permissions
+disclaimer. Use the resolved configuration home the workers will use:
+`CLAUDE_CONFIG_DIR`, resolved from the launcher's working directory if relative,
+or `$HOME/.claude` from the worker environment when unset or empty. This is a
+one-time prerequisite for that home; a fresh or
 isolated Claude configuration home needs its own acceptance. Ensemble does
-not accept the disclaimer on your behalf.
+not accept the disclaimer on your behalf. A dispatch refused for missing
+consent names that resolved home and gives an interactive command scoped to it.
 
 Every Claude worker is launched with `CLAUDE_CODE_SANDBOXED` set, which tells
 Claude Code to skip its per-directory trust prompt. Once the bypass disclaimer

@@ -1126,7 +1126,11 @@ test("status file sweep removes dead runs' files and temp files without touching
       writeFile(foreign, "{}\n")
     ]);
 
-    const progress = new RunProgress({ runId: "sweeper-run", budget: new UnboundedBudget() });
+    const progress = new RunProgress({
+      runId: "sweeper-run",
+      budget: new UnboundedBudget(),
+      admission: { ceiling: null, snapshot: () => ({ ceilingActive: 0, waiting: new Map() }) }
+    });
     const writer = new StatusFileWriter({ progress, dir: directory });
     await waitForFile(writer.path);
     await writeFile(postStartupTmp, "half-written\n");

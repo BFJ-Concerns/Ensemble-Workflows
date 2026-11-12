@@ -554,11 +554,6 @@ export class EnsembleRuntime {
     }
     this.#strip = options.strip ?? [];
     this.budget = new TokenBudget(options.budgetCeilings);
-    this.progress = new RunProgress({
-      runId: options.runId ?? randomUUID(),
-      budget: this.budget,
-      ...(options.now !== undefined ? { now: options.now } : {})
-    });
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
     // 1 hour on both by default: Claude's is the subscription cache TTL's
@@ -596,7 +591,17 @@ export class EnsembleRuntime {
     this.#resourceGate = new EngineResourceGate((engine, cwd) => engines.resourceRequirements(engine, cwd));
     this.#admission = new AdmissionController({
       ceiling: options.agentCeiling ?? null,
-      caps: this.#engineCaps()
+      caps: this.#engineCaps(),
+      // The snapshot reads admission's account each time it is taken, so a
+      // change in that account only has to ask for a fresh one.
+      onChange: () => this.progress.markChanged(),
+      ...(options.now !== undefined ? { now: options.now } : {})
+    });
+    this.progress = new RunProgress({
+      runId: options.runId ?? randomUUID(),
+      budget: this.budget,
+      admission: this.#admission,
+      ...(options.now !== undefined ? { now: options.now } : {})
     });
     this.#registerEngineCaps();
   }

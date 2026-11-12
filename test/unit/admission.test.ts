@@ -62,7 +62,7 @@ test("admission acquires both counters atomically and skips an ineligible waiter
       ["claude", 0],
       ["opencode", 0]
     ]),
-    waiting: 0
+    waiting: new Map()
   });
 });
 
@@ -140,7 +140,7 @@ test("close rejects waiting calls without acquiring their slots", async () => {
   assert.deepEqual(controller.snapshot(), {
     ceilingActive: 1,
     engineActive: new Map([["codex", 1]]),
-    waiting: 0
+    waiting: new Map()
   });
   await assert.rejects(waiting, EngineShutdownError);
   await assert.rejects(sameEngineWaiting, EngineShutdownError);
@@ -154,7 +154,7 @@ test("close rejects waiting calls without acquiring their slots", async () => {
   assert.deepEqual(controller.snapshot(), {
     ceilingActive: 0,
     engineActive: new Map([["codex", 0]]),
-    waiting: 0
+    waiting: new Map()
   });
 });
 
@@ -202,6 +202,85 @@ test("routine ceiling saturation does not emit an anti-starvation skip", async (
   activeGate.resolve(undefined);
   await Promise.all([active, waiting]);
   assert.equal(events.filter((event) => event.kind === "skipped").length, 0);
+});
+
+test("the snapshot names the gate holding each waiting worker, the engine's cap when both limits hold it", async () => {
+  let clock = 1_000;
+  const controller = new AdmissionController({
+    ceiling: 2,
+    caps: caps({ codex: 1, claude: 2 }),
+    now: () => (clock += 1)
+  });
+  const codexGate = deferred<void>();
+  const claudeGate = deferred<void>();
+
+  const codexActive = controller.admit("codex", 1, () => codexGate.promise);
+  const codexWaiting = controller.admit("codex", 2, async () => undefined);
+  // Codex is at its cap and the ceiling still has a slot.
+  assert.deepEqual(controller.snapshot().waiting, new Map([[2, { kind: "admission", gate: "engine-cap", sinceMs: 1_002 }]]));
+
+  const claudeActive = controller.admit("claude", 3, () => claudeGate.promise);
+  const claudeWaiting = controller.admit("claude", 4, async () => undefined);
+  // The ceiling is full now. Worker 2 is held by both limits and still
+  // reads its engine's cap; worker 4's engine has a free slot, so only the
+  // ceiling holds it.
+  assert.equal(controller.snapshot().ceilingActive, 2);
+  assert.deepEqual(
+    controller.snapshot().waiting,
+    new Map([
+      [2, { kind: "admission", gate: "engine-cap", sinceMs: 1_002 }],
+      [4, { kind: "admission", gate: "agent-ceiling", sinceMs: 1_004 }]
+    ])
+  );
+
+  codexGate.resolve(undefined);
+  claudeGate.resolve(undefined);
+  await Promise.all([codexActive, codexWaiting, claudeActive, claudeWaiting]);
+});
+
+test("admission refreshes gates after draining, preserves queue time and publishes close", async () => {
+  let now = 100;
+  const changes: ReturnType<AdmissionController["snapshot"]>[] = [];
+  const controller = new AdmissionController({
+    ceiling: 2, caps: caps({ codex: 1, claude: 2 }), now: () => now++,
+    onChange: () => changes.push(controller.snapshot())
+  });
+  const firstGate = deferred<void>();
+  const secondGate = deferred<void>();
+  const nextGate = deferred<void>();
+  const first = controller.admit("codex", 1, () => firstGate.promise);
+  const second = controller.admit("claude", 2, () => secondGate.promise);
+  const next = controller.admit("claude", 3, () => nextGate.promise);
+  const waiting = controller.admit("codex", 4, async () => undefined);
+  const rejected = assert.rejects(waiting, EngineShutdownError);
+  assert.equal(changes.length, 4, "one publication per admit, after draining");
+  assert.equal(changes[0]?.waiting.size, 0, "immediately admitted work must not appear waiting");
+  assert.deepEqual(controller.snapshot().waiting.get(4), { kind: "admission", gate: "engine-cap", sinceMs: 103 });
+
+  firstGate.resolve(undefined);
+  await first;
+  await drainMicrotasks();
+  assert.equal(changes.length, 5, "one publication for release and its drained successor");
+  const changed = changes.at(-1)!;
+  assert.equal(changed.ceilingActive, 2);
+  assert.equal(changed.waiting.has(3), false, "successor has already acquired its slot at publication");
+  assert.deepEqual(changed.waiting.get(4), { kind: "admission", gate: "agent-ceiling", sinceMs: 103 });
+  // Previously returned snapshots must retain the gate they observed.
+  assert.equal(changes[3]?.waiting.get(4)?.gate, "engine-cap");
+
+  controller.close();
+  assert.equal(changes.length, 6);
+  assert.equal(changes.at(-1)?.waiting.size, 0);
+  assert.equal(changes.at(-1)?.ceilingActive, 2, "close retains already admitted slots");
+  controller.close();
+  assert.equal(changes.length, 6, "repeated close is inert");
+  await rejected;
+  secondGate.resolve(undefined);
+  nextGate.resolve(undefined);
+  await Promise.all([second, next]);
+  await drainMicrotasks();
+  assert.equal(changes.length, 8);
+  assert.equal(changes.at(-1)?.ceilingActive, 0);
 });
 
 function caps(values: Partial<Record<EngineName, number>>): ReadonlyMap<EngineName, number> {

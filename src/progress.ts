@@ -1,4 +1,9 @@
-import type { AgentWaitSnapshot, EngineName } from "./types.js";
+import type {
+  AdmissionWaitSnapshot,
+  AgentWaitSnapshot,
+  BackgroundTaskWaitSnapshot,
+  EngineName
+} from "./types.js";
 
 /**
  * How a worker left the run. The four values partition every worker the run
@@ -82,6 +87,28 @@ export interface BudgetView {
   readonly ceilings: Readonly<Partial<Record<EngineName, number | null>>>;
 }
 
+/**
+ * The minimal admission surface the progress model reads when serialising.
+ *
+ * Admission owns the ceiling, its slot counters and its queue, and the
+ * progress model keeps no copy of any of them: each snapshot reads them
+ * afresh, so what it publishes about admission cannot drift from what
+ * admission holds, and nothing needs clearing when a worker is dispatched,
+ * falls back to another engine, is cancelled or settles. Whoever owns the
+ * account calls {@link RunProgress.markChanged} when it changes, so the
+ * snapshot is republished.
+ */
+export interface AdmissionView {
+  /** The run-wide agent ceiling, or null when the run has none. */
+  readonly ceiling: number | null;
+  snapshot(): {
+    /** Workers holding a ceiling slot: admitted and not yet released. */
+    ceilingActive: number;
+    /** Every worker admission is holding back, keyed by worker id. */
+    waiting: ReadonlyMap<number, AdmissionWaitSnapshot>;
+  };
+}
+
 export interface LiveAgentSnapshot {
   requestedModel: string | null;
   requestedEffort: string | null;
@@ -112,13 +139,33 @@ export interface LiveAgentSnapshot {
   /** Epoch ms of the first observed sign of worker output; null until the engine reports one. */
   firstEvidenceAtMs: number | null;
   /**
-   * What the worker is waiting on, when the harness is waiting with it: a
-   * background task its session started (a long command, a Monitor) whose
-   * wake has not yet landed. Null while the worker is thinking or its
-   * engine has no such notion. The distinction a supervisor needs between a
-   * stuck background task and a worker still generating.
+   * What the worker is waiting on, when the harness knows. The worker's
+   * state decides which wait it can carry, and each has one source:
+   *
+   * - queued — an admission wait naming the gate holding it, read from
+   *   the {@link AdmissionView} when the snapshot is taken and never stored
+   *   on the worker; null while admission is not holding it.
+   * - running — a background task its session started (a long command, a
+   *   Monitor) whose wake has not yet landed, as its engine reports it;
+   *   null while the worker is thinking or its engine has no such notion.
+   *   The distinction a supervisor needs between a stuck background task
+   *   and a worker still generating.
+   * - finished — null.
    */
   waitingOn: AgentWaitSnapshot | null;
+}
+
+/** The run-wide agent ceiling and the slots held under it, as admission counts them. */
+export interface AgentCeilingSnapshot {
+  /** The most workers the run may have in flight across all engines; null when it has no ceiling. */
+  limit: number | null;
+  /**
+   * Workers holding a ceiling slot, counted whether or not the run has a
+   * ceiling. A slot is taken just before its worker starts executing and
+   * given back just after the worker settles, so this can briefly differ
+   * from `totals.active`.
+   */
+  active: number;
 }
 
 export interface EngineProgressSnapshot extends DispositionCounts {
@@ -144,13 +191,22 @@ export interface OpenHoldSnapshot {
 
 export interface ProgressSnapshot {
   /**
-   * Snapshot schema version. 4 finishes every worker with one of the four
-   * dispositions and counts each; 3 retained finished workers as done or
-   * failed only. 2: one file per run in the status directory
-   * (`ensemble.<run-uuid>.local.json`), each carrying its writer's owner
-   * evidence; 1 was the single-slot `ensemble.local.json`.
+   * Snapshot schema version. A number names exactly one declared shape, so
+   * it rises by one with any change to that shape: a field added, removed
+   * or renamed, a field's type or meaning changed, or a value added to a
+   * set a reader switches on (a worker `state`, a `waitingOn.kind`, a
+   * `gate`). Changes that land together share one rise. The writer
+   * publishes the current version only, and a reader treats a number it was
+   * not built for as unreadable.
+   *
+   * 5 gives a queued worker an admission wait and publishes the agent
+   * ceiling. 4 finishes every worker with one of the four dispositions and
+   * counts each; 3 retained finished workers as done or failed only. 2: one
+   * file per run in the status directory (`ensemble.<run-uuid>.local.json`),
+   * each carrying its writer's owner evidence; 1 was the single-slot
+   * `ensemble.local.json`.
    */
-  schema: 4;
+  schema: 5;
   runId: string;
   pid: number;
   archiveDir: string | null;
@@ -161,6 +217,7 @@ export interface ProgressSnapshot {
   finishedAt: number | null;
   currentPhase: string | null;
   totals: { active: number; queued: number } & DispositionCounts;
+  agentCeiling: AgentCeilingSnapshot;
   engines: Record<string, EngineProgressSnapshot>;
   agents: LiveAgentSnapshot[];
   /** Open holds: present while the run awaits decisions, empty otherwise. */
@@ -170,6 +227,7 @@ export interface ProgressSnapshot {
 export interface RunProgressOptions {
   runId: string;
   budget: BudgetView;
+  admission: AdmissionView;
   /** Injectable clock; defaults to `Date.now`. Keeps snapshots testable. */
   now?: () => number;
   /** Injectable pid; defaults to `process.pid`. */
@@ -196,7 +254,8 @@ interface AgentRecord {
   attempt: number;
   startedAt: number | null;
   firstEvidenceAt: number | null;
-  waitingOn: AgentWaitSnapshot | null;
+  /** The wait the worker's engine last reported. An admission wait is never stored here. */
+  waitingOn: BackgroundTaskWaitSnapshot | null;
 }
 
 interface EngineCounters extends DispositionCounts {
@@ -221,6 +280,7 @@ export class RunProgress {
   readonly runId: string;
 
   #budget: BudgetView;
+  #admission: AdmissionView;
   #now: () => number;
   #pid: number;
 
@@ -243,6 +303,7 @@ export class RunProgress {
   constructor(options: RunProgressOptions) {
     this.runId = options.runId;
     this.#budget = options.budget;
+    this.#admission = options.admission;
     this.#now = options.now ?? (() => Date.now());
     this.#pid = options.pid ?? process.pid;
     this.#startedAt = this.#now();
@@ -415,11 +476,11 @@ export class RunProgress {
   }
 
   /**
-   * Records what a live worker is waiting on — a background task its
-   * session started — or that it no longer is (`null`). Last write wins:
-   * the engine reports each change as it observes it.
+   * Records the background task a running worker is waiting on, or that it
+   * no longer waits on one (`null`). Last write wins: the engine reports
+   * each change as it observes it.
    */
-  noteAgentWaiting(id: number, wait: AgentWaitSnapshot | null): void {
+  noteAgentWaiting(id: number, wait: BackgroundTaskWaitSnapshot | null): void {
     const record = this.#live.get(id);
     if (record === undefined || (record.waitingOn === null && wait === null)) {
       return;
@@ -490,7 +551,10 @@ export class RunProgress {
     this.#touch();
   }
 
-  /** Refreshes the live snapshot without changing its modelled state. */
+  /**
+   * Refreshes the live snapshot without changing its modelled state: what
+   * a view the snapshot reads (the admission account) calls when it changes.
+   */
   markChanged(): void {
     this.#touch();
   }
@@ -528,8 +592,12 @@ export class RunProgress {
       totals.unsettled += counters.unsettled;
     }
 
+    // One read of admission's account per snapshot, so every admission
+    // figure the snapshot carries comes from the same moment.
+    const admission = this.#admission.snapshot();
+
     return {
-      schema: 4,
+      schema: 5,
       runId: this.runId,
       pid: this.#pid,
       archiveDir: this.#archiveDir,
@@ -540,13 +608,14 @@ export class RunProgress {
       finishedAt: this.#finishedAt,
       currentPhase: this.#currentPhase,
       totals,
+      agentCeiling: { limit: this.#admission.ceiling, active: admission.ceilingActive },
       engines,
-      agents: this.#agents(),
+      agents: this.#agents(admission.waiting),
       holds: [...this.#openHolds.values()]
     };
   }
 
-  #agents(): LiveAgentSnapshot[] {
+  #agents(waiting: ReadonlyMap<number, AdmissionWaitSnapshot>): LiveAgentSnapshot[] {
     const records = [...this.#live.values(), ...this.#finished.values()];
     // Running, queued, then finished workers; every worker stays visible.
     records.sort((a, b) => rank(a.state) - rank(b.state) || (rank(a.state) === 2 ? b.id - a.id : a.id - b.id));
@@ -569,7 +638,7 @@ export class RunProgress {
       attempt: record.attempt,
       startedAtMs: record.startedAt,
       firstEvidenceAtMs: record.firstEvidenceAt,
-      waitingOn: record.waitingOn
+      waitingOn: record.state === "queued" ? waiting.get(record.id) ?? null : record.waitingOn
     }));
   }
 

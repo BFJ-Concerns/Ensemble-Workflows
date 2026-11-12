@@ -703,10 +703,12 @@ spend reaches the ceiling, admission throws a budget-exhausted error; a
 ceiling of 0 admits no dispatch and says so.
 
 The refusal names the dispatch, fallback dispatch (with its agent id), or
-numbered session turn it blocked. A session's first `send()` is `session
-turn 1`, even when admission refuses it before the worker opens; a refused
-send does not advance the turn number. Earlier targets or session turns may
-already have run and caused side effects.
+numbered session turn it blocked. An ordinary dispatch includes its label
+and phase when available; the phase comes from the call's `phase` option or
+the current `phase()` title. Calls with neither retain `refused dispatch`.
+A session's first `send()` is `session turn 1`, even when admission refuses
+it before the worker opens; a refused send does not advance the turn number.
+Earlier targets or session turns may already have run and caused side effects.
 
 Every call admitted below the ceiling still runs, including calls waiting
 in the concurrency queue when spend reaches the ceiling. Admission is not

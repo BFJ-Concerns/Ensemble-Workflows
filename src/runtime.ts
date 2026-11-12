@@ -862,7 +862,13 @@ export class EnsembleRuntime {
     // attempts to completion, so spend can overshoot by the whole dispatched
     // backlog. A blocked call is a pre-dispatch rejection, like a rejected
     // option: no engine invocation, no progress entry, no run record.
-    this.budget.assertCanStart(engine.name);
+    const dispatchPhase = options.phase ?? this.progress.snapshot().currentPhase;
+    const dispatchContext = [
+      ...(options.label !== undefined ? [`label ${JSON.stringify(options.label)}`] : []),
+      ...(dispatchPhase !== null ? [`phase ${JSON.stringify(dispatchPhase)}`] : [])
+    ];
+    this.budget.assertCanStart(engine.name,
+      dispatchContext.length > 0 ? `dispatch (${dispatchContext.join(", ")})` : "dispatch");
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
       engine: engine.name,

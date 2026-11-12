@@ -737,7 +737,7 @@ test("CLI budget flag enforces Codex ceiling without blocking Claude", async () 
     codexRemaining: 0,
     claudeSpent: 3,
     claudeUnbounded: true,
-    codexBlockedMessage: "Token budget exhausted for codex: spent 6 of 5 tokens; refused dispatch",
+    codexBlockedMessage: "Token budget exhausted for codex: spent 6 of 5 tokens; remaining 0; refused dispatch",
     claudeAfterCodexExhaustion: "claude-still-runs"
   });
   // The blocked call is rejected at dispatch, before the engine sees it: one
@@ -784,7 +784,7 @@ test("CLI budget flag enforces Claude ceiling without blocking Codex", async () 
     claudeRemaining: 0,
     codexSpent: 4,
     codexUnbounded: true,
-    claudeBlockedMessage: "Token budget exhausted for claude: spent 7 of 5 tokens; refused dispatch",
+    claudeBlockedMessage: "Token budget exhausted for claude: spent 7 of 5 tokens; remaining 0; refused dispatch",
     codexAfterClaudeExhaustion: "codex-still-runs"
   });
   assert.equal(codex.invocations.length, 1);
@@ -1340,7 +1340,7 @@ test("Codex budget exhaustion leaves Claude unbounded and runnable", async () =>
     codexRemaining: 0,
     claudeSpent: 3,
     claudeUnbounded: true,
-    codexBlockedMessage: "Token budget exhausted for codex: spent 6 of 5 tokens; refused dispatch",
+    codexBlockedMessage: "Token budget exhausted for codex: spent 6 of 5 tokens; remaining 0; refused dispatch",
     claudeAfterCodexExhaustion: "claude-still-runs"
   });
 });
@@ -1381,7 +1381,7 @@ test("Claude budget exhaustion leaves Codex unbounded and runnable", async () =>
     claudeRemaining: 0,
     codexSpent: 4,
     codexUnbounded: true,
-    claudeBlockedMessage: "Token budget exhausted for claude: spent 7 of 5 tokens; refused dispatch",
+    claudeBlockedMessage: "Token budget exhausted for claude: spent 7 of 5 tokens; remaining 0; refused dispatch",
     codexAfterClaudeExhaustion: "codex-still-runs"
   });
 });

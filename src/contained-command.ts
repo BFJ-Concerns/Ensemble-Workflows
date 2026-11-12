@@ -6,7 +6,8 @@ import { constants as osConstants } from "node:os";
 import path from "node:path";
 import type { Writable } from "node:stream";
 
-import { EnsembleError, StopUnconfirmedError } from "./errors.js";
+import { EnsembleError, StopUnconfirmedError, type UnestablishedStop } from "./errors.js";
+import type { JsonObject } from "./types.js";
 import {
   DEFAULT_STOP_BOUNDS,
   waitUntil,
@@ -36,11 +37,22 @@ import {
  *   That stop is also what releases the engine's own wait: a descendant
  *   holding the command's output pipes ends with it, so an engine never
  *   waits for the run's close to end a command for it.
+ * - The run says when it is ending. `CommandContainment.runEnding()` divides
+ *   every stop by its occasion (`StopOccasion`): one that begins before it
+ *   is an attempt's, one that begins after it is the run's teardown. The
+ *   engine never says which, and never reads an abort's reason to find out.
+ * - The attempt discloses its own. A worker stopped while the script runs —
+ *   by its turn deadline, say — is a failure the script receives as a value,
+ *   and what that stop could not establish is part of the same account: the
+ *   engine puts `CommandStop.attemptAccount` on the attempt's result
+ *   (`unestablishedStopDiagnostics`), and the run still ends as the script
+ *   left it.
  * - The run confirms. `CommandContainment.close()` runs after every engine
  *   has closed, stops whatever was left unstopped, and rejects with
  *   `StopUnconfirmedError` naming each command whose end the run could not
- *   establish. An engine therefore plumbs no stop result anywhere: a stop
- *   it made and could not confirm is reported by the run's close.
+ *   establish: one its own teardown cut short, or one an attempt left
+ *   running within reach that is running still. An engine therefore plumbs
+ *   nothing for a stop the run's ending caused.
  */
 export interface ContainedCommand {
   /**
@@ -52,9 +64,66 @@ export interface ContainedCommand {
   readonly reach: ContainmentReach;
   /**
    * End the command and everything within its reach, and confirm the end.
-   * Every call shares the first call's stop and its bounds. Never rejects.
+   * Every call shares the first call's stop, its bounds and its occasion.
+   * Never rejects.
    */
-  stop(bounds?: StopBounds): Promise<StopOutcome>;
+  stop(bounds?: StopBounds): Promise<CommandStop>;
+}
+
+/**
+ * On whose account a stop is made, fixed when the stop begins.
+ *
+ * - `attempt`: the script is still running. The stop belongs to one
+ *   attempt — its deadline expired, its call was cancelled, its command
+ *   exited — and the worker's failure, where this is one, reaches the script
+ *   as a value. Whatever the stop could not establish is that attempt's to
+ *   disclose and never, by itself, fails the run.
+ * - `run-ending`: the run has said it is ending (`runEnding()`), so the stop
+ *   is its teardown cutting work short, and the run's close answers for it.
+ */
+export type StopOccasion = "attempt" | "run-ending";
+
+/** What one stop of a contained command observed, and what the attempt that ran the command owes its account. */
+export interface CommandStop {
+  /** What was observed within the command's reach. */
+  readonly outcome: StopOutcome;
+  /**
+   * The entry the attempt's account carries for this stop, or null where the
+   * attempt has nothing to say: the command's end is established, or the
+   * stop was the run's teardown and the run's close reports it. Non-null
+   * only on the `attempt` occasion, for a command cut short where the run
+   * could see no further than its process group, or one whose processes
+   * within reach outlived the stop.
+   */
+  readonly attemptAccount: UnestablishedStop | null;
+}
+
+/** The key an attempt's `diagnostics` carries its unestablished stops under, on every engine. */
+export const UNESTABLISHED_STOPS_DIAGNOSTIC = "unestablishedStops";
+
+/**
+ * The attempt-record form of the stops an attempt made: spread into the
+ * attempt result's `diagnostics`, alike on a result that completed, one
+ * that failed, and one a thrown failure carries (`attachFailedTurnResult`).
+ * Empty where no stop left the attempt anything to disclose. The runtime
+ * takes it from there — the attempt record keeps it and the run's event
+ * stream announces it — so an engine reports a stop nowhere else.
+ */
+export function unestablishedStopDiagnostics(stops: readonly CommandStop[]): JsonObject {
+  const accounts = stops.flatMap((stop) => (stop.attemptAccount === null ? [] : [{ ...stop.attemptAccount }]));
+  return accounts.length === 0 ? {} : { [UNESTABLISHED_STOPS_DIAGNOSTIC]: accounts };
+}
+
+/** The unestablished stops an attempt's `diagnostics` carry; none where it carries none. */
+export function unestablishedStopsOf(diagnostics: JsonObject | undefined): UnestablishedStop[] {
+  const carried = diagnostics?.[UNESTABLISHED_STOPS_DIAGNOSTIC];
+  if (!Array.isArray(carried)) {
+    return [];
+  }
+  return carried.flatMap((entry: unknown) => {
+    const { owner, reason } = (entry ?? {}) as { owner?: unknown; reason?: unknown };
+    return typeof owner === "string" && typeof reason === "string" ? [{ owner, reason }] : [];
+  });
 }
 
 /**
@@ -104,10 +173,11 @@ export class CommandContainment {
   /** Distinguishes this run's command groups on a manager another run may share. */
   #label = randomUUID().slice(0, 8);
   #count = 0;
-  /** Commands whose end the run has not established: not yet stopped, or stopped without confirmation. */
+  /** Commands the run's close still answers for: not yet stopped, or stopped with their end unestablished on the run's account. */
   #owned = new Set<Contained>();
   /** Containments under way, so `close()` stops a command whose start it raced. */
   #containing = new Set<Promise<unknown>>();
+  #runEnding = false;
   #closing: Promise<void> | null = null;
 
   constructor(scopes: WorkerScopes, options: CommandContainmentOptions = {}) {
@@ -156,10 +226,13 @@ export class CommandContainment {
       throw error;
     }
     let reach: ContainmentReach;
-    let stopper: (bounds: StopBounds) => Promise<StopOutcome>;
+    let stopper: Stopper;
+    // The manager keeps a scope it could not confirm empty and stops it
+    // afresh when asked again, so one call serves both passes.
+    const stopScope = (bounds: StopBounds): Promise<StopOutcome> => this.#scopes.stop(group, bounds);
     if (placement.kind === "placed") {
       reach = { kind: "scope", unit: placement.unit };
-      stopper = (bounds) => this.#scopes.stop(group, bounds);
+      stopper = { stop: stopScope, stopAgain: stopScope };
     } else {
       reach = {
         kind: "process-group",
@@ -168,16 +241,33 @@ export class CommandContainment {
       // A refusal can follow a scope the manager accepted and had not yet
       // filled, so the stop covers the group's scope as well as the process
       // group; a group the manager holds no scope for costs it nothing.
-      stopper = async (bounds) => worstOf(await Promise.all([stopProcessGroup(pid, bounds), this.#scopes.stop(group, bounds)]));
+      stopper = {
+        stop: async (bounds) => worstOf(await Promise.all([stopProcessGroup(pid, bounds), stopScope(bounds)])),
+        stopAgain: async (bounds) => worstOf(await Promise.all([processGroupEnded(pid, bounds), stopScope(bounds)]))
+      };
     }
-    const command = new Contained(name, gated.child, reach, stopper, (stopped, outcome) => {
-      if (unestablished(stopped, outcome) === null) {
-        this.#owned.delete(stopped);
-      }
-    });
+    const command = new Contained(
+      name,
+      gated.child,
+      reach,
+      stopper,
+      () => (this.#runEnding ? "run-ending" : "attempt"),
+      (stopped) => this.#owned.delete(stopped)
+    );
     this.#owned.add(command);
     gated.open();
     return command;
+  }
+
+  /**
+   * The run has begun to end: every stop that begins from here on is the
+   * run's teardown (`StopOccasion`). Whoever ends the run calls this before
+   * it cancels anything — synchronously, ahead of the first worker it tears
+   * down — so no teardown stop is taken for an attempt's. `close()` implies
+   * it. Calling it again changes nothing.
+   */
+  runEnding(): void {
+    this.#runEnding = true;
   }
 
   /**
@@ -185,10 +275,19 @@ export class CommandContainment {
    * started has ended: the run's statement that its workers' commands have
    * stopped. Containment is refused once close has begun; one already under
    * way finishes first and is stopped with the rest. Rejects with
-   * `StopUnconfirmedError` naming each command whose end could not be
-   * established — processes within its reach outlived the stop, or it was
-   * cut short at `process-group` reach, where a process that left the group
-   * was never visible. Later calls share the first call's outcome.
+   * `StopUnconfirmedError` naming each command whose end the run could not
+   * establish:
+   *
+   * - one the run's own teardown stopped, where processes within its reach
+   *   outlived the stop, or where it was cut short at `process-group` reach
+   *   and a process that left the group was never visible;
+   * - one an attempt stopped and left running within its reach, which this
+   *   close stops again and still cannot confirm.
+   *
+   * A command an attempt cut short at `process-group` reach is not named:
+   * its group ended, the attempt's account already says what could not be
+   * seen, and nothing here could learn more. Later calls share the first
+   * call's outcome.
    */
   close(): Promise<void> {
     this.#closing ??= this.#closeOnce();
@@ -196,14 +295,10 @@ export class CommandContainment {
   }
 
   async #closeOnce(): Promise<void> {
+    this.runEnding();
     await Promise.all([...this.#containing]);
-    const accounts = await Promise.all(
-      [...this.#owned].map(async (command) => ({ command, outcome: await command.stop(this.#stopBounds) }))
-    );
-    const unconfirmed = accounts.flatMap(({ command, outcome }) => {
-      const reason = unestablished(command, outcome);
-      return reason === null ? [] : [{ owner: command.owner, reason }];
-    });
+    const accounts = await Promise.all([...this.#owned].map((command) => command.stopForRun(this.#stopBounds)));
+    const unconfirmed = accounts.flatMap((account) => (account === null ? [] : [account]));
     if (unconfirmed.length > 0) {
       throw new StopUnconfirmedError(unconfirmed);
     }
@@ -211,48 +306,46 @@ export class CommandContainment {
 }
 
 /**
- * The one judgement of whether a stopped command's end is established; null
- * when it is. An unconfirmed stop never is. A confirmed stop is, except for
- * a command cut short — still running when it was stopped — at
- * `process-group` reach: its group is observed empty, but what it had
- * started outside the group is exactly what the run cannot see, and the
- * run says so rather than report the work stopped. A command that ended by
- * itself at that reach is taken at its exit, as every worker's is on a
- * machine without a scope manager.
+ * How a command's reach is stopped. `stop` ends everything within reach and
+ * confirms the end. `stopAgain` is the run's close returning to a command
+ * whose `stop`, made for an attempt, left processes running: it may be long
+ * after, so it signals only what is still known to be the command's own.
  */
-function unestablished(command: Contained, outcome: StopOutcome): string | null {
-  if (outcome.kind === "unconfirmed") {
-    return outcome.reason;
-  }
-  if (command.reach.kind === "process-group" && command.cutShort) {
-    return `cut short without a scope (${command.reach.reason}): its process group ended, and a process it started outside that group was never visible to the run`;
-  }
-  return null;
+interface Stopper {
+  stop(bounds: StopBounds): Promise<StopOutcome>;
+  stopAgain(bounds: StopBounds): Promise<StopOutcome>;
 }
 
 /** A contained command whose stop is one shared, never-rejecting promise. */
 class Contained implements ContainedCommand {
   readonly child: ChildProcess;
   readonly reach: ContainmentReach;
-  /** Whether the first stop found the command still running. */
-  cutShort = false;
   #name: string;
-  #stopper: (bounds: StopBounds) => Promise<StopOutcome>;
-  #onStopped: (command: Contained, outcome: StopOutcome) => void;
-  #stopping: Promise<StopOutcome> | null = null;
+  #stopper: Stopper;
+  #occasionNow: () => StopOccasion;
+  #release: (command: Contained) => void;
+  /** The first stop: its occasion, whether it found the command still running, and what it observed. */
+  #first: { occasion: StopOccasion; cutShort: boolean; observing: Promise<StopOutcome> } | null = null;
+  #stop: Promise<CommandStop> | null = null;
 
+  /**
+   * `occasionNow` reads the run's state as a stop begins. `release` tells
+   * the run its close no longer answers for the command.
+   */
   constructor(
     name: string,
     child: ChildProcess,
     reach: ContainmentReach,
-    stopper: (bounds: StopBounds) => Promise<StopOutcome>,
-    onStopped: (command: Contained, outcome: StopOutcome) => void
+    stopper: Stopper,
+    occasionNow: () => StopOccasion,
+    release: (command: Contained) => void
   ) {
     this.#name = name;
     this.child = child;
     this.reach = reach;
     this.#stopper = stopper;
-    this.#onStopped = onStopped;
+    this.#occasionNow = occasionNow;
+    this.#release = release;
   }
 
   /** How the operator finds the command's processes: its scope, or its process group. */
@@ -260,17 +353,74 @@ class Contained implements ContainedCommand {
     return `${this.#name} in ${this.reach.kind === "scope" ? this.reach.unit : `process group ${this.child.pid ?? "unknown"}`}`;
   }
 
-  stop(bounds: StopBounds = DEFAULT_STOP_BOUNDS): Promise<StopOutcome> {
-    if (this.#stopping === null) {
-      this.cutShort = this.child.exitCode === null && this.child.signalCode === null;
-      this.#stopping = this.#stopper(bounds)
-        .catch((error: unknown): StopOutcome => ({ kind: "unconfirmed", reason: error instanceof Error ? error.message : String(error) }))
-        .then((outcome) => {
-          this.#onStopped(this, outcome);
-          return outcome;
-        });
+  stop(bounds: StopBounds = DEFAULT_STOP_BOUNDS): Promise<CommandStop> {
+    this.#stop ??= this.#stopFirst(bounds);
+    return this.#stop;
+  }
+
+  async #stopFirst(bounds: StopBounds): Promise<CommandStop> {
+    const first = {
+      occasion: this.#occasionNow(),
+      cutShort: this.child.exitCode === null && this.child.signalCode === null,
+      observing: observed(() => this.#stopper.stop(bounds))
+    };
+    this.#first = first;
+    const outcome = await first.observing;
+    const reason = this.#unestablished(outcome, first.cutShort);
+    // The run's close answers for a stop its own ending made, and for
+    // processes an attempt's stop left running within reach. An attempt's
+    // stop that emptied everything it could reach leaves the close nothing
+    // to do and nothing to learn, whatever the attempt has to disclose.
+    if (reason === null || (first.occasion === "attempt" && outcome.kind === "stopped")) {
+      this.#release(this);
     }
-    return this.#stopping;
+    return {
+      outcome,
+      attemptAccount: reason !== null && first.occasion === "attempt" ? { owner: this.owner, reason } : null
+    };
+  }
+
+  /**
+   * The run's close answering for this command: what it could not
+   * establish, or null. A stop the run's ending made is final. One an
+   * attempt made that left processes within reach is made again here — the
+   * script may have run on long after it — and judged on what this pass
+   * observes; what the attempt already disclosed about a process group's
+   * limit is not said twice.
+   */
+  async stopForRun(bounds: StopBounds): Promise<UnestablishedStop | null> {
+    await this.stop(bounds);
+    const first = this.#first!;
+    const outcome = await first.observing;
+    if (first.occasion === "run-ending") {
+      const reason = this.#unestablished(outcome, first.cutShort);
+      return reason === null ? null : { owner: this.owner, reason };
+    }
+    if (outcome.kind === "stopped") {
+      return null;
+    }
+    const again = await observed(() => this.#stopper.stopAgain(bounds));
+    return again.kind === "stopped" ? null : { owner: this.owner, reason: again.reason };
+  }
+
+  /**
+   * The one judgement of whether a stop established the command's end; null
+   * when it did. An unconfirmed stop never does. A confirmed stop does,
+   * except for a command cut short — still running when it was stopped — at
+   * `process-group` reach: its group is observed empty, but what it had
+   * started outside the group is exactly what the run cannot see, and
+   * whoever answers for the stop says so rather than report the work
+   * stopped. A command that ended by itself at that reach is taken at its
+   * exit, as every worker's is on a machine without a scope manager.
+   */
+  #unestablished(outcome: StopOutcome, cutShort: boolean): string | null {
+    if (outcome.kind === "unconfirmed") {
+      return outcome.reason;
+    }
+    if (this.reach.kind === "process-group" && cutShort) {
+      return `cut short without a scope (${this.reach.reason}): its process group ended, and a process it started outside that group was never visible to the run`;
+    }
+    return null;
   }
 }
 
@@ -374,6 +524,28 @@ async function stopProcessGroup(pgid: number, bounds: StopBounds): Promise<StopO
     kind: "unconfirmed",
     reason: `process group ${pgid} outlived SIGTERM by ${bounds.stopGraceMs}ms and SIGKILL by ${bounds.confirmMs}ms`
   };
+}
+
+/**
+ * Whether a process group an earlier stop sent SIGKILL has since emptied,
+ * waited for within the confirmation window. Nothing is signalled: once the
+ * group's members may all have gone its id can belong to an unrelated
+ * group, and a kill already pending on a survivor needs no second one.
+ */
+async function processGroupEnded(pgid: number, bounds: StopBounds): Promise<StopOutcome> {
+  if (await waitUntil(() => !groupLive(pgid), bounds.confirmMs)) {
+    return { kind: "stopped" };
+  }
+  return { kind: "unconfirmed", reason: `process group ${pgid} still held processes at the run's close, after the SIGKILL its attempt's stop sent` };
+}
+
+/** Make a stop so that it never rejects: an error raised in making it is an observation that could not be made. */
+async function observed(stop: () => Promise<StopOutcome>): Promise<StopOutcome> {
+  try {
+    return await stop();
+  } catch (error) {
+    return { kind: "unconfirmed", reason: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /** Whether any process remains in the group; one the user may not signal still counts. */

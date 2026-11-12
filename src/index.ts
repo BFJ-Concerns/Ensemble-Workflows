@@ -96,7 +96,7 @@ export {
   markRunEnding,
   isRunEnding
 } from "./errors.js";
-export type { WorkerExitStatus } from "./errors.js";
+export type { UnestablishedStop, WorkerExitStatus } from "./errors.js";
 export { ResourcePreflightRefusedError } from "./resource-preflight.js";
 export type { CallerSandbox, ResourceDenial, ResourceRequirement } from "./resource-preflight.js";
 export {
@@ -185,7 +185,8 @@ export type {
   EngineInvocation,
   EngineSessionTurn,
   EngineTurnOptions,
-  EngineWorkerSession
+  EngineWorkerSession,
+  SharedEngineResource
 } from "./engines.js";
 export { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 export type { CapabilityEnforcement, EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";

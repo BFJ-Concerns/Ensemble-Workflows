@@ -388,18 +388,32 @@ export function isRunEnding(error: unknown): boolean {
 }
 
 /**
- * Teardown could not establish that processes the run owns have ended. Each
- * entry names where the operator finds them — a scope unit, a process group —
- * and what was observed: processes still there when the stop's bound ran out,
- * or a command cut short where the run could see no further than its process
- * group. Raised from the close that owns the processes, it fails the run's
- * ending, so no surface reports cut-short work as stopped on the strength of
- * a signal having been sent.
+ * A stop that could not establish that processes the run owns have ended:
+ * `owner` names where the operator finds them — a scope unit, a process
+ * group — and `reason` what was observed: processes still there when the
+ * stop's bound ran out, or a command cut short where the run could see no
+ * further than its process group. One shape wherever such a stop is
+ * reported: by the run's teardown (`StopUnconfirmedError`), or on the
+ * account of the attempt that made it (`CommandStop.attemptAccount`).
+ */
+export interface UnestablishedStop {
+  owner: string;
+  reason: string;
+}
+
+/**
+ * Teardown could not establish that processes the run owns have ended.
+ * Raised from the close that owns the processes, it fails the run's ending,
+ * so no surface reports work the run cut short as stopped on the strength of
+ * a signal having been sent. A stop an attempt made while the script was
+ * running is that attempt's to disclose, and is named here only where the
+ * close itself found its processes running still: a worker's failure the
+ * script received as a value leaves the run to end as the script left it.
  */
 export class StopUnconfirmedError extends EnsembleError {
-  readonly unconfirmed: readonly { owner: string; reason: string }[];
+  readonly unconfirmed: readonly UnestablishedStop[];
 
-  constructor(unconfirmed: readonly { owner: string; reason: string }[]) {
+  constructor(unconfirmed: readonly UnestablishedStop[]) {
     super(`run-owned processes may still be running: ${unconfirmed.map(({ owner, reason }) => `${owner} (${reason})`).join("; ")}`);
     this.unconfirmed = unconfirmed;
   }

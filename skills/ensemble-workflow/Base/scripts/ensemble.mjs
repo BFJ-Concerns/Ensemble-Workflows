@@ -20939,6 +20939,8 @@ var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
 var OWNER_FILENAME = "owner.json";
 var LEAN_START_FLAGS = ["--safe-mode"];
+var CLAUDE_ROSTER_ABSENCE_BOUND = 3;
+var CLAUDE_ROSTER_LOSS_REASON = `the session is absent from ${CLAUDE_ROSTER_ABSENCE_BOUND} consecutive successful daemon roster reads`;
 var ClaudeCliControlPlane = class {
   #claudeBin;
   #tmuxBin;
@@ -20957,8 +20959,10 @@ var ClaudeCliControlPlane = class {
   #onEvent;
   /** Last placement attempt per session: refused attempts remain eligible at the same pid. */
   #placements = /* @__PURE__ */ new Map();
-  /** Session ownership lasts through idle gaps, independently of turn polling. */
+  /** Session placement, attachment and loss observations last through idle gaps. */
   #watchedSessions = /* @__PURE__ */ new Map();
+  #heldAttachments = /* @__PURE__ */ new Map();
+  #attaching = /* @__PURE__ */ new Map();
   #placementTimer = null;
   #placementSweep = null;
   #placing = /* @__PURE__ */ new Map();
@@ -21149,8 +21153,13 @@ var ClaudeCliControlPlane = class {
     const acceptHandle = (handle) => {
       accepted = true;
       this.#settingsDirs.set(handle.sessionId, settingsDir);
-      if (!(this.#scopes instanceof NoWorkerScopes)) {
-        this.#watchedSessions.set(handle.sessionId, handle);
+      if (options.keepAlive || options.onLost !== void 0 || !(this.#scopes instanceof NoWorkerScopes)) {
+        this.#watchedSessions.set(handle.sessionId, {
+          handle,
+          absences: 0,
+          keepAlive: options.keepAlive ?? false,
+          ...options.onLost === void 0 ? {} : { onLost: options.onLost }
+        });
         this.#schedulePlacementWatch();
       }
       return handle;
@@ -21214,6 +21223,7 @@ var ClaudeCliControlPlane = class {
       const handle = registered;
       this.#settingsDirs.set(handle.sessionId, settingsDir);
       signal?.throwIfAborted();
+      if (options.keepAlive) await this.#ensureHeldAttachment(handle, signal);
       openingStarted = true;
       const delivery = await controlCommandContext.run({ owner: this, signal }, () => this.steer(handle, options.prompt));
       if (!delivery.submitted) {
@@ -21380,6 +21390,7 @@ var ClaudeCliControlPlane = class {
       return { status: "unknown", state: "unknown", present: true };
     }
     const record = roster.rows.find((row) => matchesHandle(row, handle)) ?? null;
+    this.#observePresence(handle, record !== null);
     if (record === null) {
       return { status: "absent", state: "unknown", present: false };
     }
@@ -21538,7 +21549,7 @@ var ClaudeCliControlPlane = class {
     }
     return outcome;
   }
-  /** One roster read serves every owned session, including those between turns. */
+  /** One roster read serves placement, attachment repair and loss detection between turns. */
   #schedulePlacementWatch() {
     if (this.#closeController.signal.aborted || this.#placementTimer !== null || this.#placementSweep !== null || this.#watchedSessions.size === 0) return;
     this.#placementTimer = setTimeout(() => {
@@ -21561,10 +21572,82 @@ var ClaudeCliControlPlane = class {
     const signal = this.#closeController.signal;
     const roster = await this.#roster(signal);
     if (!roster.ok) return;
-    for (const handle of this.#watchedSessions.values()) {
+    for (const watched of this.#watchedSessions.values()) {
+      const { handle } = watched;
       const row = roster.rows.find((entry) => matchesHandle(entry, handle));
+      this.#observePresence(handle, row !== void 0);
+      if (row === void 0 || !this.#watchedSessions.has(handle.sessionId)) continue;
       if (typeof row?.pid === "number") await this.#observePlacement(this.#place(handle, row.pid), signal);
+      if (watched.keepAlive && this.#watchedSessions.has(handle.sessionId)) await this.#ensureHeldAttachment(handle, signal);
     }
+  }
+  #observePresence(handle, present) {
+    const watched = this.#watchedSessions.get(handle.sessionId);
+    if (watched === void 0 || this.#closeController.signal.aborted) return;
+    if (present) {
+      watched.absences = 0;
+      return;
+    }
+    if (++watched.absences < CLAUDE_ROSTER_ABSENCE_BOUND) return;
+    this.#watchedSessions.delete(handle.sessionId);
+    try {
+      watched.onLost?.({
+        nativeSession: handle.sessionId,
+        reason: CLAUDE_ROSTER_LOSS_REASON,
+        observedAt: Date.now()
+      });
+    } catch {
+    }
+  }
+  /** A separate, input-free client keeps the native session attached between turns. */
+  #ensureHeldAttachment(handle, signal) {
+    const previous = this.#attaching.get(handle.sessionId);
+    if (previous !== void 0) return previous;
+    const bounded2 = AbortSignal.any([signal ?? this.#closeController.signal, AbortSignal.timeout(this.#reclaimTimeoutMs)]);
+    const pending = this.#attachHeldSession(handle, bounded2).finally(() => {
+      if (this.#attaching.get(handle.sessionId) === pending) this.#attaching.delete(handle.sessionId);
+    });
+    this.#attaching.set(handle.sessionId, pending);
+    return pending;
+  }
+  async #attachHeldSession(handle, signal) {
+    let directory = this.#heldAttachments.get(handle.sessionId);
+    const name = `ensemble-held-${handle.id}`;
+    if (directory !== void 0) {
+      const alive = await this.#run(this.#tmuxBin, ["-S", path16.join(directory, "tmux.sock"), "has-session", "-t", name], signal);
+      signal?.throwIfAborted();
+      if (alive.ok) return;
+      await this.#releaseHeldAttachment(handle);
+    }
+    directory = await mkdtemp3(path16.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+    this.#heldAttachments.set(handle.sessionId, directory);
+    const server = ["-S", path16.join(directory, "tmux.sock")];
+    try {
+      const created = await this.#launch(this.#tmuxBin, [
+        ...server,
+        "-f",
+        "/dev/null",
+        "new-session",
+        "-d",
+        "-s",
+        name,
+        `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
+      ], { input: null, env: { ...this.#env, [WORKER_MARKER_VARIABLE]: handle.name }, ...signal === void 0 ? {} : { signal } });
+      if (!created.ok) throw new ClaudeDispatchError(`Claude keep-alive attachment failed: ${boundedEvidence(created.stderr)}`);
+      await delay(this.#valveAttachSettleMs, signal);
+      const alive = await this.#run(this.#tmuxBin, [...server, "has-session", "-t", name], signal);
+      if (!alive.ok) throw new ClaudeDispatchError("Claude keep-alive attach client exited before becoming ready");
+    } catch (error) {
+      await this.#releaseHeldAttachment(handle);
+      throw error;
+    }
+  }
+  async #releaseHeldAttachment(handle) {
+    const directory = this.#heldAttachments.get(handle.sessionId);
+    if (directory === void 0) return;
+    this.#heldAttachments.delete(handle.sessionId);
+    await this.#run(this.#tmuxBin, ["-S", path16.join(directory, "tmux.sock"), "kill-server"], AbortSignal.timeout(this.#reclaimTimeoutMs));
+    await rm5(directory, { recursive: true, force: true });
   }
   #operationSignal() {
     const context = controlCommandContext.getStore();
@@ -21660,7 +21743,8 @@ var ClaudeCliControlPlane = class {
       clearTimeout(this.#placementTimer);
       this.#placementTimer = null;
     }
-    await this.#observePlacement(Promise.all([this.#placementSweep, this.#placing.get(handle.sessionId)]), signal);
+    await this.#observePlacement(Promise.all([this.#placementSweep, this.#placing.get(handle.sessionId), this.#attaching.get(handle.sessionId)?.catch(() => void 0)]), signal);
+    await this.#releaseHeldAttachment(handle);
     const stopped = await this.#run(this.#claudeBin, ["stop", handle.id], signal);
     signal?.throwIfAborted();
     this.#placements.delete(handle.sessionId);
@@ -22244,7 +22328,6 @@ function claudeNativeEffort(effort) {
   return native;
 }
 var dispatchCounter = 0;
-var MAX_CONSECUTIVE_ABSENCES = 3;
 var SETTLED_CONFIRMATION_POLLS = 5;
 var ClaudeEngineInvocation = class {
   #cwd;
@@ -22264,6 +22347,9 @@ var ClaudeEngineInvocation = class {
    */
   #nudges = 0;
   #multiTurn;
+  #sessionObserver;
+  #lost = null;
+  #lossController = new AbortController();
   /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
   #turnPrompt;
   /** The current turn's schema — the one thing a session varies per turn. */
@@ -22305,6 +22391,7 @@ var ClaudeEngineInvocation = class {
     this.#turnPrompt = options.prompt;
     this.#turnSchema = options.options.schema;
     this.#multiTurn = options.multiTurn ?? false;
+    this.#sessionObserver = options.sessionObserver;
     this.#cwd = options.cwd;
     this.#options = options.options;
     this.#controlPlane = options.controlPlane;
@@ -22360,12 +22447,30 @@ var ClaudeEngineInvocation = class {
   }
   async #runAttempt(context) {
     this.#assertOpen();
+    if (this.#lost !== null) return this.#lostResult();
     this.#reportedUsage = null;
     this.#usageAtSettlement = null;
     this.#waits = [];
     this.#nudges = 0;
     let fromIndex = 0;
     try {
+      if (this.#multiTurn && this.#handle !== null && this.#pending === null) {
+        for (let misses = 0; misses < CLAUDE_ROSTER_ABSENCE_BOUND; misses++) {
+          const status = await this.#controlPlane.poll(this.#handle);
+          this.#assertOpen();
+          if (this.#lost !== null) return this.#lostResult();
+          if (status.present) break;
+          if (misses === CLAUDE_ROSTER_ABSENCE_BOUND - 1) {
+            this.#noteLost({
+              nativeSession: this.#handle.sessionId,
+              reason: CLAUDE_ROSTER_LOSS_REASON,
+              observedAt: Date.now()
+            });
+            return this.#lostResult();
+          }
+          await this.#pollDelay();
+        }
+      }
       const previousFailure = context.previousFailure;
       if (this.#refused !== null && this.#handle !== null) {
         const handle = this.#handle;
@@ -22432,6 +22537,9 @@ var ClaudeEngineInvocation = class {
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
+      if (this.#lost !== null && !(error instanceof EngineShutdownError)) {
+        return this.#lostResult(evidence, fromIndex);
+      }
       if (error instanceof EngineShutdownError && evidence !== null) {
         attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
       }
@@ -22458,6 +22566,24 @@ var ClaudeEngineInvocation = class {
     })();
     await this.#closePromise;
   }
+  #noteLost(loss) {
+    if (!this.#multiTurn || this.#closed || this.#lost !== null) return;
+    this.#lost = loss;
+    this.#lossController.abort();
+    try {
+      this.#sessionObserver?.onLost(loss);
+    } catch {
+    }
+  }
+  #lostResult(evidence = null, fromIndex = 0) {
+    const message = this.#lost?.reason ?? "the held Claude worker is gone";
+    const error = new ClaudePollTimeoutError(message);
+    if (evidence !== null) this.#attachWorkerText(error, evidence, fromIndex);
+    return {
+      ...failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)),
+      attemptFailure: { kind: "session-lost", message }
+    };
+  }
   async #dispatchAndCollect(previousFailure, observers) {
     this.#resolvedModel = null;
     this.#resolvedEffort = null;
@@ -22473,6 +22599,7 @@ var ClaudeEngineInvocation = class {
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
+      ...this.#multiTurn ? { keepAlive: true, onLost: (loss) => this.#noteLost(loss) } : {},
       ...stripSettings,
       ...this.#options.lean === true ? { lean: true } : {}
     });
@@ -22531,6 +22658,7 @@ var ClaudeEngineInvocation = class {
    * pending.
    */
   async #deliver(handle, submission, observers) {
+    if (this.#lost !== null) throw new ClaudePollTimeoutError(this.#lost.reason);
     if (submission.carriesTurn) this.#collectionMark = submission.mark;
     const outcome = await this.#controlPlane.steer(handle, submission.message);
     if (!outcome.submitted) {
@@ -22685,7 +22813,7 @@ var ClaudeEngineInvocation = class {
    *
    * `state: blocked` still drives bounded valve recovery, and a transient
    * roster-query failure reports `present: false` only after
-   * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
+   * `CLAUDE_ROSTER_ABSENCE_BOUND`, so a parking/respawning blip does not kill a
    * live worker.
    */
   async #runToCompletion(handle, fromIndex, observers, opening) {
@@ -22755,7 +22883,12 @@ var ClaudeEngineInvocation = class {
       this.#assertOpen();
       if (!status.present) {
         absences += 1;
-        if (absences >= MAX_CONSECUTIVE_ABSENCES) {
+        if (absences >= CLAUDE_ROSTER_ABSENCE_BOUND) {
+          this.#noteLost({
+            nativeSession: handle.sessionId,
+            reason: CLAUDE_ROSTER_LOSS_REASON,
+            observedAt: Date.now()
+          });
           if (!sawLife && opening !== void 0) {
             throw this.#firstLifeFailure(handle, "worker left the roster before writing an opening transcript");
           }
@@ -22831,7 +22964,11 @@ var ClaudeEngineInvocation = class {
   }
   /** A poll gap that ends early — by rejecting — the moment close() aborts. */
   #pollDelay() {
-    return delay2(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
+    return delay2(
+      this.#pollIntervalMs,
+      AbortSignal.any([this.#abortController.signal, this.#lossController.signal]),
+      () => this.#closed || this.#lost === null ? new EngineShutdownError("claude") : new ClaudePollTimeoutError(this.#lost.reason)
+    );
   }
   #assertOpen() {
     if (this.#closed) {
@@ -24831,7 +24968,7 @@ var ClaudeEngineAdapter = class {
     this.#activeInvocations.add(invocation);
     return invocation;
   }
-  createSession(options) {
+  createSession(options, observer) {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
     }
@@ -24841,6 +24978,7 @@ var ClaudeEngineAdapter = class {
       cwd: options.cwd ?? this.#cwd,
       options: effort === void 0 ? options : { ...options, effort },
       multiTurn: true,
+      ...observer === void 0 ? {} : { sessionObserver: observer },
       controlPlane: this.#controlPlane,
       ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
       ...this.#config !== void 0 ? { config: this.#config } : {},
@@ -34719,7 +34857,7 @@ async function runEnsembleCli(argv, options = {}) {
         return;
       }
       if (event.method === "claude/workerScopeWatchError") {
-        stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
+        stderr.write(`[claude] session roster watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
 `);
         return;
       }

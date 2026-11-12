@@ -841,7 +841,7 @@ await builder.close();
 - **Turns are sequential:** calling `send()` while a previous send is
   unsettled throws, as does `send()` after `close()` or after the run ends.
 - **Concurrency and budget are per turn:** a turn holds its engine slot from
-  dispatch to settlement, an idle session holds nothing, and each turn's
+  dispatch to settlement, an idle session holds no execution slot, and each turn's
   budget check happens at its own dispatch.
 - **Prompt caching:** Claude Code fixes the subscription prompt-cache TTL at
   one hour. Ensemble does not request a TTL for Claude workers. That lifetime
@@ -861,6 +861,14 @@ await builder.close();
   including before the first turn. `handle.staleAfterMs` gives the active
   threshold, or `null` when marking is disabled. A Claude session below this
   idle threshold may still miss the prompt cache.
+- **Claude idle lifetime:** Ensemble keeps a private, input-free attach
+  client for the held worker's lifetime and repairs that attachment if the
+  client exits. It sends no keep-alive model turns. Claude Code 2.1.322
+  retires eligible unattached, settled background sessions after a one-hour
+  grace, checked once a minute; memory pressure can reduce the grace to one
+  minute. Attached clients exempt the worker from that retirement. A daemon
+  crash, external removal or another native failure can still lose the
+  session; an attachment preserves the live conversation, not a backup of it.
 - **Lost workers:** `handle.lost` becomes `true` once the session's engine
   has found its worker gone for good — not closed by the script or the run.
   The run says so on stderr when the engine observes it and records a
@@ -869,6 +877,11 @@ await builder.close();
   `session-lost` attempt without a retry, and resolves `null`; the context
   the worker held is gone, so start a fresh session and brief it again.
   `false` means only that no loss has been observed.
+  On Claude, the roster watch confirms loss after three consecutive
+  successful reads without the worker, then reports it immediately,
+  including between turns. A failed query is not absence, a returning
+  worker resets the count, and intentional close is not loss. The same
+  confirmation applies when a send discovers the missing worker first.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.
@@ -883,7 +896,9 @@ await builder.close();
   the message boundary. Redelivery repeats that framed copy. Tasks without
   edge whitespace arrive as ordinary typed text, so a leading `/skill` line
   expands, including under a `skills` strip. Ensemble overrides `VISUAL` and
-  `EDITOR` only for that attach client and removes its files and tmux server after delivery.
+  `EDITOR` only for that delivery client and removes its files and tmux server
+  after delivery. The separate, input-free lifetime attachment remains until
+  the held session closes.
   It loads no tmux configuration and does not appear among your own sessions.
   Delivery requires a new native user row equal to the message sent (or the
   matching command name and arguments for a slash command). Roster activity

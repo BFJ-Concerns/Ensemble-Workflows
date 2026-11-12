@@ -10,6 +10,7 @@ import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import {
   ClaudeDispatchError,
   ClaudeRegistrationTimeoutError,
+  ClaudePollTimeoutError,
   EngineShutdownError,
   InvalidAgentOptionValueError,
   failedTurnResultOf,
@@ -1216,7 +1217,8 @@ for (const unavailable of ["session", "valve"] as const) {
           const result = session === null ? await runtime.agent("decide", { engine: "claude" }) : await session.send("decide");
           assert.equal(result, held ? null : "recovered");
           assert.equal(controlPlane.dispatchCount, held ? 1 : 2);
-          assert.equal(controlPlane.steerCount, held ? 2 : 1);
+          assert.equal(controlPlane.steerCount, held && unavailable === "valve" ? 2 : 1);
+          if (held && unavailable === "session") assert.equal(session?.lost, true);
           if (!held) assert.match(controlPlane.dispatched[1]?.prompt ?? "", /previous attempt failed \(claude-valve-error\)/);
           await session?.close();
           assert.equal(controlPlane.stopCount, held ? 1 : 2);
@@ -2810,10 +2812,10 @@ test("a successful native turn retains the account of a launch that could not be
 for (const grows of [false, true]) {
   test(`pending held work is charged once across retries${grows ? " while later API usage still counts" : ""}`, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-pending-spend-"));
-    class AbsentWhilePending extends FakeControlPlane {
-      override async poll(): Promise<ClaudeSessionStatus> { return { status: "absent", state: "unknown", present: false }; }
+    class PollingFailureWhilePending extends FakeControlPlane {
+      override async poll(): Promise<ClaudeSessionStatus> { throw new ClaudePollTimeoutError("controlled roster query failure"); }
     }
-    const plane = new AbsentWhilePending(dir, [{ assistant: { id: "first-call", text: "working", input: 100, output: 10, stop: "tool_use" } }], { openingArrival: sent => sent.replace("decide ", "decide") });
+    const plane = new PollingFailureWhilePending(dir, [{ assistant: { id: "first-call", text: "working", input: 100, output: 10, stop: "tool_use" } }], { openingArrival: sent => sent.replace("decide ", "decide") });
     const runtime = makeRuntime(plane, { maxAttempts: 2 });
     const records: RuntimeAgentRecord[] = [];
     runtime.setRunRecorder({

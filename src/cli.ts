@@ -505,7 +505,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         return;
       }
       if (event.method === "claude/workerScopeWatchError") {
-        stderr.write(`[claude] worker scope watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
+        stderr.write(`[claude] session roster watch failed; retrying: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
         return;
       }
       if (event.method === "claude/launchUnreclaimed") {

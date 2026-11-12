@@ -757,7 +757,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     return invocation;
   }
 
-  createSession(options: EngineTurnOptions): EngineWorkerSession {
+  createSession(options: EngineTurnOptions, observer?: EngineSessionObserver): EngineWorkerSession {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
     }
@@ -772,6 +772,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
       cwd: options.cwd ?? this.#cwd,
       options: effort === undefined ? options : { ...options, effort },
       multiTurn: true,
+      ...(observer === undefined ? {} : { sessionObserver: observer }),
       controlPlane: this.#controlPlane,
       ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),
       ...(this.#config !== undefined ? { config: this.#config } : {}),

@@ -1184,6 +1184,7 @@ test("every claude process the control plane starts is launched through the scop
         launched.push({ file, args: [...args], env: options.env });
         return spawn(file, [...args], options);
       },
+      async stop() { return { kind: "stopped" }; },
       async close() {}
     };
     const controlPlane = new DeliveryStubControlPlane({
@@ -1313,6 +1314,7 @@ async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
         if (args[0] === "--bg") background = child;
         return child;
       },
+      async stop() { return { kind: "stopped" }; },
       async close() {}
     };
     const controlPlane = new DeliveryStubControlPlane({
@@ -1402,6 +1404,7 @@ test("refused Claude placement retries during registration and at the same polle
     const scopes: WorkerScopes = {
       slice,
       launch: async (file, args, options) => spawn(file, [...args], options),
+      stop: manager.stop.bind(manager),
       close: manager.close.bind(manager),
       async place(group, pids) {
         calls += 1;

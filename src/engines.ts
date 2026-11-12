@@ -4,6 +4,7 @@ import type { TurnProgressObserver } from "./app-server.js";
 import type { LiveTranscriptObserver } from "./types.js";
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
+import { CommandContainment } from "./contained-command.js";
 import { createWorkerScopes, RUN_SCOPE_GROUP, type WorkerScopeGrouping, type WorkerScopes } from "./worker-scopes.js";
 import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
 import { ClaudeStripPreparer } from "./claude-strip-preparation.js";
@@ -213,13 +214,22 @@ export interface EngineAdapter {
    * runtime's shutdown accounting waits on those settlements before it
    * publishes the run's tally. An adapter that rejects without settling
    * its legs would stall the run's close.
+   *
+   * An adapter whose workers run a command it contained
+   * (`CommandContainment.contain`) stops that command itself, as part of
+   * cancelling the worker, and never waits for the registry's shared
+   * resources to end it: the registry closes those only after every
+   * adapter's close has settled, so an adapter waiting on them — on a pipe a
+   * contained descendant holds open, say — would never settle. It reports
+   * no stop result: the containment's own close, which follows, names every
+   * command whose end the run could not establish.
    */
   close(): Promise<void>;
 }
 
 export class EngineRegistry {
   #engines = new Map<EngineName, EngineAdapter>();
-  /** Resources the engines share and the registry therefore owns, closed after every engine has. */
+  /** Resources the engines share and the registry therefore owns, closed after every engine has, in the order given. */
   #shared: readonly { close(): Promise<void> }[];
 
   /** What each engine needs at the attempt's resolved placement, judged before dispatch (`EngineResourceGate`). */
@@ -265,19 +275,27 @@ export class EngineRegistry {
     // synchronously-throwing close into a rejection, so one bad adapter
     // cannot stop the others from being closed at all.
     const results = await Promise.allSettled([...this.#engines.values()].map(async (engine) => engine.close()));
+    const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason as unknown] : []));
     // Shared resources go after the engines that used them: a worker scope
     // stopped while its engine is still tearing a worker down would end the
-    // worker under the engine's feet.
-    await Promise.allSettled(this.#shared.map(async (resource) => resource.close()));
-    const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    // worker under the engine's feet. Engines never wait on them in turn
+    // (`EngineAdapter.close`), so the order cannot deadlock. They close one
+    // after another, in the order given, each attempted whatever the one
+    // before did. Their closes are where the run confirms that what it
+    // owns has ended, so a failure there is the run's as much as an
+    // engine's and is rethrown with the rest.
+    for (const resource of this.#shared) {
+      try {
+        await resource.close();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
     if (failures.length === 1) {
-      throw failures[0]!.reason;
+      throw failures[0];
     }
     if (failures.length > 1) {
-      throw new AggregateError(
-        failures.map((failure) => failure.reason),
-        "engine teardown failed"
-      );
+      throw new AggregateError(failures, "engine teardown failed");
     }
   }
 }
@@ -828,6 +846,10 @@ export async function createDefaultEngineRegistry(
   const grouping = parseWorkerScopeGrouping(options.workerScope ?? "worker", "workerScope");
   const ownsScopes = options.workerScopes === undefined;
   const workerScopes = options.workerScopes ?? (await createWorkerScopes({ label: `${process.pid}-${randomUUID()}` }));
+  // The run's contained commands: an engine whose workers run a command of
+  // their own starts it through this. It is the run's whoever owns the
+  // scope manager, so the registry always closes it.
+  const workerCommands = new CommandContainment(workerScopes);
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
@@ -878,7 +900,10 @@ export async function createDefaultEngineRegistry(
         onEvent: options.onOpenCodeEvent
       })
     ],
-    ownsScopes ? [workerScopes] : [],
+    // Commands before scopes: a command's scope is one of the manager's, and
+    // the manager's close would report a survivor by unit alone, where the
+    // containment names the command and judges how it was stopped.
+    [workerCommands, ...(ownsScopes ? [workerScopes] : [])],
     // The Codex app-server is shared and starts in the run base; Claude
     // and opencode launch a process in each invocation's placement.
     (engine, cwd) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], engine === "codex" ? options.cwd : cwd)

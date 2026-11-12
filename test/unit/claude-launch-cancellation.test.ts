@@ -243,6 +243,7 @@ test("cancellation during placement preserves its reason and hands ownership to 
   const scopes: WorkerScopes = {
     slice: direct.slice,
     launch: direct.launch.bind(direct),
+    stop: direct.stop.bind(direct),
     close: direct.close.bind(direct),
     place: async () => { entered.resolve(); return placement.promise; }
   };

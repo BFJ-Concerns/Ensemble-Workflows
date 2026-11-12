@@ -4716,3 +4716,38 @@ test("relative record stores use the launcher directory for preflight, archive a
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test("an identified sandbox gets one store diagnosis before any raw sentinel failure", { skip: process.platform !== "linux" }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-sandbox-sentinel-"));
+  try {
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "sandbox-sentinel" }; return "complete";');
+    for (const recording of [true, false]) {
+      const stderr = new CaptureStream();
+      const stdout = new CaptureStream();
+      const exit = await runEnsembleCli([script], {
+        cwd: directory, stdout, stderr, statusDir: null,
+        env: {
+          XDG_CONFIG_HOME: directory, ENSEMBLE_RUN_RECORD: recording ? "1" : "0",
+          ENSEMBLE_RUN_RECORD_DIR: `/sys/ensemble-sentinel-${process.pid}`,
+          CODEX_SANDBOX_NETWORK_DISABLED: "1"
+        },
+        createRuntime: async () => fakeRuntime()
+      });
+      assert.equal(exit, recording ? 2 : 0, stderr.text());
+      const lines = stderr.text().trim().split("\n");
+      assert.equal(lines.length, 1, stderr.text());
+      assert.match(lines[0]!, /inside the Codex sandbox/);
+      assert.match(lines[0]!, /danger-full-access/);
+      assert.doesNotMatch(lines[0]!, /ENOENT|no such file or directory/);
+      if (!recording) {
+        assert.match(lines[0]!, /\[sentinel\] no sentinel will be written/);
+        assert.match(lines[0]!, /completion sentinel store/);
+        assert.equal(stdout.text(), '"complete"\n');
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -481,10 +481,11 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       this.#closed = true;
       this.#abortController.abort();
       try {
-        if (this.#handle !== null) {
-          await this.#settlement?.catch(() => undefined);
-          await this.#teardown();
-        }
+        // Dispatch owns a worker before it returns its handle. Keep the
+        // invocation registered, and its shared scopes open, until that
+        // attempt has observed cancellation and reclaimed the worker.
+        await this.#settlement?.catch(() => undefined);
+        await this.#teardown();
       } finally {
         this.#onClose?.(this);
       }
@@ -519,9 +520,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     const opening: Submission = { message: prompt, mark: 0, what: "the opening prompt", carriesTurn: true };
     this.#accept(opening);
     if (this.#closed) {
-      // close() ran while dispatch was in flight and found no handle, so it
-      // returned without waiting for this dispatch. The new session is ours
-      // to stop, but first take the one best-effort evidence read while its
+      // close() is waiting for this in-flight dispatch to settle. The new
+      // session is ours to stop before releasing that wait, but first take
+      // the one best-effort evidence read while its
       // transcript is still reachable. The prepared result marks this error
       // as already read, so #runAttempt's catch will not race a second read
       // against teardown.

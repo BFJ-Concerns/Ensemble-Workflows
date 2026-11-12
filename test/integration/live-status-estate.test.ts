@@ -30,7 +30,8 @@ function barrier(file: string): string {
   return `const fs = require("node:fs"); while (!fs.existsSync(${JSON.stringify(file)})) await new Promise(resolve => setTimeout(resolve, 10)); return "complete";`;
 }
 
-test("a separate status consumer follows queued, retried, failed and held workers through the built launcher", { timeout: 90_000 }, async () => {
+for (const gate of ["engine-cap", "agent-ceiling"] as const) {
+ test(`a separate status consumer follows queued, retried, failed and held workers under ${gate}`, { timeout: 90_000 }, async () => {
   const { directory, env } = await setup();
   try {
     const releaseFile = path.join(directory, "release");
@@ -67,13 +68,15 @@ test("a separate status consumer follows queued, retried, failed and held worker
     await writeFile(spec, JSON.stringify({ bundle, workflow, cwd: directory, releaseFile, acknowledgements,
       workers: owners.filter(([, attempt]) => attempt === 1).map(([id]) => ({ id, state: id === 3 ? "failed" : "done",
         requestedModel: "requested-model", requestedEffort: "high", resolvedModel: "gpt-estate-recorder", resolvedEffort: "high",
-        spent: id === 2 ? 14 : 7, queued: id === 2, growth: id !== 3 }))
+        spent: id === 2 ? 14 : 7, queued: id === 2, growth: id !== 3, ...(id === 2 ? { admissionGate: gate } : {}) }))
     }));
     // Empty output cannot be requested reliably from a live model. The
     // schema-validated fixture supplies only that failure condition here;
     // the matching real-engine supervision journey lives in test/live/.
     const result = await runNode([consumer, spec], { ...env,
-      ENSEMBLE_CONCURRENCY_CODEX: "1", ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(notifications),
+      ENSEMBLE_CONCURRENCY_CODEX: gate === "engine-cap" ? "1" : "12",
+      ENSEMBLE_AGENT_CEILING: gate === "agent-ceiling" ? "1" : "null",
+      ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(notifications),
       ENSEMBLE_FAKE_CODEX_FIRST_DELTA_CONTROL: acknowledgements, ENSEMBLE_FAKE_CODEX_STALL_AFTER_NOTIFICATION_SEQUENCE: "1"
     }, 70_000);
     assert.equal(result.code, 0, result.stderr);
@@ -81,12 +84,18 @@ test("a separate status consumer follows queued, retried, failed and held worker
     assert.equal(report.stdout, "complete");
     assert.equal(report.snapshot.totals.done, 4);
     assert.equal(report.snapshot.totals.failed, 1);
+    const queueEvidence = report.workers.find(([id]: [number]) => id === 2)[1].admissionWaits[0];
+    assert.equal(queueEvidence.gate, gate);
+    assert.deepEqual(queueEvidence.ceiling, { limit: gate === "agent-ceiling" ? 1 : null, active: 1 });
+    assert.equal(queueEvidence.engineCap, gate === "engine-cap" ? 1 : 12);
     assert.deepEqual(report.workers.find(([id]: [number]) => id === 2)[1].attempts, [1, 2]);
     const held = report.workers.filter(([id]: [number]) => id === 4 || id === 5);
     assert.notEqual(held[0][1].latest.transcript, held[1][1].latest.transcript);
     assert.equal(report.announcement.status_path, path.join(directory, "data", "ensemble", "status", `ensemble.${report.snapshot.runId}.local.json`));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+}
 
 test("status disablement and explicit directories preserve discovery and independent concurrent files", { timeout: 90_000 }, async () => {
   const { directory, env } = await setup();

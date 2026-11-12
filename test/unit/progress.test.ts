@@ -504,3 +504,31 @@ test("each disposition is published at settlement under its own state and count"
   progress.settleAgent(cutShort, "failed", { kind: "late", message: "after teardown" });
   assert.deepEqual(progress.snapshot(), snapshot);
 });
+
+
+test("queued admission waits are read once with the ceiling and never override running background waits", () => {
+  const admission = new StubAdmission();
+  let reads = 0;
+  const view: AdmissionView = {
+    ceiling: 1,
+    snapshot: () => { reads += 1; return admission.snapshot(); }
+  };
+  const progress = progressAt(() => 1_000, new StubBudget(), view);
+  const id = progress.queueAgent({ engine: "codex", label: null, phase: null });
+  admission.ceilingActive = 1;
+  admission.waiting.set(id, { kind: "admission", gate: "agent-ceiling", sinceMs: 900 });
+  const first = progress.snapshot();
+  assert.equal(reads, 1);
+  assert.deepEqual(first.agentCeiling, { limit: 1, active: 1 });
+  assert.deepEqual(first.agents[0]?.waitingOn, { kind: "admission", gate: "agent-ceiling", sinceMs: 900 });
+  admission.waiting.set(id, { kind: "admission", gate: "engine-cap", sinceMs: 900 });
+  assert.equal(progress.snapshot().agents[0]?.waitingOn?.kind, "admission");
+  assert.deepEqual(first.agents[0]?.waitingOn, { kind: "admission", gate: "agent-ceiling", sinceMs: 900 });
+
+  progress.startAgent(id);
+  const background = { kind: "background-task" as const, taskId: "command", description: "Building", sinceMs: 950 };
+  progress.noteAgentWaiting(id, background);
+  assert.deepEqual(progress.snapshot().agents[0]?.waitingOn, background);
+  progress.settleAgent(id, "done");
+  assert.equal(progress.snapshot().agents[0]?.waitingOn, null);
+});

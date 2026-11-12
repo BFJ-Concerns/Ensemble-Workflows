@@ -506,7 +506,7 @@ carries:
   `agent_record`.
 
 The completion sentinel and the live status file are separate artefact
-families with their own schema versions (`3` and `3`), described above.
+families with their own schema versions (`3` and `5`), described above.
 
 ### Manifest
 

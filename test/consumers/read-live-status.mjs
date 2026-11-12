@@ -87,9 +87,17 @@ try {
       for (const field of ["startedAtMs", "firstEvidenceAtMs", "lastEvidenceAtMs", "finishedAtMs", "spent"]) {
         assert.ok(agent[field] === null || (Number.isFinite(agent[field]) && agent[field] >= 0), field);
       }
-      const observed = workers.get(agent.id) ?? { states: [], attempts: [], evidenceTimes: [], attemptEvidence: {}, transcriptPaths: [], latest: null };
+      const observed = workers.get(agent.id) ?? { states: [], attempts: [], evidenceTimes: [], attemptEvidence: {}, transcriptPaths: [], admissionWaits: [], latest: null };
       workers.set(agent.id, observed);
       observed.latest = agent;
+      if (agent.waitingOn?.kind === "admission") {
+        assert.equal(agent.state, "queued");
+        assert.ok(["engine-cap", "agent-ceiling"].includes(agent.waitingOn.gate));
+        assert.ok(Number.isFinite(agent.waitingOn.sinceMs));
+        if (!observed.admissionWaits.some((wait) => wait.gate === agent.waitingOn.gate)) {
+          observed.admissionWaits.push({ ...agent.waitingOn, ceiling: current.agentCeiling, engineCap: current.engines[agent.engine].cap });
+        }
+      }
       if (!observed.states.includes(agent.state)) observed.states.push(agent.state);
       if (!observed.attempts.includes(agent.attempt)) observed.attempts.push(agent.attempt);
       const attemptTimes = observed.attemptEvidence[agent.attempt] ??= [];
@@ -158,10 +166,12 @@ try {
     assert.ok(observed, `worker ${expected.id} was never visible`);
     const agent = observed.latest;
     for (const [key, value] of Object.entries(expected)) {
-      if (["queued", "worktree", "growth", "live"].includes(key)) continue;
+      if (["queued", "worktree", "growth", "live", "admissionGate"].includes(key)) continue;
       assert.deepEqual(agent[key], value, `worker ${expected.id}: ${key}`);
     }
     if (expected.queued) assert.ok(observed.states.includes("queued"));
+    if (expected.admissionGate) assert.ok(observed.admissionWaits.some((wait) => wait.gate === expected.admissionGate),
+      `worker ${expected.id} never published ${expected.admissionGate}`);
     if (expected.growth) assert.ok(observed.evidenceTimes.length > 1);
     if (expected.worktree) {
       assert.ok(path.isAbsolute(agent.worktree));

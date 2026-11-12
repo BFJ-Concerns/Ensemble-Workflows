@@ -238,6 +238,51 @@ test("the snapshot names the gate holding each waiting worker, the engine's cap 
   await Promise.all([codexActive, codexWaiting, claudeActive, claudeWaiting]);
 });
 
+test("admission refreshes gates after draining, preserves queue time and publishes close", async () => {
+  let now = 100;
+  const changes: ReturnType<AdmissionController["snapshot"]>[] = [];
+  const controller = new AdmissionController({
+    ceiling: 2, caps: caps({ codex: 1, claude: 2 }), now: () => now++,
+    onChange: () => changes.push(controller.snapshot())
+  });
+  const firstGate = deferred<void>();
+  const secondGate = deferred<void>();
+  const nextGate = deferred<void>();
+  const first = controller.admit("codex", 1, () => firstGate.promise);
+  const second = controller.admit("claude", 2, () => secondGate.promise);
+  const next = controller.admit("claude", 3, () => nextGate.promise);
+  const waiting = controller.admit("codex", 4, async () => undefined);
+  const rejected = assert.rejects(waiting, EngineShutdownError);
+  assert.equal(changes.length, 4, "one publication per admit, after draining");
+  assert.equal(changes[0]?.waiting.size, 0, "immediately admitted work must not appear waiting");
+  assert.deepEqual(controller.snapshot().waiting.get(4), { kind: "admission", gate: "engine-cap", sinceMs: 103 });
+
+  firstGate.resolve(undefined);
+  await first;
+  await drainMicrotasks();
+  assert.equal(changes.length, 5, "one publication for release and its drained successor");
+  const changed = changes.at(-1)!;
+  assert.equal(changed.ceilingActive, 2);
+  assert.equal(changed.waiting.has(3), false, "successor has already acquired its slot at publication");
+  assert.deepEqual(changed.waiting.get(4), { kind: "admission", gate: "agent-ceiling", sinceMs: 103 });
+  // Previously returned snapshots must retain the gate they observed.
+  assert.equal(changes[3]?.waiting.get(4)?.gate, "engine-cap");
+
+  controller.close();
+  assert.equal(changes.length, 6);
+  assert.equal(changes.at(-1)?.waiting.size, 0);
+  assert.equal(changes.at(-1)?.ceilingActive, 2, "close retains already admitted slots");
+  controller.close();
+  assert.equal(changes.length, 6, "repeated close is inert");
+  await rejected;
+  secondGate.resolve(undefined);
+  nextGate.resolve(undefined);
+  await Promise.all([second, next]);
+  await drainMicrotasks();
+  assert.equal(changes.length, 8);
+  assert.equal(changes.at(-1)?.ceilingActive, 0);
+});
+
 function caps(values: Partial<Record<EngineName, number>>): ReadonlyMap<EngineName, number> {
   return new Map(Object.entries(values) as Array<[EngineName, number]>);
 }

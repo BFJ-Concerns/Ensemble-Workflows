@@ -4929,7 +4929,11 @@ test("fallback admission clears the refused attempt from a queued archive record
     const deadline = Date.now() + 10_000;
     for (;;) {
       const state = runtime.progress.snapshot().agents.find((agent) => agent.label === "fallback");
-      if (state?.engine === "claude" && state.state === "queued") break;
+      if (state?.engine === "claude" && state.state === "queued" && state.waitingOn?.kind === "admission") {
+        assert.equal(state.waitingOn.gate, "engine-cap");
+        assert.deepEqual(runtime.progress.snapshot().agentCeiling, { limit: null, active: 1 });
+        break;
+      }
       assert.ok(Date.now() < deadline, "fallback never reached the occupied target's queue");
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
@@ -4938,6 +4942,7 @@ test("fallback admission clears the refused attempt from a queued archive record
     assert.equal(record.current_attempt, undefined, "queued fallback still claims an executing attempt");
     release();
     assert.equal(await fallback, "fallback done");
+    assert.equal(runtime.progress.snapshot().agents.find((agent) => agent.label === "fallback")?.waitingOn, null);
     const settled = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000002/agent.json"), "utf8"));
     assert.deepEqual(settled.attempts.map((attempt: { target: { engine: string } }) => attempt.target.engine), ["codex", "claude"]);
     assert.equal(settled.current_attempt, undefined);

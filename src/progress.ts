@@ -610,12 +610,12 @@ export class RunProgress {
       totals,
       agentCeiling: { limit: this.#admission.ceiling, active: admission.ceilingActive },
       engines,
-      agents: this.#agents(),
+      agents: this.#agents(admission.waiting),
       holds: [...this.#openHolds.values()]
     };
   }
 
-  #agents(): LiveAgentSnapshot[] {
+  #agents(waiting: ReadonlyMap<number, AdmissionWaitSnapshot>): LiveAgentSnapshot[] {
     const records = [...this.#live.values(), ...this.#finished.values()];
     // Running, queued, then finished workers; every worker stays visible.
     records.sort((a, b) => rank(a.state) - rank(b.state) || (rank(a.state) === 2 ? b.id - a.id : a.id - b.id));
@@ -638,7 +638,7 @@ export class RunProgress {
       attempt: record.attempt,
       startedAtMs: record.startedAt,
       firstEvidenceAtMs: record.firstEvidenceAt,
-      waitingOn: record.waitingOn
+      waitingOn: record.state === "queued" ? waiting.get(record.id) ?? null : record.waitingOn
     }));
   }
 

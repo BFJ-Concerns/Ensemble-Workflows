@@ -545,7 +545,10 @@ families; their versions are listed in [Schema versions](#schema-versions).
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.
 - `caller_identity`: opaque identity of the invoking session, or `null`.
-- `namespace`: namespace strategy, id, hash, and local material.
+- `namespace`: namespace strategy, id, hash, and local material. The strategy
+  label `git-root-realpath-sha256` names the combined rule in
+  [Run identity](#run-identity), including its `realpath(cwd)` fallback outside
+  a git repository; it does not prove a git root was found.
 - `status`: `"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
   `"interrupted"`, `"incomplete"` (the run ended but files it archived were
   gone at the seal), or `"abandoned"` (written only by another run's sweep).
@@ -623,7 +626,8 @@ families; their versions are listed in [Schema versions](#schema-versions).
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. See
   [Token usage and cost](#token-usage-and-cost).
 - `files`: integrity table for archived artefacts, each with `path`, `size`,
-  and `sha256`. `manifest.json` is excluded; it carries its own digest instead.
+  and `sha256`. `manifest.json` and `completion-sentinel.json` are excluded;
+  each carries its own digest instead.
 - `integrity`: `algorithm` (`"sha256"`), `recipe` (the digest rule, stated in
   the archive itself), `manifest_sha256` (the manifest's own digest), and
   `files_lost` — one `{ path, reason }` entry, sorted by path, for each
@@ -899,7 +903,10 @@ The fields present throughout a record's lifetime are:
     with it (such as the last status after its own retries ran out), or
     `null`. The whole field is `null` when Codex supplied no diagnostic.
   - `worker_exit`: `{ exit_code, signal }` when the worker process died
-    rather than returned; `null` otherwise.
+    rather than returned; `null` otherwise. On Codex this describes the shared
+    app-server process. An attempt refused as `CodexSubstrateRefusedError`
+    can carry that server's exit evidence even though no worker thread
+    started for the attempt.
   - `background_waits`: the background tasks the worker started and Ensemble
     waited on (including Claude native `Workflow` tasks), each
     `{ task_id, description, observed_at, ended_at }`

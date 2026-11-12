@@ -396,7 +396,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#usageAtSettlement = null;
     this.#waits = [];
     this.#nudges = 0;
-    let fromIndex = 0;
+    // An existing held session has no evidence window for this attempt
+    // until it starts collecting a pending turn or reads a new input mark.
+    let fromIndex: number | null = this.#multiTurn && this.#handle !== null ? null : 0;
     try {
       if (this.#multiTurn && this.#nativeTurnCompleted && this.#handle !== null && this.#pending === null) {
         // A send can beat the watch to a disappearance. Confirm the same
@@ -502,17 +504,16 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         });
       }
       const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      // Before a held turn submits anything, the saved transcript belongs
-      // to earlier turns. A loss during preflight must not publish their
-      // answer as the unsent turn's partial output.
-      const unsentHeldTurn = this.#multiTurn && this.#handle !== null && this.#turn === "unsent" && this.#pending === null;
-      const evidence = error instanceof Error && !preparedInterruption && !unsentHeldTurn
+      // Preflight has no collection window. Draining a pending turn does,
+      // even if this turn's prompt is still unsent and the pending state
+      // has been cleared before its delivery failure reaches this catch.
+      const evidence = error instanceof Error && !preparedInterruption && fromIndex !== null
         ? await this.#tryFailureEvidence(fromIndex, error) : null;
-      if (error instanceof Error && evidence !== null) {
+      if (error instanceof Error && evidence !== null && fromIndex !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
       if (this.#lost !== null && !(error instanceof EngineShutdownError)) {
-        return this.#lostResult(evidence, fromIndex);
+        return this.#lostResult(evidence, fromIndex ?? 0);
       }
       if (error instanceof EngineShutdownError && evidence !== null) {
         // Interruption remains a rejection — it must neither settle as an

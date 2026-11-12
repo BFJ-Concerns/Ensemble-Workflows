@@ -22480,7 +22480,7 @@ var ClaudeEngineInvocation = class {
     this.#usageAtSettlement = null;
     this.#waits = [];
     this.#nudges = 0;
-    let fromIndex = 0;
+    let fromIndex = this.#multiTurn && this.#handle !== null ? null : 0;
     try {
       if (this.#multiTurn && this.#nativeTurnCompleted && this.#handle !== null && this.#pending === null) {
         for (let misses = 0; misses < CLAUDE_ROSTER_ABSENCE_BOUND; misses++) {
@@ -22561,13 +22561,12 @@ var ClaudeEngineInvocation = class {
         });
       }
       const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      const unsentHeldTurn = this.#multiTurn && this.#handle !== null && this.#turn === "unsent" && this.#pending === null;
-      const evidence = error instanceof Error && !preparedInterruption && !unsentHeldTurn ? await this.#tryFailureEvidence(fromIndex, error) : null;
-      if (error instanceof Error && evidence !== null) {
+      const evidence = error instanceof Error && !preparedInterruption && fromIndex !== null ? await this.#tryFailureEvidence(fromIndex, error) : null;
+      if (error instanceof Error && evidence !== null && fromIndex !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
       if (this.#lost !== null && !(error instanceof EngineShutdownError)) {
-        return this.#lostResult(evidence, fromIndex);
+        return this.#lostResult(evidence, fromIndex ?? 0);
       }
       if (error instanceof EngineShutdownError && evidence !== null) {
         attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));

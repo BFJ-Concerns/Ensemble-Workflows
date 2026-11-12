@@ -676,7 +676,7 @@ test("unmetered cut-short turns and refused substrates name why usage was not ob
       await writer.recordAgent(record);
       return JSON.parse(await readFile(path.join(
         writer.archiveDir, "agents", String(record.id).padStart(6, "0"), "agent.json"
-      ), "utf8")) as { usage: { summary?: { totalTokens: number }; unavailable?: string }; transcripts: Array<{ path: string }> };
+      ), "utf8")) as { usage: { summary?: { totalTokens: number }; unavailable?: string }; transcripts: Array<{ path: string }>; transcripts_unavailable: string | null };
     };
     for (const engine of ["codex", "claude", "opencode"] as const) {
       for (const status of ["interrupted", "timed-out"] as const) {
@@ -700,7 +700,8 @@ test("unmetered cut-short turns and refused substrates name why usage was not ob
       }
     }
     for (const [engine, kind] of [
-      ["claude", "ClaudeDispatchError"], ["codex", "CodexSubstrateRefusedError"]
+      ["claude", "ClaudeDispatchError"], ["codex", "CodexSubstrateRefusedError"],
+      ["codex", "SubstrateRefusedError"], ["claude", "SubstrateRefusedError"], ["opencode", "SubstrateRefusedError"]
     ] as const) {
       const record = agentRecord(++id, engine, null, 0);
       record.status = "failed";
@@ -709,14 +710,19 @@ test("unmetered cut-short turns and refused substrates name why usage was not ob
       attempt.failure = { kind, message: "substrate refused before a worker existed" };
       attempt.tokenUsageEvents = [];
       attempt.transcripts = [];
-      assert.deepEqual((await archive(record)).usage, { unavailable: "substrate-never-started" });
+      record.attempts.push({ ...structuredClone(attempt), attempt: 2 });
+      const saved = await archive(record);
+      assert.deepEqual(saved.usage, { unavailable: "substrate-never-started" });
+      assert.equal(saved.transcripts_unavailable, "substrate-never-started");
 
       // A later refusal cannot erase an earlier attempt that did run.
       record.id = ++id;
       const earlier = structuredClone(attempt);
       earlier.failure = { kind: "Error", message: "worker failed after starting" };
       record.attempts = [earlier, { ...attempt, attempt: 2 }];
-      assert.deepEqual((await archive(record)).usage, { unavailable: "engine-reported-no-usage" });
+      const mixed = await archive(record);
+      assert.deepEqual(mixed.usage, { unavailable: "engine-reported-no-usage" });
+      assert.equal(mixed.transcripts_unavailable, "engine-produced-no-transcript");
     }
   } finally {
     await rm(cwd, { recursive: true, force: true });

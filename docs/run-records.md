@@ -817,7 +817,8 @@ The fields present throughout a record's lifetime are:
   `in-progress`, or was abandoned after its run was killed — so the attempt
   in flight and its spend are unobserved), `"no-attempt-ran"`,
   `"substrate-never-started"` (every attempt was refused before a worker
-  existed), `"worker-interrupted"` or `"worker-timed-out"` (the run cut the
+  existed, including a resource-preflight refusal), `"worker-interrupted"` or
+  `"worker-timed-out"` (the run cut the
   worker short before usage was reported), or `"engine-reported-no-usage"`
   (a settled worker supplied no usage). Any usage the engine did report,
   including zero tokens, is retained as a summary instead of an absence reason.

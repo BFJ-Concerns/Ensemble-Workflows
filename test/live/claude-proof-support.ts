@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { readProcessStartTicks } from "../../src/process-owner-evidence.js";
+import { claudeConfigDirectory } from "../../src/engine-resources.js";
 import { access, mkdtemp, realpath, rm, symlink, readFile, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
@@ -141,17 +141,37 @@ export async function daemonPid(executable: string, env: NodeJS.ProcessEnv): Pro
   return status.code === 0 ? status.pid : null;
 }
 
+/** Bracket the log and process reads with status so startup cannot split an observation. */
 export async function supervisorSnapshot(executable: string, env: NodeJS.ProcessEnv, startAt: number | "current" = 0): Promise<{ selectedVersion: string | null; versionEvidence: ClaudeVersionEvidence; identity: SupervisorIdentity; lifecycle: Record<string, string>[]; offset: number }> {
-  const pid = await daemonPid(executable, env);
-  const all = await supervisorLifecycle(env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"));
+  const config = claudeConfigDirectory(env, process.cwd());
+  const deadline = Date.now() + 20_000;
+  let status = await daemonStatus(executable, env);
+  let all: Record<string, string>[];
+  let pid: number | null;
+  let startTicks: string | null;
+  let cgroup: string | null;
+  while (true) {
+    pid = status.code === 0 ? status.pid : null;
+    const firstTicks = pid === null ? null : await readProcessStartTicks("/proc", pid);
+    all = await supervisorLifecycle(config);
+    cgroup = pid === null ? null : await readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null);
+    const next = await daemonStatus(executable, env);
+    const nextPid = next.code === 0 ? next.pid : null;
+    startTicks = pid === null ? null : await readProcessStartTicks("/proc", pid);
+    if (pid === nextPid && firstTicks === startTicks) break;
+    if (Date.now() >= deadline) {
+      throw new Error(`Claude supervisor changed throughout observation: ${JSON.stringify({ config, status, next, lifecycle: all })}`);
+    }
+    status = next;
+  }
   // The operator's log spans unrelated sessions. Retain the serving daemon's
   // start and subsequent lifecycle, using the same offset after the journey.
   const offset = startAt === "current" ? Math.max(0, all.findLastIndex(row => row.event === "start" && row.pid === String(pid))) : startAt;
   const lifecycle = all.slice(offset).filter(row => row.event !== "settled");
   const identity: SupervisorIdentity = {
     pid,
-    startTicks: pid === null ? null : await readProcessStartTicks("/proc", pid),
-    cgroup: pid === null ? null : await readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null),
+    startTicks,
+    cgroup,
     version: lifecycle.findLast(row => row.event === "start" && row.pid === String(pid))?.version ?? ""
   };
   const selectedVersion = await claudeVersion(executable, env);

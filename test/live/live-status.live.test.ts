@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { runNode, runProcess } from "../integration/estate-process.js";
 import type { ProcessResult } from "../integration/estate-process.js";
 import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths } from "./held-worker-probes.js";
@@ -30,20 +29,16 @@ for (const engine of ["claude", "codex"] as const) {
     }));
     let reader: Promise<ProcessResult> | undefined;
     try {
-      // Keep ambient run settings isolated while retaining machine worker credentials.
-      const configHome = path.join(directory, "config");
-      await mkdir(path.join(configHome, "ensemble"), { recursive: true, mode: 0o700 });
-      await writeFile(path.join(configHome, "ensemble", "config.json"), JSON.stringify({
-        schema_version: 1,
-        worker_environment: resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment
-      }), { mode: 0o600 });
       await mkdir(repo);
       const init = await runProcess("git", ["-C", repo, "init", "--initial-branch=main"]);
       assert.equal(init.code, 0, init.stderr);
       const commit = await runProcess("git", ["-C", repo, "-c", "user.name=Ensemble test", "-c", "user.email=ensemble@example.invalid", "commit", "--allow-empty", "-m", "initialise test repository"]);
       assert.equal(commit.code, 0, commit.stderr);
-      // Exercise the same data-home default with and without a project namespace.
+      // Exercise status under the data home with and without a project namespace.
       if (engine === "claude") await mkdir(path.join(repo, ".claude"));
+      const dataHome = process.env.XDG_DATA_HOME ?? path.join(process.env.HOME!, ".local", "share");
+      const statusDirectory = path.join(dataHome, "ensemble", "status");
+      await mkdir(statusDirectory, { recursive: true });
       const acknowledgements = path.join(directory, "observed");
       const releaseFile = path.join(directory, "finish");
       const unplaceable = path.join(directory, "not-a-repository");
@@ -75,11 +70,12 @@ for (const engine of ["claude", "codex"] as const) {
           requestedEffort: "medium", live: true, queued: id === 2, worktree: id === 1, growth: true })).concat([{ id: 5, state: "failed", requestedModel: model ?? null,
           requestedEffort: "medium", live: false, queued: false, worktree: false, growth: false }])
       }));
+      // Keep the machine configuration that routes/authenticates the engines.
       // Do not relocate XDG_DATA_HOME: Claude's supervisor can outlive a run.
       reader = runNode([consumer, spec], {
         ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records"),
-        ENSEMBLE_CONCURRENCY_CODEX: "1", ENSEMBLE_CONCURRENCY_CLAUDE: "1",
-        XDG_CONFIG_HOME: configHome
+        ENSEMBLE_STATUS: "1", ENSEMBLE_STATUS_DIR: statusDirectory,
+        ENSEMBLE_CONCURRENCY_CODEX: "1", ENSEMBLE_CONCURRENCY_CLAUDE: "1"
       }, 1_110_000);
       for (const [index, probe] of probes.entries()) {
         await waitForReady(probe.paths.ready, reader);
@@ -97,8 +93,7 @@ for (const engine of ["claude", "codex"] as const) {
       assert.equal(result.code, 0, result.stderr);
       const report = JSON.parse(result.stdout);
       assert.equal(report.stdout, "complete");
-      const dataHome = process.env.XDG_DATA_HOME ?? path.join(process.env.HOME!, ".local", "share");
-      assert.equal(path.dirname(report.announcement.status_path), path.join(dataHome, "ensemble", "status"));
+      assert.equal(path.dirname(report.announcement.status_path), statusDirectory);
       if (engine === "claude") {
         assert.ok((await readdir(path.join(repo, ".claude"))).every((name) => !name.startsWith("ensemble.")));
       } else {

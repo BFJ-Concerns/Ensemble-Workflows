@@ -426,7 +426,9 @@ abandons (one still being dispatched when the run ended) says
 `no-attempt-ran` instead, because its writer knows no attempt began. Settled
 agent records are never rewritten. A dead run whose records carry an earlier
 `schema_version` keeps that version's sweep: its records' status is flipped,
-`current_attempt` is removed, and its roll-up stands as written.
+`current_attempt` is removed, and its roll-up stands as written, in that
+version's vocabulary: a version-5 leaf with no figures reads
+`{ "unavailable": "no-usage-reported" }`, whatever its attempts did.
 
 ## Run record schema
 
@@ -434,7 +436,12 @@ Every record document — the JSON files described below, as opposed to the
 archived workflow source, canonical arguments, transcripts, and diffs —
 carries:
 
-- `schema_version`: currently `5`. A reader built for an earlier version should not read a version-5 record as one: version 5 lists an abandoned attempt in `attempts` and marks each `cost_rollup` leaf complete or not.
+- `schema_version`: currently `6`. A reader built for an earlier version should
+  not read a version-6 record as one: version 6 gives a `cost_rollup` leaf with
+  no figures the absence reason its attempts' entries call for, and books no
+  leaf for an agent that ran no attempt. Version 5 introduced listing an
+  abandoned attempt in `attempts` and marking each `cost_rollup` leaf complete
+  or not.
 - `kind`: one of `run_manifest`, `run_args`, `workflow_args`, `run_result`, or
   `agent_record`.
 
@@ -445,7 +452,7 @@ families with their own schema versions (`3` and `3`), described above.
 
 `manifest.json` has these top-level fields:
 
-- `schema_version`: `5`.
+- `schema_version`: `6`.
 - `kind`: `"run_manifest"`.
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.
@@ -539,7 +546,7 @@ The root's `args.json` and each composed child's
 
 | Field | Root (`run_args`) | Child (`workflow_args`) |
 |---|---|---|
-| `schema_version` | `4` | `4` |
+| `schema_version` | `6` | `6` |
 | `kind` | `"run_args"` | `"workflow_args"` |
 | `value` | For a workflow, a positional string array or the JSON value supplied with `--json-args`; for a direct `agent` invocation, `{ prompt, options }` with the prompt string and parsed agent options | The JSON value passed as the child's arguments to `workflow()` |
 
@@ -556,7 +563,7 @@ handle. A run killed before it seals can have no result file. Its fields are:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | `4` |
+| `schema_version` | `6` |
 | `kind` | `"run_result"` |
 | `status` | `"complete"`, `"failed"`, `"timed-out"`, or `"interrupted"`: the run's outcome, independent of the archive's integrity |
 | `exit_code` | Numeric process exit code: normally `0` on success, `1` on failure or timeout, `130` on SIGINT, or `143` on SIGTERM |
@@ -617,7 +624,7 @@ settled manifest to verify final transcript integrity.
 
 The fields present throughout a record's lifetime are:
 
-- `schema_version`: `5`.
+- `schema_version`: `6`.
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, and `concurrency_group` (the engine group of the
   last target admitted: initially the requested engine, and the answering
@@ -792,8 +799,9 @@ The fields present throughout a record's lifetime are:
   `codex.schema-rejected` even in this envelope and settles immediately
   without retrying. Other unrecognised `other` diagnostics keep a
   null rule. Credential failures use kind `authentication-failure` and rule
-  `<engine>.authentication-failure`; Codex unknown-model failures use kind
-  `model-not-found` and rule `codex.model-not-found`. Both keep the engine's
+  `<engine>.authentication-failure`; Codex `modelNotFound` and Claude's
+  `unknown provider for model` diagnostics use kind `model-not-found` and rule
+  `<engine>.model-not-found`. Both keep the engine's
   diagnostic and add a recovery step to `failure.message`. An explicit
   provider HTTP 401 remains `authentication-failure` when Codex's
   retry-promise bound wraps that diagnostic. `rule` names
@@ -809,8 +817,10 @@ The fields present throughout a record's lifetime are:
   a later entry remaining: the call moved to that entry, spending none of its
   attempt bound), `"retried-in-place"`, `"exhausted"` (nothing left to try:
   the call settles on this failure), or `"chain-not-consulted"` (the failure
-  matched no rule while a later entry remained, so the chain, which advances
-  on availability failures only, was not used). `null` on a complete attempt,
+  was unclassified, with or without a matching rule, or was an output failure
+  with no retry remaining, while a later entry remained untried). The chain
+  advances on availability failures only; an output failure with retries
+  remaining is `"retried-in-place"`. `null` on a complete attempt,
   on every attempt of a call with no chain, and on an attempt cut short by the
   run's own ending.
 - `transcripts`: array; each entry has `attempt`, `path`, `format`, `source`,
@@ -901,7 +911,7 @@ count with `0`.
 fallback chain crossed engines books each attempt under the engine that ran
 it. The literal `"unresolved"` is used when no served model was ever learned,
 never the requested model; for opencode the served model is the configured
-`provider_model`. A run that dispatched no worker has an empty roll-up.
+`provider_model`. A run whose agents started no attempt has an empty roll-up.
 Figures are never summed across engines.
 
 A live or abandoned attempt with no served identity of its own books under
@@ -910,8 +920,14 @@ model. A held turn keeps its session's known identity, including on retries.
 
 Each leaf has four fields:
 
-- `tokens`: a usage summary, or `{ "unavailable": "no-usage-reported" }` when
-  nothing booked under the leaf reported usage. It is never a zero summary.
+- `tokens`: a usage summary, or `{ "unavailable": <reason> }` when nothing
+  booked under the leaf reported usage. It is never a zero summary. The reason
+  is a word of the agent record's `usage.unavailable`, taken from the leaf's
+  `unobserved` entries: the first of `record-unsettled`, `worker-interrupted`,
+  `worker-timed-out` and `engine-reported-no-usage` that any entry names, so
+  spend that may exist outranks an engine's account of none. A leaf with no
+  `unobserved` entries holds only refused attempts and reads
+  `substrate-never-started`. Read `unobserved` for each attempt's own reason.
 - `cost`: `{ amount, currency, source: "provider-reported" }` — Ensemble never
   estimates money — or a reason instead of an amount:
   `{ "unavailable": "no-provider-cost-reported" }`, or
@@ -946,15 +962,17 @@ the attempts it settled is booked as complete.
 
 An attempt refused before any worker existed spent nothing. It books its leaf
 without an `unobserved` entry, so a leaf holding only such attempts reads
-`tokens.unavailable` with `complete: true`. Several workers on one served model
+`{ "unavailable": "substrate-never-started" }` with `complete: true`: the
+engine was tried and spent nothing. Several workers on one served model
 share a leaf. When one reported its usage and another was cut short, the leaf
 carries the first's figures, `complete: false`, and an `unobserved` entry for
 the second.
 
-An agent that lists no attempt books under its engine's `"unresolved"` leaf.
-That leaf stays complete when the record shows no worker started: the agent
-settled without one, or the run's own close abandoned it while it was still
-being dispatched. A record's attempt start is written on a best-effort basis,
+Leaves exist for attempts, not agents. An agent that lists no attempt books no
+leaf when the record shows no worker started: the agent settled without one,
+or the run's own close abandoned it while it was still being dispatched. Its
+record's `usage` reads `no-attempt-ran`, a word no leaf carries. A record's
+attempt start is written on a best-effort basis,
 and the worker runs even when that write fails, so a record whose writer
 never settled it — the sweep's `abandoned` records, which carry an
 `abandonment` block — may have had an attempt running that it does not list.

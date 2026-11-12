@@ -93,7 +93,7 @@ the prompt.
 | `--engine <engine>` | Required. `codex`, `claude`, or `opencode` |
 | `--model <model>` | Model to run. Required for opencode |
 | `--effort <effort>` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh`; on opencode, one of the model's declared variants |
-| `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed |
+| `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed. A schema Ensemble cannot compile is a usage error (exit 2), naming the inline argument or resolved file path, the invalid location and a correction |
 | `--identity` | Print the identified result `{ label, phase, output, failure }` instead of the bare output |
 | `--max-attempts N` | Attempt bound (default 3), as `maxAttempts` in a script |
 | `--cwd <path>` | Working directory for the worker; must be an existing directory |
@@ -201,9 +201,13 @@ Logs and diagnostics go to stderr. These lines are written there:
   reads `failed after N attempts across M chain targets — the last target's
   failure: <cause>`.
 - `[<engine>] agent <id> (<label>) answered by fallback entry <n> …` — a
-  fallback entry answered for a refused target.
-- `[<engine>] agent <id> (<label>) fallback chain not consulted — …` — a
-  failure the classifier did not recognise, so the declared chain was not used.
+  fallback entry answered. Each refused target is named with its engine,
+  model, classification rule and diagnostic; quoted engine stderr is labelled
+  as context.
+- `[<engine>] agent <id> (<label>) fallback chain not consulted — …` —
+  an unclassified failure (including a recognised client refusal), or a final
+  output failure, left declared entries untried. The line names the failure's
+  class and matching rule, if any; only availability failures advance the chain.
 - `[codex] app-server (pid <pid>) scope placement refused: <reason>` — the
   app-server could not be moved; its threads still dispatch, with the refusal
   also available through `codex/workerScopePlacement` runtime events.
@@ -269,7 +273,10 @@ code. Other stdout errors remain failures.
 
 - **Signals.** The first SIGINT or SIGTERM while the script is running (or
   about to start) marks the run interrupted, and the launcher then ends it
-  once, fully recorded. A second signal during that shutdown is absorbed;
+  once, fully recorded. Worker teardown includes Claude launches still
+  waiting for their session handles: their workers are stopped before shared
+  scopes close, the archive is sealed, and the completion sentinel is written.
+  A second signal during that shutdown is absorbed;
   SIGKILL remains the way to end the process sooner, at the cost of the
   sentinel. A signal that arrives after the script has returned changes
   nothing: the printed result stands and the run ends `complete`.

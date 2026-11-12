@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { ClaudeCliControlPlane } from "../../src/claude-control-plane.js";
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import { validateJsonSchema } from "../../src/schema.js";
@@ -30,7 +31,9 @@ test(
     let runtime: EnsembleRuntime | null = null;
     const adapter = new ClaudeEngineAdapter({
       cwd: process.cwd(),
-      controlPlane: new ClaudeCliControlPlane(),
+      controlPlane: new ClaudeCliControlPlane({
+        workerEnv: resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment.claude ?? {}
+      }),
       onEvent: (event) => runtime?.handleEngineEvent("claude", event)
     });
     runtime = new EnsembleRuntime({

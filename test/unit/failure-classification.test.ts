@@ -296,3 +296,29 @@ test("a structured provider 401 outranks the retry-promise availability wrapper"
     }
   }
 });
+
+
+test("unknown-model diagnoses preserve engine evidence and name the engine model picker", () => {
+  for (const engine of ["codex", "claude"] as const) {
+    const input = evidence({ engine,
+      failure: { kind: engine === "claude" ? "claude-worker-diagnostic" : "AppServerRequestError", message: "API Error: 400 unknown provider for model bad" },
+      appServerDiagnostic: engine === "codex" ? { code: "modelNotFound" } : null,
+      diagnostics: engine === "claude" ? { apiError: { status: 400, code: "invalid_request" } } : undefined
+    });
+    const failure = diagnoseAttemptFailure(input);
+    assert.equal(failure.kind, "model-not-found");
+    assert.ok(failure.message.includes(`run \`${engine}\` and use /model`));
+    assert.ok(failure.message.includes(input.failure.message));
+    assert.deepEqual(classifyAttemptFailure({ ...input, failure }), { class: "unclassified", rule: `${engine}.model-not-found` });
+  }
+  for (const [kind, status, message] of [
+    ["claude-worker-diagnostic", 400, "API Error: 400 invalid request"],
+    ["claude-worker-diagnostic", 503, "unknown provider for model bad"],
+    ["claude-worker-diagnostic", 401, "unknown provider for model bad"],
+    ["claude-collection-error", 400, "unknown provider for model bad"],
+    ["claude-worker-diagnostic", null, "the worker mentioned a model"]
+  ] as const) {
+    const failure = diagnoseAttemptFailure(evidence({ engine: "claude", failure: { kind, message }, diagnostics: { apiError: { status, code: null } } }));
+    assert.notEqual(failure.kind, "model-not-found");
+  }
+});

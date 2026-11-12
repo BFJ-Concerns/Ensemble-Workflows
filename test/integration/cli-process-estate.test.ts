@@ -1051,22 +1051,29 @@ test("built CLI keeps the complete engine map and gives mapped flags their own i
   }
 });
 
-test("built CLI reports a direct-agent malformed --schema before the Codex worker starts", async () => {
+test("built CLI refuses malformed --schema with its source and remedy before any worker starts", async () => {
   const fixture = await createProcessFixture("direct-agent-schema-diagnostic");
 
   try {
-    const result = await fixture.runArgs([
-      "agent",
-      "--engine=codex",
-      '--schema={"type":"definitely-not-json-schema"}',
-      "return a receipt"
-    ]);
-
-    assert.equal(result.code, 1);
-    assertSalvageEnvelope(result.stdout, "failed");
-    assert.match(result.stderr, /InvalidAgentSchemaError/);
-    assert.match(result.stderr, /offending schema: \{"type":"definitely-not-json-schema"\}/);
-    assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
+    const schemaPath = path.join(path.dirname(fixture.script), "answer.json");
+    await writeFile(schemaPath, '{"properties":42}');
+    for (const engine of ["codex", "claude"]) {
+      for (const [schema, source, location, remedy] of [
+        ['{"type":"definitely-not-json-schema"}', "the inline argument", "#/type", /"array", "boolean", "integer", "null", "number", "object", "string"/],
+        [`@${path.relative(process.cwd(), schemaPath)}`, schemaPath, "#/properties", /replace this value with a JSON object/]
+      ] as const) {
+        const result = await fixture.runArgs(["agent", `--engine=${engine}`, `--schema=${schema}`, "return a receipt"]);
+        assert.equal(result.code, 2);
+        assert.equal(result.stdout, "");
+        assert.ok(result.stderr.startsWith(`--schema from ${source}:`), result.stderr);
+        assert.ok(result.stderr.includes(`at ${location}:`), result.stderr);
+        assert.match(result.stderr, remedy);
+        assert.equal(result.stderr.split("\n").length, 2);
+      }
+    }
+    assert.equal((await fixture.messages()).length, 0);
+    assert.equal((await fixture.validations()).length, 0);
+    await assert.rejects(readdir(fixture.dataHome), { code: "ENOENT" });
   } finally {
     await fixture.cleanup();
   }

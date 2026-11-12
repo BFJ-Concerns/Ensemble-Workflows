@@ -6,7 +6,6 @@ import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { runNode } from "../integration/estate-process.js";
 import type { ProcessResult } from "../integration/estate-process.js";
 import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths, waitForPath } from "./held-worker-probes.js";
@@ -29,13 +28,6 @@ for (const engine of ["claude", "codex"] as const) {
       token: `RELEASED_${randomUUID()}`
     }));
     try {
-      // Keep ambient run settings isolated while retaining machine worker credentials.
-      const configHome = path.join(directory, "config");
-      await mkdir(path.join(configHome, "ensemble"), { recursive: true, mode: 0o700 });
-      await writeFile(path.join(configHome, "ensemble", "config.json"), JSON.stringify({
-        schema_version: 1,
-        worker_environment: resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment
-      }), { mode: 0o600 });
       const store = path.join(directory, "records");
       const workflow = path.join(directory, "workflow.mjs");
       await mkdir(store);
@@ -59,8 +51,7 @@ for (const engine of ["claude", "codex"] as const) {
       const observation = new AbortController();
       const runProcess = runNode([bundle, workflow], {
         ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: store, ENSEMBLE_STATUS: "0",
-        ENSEMBLE_CONCURRENCY_CODEX: "1", ENSEMBLE_CONCURRENCY_CLAUDE: "1",
-        XDG_CONFIG_HOME: configHome
+        ENSEMBLE_CONCURRENCY_CODEX: "1", ENSEMBLE_CONCURRENCY_CLAUDE: "1"
       }, 1_100_000).finally(() => { settled = true; });
       void runProcess.then(
         (result) => observation.abort(new Error(`workflow settled while its probe was held: ${result.code}\n${result.stderr}`)),

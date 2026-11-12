@@ -38,6 +38,7 @@ test("GitWorktreeIsolationManager removes unchanged worktrees and their temporar
 
     const record = await manager.finish(worktree);
 
+    assert.equal(record.state, "unchanged");
     assert.equal(record.changed, false);
     assert.equal(record.removed, true);
     assert.equal(record.tipCommit, worktree.baseCommit);
@@ -72,6 +73,7 @@ test("GitWorktreeIsolationManager keeps a worktree whose worker committed its ch
 
     const record = await manager.finish(worktree);
 
+    assert.equal(record.state, "committed");
     assert.equal(record.changed, true);
     assert.equal(record.removed, false);
     await access(worktree.path);
@@ -82,6 +84,64 @@ test("GitWorktreeIsolationManager keeps a worktree whose worker committed its ch
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("GitWorktreeIsolationManager reports edits left uncommitted apart from a moved tip", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-uncommitted-"));
+  const repo = path.join(directory, "repo");
+  await initialiseRepo(repo);
+
+  try {
+    const manager = new GitWorktreeIsolationManager();
+    const worktree = await manager.create(repo);
+
+    // The worker stages its work and never commits it: the branch holds none of it.
+    await writeFile(path.join(worktree.path, "feature.txt"), "worker output\n");
+    await git(worktree.path, ["add", "feature.txt"]);
+
+    const record = await manager.finish(worktree);
+
+    assert.equal(record.state, "uncommitted");
+    assert.equal(record.changed, true);
+    assert.equal(record.removed, false);
+    assert.equal(record.tipCommit, worktree.baseCommit);
+    assert.equal((await git(repo, ["rev-parse", worktree.branch])).trim(), worktree.baseCommit);
+    await access(path.join(worktree.path, "feature.txt"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+for (const edits of ["staged", "unstaged", "untracked"] as const) {
+  test(`GitWorktreeIsolationManager keeps committed work with ${edits} edits`, async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-mixed-"));
+    const repo = path.join(directory, "repo");
+    await initialiseRepo(repo);
+    try {
+      const manager = new GitWorktreeIsolationManager();
+      const worktree = await manager.create(repo);
+      await writeFile(path.join(worktree.path, "feature.txt"), "committed output\n");
+      await git(worktree.path, ["add", "feature.txt"]);
+      await git(worktree.path, ["commit", "-m", "worker output"]);
+      const filename = edits === "untracked" ? "extra.txt" : "feature.txt";
+      await writeFile(path.join(worktree.path, filename), "uncommitted output\n");
+      if (edits === "staged") {
+        await git(worktree.path, ["add", filename]);
+      }
+
+      const record = await manager.finish(worktree);
+
+      assert.equal(record.state, "committed-and-uncommitted");
+      assert.equal(record.changed, true);
+      assert.equal(record.removed, false);
+      assert.notEqual(record.tipCommit, worktree.baseCommit);
+      assert.equal(record.tipCommit, (await git(repo, ["rev-parse", worktree.branch])).trim());
+      await access(path.join(worktree.path, filename));
+      assert.notEqual((await git(worktree.path, ["status", "--porcelain"])).trim(), "");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
 
 test("the container directory goes with its last worktree and survives while siblings remain", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-container-"));

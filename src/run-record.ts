@@ -36,6 +36,7 @@ import type { AppServerDiagnostic } from "./errors.js";
 import type { FailureClassification } from "./failure-classification.js";
 import type { FallbackSource } from "./fallback-source.js";
 import type { UsageSummary } from "./usage-summary.js";
+import type { WorktreeState } from "./worktree-isolation.js";
 
 const execFileAsync = promisify(execFile);
 /**
@@ -342,6 +343,7 @@ export interface RuntimeAgentRecord {
   worktree: {
     branch: string;
     baseCommit: string;
+    state: WorktreeState;
     tipCommit: string | null;
     changed: boolean;
     removed: boolean;
@@ -1185,6 +1187,7 @@ export class RunRecordWriter {
           : {
               branch: record.worktree.branch,
               base_commit: record.worktree.baseCommit,
+              state: record.worktree.state,
               tip_commit: record.worktree.tipCommit,
               changed: record.worktree.changed,
               removed: record.worktree.removed

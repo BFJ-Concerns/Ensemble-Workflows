@@ -16492,6 +16492,7 @@ var RunRecordWriter = class _RunRecordWriter {
       worktree: record.worktree === null ? null : {
         branch: record.worktree.branch,
         base_commit: record.worktree.baseCommit,
+        state: record.worktree.state,
         tip_commit: record.worktree.tipCommit,
         changed: record.worktree.changed,
         removed: record.worktree.removed
@@ -17325,6 +17326,9 @@ import { mkdir as mkdir5, rmdir } from "node:fs/promises";
 import path8 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var execFileAsync2 = promisify2(execFile2);
+function unknownWorktreeRecord(worktree) {
+  return { ...worktree, state: "unknown", tipCommit: null, changed: true, removed: false };
+}
 var GitWorktreeIsolationManager = class {
   #counter = 0;
   #repoRoots = /* @__PURE__ */ new Map();
@@ -17347,11 +17351,15 @@ var GitWorktreeIsolationManager = class {
   async finish(worktree) {
     const status = await git2(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
     const tip = (await git2(worktree.path, ["rev-parse", "HEAD"])).trim();
-    const changed = status.trim().length > 0 || tip !== worktree.baseCommit;
-    if (changed) {
+    const state = inspectedState({
+      committed: tip !== worktree.baseCommit,
+      uncommitted: status.trim().length > 0
+    });
+    if (state !== "unchanged") {
       this.#worktreeRoots.delete(worktree.path);
       return {
         ...worktree,
+        state,
         tipCommit: tip,
         changed: true,
         removed: false
@@ -17370,6 +17378,7 @@ var GitWorktreeIsolationManager = class {
     }
     return {
       ...worktree,
+      state,
       tipCommit: tip,
       changed: false,
       removed: true
@@ -17406,6 +17415,12 @@ var GitWorktreeIsolationManager = class {
     return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID2().slice(0, 8)}`;
   }
 };
+function inspectedState(observed) {
+  if (observed.committed) {
+    return observed.uncommitted ? "committed-and-uncommitted" : "committed";
+  }
+  return observed.uncommitted ? "uncommitted" : "unchanged";
+}
 async function git2(cwd, args) {
   try {
     const { stdout } = await execFileAsync2("git", args, {
@@ -25086,20 +25101,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
         const worktree = await this.#placement.close(placement);
         if (worktree !== null) {
           this.worktrees.push(worktree);
-          this.#emitEvent({
-            method: "worktree/finished",
-            params: {
-              path: worktree.path,
-              branch: worktree.branch,
-              changed: worktree.changed,
-              removed: worktree.removed
-            },
-            receivedAt: Date.now()
-          });
+          this.#emitWorktreeFinished(worktree);
         }
       } catch (error) {
         if (placement.worktree !== void 0) {
-          this.worktrees.push({ ...placement.worktree, tipCommit: null, changed: true, removed: false });
+          this.worktrees.push(unknownWorktreeRecord(placement.worktree));
           this.#emitEvent({
             method: "worktree/finalisationFailed",
             params: {
@@ -25856,25 +25862,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
           const worktree = await this.#placement.close(placement);
           if (worktree !== null) {
             this.#publishWorktree(agentRecord, worktree);
-            this.#emitEvent({
-              method: "worktree/finished",
-              params: {
-                path: worktree.path,
-                branch: worktree.branch,
-                changed: worktree.changed,
-                removed: worktree.removed
-              },
-              receivedAt: Date.now()
-            });
+            this.#emitWorktreeFinished(worktree);
           }
         } catch (error) {
           if (placement.worktree !== void 0) {
-            const worktree = {
-              ...placement.worktree,
-              tipCommit: null,
-              changed: true,
-              removed: false
-            };
+            const worktree = unknownWorktreeRecord(placement.worktree);
             this.#publishWorktree(agentRecord, worktree);
             this.#emitEvent({
               method: "worktree/finalisationFailed",
@@ -25913,10 +25905,30 @@ var EnsembleRuntime = class _EnsembleRuntime {
     agentRecord.worktree = {
       branch: worktree.branch,
       baseCommit: worktree.baseCommit,
+      state: worktree.state,
       tipCommit: worktree.tipCommit,
       changed: worktree.changed,
       removed: worktree.removed
     };
+  }
+  /**
+   * The one `worktree/finished` shape, for an agent call's worktree and a
+   * held session's alike. A failed finalisation raises
+   * `worktree/finalisationFailed` instead, so `state` here is never
+   * `unknown`.
+   */
+  #emitWorktreeFinished(worktree) {
+    this.#emitEvent({
+      method: "worktree/finished",
+      params: {
+        path: worktree.path,
+        branch: worktree.branch,
+        state: worktree.state,
+        changed: worktree.changed,
+        removed: worktree.removed
+      },
+      receivedAt: Date.now()
+    });
   }
   /**
    * The bounded-attempt loop for a text call on one target: the trimmed
@@ -33936,16 +33948,11 @@ async function runEnsembleCli(argv, options = {}) {
       }
       const worktreePath = typeof event.params.path === "string" ? event.params.path : "<unknown>";
       const branch = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
-      if (invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree") {
-        const outcome = event.params.changed === true ? "changed" : "unchanged and removed";
-        stderr.write(`[worktree] ${outcome} ${worktreePath} (${branch})
-`);
+      const reportUnchanged = invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree";
+      if (!reportUnchanged && event.params.changed !== true) {
         return;
       }
-      if (event.params.changed !== true) {
-        return;
-      }
-      stderr.write(`[worktree] changed ${worktreePath} (${branch})
+      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${branch})
 `);
     });
     const runnerOptions = {
@@ -35034,6 +35041,20 @@ function wrapTokens(lead, tokens, indent, separator) {
   });
   lines.push(line);
   return lines;
+}
+function worktreeStatePhrase(state) {
+  switch (state) {
+    case "unchanged":
+      return "unchanged and removed";
+    case "uncommitted":
+      return "uncommitted";
+    case "committed":
+      return "committed";
+    case "committed-and-uncommitted":
+      return "committed with uncommitted edits";
+    default:
+      return "state unknown";
+  }
 }
 function serialiseResult(result) {
   try {

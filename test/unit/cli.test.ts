@@ -589,6 +589,51 @@ test("CLI prints result JSON to stdout and logs to stderr", async () => {
   assert.equal(stderr.text(), "hello stderr\n");
 });
 
+for (const mode of ["workflow", "agent"] as const) {
+  for (const [state, phrase] of [
+    ["unchanged", "unchanged and removed"],
+    ["uncommitted", "uncommitted"],
+    ["committed", "committed"],
+    ["committed-and-uncommitted", "committed with uncommitted edits"]
+  ]) {
+    test(`${mode} CLI reports a ${state} worktree explicitly`, async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worktree-state-"));
+      try {
+        const script = path.join(directory, "workflow.js");
+        await writeFile(script, 'export const meta = { name: "worktree-state" }; return "ok";');
+        const runtime = fakeRuntime();
+        runtime.onEvent = (listener) => {
+          listener({
+            method: "worktree/finished",
+            params: {
+              path: "/repo/worktree with spaces",
+              branch: "ensemble-workflows/worker",
+              state,
+              changed: state !== "unchanged",
+              removed: state === "unchanged"
+            },
+            receivedAt: 0
+          });
+          return () => {};
+        };
+        const stdout = new CaptureStream();
+        const stderr = new CaptureStream();
+        const argv = mode === "workflow" ? [script]
+          : ["agent", "--engine=codex", "--isolation=worktree", "work"];
+        const exitCode = await runEnsembleCli(argv, {
+          cwd: directory, stdout, stderr, runRecordDir: null,
+          createRuntime: async () => runtime
+        });
+        assert.equal(exitCode, 0, stderr.text());
+        assert.equal(stderr.text(), mode === "workflow" && state === "unchanged" ? ""
+          : `[worktree] ${phrase} /repo/worktree with spaces (ensemble-workflows/worker)\n`);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
 test("CLI reports a worktree finalisation failure through the operator log", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worktree-finalisation-"));
   const script = path.join(directory, "workflow.js");
@@ -1548,6 +1593,7 @@ test("ensemble agent reports a recoverable branch carrying the worker commit", a
 
     assert.equal(exitCode, 0, stderr.text());
     assert.equal(stdout.text(), '"committed"\n');
+    assert.match(stderr.text(), /\[worktree\] committed .* \(ensemble-workflows\/[^)]+\)\n/);
     const branch = stderr.text().match(/\((ensemble-workflows\/[^)]+)\)/)?.[1];
     assert.ok(branch, stderr.text());
     const { stdout: committed } = await execFileAsync("git", ["show", `${branch}:worker-receipt.txt`], {

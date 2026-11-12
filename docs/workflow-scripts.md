@@ -223,8 +223,20 @@ input and cache-read figures once, plus every output and reasoning delta. A
 stream with no usable token data records no spend.
 
 `worktrees` lists the finished worktrees from `isolation: "worktree"` calls on
-any engine, with each one's final tip commit, whether it changed, and whether
-an unchanged worktree was removed.
+any engine. Each entry has the worktree's `path`, `branch`, and `baseCommit`,
+and a `state` saying where its work is:
+
+| `state` | Meaning |
+|---|---|
+| `"unchanged"` | No commit and no uncommitted file; the worktree and its branch were removed |
+| `"uncommitted"` | The work is only in the worktree's files (staged, unstaged, or untracked); the branch still points at `baseCommit` |
+| `"committed"` | The branch holds all of the work |
+| `"committed-and-uncommitted"` | The branch holds commits, and the worktree also has uncommitted files |
+| `"unknown"` | Clean-up failed, so nothing is claimed about the worktree's contents; it is kept |
+
+`tipCommit` is the commit the worktree ended on, or `null` when the state is
+`"unknown"`. `changed` is `true` for every state except `"unchanged"`, and
+`removed` is `true` only for `"unchanged"`.
 
 `args` is the array of positional string arguments from the command line, or
 the parsed value of `--json-args` (a JSON `null` arrives as an empty array).
@@ -395,9 +407,10 @@ When the worker finishes, an unchanged worktree and its branch are removed.
 Changed work is kept and reported, never merged automatically: committed work
 is on the reported branch, while uncommitted changes remain only in the kept
 worktree. If clean-up itself fails, the call fails, the error is reported,
-and the branch is recorded as changed and kept, since it was not proven
-unchanged. A linked worktree shares its repository's objects and refs, so
-isolation separates checkouts; it does not contain the worker.
+and the branch is kept and recorded as changed with the state `"unknown"`,
+since it was not proven unchanged. A linked worktree shares its repository's
+objects and refs, so isolation separates checkouts; it does not contain the
+worker.
 
 ## Failures
 

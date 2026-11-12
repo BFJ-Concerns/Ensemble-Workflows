@@ -1752,6 +1752,9 @@ export class EnsembleRuntime {
   ): void {
     const failure = settledFailureAccount(agentRecord);
     const diagnosis = thrown === undefined ? null : presentOperationalError(thrown);
+    // Advancing spends no answered attempt. A terminal substrate refusal
+    // also has no answer, even when no later chain entry exists.
+    const refusedTargets = advancesOf(agentRecord).length + (thrown instanceof SubstrateRefusedError ? 1 : 0);
     this.#emitEvent({
       method: `${engine}/agentFailed`,
       params: {
@@ -1760,6 +1763,8 @@ export class EnsembleRuntime {
         phase: identity.phase,
         status: agentRecord.status,
         attempts: agentRecord.attempts.length,
+        answeredAttempts: agentRecord.attempts.length - refusedTargets,
+        refusedTargets,
         targetsTried: agentRecord.fallback === null ? null : targetsTriedOf(agentRecord),
         failure: { kind: failure.kind, message: failure.message },
         diagnosis

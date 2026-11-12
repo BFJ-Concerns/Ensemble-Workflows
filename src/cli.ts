@@ -576,9 +576,12 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // last target's own failure beside how many targets were tried.
         const targetsTried = typeof event.params.targetsTried === "number" ? event.params.targetsTried : null;
         const account = diagnosis ?? `${kind}: ${message}`;
+        const answered = typeof event.params.answeredAttempts === "number" ? event.params.answeredAttempts : attempts;
+        const refused = typeof event.params.refusedTargets === "number" ? event.params.refusedTargets : 0;
+        const chainCount = `${answered} answered attempt${answered === 1 ? "" : "s"}, ${refused} refused target${refused === 1 ? "" : "s"}`;
         const outcome =
           targetsTried !== null && targetsTried > 1
-            ? `${count} across ${targetsTried} chain targets — the last target's failure: ${account}`
+            ? `${chainCount} across ${targetsTried} chain targets — the last target's failure: ${account}`
             : `${count} — ${account}`;
         stderr.write(`[${engine}] agent ${agentId}${label} failed after ${outcome}\n`);
         return;

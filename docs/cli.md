@@ -211,8 +211,9 @@ Logs and diagnostics go to stderr. These lines are written there:
 - `[<engine>] agent <id> (<label>) failed after N attempts — <cause>` — a
   workflow worker that failed, with its cause. A single `ensemble agent` run
   reports its failure in its own final diagnostic instead. When a fallback chain was used, the line
-  reads `failed after N attempts across M chain targets — the last target's
-  failure: <cause>`.
+  reads `failed after N answered attempts, R refused targets across M chain
+  targets — the last target's failure: <cause>`. Refusals that advance the
+  chain and terminal substrate refusals consume no answered attempt.
 - `[<engine>] agent <id> (<label>) answered by fallback entry <n> …` — a
   fallback entry answered. Each refused target is named with its engine,
   model, classification rule and diagnostic; quoted engine stderr is labelled

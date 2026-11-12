@@ -394,6 +394,8 @@ test("a text call's exhausted attempts resolve null with the account on the reco
             status: "failed",
             attempts: 2,
             // No chain declared, so no count of chain targets to carry.
+            answeredAttempts: 2,
+            refusedTargets: 0,
             targetsTried: null,
             failure: { kind: "empty-output", message: "agent returned empty text on attempt 2" },
             // An answered failure has no thrown error for the diagnosis

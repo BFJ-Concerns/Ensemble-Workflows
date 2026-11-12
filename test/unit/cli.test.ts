@@ -4014,7 +4014,7 @@ test("an exhausted chain's failure notice names the last target's own failure an
   assert.equal(result.stdout, '{"answer":null}\n');
   assert.equal(
     result.stderr,
-    "[claude] agent 1 (scout) failed after 2 attempts across 2 chain targets — " +
+    "[claude] agent 1 (scout) failed after 1 answered attempt, 1 refused target across 2 chain targets — " +
       "the last target's failure: claude-worker-diagnostic: API Error: Request rejected (529)\n"
   );
 });
@@ -4833,4 +4833,32 @@ test("workflow lean flags obey placement, reject inline values and pass through 
     }), 0, stderr.text());
     assert.deepEqual(JSON.parse(stdout.text()), ["--lean=true"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("chain exhaustion separates pre-spawn refusals from answered attempts", async () => {
+  for (const terminalRefuses of [false, true]) {
+    const directory = await mkdtemp("/mnt/ai-data/scratch/cli-chain-counts-");
+    try {
+      const script = path.join(directory, "workflow.js");
+      await writeFile(script, `export const meta = { name: "count-exhaustion" };
+        try { await agent("work", { engine: "codex", model: "primary", maxAttempts: 1,
+          fallback: [{ engine: "codex", model: "last" }] }); } catch {}
+        return "finished";`);
+      const stderr = new CaptureStream();
+      const engine = new ChainEngine("codex", [
+        async () => { throw new CodexSubstrateRefusedError(undefined, new Error("primary unavailable")); },
+        terminalRefuses
+          ? async () => { throw new CodexSubstrateRefusedError(undefined, new Error("last unavailable")); }
+          : async () => ({ text: "", deltaText: "", durationMs: 1, firstDeltaMs: null, items: {}, tokenUsageEvents: [] })
+      ]);
+      assert.equal(await runEnsembleCli([script], {
+        cwd: directory, stdout: new CaptureStream(), stderr, runRecordDir: null, statusDir: null,
+        createRuntime: async () => new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 })
+      }), 0, stderr.text());
+      assert.ok(stderr.text().includes(terminalRefuses
+        ? "0 answered attempts, 2 refused targets across 2 chain targets"
+        : "1 answered attempt, 1 refused target across 2 chain targets"), stderr.text());
+      assert.equal(engine.dispatches.length, 2);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
 });

@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { RunProgress, workerDisposition } from "../../src/progress.js";
+import { StatusFileWriter } from "../../src/status-file.js";
 
 import type { AdmissionView, BudgetView, DispositionEvidence, ShutdownStatus, WorkerDisposition } from "../../src/progress.js";
+import type { SnapshotOwnerEvidence } from "../../src/status-file.js";
 import type { AdmissionWaitSnapshot, EngineName } from "../../src/types.js";
 
 class StubBudget implements BudgetView {
@@ -107,7 +112,7 @@ test("queue → start → settle tracks per-engine and total counts", () => {
   assert.equal(snapshot.agents[0]?.state, "done");
 });
 
-test("documented status file schema stays in sync with progress snapshots", () => {
+test("documented status file schema stays in sync with published snapshots", async () => {
   const clock = 1_000;
   const budget = new StubBudget();
   budget.ceilings.codex = 100;
@@ -118,30 +123,43 @@ test("documented status file schema stays in sync with progress snapshots", () =
   const id = progress.queueAgent({ engine: "codex", label: "scan", phase: null });
   progress.startAgent(id);
 
-  const snapshot = progress.snapshot();
-  const section = documentedStatusSchemaSection();
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-docs-"));
+  const writer = new StatusFileWriter({ progress, dir });
+  try {
+    assert.equal(await writer.ready(), true);
+    const snapshot = JSON.parse(await readFile(writer.path, "utf8")) as ReturnType<RunProgress["snapshot"]> & { owner: SnapshotOwnerEvidence };
+    const section = documentedStatusSchemaSection();
 
-  assert.deepEqual(documentedTopLevelFields(section).sort(), sortedKeys(snapshot));
-  assert.deepEqual(documentedNestedFields(section, "totals").sort(), sortedKeys(snapshot.totals));
-  assert.deepEqual(
-    documentedNestedFields(section, "agentCeiling").filter((field) => field !== "null").sort(),
-    sortedKeys(snapshot.agentCeiling)
-  );
-  assert.deepEqual(["claude", "codex", "opencode"], sortedKeys(snapshot.engines));
-  assert.deepEqual(
-    documentedNestedFields(section, "engines")
-      .filter((field) => !["codex", "claude", "opencode"].includes(field))
-      .filter((field) => field !== "null")
-      .sort(),
-    sortedKeys(snapshot.engines.codex ?? {})
-  );
-  assert.deepEqual(
-    documentedNestedFields(section, "agents")
-      .filter((field) => !["codex", "claude", "opencode", "queued", "running", "done", "failed"].includes(field))
-      .filter((field) => field !== "null")
-      .sort(),
-    sortedKeys(snapshot.agents[0] ?? {})
-  );
+    assert.deepEqual(documentedTopLevelFields(section).sort(), sortedKeys(snapshot));
+    assert.equal(Number(documentedNestedFields(section, "schema")[0]), snapshot.schema);
+    assert.deepEqual(
+      documentedNestedFields(section, "owner").filter((field) => field !== "null").sort(),
+      sortedKeys(snapshot.owner)
+    );
+    assert.deepEqual(documentedNestedFields(section, "totals").sort(), sortedKeys(snapshot.totals));
+    assert.deepEqual(
+      documentedNestedFields(section, "agentCeiling").filter((field) => field !== "null").sort(),
+      sortedKeys(snapshot.agentCeiling)
+    );
+    assert.deepEqual(["claude", "codex", "opencode"], sortedKeys(snapshot.engines));
+    assert.deepEqual(
+      documentedNestedFields(section, "engines")
+        .filter((field) => !["codex", "claude", "opencode"].includes(field))
+        .filter((field) => field !== "null")
+        .sort(),
+      sortedKeys(snapshot.engines.codex ?? {})
+    );
+    assert.deepEqual(
+      documentedNestedFields(section, "agents")
+        .filter((field) => !["codex", "claude", "opencode", "queued", "running", "done", "failed"].includes(field))
+        .filter((field) => field !== "null")
+        .sort(),
+      sortedKeys(snapshot.agents[0] ?? {})
+    );
+  } finally {
+    await writer.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("phase is captured at queue time, with an explicit phase overriding the current one", () => {

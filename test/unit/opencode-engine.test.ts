@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import { CommandContainment } from "../../src/contained-command.js";
-import { NoWorkerScopes } from "../../src/worker-scopes.js";
+import { createWorkerScopes, NoWorkerScopes } from "../../src/worker-scopes.js";
 import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
 import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
 import { testOpenCodeModelRegistry, testOpenCodeModels } from "../fixtures/opencode/models.js";
@@ -313,17 +313,26 @@ test("a worker killed by signal leaves its exit evidence in the attempt record",
   }
 });
 
-test("an opencode subprocess stopped by its turn deadline records a timeout", async () => {
+test("an opencode subprocess stopped by its turn deadline records a timeout", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-deadline-"));
   const bin = path.join(directory, "opencode");
   const records: RuntimeAgentRecord[] = [];
-  await writeFile(bin, "#!/bin/sh\nexec sleep 2\n");
+  await writeFile(bin, "#!/bin/sh\nexec sleep infinity\n");
   await chmod(bin, 0o755);
+  const scopes = await createWorkerScopes();
+  const commands = new CommandContainment(scopes);
+  const contain = commands.contain.bind(commands);
+  let child: ChildProcess | undefined;
+  t.mock.method(commands, "contain", async (...args: Parameters<typeof contain>) => {
+    const command = await contain(...args);
+    child = command.child;
+    return command;
+  });
   const runtime = new EnsembleRuntime({
     engines: new EngineRegistry([
       new OpenCodeEngineAdapter({
         cwd: directory,
-        runner: new OpenCodeCliRunner(bin, { killGraceMs: 20 }),
+        runner: new OpenCodeCliRunner(bin, { killGraceMs: 20, commands }),
         modelRegistry: testOpenCodeModelRegistry
       })
     ]),
@@ -346,13 +355,81 @@ test("an opencode subprocess stopped by its turn deadline records a timeout", as
     assert.match(record.terminationCause.message, /50ms/);
     assert.equal(record.attempts[0]?.failure?.kind, "TurnTimeoutError");
     assert.match(record.attempts[0]?.failure?.message ?? "", /50ms/);
-    assert.deepEqual(record.attempts[0]?.workerExit, { exitCode: null, signal: "SIGTERM" });
+    // The scope's manager may need to escalate within this deliberately
+    // short grace. Recording must retain the observed exit, whichever
+    // stop signal ended the child; it must not invent SIGTERM on timeout.
+    assert.ok(child);
+    assert.equal(child.exitCode, null);
+    assert.ok(child.signalCode === "SIGTERM" || child.signalCode === "SIGKILL");
+    assert.deepEqual(record.attempts[0]?.workerExit, { exitCode: child.exitCode, signal: child.signalCode });
     assert.deepEqual(record.attempts[0]?.classification, { class: "unclassified", rule: "opencode.deadline" });
   } finally {
     await runtime.close();
+    await commands.close();
+    await scopes.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+  test(`an opencode turn deadline retains ${signal} after contained stop settles`, async (t) => {
+    const child = new ChildProcess();
+    Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
+    const commands = new CommandContainment(new NoWorkerScopes());
+    let releaseStop!: () => void;
+    const stopReleased = new Promise<void>((resolve) => { releaseStop = resolve; });
+    const stop = t.mock.fn(async () => {
+      await stopReleased;
+      child.emit("exit", null, signal);
+      child.emit("close", null, signal);
+      return { outcome: { kind: "stopped" as const }, attemptAccount: null };
+    });
+    t.mock.method(commands, "contain", async () => ({ child, reach: { kind: "scope", unit: "fixture.scope" }, stop }));
+    const records: RuntimeAgentRecord[] = [];
+    const runtime = new EnsembleRuntime({
+      engines: new EngineRegistry([new OpenCodeEngineAdapter({
+        runner: new OpenCodeCliRunner(undefined, { commands, killGraceMs: 20 }),
+        modelRegistry: testOpenCodeModelRegistry
+      })]),
+      defaultMaxAttempts: 1
+    });
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+    } as unknown as RunRecordWriter);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let settled = false;
+    try {
+      const pending = runtime.agent("outlast the deadline", {
+        engine: "opencode", model: "glm-5.2", timeoutMs: 50, maxAttempts: 1
+      }).then((result) => { settled = true; return result; });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      t.mock.timers.tick(49);
+      assert.equal(stop.mock.callCount(), 0);
+      t.mock.timers.tick(1);
+      assert.equal(stop.mock.callCount(), 1);
+      assert.deepEqual(stop.mock.calls[0]?.arguments, [{ stopGraceMs: 20, confirmMs: 3_000 }]);
+      // A deadline starts a stop; it cannot publish a terminal attempt
+      // until containment returns its observation and the child closes.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, false);
+      assert.equal(records.some((record) => record.status === "timed-out"), false);
+      releaseStop();
+      assert.equal(await pending, null);
+      const record = records.at(-1);
+      assert.equal(record?.status, "timed-out");
+      assert.equal(record.terminationCause?.kind, "turn-timeout");
+      assert.equal(record.attempts[0]?.failure?.kind, "TurnTimeoutError");
+      assert.match(record.attempts[0]?.failure?.message ?? "", /50ms/);
+      assert.deepEqual(record.attempts[0]?.workerExit, { exitCode: null, signal });
+      assert.deepEqual(record.attempts[0]?.classification, { class: "unclassified", rule: "opencode.deadline" });
+      assert.equal(stop.mock.callCount(), 1);
+    } finally {
+      releaseStop();
+      t.mock.timers.reset();
+      await runtime.close();
+    }
+  });
+}
 
 test("an opencode deadline keeps the spend and transcript the stream had already shown", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-deadline-usage-"));

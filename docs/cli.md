@@ -222,6 +222,9 @@ Logs and diagnostics go to stderr. These lines are written there:
 - `[claude] worker scope watch failed; retrying: <reason>` — an unexpected
   background roster-watch error. The watch continues across idle turns and
   retries while Ensemble owns a Claude session.
+- `[teardown] stopping workers and their commands` — emitted before waiting
+  for teardown when workers are still active or queued, including after a
+  script throw, a whole-run timeout, or an early return.
 - `[teardown] …` — the script returned while a worker it started was still
   running, or tried to end the process after returning.
 - `[teardown] the run failed to end cleanly: run-owned processes may still be running: <owner> (<reason>); …`

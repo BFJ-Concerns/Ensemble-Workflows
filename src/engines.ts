@@ -890,9 +890,10 @@ export async function createDefaultEngineRegistry(
       new OpenCodeEngineAdapter({
         cwd: options.cwd,
         ...(options.openCodeBin !== undefined ? { bin: options.openCodeBin } : {}),
-        ...(options.workerEnvironment?.opencode !== undefined
-          ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) }
-          : {}),
+        runner: new OpenCodeCliRunner(options.openCodeBin, {
+          commands: workerCommands,
+          ...(options.workerEnvironment?.opencode !== undefined ? { workerEnv: options.workerEnvironment.opencode } : {})
+        }),
         ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {}),
         ...(options.openCodeModels !== undefined || options.openCodeModelSource !== undefined
           ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels ?? [], options.openCodeModelSource) }

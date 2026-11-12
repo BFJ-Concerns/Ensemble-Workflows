@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import childProcess, { ChildProcess, execFile } from "node:child_process";
-import { syncBuiltinESMExports } from "node:module";
+import { ChildProcess, execFile } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+
+import { CommandContainment } from "../../src/contained-command.js";
+import { NoWorkerScopes } from "../../src/worker-scopes.js";
 
 import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
 import { testOpenCodeModelRegistry, testOpenCodeModels } from "../fixtures/opencode/models.js";
@@ -431,14 +433,15 @@ test("an opencode deadline keeps the engine diagnostic in the failure record", a
 test("an opencode process that exited before its streams close is not timed out", async (t) => {
   const child = new ChildProcess();
   Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
-  const spawn = t.mock.method(childProcess, "spawn", () => child);
-  const kill = t.mock.method(child, "kill", () => true);
-  syncBuiltinESMExports();
+  const commands = new CommandContainment(new NoWorkerScopes());
+  const stop = t.mock.fn(async () => ({ kind: "stopped" as const }));
+  t.mock.method(commands, "contain", async () => ({ child, reach: { kind: "scope", unit: "fixture.scope" }, stop }));
   t.mock.timers.enable({ apis: ["setTimeout"] });
   try {
-    const pending = new OpenCodeCliRunner().run({
+    const pending = new OpenCodeCliRunner(undefined, { commands }).run({
       prompt: "finish", cwd: process.cwd(), providerModel: "fixture/model", timeoutMs: 100
     });
+    await new Promise<void>((resolve) => setImmediate(resolve));
     child.emit("exit", 0, null);
     // Deterministically separate exit from close: the process has finished,
     // but a pipe is still open when the former deadline would have fired.
@@ -449,11 +452,9 @@ test("an opencode process that exited before its streams close is not timed out"
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout, "completed stream");
     assert.equal(result.deadlineExpired, false);
-    assert.equal(kill.mock.callCount(), 0);
+    assert.equal(stop.mock.callCount(), 1);
   } finally {
     t.mock.timers.reset();
-    spawn.mock.restore();
-    syncBuiltinESMExports();
   }
 });
 

@@ -228,6 +228,13 @@ before a move in the original cgroup. Run teardown stops the scopes Ensemble own
 Claude control-command scopes and the shared supervisor are outside that
 ownership.
 
+Opencode run and session-export commands each take a separate scope under
+either grouping. They enter that scope before executing, so commands they start
+inherit its ownership. An attempt can therefore stop its own commands without
+ending another worker. Without a scope, opencode uses a process group; a
+cut-short command there produces a teardown failure because descendants that
+left the group cannot be confirmed stopped.
+
 Stopping a scope ends every process in it, including one a worker started in
 a session of its own or one reparented away from the worker. Each scope gets
 SIGTERM, then SIGKILL two seconds later, and three more seconds to be seen

@@ -49,7 +49,13 @@ test("a contained command runs in its own scope from its first instruction, and 
     // what ends the pipe holder, so the engine's own wait on the streams
     // returns without waiting for the run's close.
     assert.deepEqual(await command.stop(), { kind: "stopped" });
-    assert.equal(isLive(innerPid), false, "stopped is an observation: the inner command is gone");
+    // A killed orphan can remain as zombie metadata until its new parent
+    // reaps it. kill(pid, 0) still succeeds there; it cannot execute or hold pipes.
+    const after = await readFile(`/proc/${innerPid}/stat`, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    assert.ok(after === null || after.slice(after.lastIndexOf(")") + 2).startsWith("Z "), `stopped descendant must be absent or a zombie: ${after}`);
     await closed;
 
     // The run's part: nothing is left to establish.

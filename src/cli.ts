@@ -747,6 +747,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           // returned, not that the run was interrupted. The word and the
           // occasion are chosen here, the one site that already knows the
           // body's outcome; `abandoned` stays the reaper's alone.
+          const pendingWorkers = progress?.snapshot().totals;
+          if (pendingWorkers !== undefined && pendingWorkers.active + pendingWorkers.queued > 0) {
+            stderr.write("[teardown] stopping workers and their commands\n");
+          }
           await runtime.close(
             terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus,
             terminalStatus === "complete" ? "body-returned" : "run-ended"

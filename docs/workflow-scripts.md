@@ -528,6 +528,20 @@ and keep the worker's partial text, exit status, and the engine's diagnostic
 on the attempt record. A call whose deadline should end it outright sets
 `maxAttempts: 1`.
 
+Each opencode run and session-export command starts inside its own run-owned
+systemd scope before it can start descendants. Cancellation, an attempt deadline,
+and the command's own exit stop that containment, including shell commands
+that start another session or become reparented. Stop uses SIGTERM, a two-second
+grace, then SIGKILL with three seconds to confirm the scope is empty. Output
+pipes drain for at most one further second after the stop attempt; a descendant
+holding a pipe cannot indefinitely delay the run's teardown report.
+
+Without a reachable user manager, or when scope placement is refused, the
+command runs in its own process group. A process that leaves that group is
+outside Ensemble's reach. Cutting a command short there makes teardown fail
+explicitly: stderr and the completion sentinel's `teardown_error` name the
+unconfirmed command, even if its original process group has ended.
+
 An opencode subprocess stopped by its per-attempt deadline records a turn
 timeout, retaining its engine diagnostic, streamed usage, transcript, and
 subprocess exit signal on the attempt. The execution deadline stops when the

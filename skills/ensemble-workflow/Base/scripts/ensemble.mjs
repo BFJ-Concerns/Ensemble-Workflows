@@ -22876,16 +22876,17 @@ var ClaudeStripPreparer = class {
 };
 
 // src/opencode-engine.ts
-import { spawn as spawn4 } from "node:child_process";
 import { randomUUID as randomUUID6 } from "node:crypto";
 var OpenCodeCliRunner = class {
   #bin;
   #killGraceMs;
   #env;
+  #commands;
   constructor(bin = "opencode", options = {}) {
     this.#bin = bin;
-    this.#killGraceMs = options.killGraceMs ?? 5e3;
+    this.#killGraceMs = options.killGraceMs ?? DEFAULT_STOP_BOUNDS.stopGraceMs;
     this.#env = launchEnvironment("opencode", options.workerEnv);
+    this.#commands = options.commands;
   }
   async run(options) {
     const args = [
@@ -22909,6 +22910,7 @@ var OpenCodeCliRunner = class {
       args,
       options.cwd,
       this.#env,
+      this.#commands,
       options.timeoutMs,
       this.#killGraceMs,
       options.signal,
@@ -22917,7 +22919,7 @@ var OpenCodeCliRunner = class {
     );
   }
   async exportSession(sessionId, cwd, signal) {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, 3e4, this.#killGraceMs, signal);
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, this.#commands, 3e4, this.#killGraceMs, signal);
     if (result.exitCode !== 0) {
       return {
         status: "command-failed",
@@ -23209,44 +23211,91 @@ var OpenCodeEngineInvocation = class {
     return lines.join("\n");
   }
 };
-function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abortSignal, onFirstData, onData) {
-  return new Promise((resolve, reject) => {
-    const startedAt = Date.now();
-    const child = spawn4(command, args, {
+async function runProcess(file, args, cwd, env, commands, timeoutMs, killGraceMs, abortSignal, onFirstData, onData) {
+  const startedAt = Date.now();
+  if (abortSignal?.aborted) {
+    return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
+  }
+  const scopes = commands === void 0 ? await createWorkerScopes() : void 0;
+  const containment = commands ?? new CommandContainment(scopes);
+  try {
+    const command = await containment.contain(`opencode ${args[0]}`, file, args, {
       cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"]
     });
+    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData);
+  } finally {
+    if (scopes !== void 0) {
+      try {
+        await containment.close();
+      } finally {
+        await scopes.close();
+      }
+    }
+  }
+}
+function collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData) {
+  return new Promise((resolve, reject) => {
+    const child = command.child;
     const stdout = [];
     const stderr = [];
     let settled = false;
     let exited = false;
+    let closed = false;
+    let stopped = false;
     let deadlineExpired = false;
-    let killEscalation;
-    const terminate = () => {
-      if (settled || exited || killEscalation !== void 0) {
-        return;
+    let stopping;
+    let drainTimer;
+    let processError;
+    let exitCode = null;
+    let exitSignal = null;
+    const settle = () => {
+      if (settled || !stopped || !closed) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(drainTimer);
+      abortSignal?.removeEventListener("abort", terminate);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref();
+      if (processError !== void 0) {
+        reject(processError);
+      } else {
+        resolve({
+          exitCode,
+          signal: exitSignal,
+          stdout: stdout.join(""),
+          stderr: stderr.join(""),
+          durationMs: Date.now() - startedAt,
+          deadlineExpired
+        });
       }
-      child.kill("SIGTERM");
-      killEscalation = setTimeout(() => {
-        child.kill("SIGKILL");
-      }, killGraceMs);
-      killEscalation.unref();
+    };
+    const stop = () => {
+      stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then(() => {
+        stopped = true;
+        if (!closed) {
+          drainTimer = setTimeout(() => {
+            closed = true;
+            settle();
+          }, 1e3);
+        }
+        settle();
+      });
+    };
+    const terminate = () => {
+      if (!settled) stop();
     };
     const timeout = timeoutMs === void 0 ? void 0 : setTimeout(() => {
       if (!settled && !exited) {
         deadlineExpired = true;
-        terminate();
+        stop();
       }
     }, timeoutMs);
-    if (abortSignal?.aborted === true) {
-      terminate();
-    } else {
-      abortSignal?.addEventListener("abort", terminate, { once: true });
-    }
     let firstDataSeen = false;
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
       if (!firstDataSeen) {
         firstDataSeen = true;
         try {
@@ -23260,40 +23309,30 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
       }
       stdout.push(chunk);
     });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
+      processError = error;
       clearTimeout(timeout);
-      clearTimeout(killEscalation);
-      abortSignal?.removeEventListener("abort", terminate);
-      reject(error);
+      stop();
     });
-    child.on("exit", () => {
+    child.on("exit", (code, signal) => {
       exited = true;
+      exitCode = code;
+      exitSignal = signal;
       clearTimeout(timeout);
-      clearTimeout(killEscalation);
+      stop();
     });
-    child.on("close", (exitCode, signal) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
+    child.on("close", (code, signal) => {
+      closed = true;
+      exitCode = code;
+      exitSignal = signal;
       clearTimeout(timeout);
-      clearTimeout(killEscalation);
-      abortSignal?.removeEventListener("abort", terminate);
-      resolve({
-        exitCode,
-        signal,
-        stdout: stdout.join(""),
-        stderr: stderr.join(""),
-        durationMs: Date.now() - startedAt,
-        deadlineExpired
-      });
+      stop();
+      settle();
     });
+    abortSignal?.addEventListener("abort", terminate, { once: true });
+    if (abortSignal?.aborted) terminate();
   });
 }
 function parseRunEvents(stdout) {
@@ -24500,7 +24539,10 @@ async function createDefaultEngineRegistry(options) {
       new OpenCodeEngineAdapter({
         cwd: options.cwd,
         ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
-        ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
+        runner: new OpenCodeCliRunner(options.openCodeBin, {
+          commands: workerCommands,
+          ...options.workerEnvironment?.opencode !== void 0 ? { workerEnv: options.workerEnvironment.opencode } : {}
+        }),
         ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
         ...options.openCodeModels !== void 0 || options.openCodeModelSource !== void 0 ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels ?? [], options.openCodeModelSource) } : {},
         onEvent: options.onOpenCodeEvent
@@ -34245,6 +34287,10 @@ async function runEnsembleCli(argv, options = {}) {
         progress?.finish();
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
+          const pendingWorkers = progress?.snapshot().totals;
+          if (pendingWorkers !== void 0 && pendingWorkers.active + pendingWorkers.queued > 0) {
+            stderr.write("[teardown] stopping workers and their commands\n");
+          }
           await runtime.close(
             terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus,
             terminalStatus === "complete" ? "body-returned" : "run-ended"

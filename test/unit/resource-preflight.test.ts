@@ -20,6 +20,8 @@ import {
   type ResourceRequirement
 } from "../../src/resource-preflight.js";
 
+import { declaredDirectory, readSetting } from "../../src/resource-location.js";
+
 import { NoWorkerScopes } from "../../src/worker-scopes.js";
 
 import type { EngineName } from "../../src/types.js";
@@ -100,16 +102,49 @@ test("a refusal names the resource, its owner, its source and the error, and cla
   await withDirectory(async (dir) => {
     await writeFile(path.join(dir, "file"), "");
     const store = path.join(dir, "file", "store");
-    const refusal = await judgeResources([requirement({ path: store, resolvedFrom: "ENSEMBLE_RUN_RECORD_DIR" })], {}).then(
+    const refusal = await judgeResources([requirement({ path: store, location: declaredDirectory(readSetting("ENSEMBLE_RUN_RECORD_DIR", store, dir)).location })], {}).then(
       () => assert.fail("expected a refusal"),
       (error: unknown) => error
     );
     assert.ok(refusal instanceof ResourcePreflightRefusedError);
     assert.equal(refusal.sandbox, null);
     assert.match(refusal.message, new RegExp(`cannot create entries in ${store}`));
-    assert.match(refusal.message, /the launcher's test store \(from ENSEMBLE_RUN_RECORD_DIR\): ENOTDIR/);
-    assert.match(refusal.message, /no sandbox around the launching process was identified/);
+    assert.match(refusal.message, /the launcher's test store \(from ENSEMBLE_RUN_RECORD_DIR=.*\): ENOTDIR/);
+    assert.doesNotMatch(refusal.message, /sandbox/);
+    assert.match(refusal.message, /set ENSEMBLE_RUN_RECORD_DIR to a writable directory/);
   });
+});
+
+test("refusals retain relative worker, launcher and default readings and name effective remedies", () => {
+  const cases = [
+    { engine: "codex", declared: { CODEX_HOME: "codex" }, launcher: {}, role: "Codex home", value: 'CODEX_HOME="codex"; relative to /placed', remedy: "CODEX_HOME" },
+    { engine: "opencode", declared: { XDG_DATA_HOME: "data" }, launcher: {}, role: "opencode data", value: 'XDG_DATA_HOME="data"; relative to /placed', remedy: "XDG_DATA_HOME" },
+    { engine: "opencode", declared: { HOME: "home" }, launcher: {}, role: "opencode configuration", value: 'HOME="home"; relative to /placed', remedy: "XDG_CONFIG_HOME" },
+    { engine: "claude", declared: { CLAUDE_CONFIG_DIR: ".claude-relative" }, launcher: {}, role: "Claude home", value: `CLAUDE_CONFIG_DIR=".claude-relative"; relative to ${process.cwd()}`, remedy: "CLAUDE_CONFIG_DIR" },
+    { engine: "claude", declared: { CLAUDE_CODE_TMPDIR: "scratch" }, launcher: {}, role: "Claude scratch files", value: 'CLAUDE_CODE_TMPDIR="scratch"; relative to /placed', remedy: "CLAUDE_CODE_TMPDIR" },
+    { engine: "claude", declared: { TMPDIR: "worker-tmp" }, launcher: { TMPDIR: "launcher-tmp" }, role: "dispatch settings scratch files", value: `launcher TMPDIR="launcher-tmp"; relative to ${process.cwd()}`, remedy: "launcher TMPDIR" },
+    { engine: "claude", declared: { TMUX_TMPDIR: "worker-valve" }, launcher: { TMUX_TMPDIR: "launcher-valve" }, role: "reply valve sockets", value: `launcher TMUX_TMPDIR="launcher-valve"; relative to ${process.cwd()}`, remedy: "launcher TMUX_TMPDIR" }
+  ] as const;
+  for (const example of cases) {
+    const resource = engineResourceRequirements(example.engine, example.declared, "/placed", example.launcher).find((r) => r.role === example.role)!;
+    const refusal = new ResourcePreflightRefusedError([{ requirement: resource, probedPath: resource.path, code: "EACCES", message: "denied" }], null);
+    assert.ok(refusal.message.includes(example.value), refusal.message);
+    assert.ok(refusal.message.includes(`set ${example.remedy} to ${resource.access === "bind-socket" ? "a directory where Unix socket binding is permitted" : "a writable directory"}`), refusal.message);
+    assert.doesNotMatch(refusal.message, /sandbox/);
+    if (example.role === "Claude home") assert.equal(resource.path, path.resolve(".claude-relative"));
+  }
+});
+
+test("fixed sockets offer access advice, and an identified sandbox adds its remedy", () => {
+  const resource = engineResourceRequirements("claude", { HOME: "/home/worker" }, "/placed", {}).find((r) => r.role === "daemon sockets")!;
+  const denial = { requirement: resource, probedPath: resource.path, code: "EPERM", message: "denied" };
+  const plain = new ResourcePreflightRefusedError([denial], null).message;
+  assert.match(plain, /grant the launching process access to bind a socket under this directory; no setting moves it/);
+  assert.doesNotMatch(plain, /set .* to|sandbox/);
+  const sandbox = diagnoseCallerSandbox({ CODEX_NETWORK_PROXY_ACTIVE: "1" }, [denial]);
+  const identified = new ResourcePreflightRefusedError([denial], sandbox).message;
+  assert.match(identified, /inside the Codex sandbox/);
+  assert.match(identified, /danger-full-access/);
 });
 
 test("a caller sandbox is named only by a rule whose evidence matches", () => {

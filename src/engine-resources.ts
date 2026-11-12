@@ -3,9 +3,9 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { launchEnvironment, writtenEnvironment } from "./engine-environment.js";
-import { declaredDirectory, defaultDirectory, readSetting } from "./resource-location.js";
+import { declaredDirectory, defaultDirectory, fixedDirectory, readSetting } from "./resource-location.js";
 
-import type { SettingReading } from "./resource-location.js";
+import type { LocatedDirectory, SettingReading } from "./resource-location.js";
 import type { ResourceRequirement } from "./resource-preflight.js";
 import type { EngineName } from "./types.js";
 
@@ -80,19 +80,27 @@ export function claudeResources(env: EngineResourceEnvironment): ResourceRequire
   const uid = process.getuid?.() ?? 0;
   const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path.join(env.worker.PREFIX, "tmp") : "/tmp";
   const daemon = path.join(daemonRoot, `cc-daemon-${uid}`, createHash("sha256").update(config).digest("hex").slice(0, 8));
-  const configFrom = env.worker.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "default: $HOME/.claude";
-  const scratch = temporaryDirectory(env.launcher, process.cwd());
-  const valve = claudeValveDirectory(env.launcher);
-  const workerScratch = env.worker.CLAUDE_CODE_TMPDIR
-    ? { path: path.resolve(env.cwd, env.worker.CLAUDE_CODE_TMPDIR), from: "CLAUDE_CODE_TMPDIR" }
-    : temporaryDirectory(env.worker, env.cwd);
+  const homeLocation = env.written.CLAUDE_CONFIG_DIR
+    ? declaredDirectory(readSetting("CLAUDE_CONFIG_DIR", env.written.CLAUDE_CONFIG_DIR, process.cwd())).location
+    : defaultDirectory({ rule: "$HOME/.claude", movedBy: "CLAUDE_CONFIG_DIR" }, homeRoot(env.written, env.cwd), ".claude").location;
+  const home = { path: config, location: homeLocation };
+  const global = env.written.CLAUDE_CONFIG_DIR
+    ? home
+    : defaultDirectory({ rule: "$HOME (.claude.json)", movedBy: "CLAUDE_CONFIG_DIR" }, homeRoot(env.written, env.cwd));
+  const scratch = temporaryLocation(env.launcher, process.cwd(), "launcher ");
+  const valve = env.launcher.TMUX_TMPDIR
+    ? declaredDirectory(readSetting("launcher TMUX_TMPDIR", env.launcher.TMUX_TMPDIR, process.cwd()))
+    : defaultDirectory({ rule: "/tmp", movedBy: "launcher TMUX_TMPDIR" }, "/tmp");
+  const workerScratch = env.written.CLAUDE_CODE_TMPDIR
+    ? declaredDirectory(readSetting("CLAUDE_CODE_TMPDIR", env.written.CLAUDE_CODE_TMPDIR, env.cwd), `claude-${uid}`)
+    : temporaryLocation(env.written, env.cwd, "", `claude-${uid}`);
   return [
-    { owner: "claude", role: "Claude home", path: config, access: "create-entries", resolvedFrom: configFrom },
-    { owner: "claude", role: "Claude global configuration", path: env.worker.CLAUDE_CONFIG_DIR ? config : path.resolve(env.cwd, homeOf(env.worker)), access: "create-entries", resolvedFrom: env.worker.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "HOME (.claude.json)" },
-    { owner: "claude", role: "daemon sockets", path: daemon, access: "bind-socket", resolvedFrom: `${configFrom}; daemon default: ${daemonRoot}/cc-daemon-<uid>/<config hash>` },
-    { owner: "claude", role: "dispatch settings scratch files", path: scratch.path, access: "create-entries", resolvedFrom: `launcher ${scratch.from}` },
-    { owner: "claude", role: "reply valve sockets", path: valve, access: "bind-socket", resolvedFrom: env.launcher.TMUX_TMPDIR ? "launcher TMUX_TMPDIR" : "launcher default: /tmp" },
-    { owner: "claude", role: "Claude scratch files", path: path.join(workerScratch.path, `claude-${uid}`), access: "create-entries", resolvedFrom: workerScratch.from }
+    { owner: "claude", role: "Claude home", access: "create-entries", ...home },
+    { owner: "claude", role: "Claude global configuration", access: "create-entries", ...global },
+    { owner: "claude", role: "daemon sockets", access: "bind-socket", ...fixedDirectory(`${daemonRoot}/cc-daemon-<uid>/<config hash>`, daemon) },
+    { owner: "claude", role: "dispatch settings scratch files", access: "create-entries", ...scratch },
+    { owner: "claude", role: "reply valve sockets", access: "bind-socket", ...valve },
+    { owner: "claude", role: "Claude scratch files", access: "create-entries", ...workerScratch }
   ];
 }
 
@@ -104,14 +112,14 @@ export function openCodeResources(env: EngineResourceEnvironment): ResourceRequi
     ["XDG_STATE_HOME", ".local/state", "state"],
     ["XDG_CACHE_HOME", ".cache", "cache"]
   ] as const;
-  const scratch = temporaryDirectory(env.worker, env.cwd);
   return [
     ...homes.map(([key, fallback, role]): ResourceRequirement => ({
       owner: "opencode", role: `opencode ${role}`, access: "create-entries",
-      path: path.resolve(env.cwd, env.worker[key] || path.join(homeOf(env.worker), fallback), "opencode"),
-      resolvedFrom: env.worker[key] ? key : `default: $HOME/${fallback}`
+      ...(env.written[key]
+        ? declaredDirectory(readSetting(key, env.written[key], env.cwd), "opencode")
+        : defaultDirectory({ rule: `$HOME/${fallback}`, movedBy: key }, homeRoot(env.written, env.cwd), fallback, "opencode"))
     })),
-    { owner: "opencode", role: "opencode scratch files", path: path.join(scratch.path, "opencode"), access: "create-entries", resolvedFrom: scratch.from }
+    { owner: "opencode", role: "opencode scratch files", access: "create-entries", ...temporaryLocation(env.written, env.cwd, "", "opencode") }
   ];
 }
 
@@ -126,11 +134,15 @@ export function claudeValveDirectory(env: NodeJS.ProcessEnv): string {
 }
 
 /** Node's Unix tmpdir selection; relative declarations resolve where the process starts. */
-export function temporaryDirectory(env: NodeJS.ProcessEnv, cwd: string): { path: string; from: string } {
+export function temporaryDirectory(env: NodeJS.ProcessEnv, cwd: string): LocatedDirectory {
+  return temporaryLocation(env, cwd);
+}
+
+function temporaryLocation(env: NodeJS.ProcessEnv, cwd: string, qualifier = "", ...below: string[]): LocatedDirectory {
   for (const key of ["TMPDIR", "TMP", "TEMP"]) {
-    if (env[key]) return { path: path.resolve(cwd, env[key]), from: key };
+    if (env[key]) return declaredDirectory(readSetting(`${qualifier}${key}`, env[key], cwd), ...below);
   }
-  return { path: "/tmp", from: "default: /tmp" };
+  return defaultDirectory({ rule: "/tmp", movedBy: `${qualifier}TMPDIR` }, "/tmp", ...below);
 }
 
 /** One resolver per engine: a new engine cannot be added without declaring what it needs. */

@@ -3,6 +3,9 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 
+import { settingToChange } from "./resource-location.js";
+import type { ResourceLocation, SettingReading } from "./resource-location.js";
+
 import { SubstrateRefusedError } from "./errors.js";
 
 import type { LocatedDirectory } from "./resource-location.js";
@@ -105,7 +108,7 @@ export interface CallerSandboxRule {
  * The sandboxes the preflight can name, first match winning. Each rule
  * rests on measured evidence of what that sandbox leaves in its children's
  * environment. Where no rule matches, the refusal names the denied
- * resources and says that no sandbox was identified, rather than guessing.
+ * resources without mentioning a sandbox.
  */
 export const CALLER_SANDBOX_RULES: readonly CallerSandboxRule[] = [
   {
@@ -157,13 +160,29 @@ function refusalMessage(denials: readonly ResourceDenial[], sandbox: CallerSandb
     const verb = requirement.access === "bind-socket" ? "bind a socket under" : "create entries in";
     const where = denial.probedPath === requirement.path ? "" : ` (probed at ${denial.probedPath})`;
     const who = requirement.owner === "launcher" ? "the launcher" : `the ${requirement.owner} engine`;
-    return `cannot ${verb} ${requirement.path}${where}, ${who}'s ${requirement.role} (from ${requirement.resolvedFrom}): ${denial.code}`;
+    const setting = settingToChange(requirement.location);
+    const access = requirement.access === "bind-socket" ? "a directory where Unix socket binding is permitted" : "a writable directory";
+    const remedy = setting === null
+      ? `grant the launching process access to ${verb} this directory; no setting moves it`
+      : `set ${setting} to ${access}, or grant the launching process access to ${verb} this directory`;
+    return `cannot ${verb} ${requirement.path}${where}, ${who}'s ${requirement.role} (${describeLocation(requirement.location)}): ${denial.code}; ${remedy}`;
   });
-  const cause =
-    sandbox === null
-      ? "no sandbox around the launching process was identified; grant it this access, or move the path by the setting named"
-      : `the launching process runs inside the ${sandbox.name} sandbox (${sandbox.evidence}), and access was denied; ${sandbox.lift}`;
-  return `${denied.join("; ")} — ${cause}`;
+  const cause = sandbox === null
+    ? ""
+    : ` — the launching process runs inside the ${sandbox.name} sandbox (${sandbox.evidence}), and access was denied; ${sandbox.lift}`;
+  return `${denied.join("; ")}${cause}`;
+}
+
+function describeLocation(location: ResourceLocation): string {
+  switch (location.kind) {
+    case "declared": return `from ${describeReading(location.reading)}`;
+    case "default": return `default: ${location.rule}${location.from === null ? "" : `; from ${describeReading(location.from)}`}`;
+    case "fixed": return `fixed: ${location.rule}`;
+  }
+}
+
+function describeReading(reading: SettingReading): string {
+  return `${reading.setting}=${JSON.stringify(reading.value)}${reading.resolvedAgainst === null ? "" : `; relative to ${reading.resolvedAgainst}`}`;
 }
 
 /** Probe every requirement concurrently; the denials, in requirement order. */

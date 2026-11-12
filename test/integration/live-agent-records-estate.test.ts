@@ -11,6 +11,40 @@ const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs"
 const fixture = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 const consumer = path.resolve("test/consumers/read-live-agent-records.mjs");
 
+test("the live reader discovers archives without entering resource-probe directories", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-reader-discovery-"));
+  try {
+    const store = path.join(directory, "records");
+    const archive = path.join(store, "runs", "cwd", "namespace", "run");
+    const agentDirectory = path.join(archive, "agents", "000001");
+    const probe = path.join(store, ".ensemble-probe-fixture");
+    await mkdir(agentDirectory, { recursive: true });
+    await mkdir(probe);
+    // A probe is outside the archive tree even when its contents resemble
+    // an archive. Parsing this file proves the reader crossed that boundary.
+    await writeFile(path.join(probe, "manifest.json"), "not an archive");
+    const keys: string[] = JSON.parse(await readFile(path.resolve("test/fixtures/run-record/v6-agent-keys.json"), "utf8"));
+    await writeFile(path.join(agentDirectory, "agent.json"), JSON.stringify({
+      ...Object.fromEntries(keys.map((key) => [key, null])),
+      id: 1, label: "settled", status: "complete", attempts: [], session: null
+    }));
+    await writeFile(path.join(archive, "manifest.json"), JSON.stringify({ status: "complete", files: [] }));
+    const result = await runNode([consumer, store, "1"], {}, 10_000);
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), [{
+      id: 1, label: "settled", queued: false, attempts: [], session: null
+    }]);
+
+    // Errors inside an actual archive must still fail the independent read.
+    await writeFile(path.join(archive, "manifest.json"), "not an archive");
+    const invalid = await runNode([consumer, store, "1"], {}, 10_000);
+    assert.notEqual(invalid.code, 0);
+    assert.match(invalid.stderr, /SyntaxError/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("an independent reader follows queued, retried and held workers through the built CLI archive", { timeout: 60_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-records-estate-"));
   const processes: Array<Promise<unknown>> = [];
@@ -116,7 +150,7 @@ test("a failed live observation stops and reaps its reader with an incomplete ar
   const acknowledgements = path.join(directory, "observed");
   let reader: ReturnType<typeof runNode> | undefined;
   try {
-    const archive = path.join(directory, "records", "run");
+    const archive = path.join(directory, "records", "runs", "cwd", "namespace", "run");
     const agent = path.join(archive, "agents", "000001");
     await mkdir(agent, { recursive: true });
     await writeFile(acknowledgements, "");

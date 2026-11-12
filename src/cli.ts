@@ -328,7 +328,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   // stdout, no sentinel, no archive. Every ending after it is a run ending.
   let prepared: PreparedRun;
   try {
-    prepared = await prepareRun(invocation, cwd);
+    prepared = await prepareRun(invocation, cwd, program);
     await judgeResources(launcherResourceRequirements(configuredRecordDir, options.runRecordDir !== undefined, ambientSettings, env), env);
   } catch (error) {
     stderr.write(`${presentOperationalError(error) ?? formatError(error)}\n`);
@@ -985,7 +985,7 @@ interface PreparedRun {
   recordArgs: unknown;
 }
 
-async function prepareRun(invocation: ParsedInvocation, cwd: string): Promise<PreparedRun> {
+async function prepareRun(invocation: ParsedInvocation, cwd: string, program: string): Promise<PreparedRun> {
   if (invocation.kind === "agent") {
     // The direct agent's own pre-run check, judged before any run artefact
     // exists: the runtime would reject the same path at agent(), but by
@@ -1000,7 +1000,7 @@ async function prepareRun(invocation: ParsedInvocation, cwd: string): Promise<Pr
         isDirectory = false;
       }
       if (!isDirectory) {
-        throw new CliUsageError(`--cwd must name an existing directory; got ${requestedCwd}`);
+        throw new CliUsageError(`${program} agent: --cwd must name an existing directory; got ${requestedCwd}; choose an existing directory or omit --cwd`);
       }
     }
     return {
@@ -1420,6 +1420,16 @@ const WORKFLOW_TUNING_OPTIONS = {
 } as const;
 
 async function parseWorkflowInvocation(argv: string[], cwd: string, program: string): Promise<ParsedWorkflowInvocation> {
+  // A real workflow named run is valid; only diagnose the guessed verb
+  // when that path does not exist. The terminator bypasses this hint.
+  if (argv[0] === "run") {
+    try {
+      await stat(path.resolve(cwd, "run"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      throw new CliUsageError(`${program}: "run" was taken as the script path; there is no run subcommand. Use: ${program} [run options] <script.js> [args...]`);
+    }
+  }
   const split = splitTuningFlags(argv, program);
   rejectDuplicateScalarFlags(split.tuningArgs);
   let parsed;
@@ -1497,7 +1507,14 @@ async function parseAgentInvocation(
     const unknown = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION"
       ? unknownAgentOption(argv)
       : undefined;
-    throw new CliUsageError(unknown === undefined ? message : `${program} agent: ${unknownAgentOptionMessage(unknown)}`);
+    const missing = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+      ? missingAgentOptionValue(argv)
+      : undefined;
+    throw new CliUsageError(unknown !== undefined
+      ? `${program} agent: ${unknownAgentOptionMessage(unknown)}`
+      : missing !== undefined
+        ? `${program} agent: ${missing} requires a value; put a value immediately after ${missing}, or omit the option`
+        : message);
   }
 
   if (parsed.positionals.length > 1) {
@@ -1568,6 +1585,19 @@ async function parseAgentInvocation(
   };
 }
 
+function missingAgentOptionValue(argv: string[]): string | undefined {
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]!;
+    if (argument === "--") return undefined;
+    if (isKnownAgentOption(argument) && !isBooleanAgentFlag(argument)) {
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("-")) return argument;
+      index += 1;
+    }
+  }
+  return undefined;
+}
+
 /** Read the option from tokens: diagnostic punctuation can occur inside the argument itself. */
 function unknownAgentOption(argv: string[]): string | undefined {
   try {
@@ -1588,16 +1618,33 @@ function unknownAgentOption(argv: string[]): string | undefined {
 
 /** Keep option hints stable across Node versions and quote the positional example completely. */
 function unknownAgentOptionMessage(option: string): string {
+  const suggestion = suggestedOption(option);
+  if (suggestion !== undefined) {
+    return `Unknown option ${JSON.stringify(option)}. Did you mean ${JSON.stringify(suggestion)}?`;
+  }
+  return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${quoteShellArgument(option)}`;
+}
+
+function suggestedOption(option: string, names = Object.keys(AGENT_INVOCATION_OPTIONS)): string | undefined {
   const name = option.split("=", 1)[0]!;
-  const candidates = Object.keys(AGENT_INVOCATION_OPTIONS)
+  const candidates = names
     .map((key) => ({ flag: `--${key}`, distance: optionDistance(name, `--${key}`) }))
     .filter(({ distance }) => distance <= 2)
     .sort((left, right) => left.distance - right.distance || left.flag.localeCompare(right.flag));
   const best = candidates[0];
-  if (best !== undefined && (candidates[1] === undefined || best.distance < candidates[1].distance)) {
-    return `Unknown option ${JSON.stringify(option)}. Did you mean ${JSON.stringify(best.flag)}?`;
-  }
-  return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${quoteShellArgument(option)}`;
+  return best !== undefined && (candidates[1] === undefined || best.distance < candidates[1].distance)
+    ? best.flag : undefined;
+}
+
+function workflowOptionMessage(option: string, program: string): string {
+  const name = option.split("=", 1)[0]!;
+  const known = isKnownAgentOption(name);
+  const suggestion = known ? name : suggestedOption(option, [...new Set([...Object.keys(AGENT_INVOCATION_OPTIONS), ...Object.keys(WORKFLOW_TUNING_OPTIONS)])]);
+  const hint = !known && suggestion !== undefined ? ` Did you mean ${JSON.stringify(suggestion)}?` : "";
+  const placement = suggestion !== undefined && !Object.hasOwn(WORKFLOW_TUNING_OPTIONS, suggestion.slice(2))
+    ? ` ${suggestion} belongs to ${program} agent; set script models and other worker options in agent() calls.`
+    : "";
+  return `${known ? "Option" : "Unknown option before script path:"} ${option}${hint || placement ? "." : ""}${hint}${placement}`;
 }
 
 function optionDistance(left: string, right: string): number {
@@ -1669,7 +1716,7 @@ function splitTuningFlags(
     }
 
     if (value === "agent" && tuningArgs.length > 0) {
-      throw new CliUsageError(`Tuning flags must appear after ${program} agent, not before it`);
+      throw new CliUsageError(`${program}: Run option ${tuningArgs[0]} must come after agent: ${program} agent ${tuningArgs.join(" ")} --engine <engine> <prompt>`);
     }
 
     if (isKnownInlineOption(value) || isBooleanTuningOption(value)) {
@@ -1688,7 +1735,7 @@ function splitTuningFlags(
     }
 
     if (value.startsWith("-")) {
-      throw new CliUsageError(`${program}: Unknown option before script path: ${value}`);
+      throw new CliUsageError(`${program}: ${workflowOptionMessage(value, program)}`);
     }
 
     const scriptArgs = argv.slice(index + 1);
@@ -1697,7 +1744,7 @@ function splitTuningFlags(
     );
     if (misplacedTuningFlag !== undefined) {
       throw new CliUsageError(
-        `Tuning flag ${misplacedTuningFlag} appears after the script path; put tuning flags before the script, or put \`--\` before the script path to pass it through`
+        `${program}: Run option ${misplacedTuningFlag} appears after the script path; put run options before the script, or put \`--\` before the script path to pass it through`
       );
     }
 

@@ -212,8 +212,12 @@ Logs and diagnostics go to stderr. These lines are written there:
   output failure, left declared entries untried. The line names the failure's
   class and matching rule, if any; only availability failures advance the chain.
 - `[codex] app-server (pid <pid>) scope placement refused: <reason>` — the
-  app-server could not be moved; its threads still dispatch, with the refusal
-  also available through `codex/workerScopePlacement` runtime events.
+  app-server could not be moved into its scope. Placement is best-effort: a
+  live app-server can still dispatch threads, but the process may have exited
+  before or during placement, as the reason states. The notice does not
+  establish app-server health; startup or worker failures are reported
+  separately. The refusal is also available through
+  `codex/workerScopePlacement` runtime events.
 - `[claude] worker <name> (pid <pid>) scope placement refused; retrying: <reason>`
   — the worker could not be moved into its scope. Ensemble retries within the
   registration window and on later roster polls; repeated identical refusals

@@ -613,15 +613,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       }
       const worktreePath = typeof event.params.path === "string" ? event.params.path : "<unknown>";
       const branch = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
-      if (invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree") {
-        const outcome = event.params.changed === true ? "changed" : "unchanged and removed";
-        stderr.write(`[worktree] ${outcome} ${worktreePath} (${branch})\n`);
+      const reportUnchanged = invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree";
+      if (!reportUnchanged && event.params.changed !== true) {
         return;
       }
-      if (event.params.changed !== true) {
-        return;
-      }
-      stderr.write(`[worktree] changed ${worktreePath} (${branch})\n`);
+      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${branch})\n`);
     });
     const runnerOptions = {
       source: prepared.source,
@@ -2204,6 +2200,16 @@ function wrapTokens(lead: string, tokens: readonly string[], indent: string, sep
   });
   lines.push(line);
   return lines;
+}
+
+function worktreeStatePhrase(state: unknown): string {
+  switch (state) {
+    case "unchanged": return "unchanged and removed";
+    case "uncommitted": return "uncommitted";
+    case "committed": return "committed";
+    case "committed-and-uncommitted": return "committed with uncommitted edits";
+    default: return "state unknown";
+  }
 }
 
 function serialiseResult(result: unknown): string {

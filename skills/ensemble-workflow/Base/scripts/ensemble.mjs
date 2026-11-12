@@ -33888,16 +33888,11 @@ async function runEnsembleCli(argv, options = {}) {
       }
       const worktreePath = typeof event.params.path === "string" ? event.params.path : "<unknown>";
       const branch = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
-      if (invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree") {
-        const outcome = event.params.changed === true ? "changed" : "unchanged and removed";
-        stderr.write(`[worktree] ${outcome} ${worktreePath} (${branch})
-`);
+      const reportUnchanged = invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree";
+      if (!reportUnchanged && event.params.changed !== true) {
         return;
       }
-      if (event.params.changed !== true) {
-        return;
-      }
-      stderr.write(`[worktree] changed ${worktreePath} (${branch})
+      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${branch})
 `);
     });
     const runnerOptions = {
@@ -34986,6 +34981,20 @@ function wrapTokens(lead, tokens, indent, separator) {
   });
   lines.push(line);
   return lines;
+}
+function worktreeStatePhrase(state) {
+  switch (state) {
+    case "unchanged":
+      return "unchanged and removed";
+    case "uncommitted":
+      return "uncommitted";
+    case "committed":
+      return "committed";
+    case "committed-and-uncommitted":
+      return "committed with uncommitted edits";
+    default:
+      return "state unknown";
+  }
 }
 function serialiseResult(result) {
   try {

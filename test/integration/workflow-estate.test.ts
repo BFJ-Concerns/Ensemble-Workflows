@@ -1415,6 +1415,7 @@ test("CLI workflow exposes changed isolated worktrees and removes the clean one"
           worktrees: worktrees.map((worktree) => ({
             path: worktree.path,
             branch: worktree.branch,
+            state: worktree.state,
             changed: worktree.changed,
             removed: worktree.removed
           }))
@@ -1433,7 +1434,7 @@ test("CLI workflow exposes changed isolated worktrees and removes the clean one"
     const result = JSON.parse(stdout) as {
       clean: string;
       writes: string[];
-      worktrees: Array<{ path: string; branch: string; changed: boolean; removed: boolean }>;
+      worktrees: Array<{ path: string; branch: string; state: string; changed: boolean; removed: boolean }>;
     };
     assert.equal(result.clean, "clean-ok");
     assert.deepEqual(result.writes.sort(), ["a-ok", "b-ok"]);
@@ -1442,6 +1443,7 @@ test("CLI workflow exposes changed isolated worktrees and removes the clean one"
     const cleanWorktree = result.worktrees.find((worktree) => !worktree.changed);
     assert.ok(cleanWorktree, "expected one clean isolated worktree");
     assert.equal(cleanWorktree.removed, true);
+    assert.equal(cleanWorktree.state, "unchanged");
     await assert.rejects(() => access(cleanWorktree.path), /ENOENT/);
     await assert.rejects(() => git(repo, ["rev-parse", "--verify", cleanWorktree.branch]), /unknown revision|Needed a single revision/);
 
@@ -1450,7 +1452,8 @@ test("CLI workflow exposes changed isolated worktrees and removes the clean one"
     assert.notEqual(changedWorktrees[0]?.path, changedWorktrees[1]?.path);
     assert.notEqual(changedWorktrees[0]?.branch, changedWorktrees[1]?.branch);
     for (const worktree of changedWorktrees) {
-      assert.match(stderr, new RegExp(`\\[worktree\\] changed ${escapeRegExp(worktree.path)} \\(${escapeRegExp(worktree.branch)}\\)`));
+      assert.equal(worktree.state, "uncommitted");
+      assert.match(stderr, new RegExp(`\\[worktree\\] uncommitted ${escapeRegExp(worktree.path)} \\(${escapeRegExp(worktree.branch)}\\)`));
     }
 
     const aWorktree = await worktreeContaining(changedWorktrees, "agent-a.txt");

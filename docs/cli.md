@@ -110,8 +110,14 @@ The run options `--budget`, `--concurrency`, `--agent-ceiling`, `--timeout`,
 The option semantics match `agent()` in a script; see
 [`agent()` options](workflow-scripts.md#agent-options). There is no fallback
 flag: a fallback chain is declared in a script. With `--isolation worktree`
-the worker's branch is reported on stderr, and a branch containing changed
-work is kept.
+stderr reports `[worktree] <phrase> <path> (<branch>)`. The phrase is
+`uncommitted` when the branch still points at its base, `committed` when
+all work is committed, `committed with uncommitted edits` when files still
+need committing, or `unchanged and removed` when nothing was left to keep.
+Branches containing changed work are kept. Workflow runs report the same
+lines for changed worktrees, omitting unchanged ones. A finalisation failure
+reports `[worktree] finalisation failed for <path> (<branch>): <message>`;
+the retained result's state is `unknown`.
 
 A failed worker exits 1 with the partial-result envelope (below) rather than
 printing a bare `null`. Its `error.kind` and `error.message` carry the last

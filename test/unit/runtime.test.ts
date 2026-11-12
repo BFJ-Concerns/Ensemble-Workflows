@@ -1295,6 +1295,46 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
   ]);
 });
 
+test("a held session publishes its worktree state only when the session closes", async () => {
+  const worktreeManager = new FakeWorktreeManager(true);
+  const runtime = new EnsembleRuntime({
+    transport: new FakeTransport([turn("first"), turn("second")]),
+    cwd: "/fake/repo",
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1,
+    worktreeManager
+  });
+  const events: Array<{ method: string; params: unknown }> = [];
+  runtime.onEvent((event) => {
+    if (event.method === "worktree/finished") {
+      events.push({ method: event.method, params: event.params });
+    }
+  });
+  const session = runtime.createWorkerSession({ engine: "codex", isolation: "worktree" });
+  try {
+    assert.equal(await session.send("first turn"), "first");
+    assert.equal(await session.send("second turn"), "second");
+    assert.deepEqual(events, []);
+    assert.equal(runtime.worktrees.length, 0);
+    await session.close();
+    assert.equal(runtime.worktrees[0]?.state, "committed");
+    assert.deepEqual(events, [{
+      method: "worktree/finished",
+      params: {
+        path: "/fake/worktree-1",
+        branch: "ensemble-workflows/fake-1",
+        state: "committed",
+        changed: true,
+        removed: false
+      }
+    }]);
+    await session.close();
+    assert.equal(events.length, 1);
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("one worktree stays open across every retry in one agent call", async () => {
   const transport = new FakeTransport([turn("not json"), turn("{\"answer\":\"no\"}"), turn("{\"answer\":\"yes\"}")]);
   const worktreeManager = new FakeWorktreeManager(true);

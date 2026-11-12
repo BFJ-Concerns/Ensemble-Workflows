@@ -799,14 +799,17 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       teardownError ??= judgeLateEnding();
       // A teardown failure degrades whatever the body earned: the outcome
       // the sentinel publishes and the code the process exits with both say
-      // the run did not end cleanly. The reason rides the existing `error`
-      // field, so the payload grows by nothing.
+      // the run did not end cleanly. The reason has a field of its own, and
+      // also fills `error` where nothing else ended the run: a run that had
+      // already failed keeps what ended it there, and still says its
+      // teardown could not confirm a clean end.
       const terminal = teardownError === null ? settled : { status: "failed" as const, exitCode: 1 };
       exitCode = terminal.exitCode;
       try {
         await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
           workers: workerOutcomes(progress, runtime),
           error: terminalError ?? teardownError,
+          teardownError,
           // The sealed manifest's own digest, attested from outside the file
           // it covers. A missing writer or an unsealed archive says why no
           // digest can be attested rather than omitting the field.

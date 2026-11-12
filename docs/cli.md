@@ -224,6 +224,12 @@ Logs and diagnostics go to stderr. These lines are written there:
   retries while Ensemble owns a Claude session.
 - `[teardown] …` — the script returned while a worker it started was still
   running, or tried to end the process after returning.
+- `[teardown] the run failed to end cleanly: run-owned processes may still be running: <owner> (<reason>); …`
+  — the run could not confirm that processes it owns had ended. Each
+  `<owner>` names a systemd scope unit or a process group, and `<reason>`
+  says what was observed there. The run ends `failed` with exit code 1, and
+  the completion sentinel carries the line as its
+  [`teardown_error`](run-records.md#completion-sentinel).
 
 ### Partial results
 

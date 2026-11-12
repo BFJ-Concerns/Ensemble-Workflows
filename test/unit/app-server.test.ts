@@ -2185,6 +2185,7 @@ test("Codex is placed before handshake and shares its assigned group across lazy
       const scopes: WorkerScopes = {
         slice: manager.slice,
         launch: manager.launch.bind(manager),
+        stop: manager.stop.bind(manager),
         close: manager.close.bind(manager),
         async place(group, pids) {
           assert.equal(await readFile(capturePath, "utf8").catch(() => ""), "", "the handshake began before placement");
@@ -2325,6 +2326,7 @@ test("Codex placement refusal is observable while its app-server remains usable"
     slice: null,
     async place() { return { kind: "refused", reason: "controlled scope refusal" }; },
     async launch(file, args, options) { return spawn(file, [...args], options); },
+    async stop() { return { kind: "stopped" }; },
     async close() {}
   };
   let transport: CodexAppServerTransport | undefined;

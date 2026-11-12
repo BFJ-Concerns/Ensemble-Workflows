@@ -836,6 +836,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
             // Liveness reporting must never take the turn down with it.
           }
         }
+        // A client rejection ends this request even if background work is
+        // still listed. Its diagnostic is collected by #buildResult.
+        if (endsInSyntheticReply(transcript.entries, fromIndex)) return transcript;
         const outstanding = outstandingBackgroundTasks(transcript.entries, fromIndex);
         const current = this.#noteWaits(outstanding);
         awaitingTask = current !== null;
@@ -874,15 +877,26 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       absences = 0;
 
       if (status.state === "blocked") {
+        // The request can settle while the roster poll is in flight. Read
+        // again before recovery so a rejection never receives a nudge. A
+        // readable transcript is also required to anchor this submission:
+        // falling back to the turn's old mark would compare an earlier
+        // user row with the nudge.
         const canNudge = this.#nudges < this.#blockedRecoveryBound && (await this.#controlPlane.tmuxAvailable());
+        const latest = await this.#readTranscript(handle, observers);
+        if (!sawLife && opening !== undefined) {
+          await this.#requireReceipt(handle, opening, observers);
+        }
+        sawLife = true;
+        if (endsInSyntheticReply(latest.entries, fromIndex) ||
+          (turnComplete(latest.entries, fromIndex) && outstandingBackgroundTasks(latest.entries, fromIndex).length === 0)) {
+          return latest;
+        }
         if (!canNudge) {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         this.#nudges += 1;
-        // Re-read at nudge time: the nudge's receipt is read from this
-        // mark, and a submission recorded between the loop-top read and the
-        // blocked observation must not be taken for it.
-        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
+        const mark = latest.entries.length;
         const message = this.#blockedNudge(status.waitingFor);
         await this.#deliver(handle, { message, mark, what: "the blocked-worker nudge", carriesTurn: false }, observers);
         continue;

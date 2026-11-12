@@ -17675,7 +17675,7 @@ function diagnoseAttemptFailure(evidence) {
   if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
     return failure;
   }
-  const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
+  const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
     const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude" ? "Run `claude auth login`." : "Run `opencode auth login` for the provider you selected.";
     return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${failure.message}` };
@@ -21981,6 +21981,7 @@ var ClaudeEngineInvocation = class {
           } catch {
           }
         }
+        if (endsInSyntheticReply(transcript.entries, fromIndex)) return transcript;
         const outstanding = outstandingBackgroundTasks(transcript.entries, fromIndex);
         const current2 = this.#noteWaits(outstanding);
         awaitingTask = current2 !== null;
@@ -22017,11 +22018,19 @@ var ClaudeEngineInvocation = class {
       absences = 0;
       if (status.state === "blocked") {
         const canNudge = this.#nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
+        const latest = await this.#readTranscript(handle, observers);
+        if (!sawLife && opening !== void 0) {
+          await this.#requireReceipt(handle, opening, observers);
+        }
+        sawLife = true;
+        if (endsInSyntheticReply(latest.entries, fromIndex) || turnComplete(latest.entries, fromIndex) && outstandingBackgroundTasks(latest.entries, fromIndex).length === 0) {
+          return latest;
+        }
         if (!canNudge) {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         this.#nudges += 1;
-        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
+        const mark = latest.entries.length;
         const message = this.#blockedNudge(status.waitingFor);
         await this.#deliver(handle, { message, mark, what: "the blocked-worker nudge", carriesTurn: false }, observers);
         continue;

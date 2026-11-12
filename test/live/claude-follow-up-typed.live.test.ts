@@ -95,7 +95,7 @@ test("built Claude follow-ups arrive typed, exact and expanded through the promp
         const row = entry as typeof entry & { uuid?: string; timestamp?: string };
         return { type: row.type, uuid: row.uuid, timestamp: row.timestamp, content: row.message?.content };
       });
-      console.log(JSON.stringify({ kind, rows: rows.map(row => ({ ...row, content: String(row.content).slice(0, 160) })) }));
+      console.log(JSON.stringify({ kind, rows: rows.map(row => ({ ...row, content: (typeof row.content === "string" ? row.content : JSON.stringify(row.content))?.slice(0, 160) })) }));
       const arrival = followUpArrival(entries, start, prompt);
       assert.equal(arrival.kind, kind, `unexpected native input shape: ${JSON.stringify(arrival).slice(0, 400)}`);
       if (arrival.kind === "command") {

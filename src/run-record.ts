@@ -126,9 +126,9 @@ export interface EffectiveRunSettingsRecord {
  *   call moved to that entry and the attempt spent none of the bound.
  * - `retried-in-place` — the call stays on this target for another attempt.
  * - `exhausted` — nothing remains to try: the call settles on this failure.
- * - `chain-not-consulted` — the classifier recognised nothing (`rule:
- *   null`) while a later entry remained, so the chain, which advances on
- *   availability alone, was not asked; any further attempt stays in place.
+ * - `chain-not-consulted` — an unclassified failure, or an output failure
+ *   with no retry remaining, left a later entry untried. The chain advances
+ *   on availability alone; any further attempt stays in place.
  */
 export type ChainDecision = "advanced" | "retried-in-place" | "exhausted" | "chain-not-consulted";
 

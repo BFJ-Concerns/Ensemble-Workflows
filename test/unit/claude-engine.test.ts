@@ -1527,8 +1527,10 @@ test("a client diagnostic in place of a model reply is archived as a failure, no
         assert.equal(result, null);
         const settled = records.at(-1);
         assert.equal(settled?.status, "failed");
-        assert.equal(settled?.attempts[0]?.failure?.kind, "claude-worker-diagnostic");
+        assert.equal(settled?.attempts[0]?.failure?.kind, "model-not-found");
+        assert.deepEqual(settled?.attempts[0]?.classification, { class: "unclassified", rule: "claude.model-not-found" });
         assert.match(settled?.attempts[0]?.failure?.message ?? "", /unknown provider/);
+        assert.match(settled?.attempts[0]?.failure?.message ?? "", /use \/model/);
         // The placeholder Claude Code writes on its own diagnostic is not a
         // served model: recording it would name a model that never ran.
         assert.equal(settled?.resolvedModel, null);
@@ -1640,7 +1642,7 @@ test("a client diagnostic in place of a model reply still keeps the transcript a
       try {
         assert.equal(await runtime.agent("decide", { engine: "claude", model: "definitely-not-a-model", schema: okSchema }), null);
         const attempt = records.at(-1)?.attempts[0];
-        assert.equal(attempt?.failure?.kind, "claude-worker-diagnostic");
+        assert.equal(attempt?.failure?.kind, "model-not-found");
         // The turn really happened and left a transcript; dropping it would
         // make the archive report that the engine produced none.
         assert.equal(attempt?.transcripts.length, 1);
@@ -2263,7 +2265,7 @@ test("an opening the session received altered stays on its target: each session 
         const attempts = records.at(-1)?.attempts ?? [];
         assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind), ["claude-delivery-error", "claude-delivery-error", "claude-delivery-error"]);
         assert.deepEqual(attempts.map((attempt) => attempt.classification), Array(3).fill({ class: "unclassified", rule: "claude.delivery" }));
-        assert.deepEqual(attempts.map((attempt) => attempt.chainDecision), ["retried-in-place", "retried-in-place", "exhausted"]);
+        assert.deepEqual(attempts.map((attempt) => attempt.chainDecision), ["chain-not-consulted", "chain-not-consulted", "chain-not-consulted"]);
         assert.deepEqual(attempts.map((attempt) => attempt.rawOutput), Array(3).fill("reply to the cut prompt"));
         assert.match(
           attempts[0]?.failure?.message ?? "",

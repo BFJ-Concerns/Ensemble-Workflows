@@ -86,6 +86,7 @@ export {
   SubstrateRefusedError,
   SessionBusyError,
   SessionClosedError,
+  StopUnconfirmedError,
   TallyRejectedError,
   WorkflowScriptReadError,
   attachPartialWorkerText,
@@ -194,7 +195,7 @@ export { summariseUsage } from "./usage-summary.js";
 export type { UsageSummary } from "./usage-summary.js";
 export type { IsolatedWorktree, IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 export { NoWorkerScopes, SystemdWorkerScopes, containingSlice, createWorkerScopes, parentSlice, processTree } from "./worker-scopes.js";
-export type { LaunchOptions, ScopePlacement, WorkerScopeGrouping, WorkerScopes } from "./worker-scopes.js";
+export type { LaunchOptions, ScopePlacement, StopBounds, StopOutcome, WorkerScopeGrouping, WorkerScopes } from "./worker-scopes.js";
 export type {
   SavedWorkflowEntry,
   SavedWorkflowMeta,

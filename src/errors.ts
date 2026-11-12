@@ -387,6 +387,24 @@ export function isRunEnding(error: unknown): boolean {
   return error instanceof Error && (error as RunEndingCarrier).ensembleRunEnding === true;
 }
 
+/**
+ * Teardown could not establish that processes the run owns have ended. Each
+ * entry names where the operator finds them — a scope unit, a process group —
+ * and what was observed: processes still there when the stop's bound ran out,
+ * or a command cut short where the run could see no further than its process
+ * group. Raised from the close that owns the processes, it fails the run's
+ * ending, so no surface reports cut-short work as stopped on the strength of
+ * a signal having been sent.
+ */
+export class StopUnconfirmedError extends EnsembleError {
+  readonly unconfirmed: readonly { owner: string; reason: string }[];
+
+  constructor(unconfirmed: readonly { owner: string; reason: string }[]) {
+    super(`run-owned processes may still be running: ${unconfirmed.map(({ owner, reason }) => `${owner} (${reason})`).join("; ")}`);
+    this.unconfirmed = unconfirmed;
+  }
+}
+
 export class AppServerExitedError extends EnsembleError {}
 
 export class AppServerRequestError extends EnsembleError {

@@ -76,6 +76,7 @@ for (const route of routes) {
     const handoff: WorkerScopes = {
       slice: scopes.slice,
       place: scopes.place.bind(scopes),
+      stop: scopes.stop.bind(scopes),
       close: scopes.close.bind(scopes),
       launch: async (...args) => {
         child = await scopes.launch(...args);

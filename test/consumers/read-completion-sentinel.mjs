@@ -9,13 +9,16 @@ assert.ok(sentinelPath, "usage: read-completion-sentinel.mjs <completion-sentine
 
 const sentinel = JSON.parse(await readFile(sentinelPath, "utf8"));
 assert.deepEqual(Object.keys(sentinel).sort(), [
-  "ended_at", "error", "exit_code", "integrity", "kind", "manifest", "outcome", "schema_version", "workers"
+  "ended_at", "error", "exit_code", "integrity", "kind", "manifest", "outcome", "schema_version", "teardown_error", "workers"
 ]);
-assert.equal(sentinel.schema_version, 3);
+assert.equal(sentinel.schema_version, 4);
 assert.equal(sentinel.kind, "completion_sentinel");
 assert.ok(["complete", "failed", "timed-out", "interrupted"].includes(sentinel.outcome));
 assert.equal(typeof sentinel.exit_code, "number");
 assert.ok(sentinel.error === null || (typeof sentinel.error.kind === "string" && typeof sentinel.error.message === "string"));
+assert.ok(sentinel.teardown_error === null || (typeof sentinel.teardown_error.kind === "string" && typeof sentinel.teardown_error.message === "string"));
+// A teardown that failed is always a failed ending.
+assert.ok(sentinel.teardown_error === null || sentinel.outcome === "failed");
 assert.ok(sentinel.workers === null || (
   Number.isInteger(sentinel.workers.done) &&
   Number.isInteger(sentinel.workers.failed) &&

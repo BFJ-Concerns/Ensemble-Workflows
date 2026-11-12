@@ -6,7 +6,7 @@ import { resolveRunDirectory } from "./run-record.js";
 
 /** Fixed name under the run's directory in the durable-record store. */
 export const SENTINEL_FILENAME = "completion-sentinel.json";
-export const SENTINEL_SCHEMA_VERSION = 3;
+export const SENTINEL_SCHEMA_VERSION = 4;
 
 export type SentinelOutcome = "complete" | "failed" | "timed-out" | "interrupted";
 
@@ -54,6 +54,14 @@ export interface SentinelTerminalDetail {
   workers?: SentinelWorkerOutcomes | null;
   /** What ended the run, when it ended badly; null on a clean end. */
   error?: { kind: string; message: string } | null;
+  /**
+   * Why the run failed to end cleanly — workers or their commands not
+   * confirmed stopped, an archive that would not seal — or null when
+   * teardown ended cleanly. Separate from `error`, which a run that ended
+   * badly has already filled: a reader must be able to tell a failed run
+   * whose workers stopped from one whose teardown could not establish that.
+   */
+  teardownError?: { kind: string; message: string } | null;
   manifest?: SentinelManifestAttestation;
 }
 
@@ -140,6 +148,7 @@ export class CompletionSentinel {
               unsettled: workers.unsettled
             },
       error: detail.error ?? null,
+      teardown_error: detail.teardownError ?? null,
       manifest: detail.manifest ?? { unavailable: "recording-disabled" as const },
       ended_at: new Date().toISOString(),
       // Self-attestation, computed last over everything above it: the

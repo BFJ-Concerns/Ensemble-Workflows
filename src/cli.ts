@@ -732,22 +732,16 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   } catch (error) {
     // A failed workflow would otherwise discard every completed worker's
     // output — whether it was stopped, timed out, or threw (a transport hiccup
-    // an hour in counts). Emit a best-effort partial envelope to stdout so the
-    // driver can recover the finished work; the error still goes to stderr and
-    // the exit code stays non-zero, so callers that gate on it are unaffected.
+    // an hour in counts). The partial envelope is published after teardown:
+    // a worker can still settle successfully while its engine is closing.
     const status =
       error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
     terminalError = error instanceof SingleAgentFailedError && error.failure !== null
       ? error.failure : describeError(error);
-    // The envelope carries what ended the run: a consumer capturing stdout,
-    // as the contract directs, must not have to scrape stderr to learn why.
-    const partial = partialResult(runtime, status, terminalError);
-    const serialised = serialiseResult(partial);
-    stdout.write(`${serialised}\n`);
     // The recorded exit code is the code the process exits with: a
     // signal-stopped run takes the shell convention (128 + the signal
     // number) so an archive reconciled against `$?` agrees with it.
-    finalRecord = { status, exitCode: error instanceof WorkflowInterruptedError ? error.exitCode : 1, result: JSON.parse(serialised) };
+    finalRecord = { status, exitCode: error instanceof WorkflowInterruptedError ? error.exitCode : 1, result: null };
     // Operational failures present a cause-first operator diagnosis;
     // author errors keep their clean line, and only a genuinely unknown
     // error falls through to its stack — internals as evidence, never as
@@ -801,6 +795,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // app-server death must not be attributed to the author's own
         // calls with a stack into the bundle.
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError(error)}\n`);
+      }
+      if (finalRecord !== null && finalRecord.status !== "complete" && terminalError !== null) {
+        // close() has settled the workers, including any answer that
+        // outraced cancellation. stdout and the archive share this one
+        // serialisation, after the same barrier the sentinel's tally uses.
+        const serialised = serialiseResult(partialResult(runtime, finalRecord.status, terminalError));
+        stdout.write(`${serialised}\n`);
+        finalRecord.result = JSON.parse(serialised);
       }
       if (statusWriter !== null) {
         await statusWriter.close();

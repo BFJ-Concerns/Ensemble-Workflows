@@ -271,8 +271,10 @@ envelope instead:
 ```
 
 `reason` is `failed`, `timed-out`, or `interrupted`. `completed` holds the
-output of every worker that finished successfully, and `error` is the same
-`{ kind, message }` the run record and sentinel carry for what ended the run.
+output of every worker that finished successfully, including workers that
+settled during teardown on any engine. The envelope is printed after worker
+teardown. `error` is the same `{ kind, message }` the run record and sentinel
+carry for what ended the run.
 
 ## Exit codes
 

@@ -11,7 +11,7 @@ import { EnsembleRuntime } from "../../src/runtime.js";
 import { rollupViewOfArchivedRecord } from "../../src/run-record.js";
 import { buildCostRollup } from "../../src/cost-rollup.js";
 
-import type { EngineAdapter } from "../../src/engines.js";
+import type { EngineAdapter, EngineAttemptResult } from "../../src/engines.js";
 import type { EngineName } from "../../src/types.js";
 
 class Capture extends Writable {
@@ -26,6 +26,85 @@ function announcement(stderr: Capture, prefix: string): Record<string, string> {
   const line = stderr.text.split("\n").find((entry) => entry.startsWith(prefix));
   assert.ok(line, stderr.text);
   return JSON.parse(line.slice(prefix.length));
+}
+
+function answer(text: string): EngineAttemptResult {
+  return { text, deltaText: text, durationMs: 1, firstDeltaMs: 1, items: {}, tokenUsageEvents: [] };
+}
+
+for (const ending of ["failed", "timed-out", "interrupted"] as const) {
+  test(`partial results retain answers settling during ${ending} teardown on every engine`, { timeout: 30_000 }, async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-settling-answers-"));
+    try {
+      const stdout = new Capture();
+      const stderr = new Capture();
+      const engines: EngineName[] = ["codex", "claude", "opencode"];
+      const releases: Array<() => void> = [];
+      const started = Promise.withResolvers<void>();
+      const adapters: EngineAdapter[] = engines.map((name) => ({
+        name, concurrency: 4, schedule: async (run) => run(),
+        createInvocation: (prompt) => ({
+          runAttempt: async () => {
+            if (prompt === "barrier") {
+              await started.promise;
+              return answer("barrier finished");
+            }
+            return new Promise<EngineAttemptResult>((resolve) => {
+              releases.push(() => resolve(answer("null")));
+              if (releases.length === engines.length) started.resolve();
+            });
+          }
+        }),
+        close: async () => { for (const release of releases) release(); }
+      }));
+      let runtime: EnsembleRuntime | undefined;
+      const script = path.join(directory, "workflow.js");
+      await writeFile(script, `
+        export const meta = { name: "settling-answers" };
+        const calls = ["codex", "claude", "opencode"].map(engine =>
+          agent("finish at shutdown", { engine, label: engine, schema: { type: "null" } })
+        );
+        ${ending === "failed" ? 'await agent("barrier", { engine: "codex", label: "barrier" }); throw new Error("body failed with workers running");' : 'await parallel(calls.map(call => () => call));'}
+      `);
+      const run = runEnsembleCli([script], {
+        cwd: directory, stdout, stderr, statusDir: null,
+        runRecordDir: path.join(directory, "records"),
+        ...(ending === "timed-out" ? { timeoutMs: 500 } : {}),
+        createRuntime: async (options) => {
+          runtime = new EnsembleRuntime({ ...options, engines: new EngineRegistry(adapters), defaultMaxAttempts: 1 });
+          return runtime;
+        }
+      });
+      await started.promise;
+      // The workers cannot answer until close begins. The script's body
+      // therefore cannot win the race, regardless of engine scheduling.
+      if (ending === "interrupted") process.emit("SIGINT");
+      const code = await run;
+      assert.equal(code, ending === "interrupted" ? 130 : 1, stderr.text);
+      const envelope = JSON.parse(stdout.text);
+      assert.equal(envelope.reason, ending);
+      const expected = engines.map((engine, index) => ({
+        id: index + 1, engine, label: engine, phase: null, output: null
+      }));
+      assert.deepEqual(envelope.completed, [
+        ...(ending === "failed" ? [{ id: 4, engine: "codex", label: "barrier", phase: null, output: "barrier finished" }] : []),
+        ...expected
+      ]);
+      assert.equal(runtime?.shutdownTally()?.done, expected.length + (ending === "failed" ? 1 : 0));
+      const archive = announcement(stderr, "[run-record-archive] ").archive_path!;
+      const result = JSON.parse(await readFile(path.join(archive, "result.json"), "utf8"));
+      assert.deepEqual(result.value, envelope);
+      const sentinel = JSON.parse(await readFile(path.join(archive, "completion-sentinel.json"), "utf8"));
+      assert.equal(sentinel.workers.done, envelope.completed.length);
+      for (const completed of envelope.completed) {
+        const record = JSON.parse(await readFile(path.join(archive, "agents", String(completed.id).padStart(6, "0"), "agent.json"), "utf8"));
+        assert.equal(record.status, "complete");
+        assert.equal(record.validated_output, completed.output);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 }
 
 test("resource preflight refusals on every engine record known absence and complete spend", async () => {

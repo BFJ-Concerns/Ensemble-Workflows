@@ -663,8 +663,11 @@ handle. A run killed before it seals can have no result file. Its fields are:
 A partial-result envelope has `partial: true`, `reason` (`"failed"`,
 `"timed-out"`, or `"interrupted"`), `error` (`{ kind, message }`), and
 `completed`: an array of `{ id, engine, label, phase, output }` for workers
-that finished successfully, in completion order. `label` and `phase` can be
-`null`; `output` is the worker's validated value or text. The script's
+that finished successfully, in completion order, including those that settled
+during teardown on any engine. The CLI prints this envelope after worker
+teardown, so it includes the same successful workers the sentinel counts.
+`label` and `phase` can be `null`; `output` is the worker's validated value or
+text. The script's
 unfinished return value cannot be recovered from this envelope. A teardown
 failure after a successful body can leave that body's value in `value` while
 `status`, `exit_code` and `error` report the teardown failure. Use those

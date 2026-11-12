@@ -18518,8 +18518,21 @@ function worstOf(outcomes) {
 }
 
 // src/failure-classification.ts
+var SESSION_LOST_KIND = "session-lost";
+var SETTLING_FAILURE_KINDS = /* @__PURE__ */ new Set([
+  // Codex refused the authored schema before generation, and a retry sends the same schema.
+  "CodexSchemaSubsetUnsupportedError",
+  // The held worker no longer exists, and a retry would address the same absent session.
+  SESSION_LOST_KIND
+]);
+function settlesWithoutRetry(failure) {
+  return SETTLING_FAILURE_KINDS.has(failure.kind);
+}
 function diagnoseAttemptFailure(evidence) {
   const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
+  if (failure.kind === SESSION_LOST_KIND) {
+    return failure;
+  }
   const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
   const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
   if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
@@ -18627,6 +18640,9 @@ function classifyAttemptFailure(evidence) {
   }
   if (kind === "ResourcePreflightRefusedError") {
     return { class: "availability", rule: "preflight.resource-denied" };
+  }
+  if (kind === SESSION_LOST_KIND) {
+    return { class: "unclassified", rule: "session.lost" };
   }
   switch (evidence.engine) {
     case "codex":
@@ -26692,6 +26708,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
           if (operationalFailure.refused) {
             return { status: "refused" };
           }
+          if (operationalFailure.settles) {
+            return { status: "failed", value: null };
+          }
           previousFailure = operationalFailure.failure;
           continue;
         }
@@ -26717,7 +26736,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         if (this.#crossesSpawnBoundary(error)) {
           throw error;
         }
-        if (error instanceof CodexSchemaSubsetUnsupportedError) {
+        if (thrown.settles) {
           return { status: "failed", value: null, cause: error };
         }
         previousFailure = thrown.failure;
@@ -26757,6 +26776,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
         if (operationalFailure !== void 0) {
           if (operationalFailure.refused) {
             return { status: "refused" };
+          }
+          if (operationalFailure.settles) {
+            return { status: "failed", value: null };
           }
           previousFailure = operationalFailure.failure;
           continue;
@@ -26805,7 +26827,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         if (this.#crossesSpawnBoundary(error)) {
           throw error;
         }
-        if (error instanceof CodexSchemaSubsetUnsupportedError) {
+        if (thrown.settles) {
           return { status: "failed", value: null, cause: error };
         }
         previousFailure = thrown.failure;
@@ -26851,7 +26873,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * An engine-classified operational failure riding a returned result (the
    * Claude and opencode adapters' shape). Recorded with its class; an
    * availability class with a chain entry remaining reports `refused` and
-   * consumes no attempt — the worker never answered.
+   * consumes no attempt — the worker never answered. A failure that stays on
+   * its target and that no retry can change reports `settles`
+   * (`settlesWithoutRetry`): its attempt is spent, and the loop runs no other.
    */
   #recordOperationalFailure(record, attempt, startedAt, result, attempts) {
     if (result.attemptFailure === void 0) {
@@ -26868,6 +26892,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (!refused2) {
       attempts.ledger.answered += 1;
     }
+    const settles = !refused2 && settlesWithoutRetry(result.attemptFailure);
     this.#pushFailedAttempt(
       record,
       attemptRecord(
@@ -26885,10 +26910,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
         null,
         null,
         classification,
-        chainDecisionAfter(attempts, classification, !refused2 && boundRemains(attempts.ledger))
+        chainDecisionAfter(attempts, classification, !refused2 && !settles && boundRemains(attempts.ledger))
       )
     );
-    return { failure, refused: refused2 };
+    return { failure, refused: refused2, settles };
   }
   /**
    * A thrown failure (the Codex transport's shape, and any engine's
@@ -26921,7 +26946,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...partialTranscript !== null ? { transcripts: [partialTranscript] } : {},
       ...firstDeltaMs !== null ? { firstDeltaMs } : {}
     } : null);
-    const retries = !refused2 && !this.#crossesSpawnBoundary(error) && !(error instanceof CodexSchemaSubsetUnsupportedError) && boundRemains(attempts.ledger);
+    const settles = settlesWithoutRetry(failureFromError(error));
+    const retries = !refused2 && !this.#crossesSpawnBoundary(error) && !settles && boundRemains(attempts.ledger);
     this.#pushFailedAttempt(
       record,
       attemptRecord(
@@ -26940,7 +26966,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         settlement === null ? chainDecisionAfter(attempts, classification, retries) : null
       )
     );
-    return { refused: refused2, failure: observed2 };
+    return { refused: refused2, failure: observed2, settles };
   }
   /** A probe substrate refused before a requested worker could be constructed. */
   #recordPreparationFailure(record, agentId, error, startedAt, attempts) {

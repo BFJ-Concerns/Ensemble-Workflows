@@ -557,7 +557,8 @@ and model context still bound prompt size.
 
 ### Retries
 
-Except for Codex output-schema rejections, each
+Except for Codex output-schema rejections and a session's lost worker
+(`session-lost`), each
 attempt that fails is retried, up to `maxAttempts`, with the failure fed
 back to the worker. Claude corrects in the same session through the prompt
 editor. If tmux becomes unavailable, a one-shot correction starts a fresh session, whose
@@ -700,7 +701,10 @@ engine's own diagnostic:
   `other`; this is recognised by `codex.provider-request-rejected`, retried
   in place within `maxAttempts`, and never advances a chain. A recognised
   schema rejection instead keeps `codex.schema-rejected` and settles without
-  retrying, including when forwarded in this envelope. A diagnostic that no
+  retrying, including when forwarded in this envelope. A session turn whose
+  engine found the session's worker gone records `session-lost` under
+  `session.lost` on every engine: one attempt, no retry, and no chain step,
+  since no other target holds the session's context. A diagnostic that no
   rule recognised is recorded with `rule: null`.
 
 With a chain declared, a failure that matches no rule leaves the chain

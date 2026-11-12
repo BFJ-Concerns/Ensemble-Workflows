@@ -89,12 +89,24 @@ export interface StripPreparationContext {
  * A failure an engine observed and *returned* on the attempt result, in the
  * engine's own vocabulary. A refused Claude dispatch is not among them: it is
  * thrown (`ClaudeDispatchError`, pre-spawn) rather than returned.
+ *
+ * `session-lost` is the one kind every engine shares, and only a held
+ * worker (`EngineWorkerSession`) returns it: the engine has established that
+ * the worker no longer exists, so the attempt's message was submitted to
+ * nothing and no later one can be. The call settles on it at once — one
+ * recorded attempt, no retry (`settlesWithoutRetry`), no fallback step
+ * (`session.lost` is not an availability rule) — and resolves its ordinary
+ * failed value. It is returned, never thrown: a thrown failure is recorded
+ * under its error's class name, and this kind has one name on every engine.
+ * A one-shot invocation never returns it: its lost worker is replaced by
+ * redispatch, so that loss retries like any other failure.
  */
 export interface EngineAttemptFailure {
   kind:
     | "empty-output"
     | "invalid-json"
     | "schema-validation"
+    | "session-lost"
     | "claude-worker-error"
     | "claude-poll-timeout"
     | "claude-first-life-timeout"

@@ -8,7 +8,7 @@ import { effectiveLean, resolveLeanStart } from "./lean-start.js";
 import type { DischargedLeanStart } from "./lean-start.js";
 import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
-import { classifyAttemptFailure, diagnoseAttemptFailure } from "./failure-classification.js";
+import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } from "./failure-classification.js";
 import { fallbackSourceOf } from "./fallback-source.js";
 
 import type { DischargedEnforcement, PreparedStrip } from "./capability-stripping.js";
@@ -27,7 +27,6 @@ import {
   AppServerExitedError,
   attachAgentIdentity,
   BudgetExceededError,
-  CodexSchemaSubsetUnsupportedError,
   describeError,
   EngineShutdownError,
   failedTurnResultOf,
@@ -2490,6 +2489,11 @@ export class EnsembleRuntime {
           if (operationalFailure.refused) {
             return { status: "refused" };
           }
+          if (operationalFailure.settles) {
+            // A failure no retry can change: the call settles on it, the
+            // attempt just recorded carrying its account.
+            return { status: "failed", value: null };
+          }
           previousFailure = operationalFailure.failure;
           continue;
         }
@@ -2515,9 +2519,9 @@ export class EnsembleRuntime {
         if (this.#crossesSpawnBoundary(error)) {
           throw error;
         }
-        if (error instanceof CodexSchemaSubsetUnsupportedError) {
-          // The backend rejected the schema before generation: the contract
-          // exempts this failure from retries.
+        if (thrown.settles) {
+          // A failure no retry can change: the call settles on it, with
+          // this throw as its cause.
           return { status: "failed", value: null, cause: error };
         }
         // A dispatched worker's thrown failure — a deadline, a transport
@@ -2573,6 +2577,11 @@ export class EnsembleRuntime {
           if (operationalFailure.refused) {
             return { status: "refused" };
           }
+          if (operationalFailure.settles) {
+            // A failure no retry can change: the call settles on it, the
+            // attempt just recorded carrying its account.
+            return { status: "failed", value: null };
+          }
           previousFailure = operationalFailure.failure;
           continue;
         }
@@ -2622,9 +2631,9 @@ export class EnsembleRuntime {
         if (this.#crossesSpawnBoundary(error)) {
           throw error;
         }
-        if (error instanceof CodexSchemaSubsetUnsupportedError) {
-          // The backend rejected the schema before generation: the contract
-          // exempts this failure from retries.
+        if (thrown.settles) {
+          // A failure no retry can change: the call settles on it, with
+          // this throw as its cause.
           return { status: "failed", value: null, cause: error };
         }
         // A dispatched worker's thrown failure — a deadline, a transport
@@ -2686,7 +2695,9 @@ export class EnsembleRuntime {
    * An engine-classified operational failure riding a returned result (the
    * Claude and opencode adapters' shape). Recorded with its class; an
    * availability class with a chain entry remaining reports `refused` and
-   * consumes no attempt — the worker never answered.
+   * consumes no attempt — the worker never answered. A failure that stays on
+   * its target and that no retry can change reports `settles`
+   * (`settlesWithoutRetry`): its attempt is spent, and the loop runs no other.
    */
   #recordOperationalFailure(
     record: RuntimeAgentRecord,
@@ -2694,7 +2705,7 @@ export class EnsembleRuntime {
     startedAt: number,
     result: EngineAttemptResult,
     attempts: TargetAttempts
-  ): { failure: PreviousAttemptFailure; refused: boolean } | undefined {
+  ): { failure: PreviousAttemptFailure; refused: boolean; settles: boolean } | undefined {
     if (result.attemptFailure === undefined) {
       return undefined;
     }
@@ -2709,6 +2720,7 @@ export class EnsembleRuntime {
     if (!refused) {
       attempts.ledger.answered += 1;
     }
+    const settles = !refused && settlesWithoutRetry(result.attemptFailure);
     this.#pushFailedAttempt(
       record,
       attemptRecord(
@@ -2726,10 +2738,10 @@ export class EnsembleRuntime {
         null,
         null,
         classification,
-        chainDecisionAfter(attempts, classification, !refused && boundRemains(attempts.ledger))
+        chainDecisionAfter(attempts, classification, !refused && !settles && boundRemains(attempts.ledger))
       )
     );
-    return { failure, refused };
+    return { failure, refused, settles };
   }
 
   /**
@@ -2744,7 +2756,7 @@ export class EnsembleRuntime {
     error: unknown,
     startedAt: number,
     attempts: TargetAttempts
-  ): { refused: boolean; failure: PreviousAttemptFailure } {
+  ): { refused: boolean; failure: PreviousAttemptFailure; settles: boolean } {
     const observed = diagnoseAttemptFailure({
       engine: attempts.target.engine,
       failure: failureFromError(error),
@@ -2787,12 +2799,13 @@ export class EnsembleRuntime {
           }
         : null);
     // The loop's own next step, read from the same facts it acts on: a
-    // boundary throw leaves, a rejected schema settles, anything else
-    // retries while the bound lasts. A run ending decides nothing.
+    // boundary throw leaves, a failure no retry can change settles, anything
+    // else retries while the bound lasts. A run ending decides nothing.
+    const settles = settlesWithoutRetry(failureFromError(error));
     const retries =
       !refused &&
       !this.#crossesSpawnBoundary(error) &&
-      !(error instanceof CodexSchemaSubsetUnsupportedError) &&
+      !settles &&
       boundRemains(attempts.ledger);
     this.#pushFailedAttempt(
       record,
@@ -2812,7 +2825,7 @@ export class EnsembleRuntime {
         settlement === null ? chainDecisionAfter(attempts, classification, retries) : null
       )
     );
-    return { refused, failure: observed };
+    return { refused, failure: observed, settles };
   }
 
   /** A probe substrate refused before a requested worker could be constructed. */

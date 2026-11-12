@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { appServerDiagnosticOf, CodexSchemaSubsetUnsupportedError } from "../../src/errors.js";
-import { classifyAttemptFailure, diagnoseAttemptFailure } from "../../src/failure-classification.js";
+import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } from "../../src/failure-classification.js";
 
 import type { AttemptFailureEvidence } from "../../src/failure-classification.js";
 
@@ -320,5 +320,31 @@ test("unknown-model diagnoses preserve engine evidence and name the engine model
   ] as const) {
     const failure = diagnoseAttemptFailure(evidence({ engine: "claude", failure: { kind, message }, diagnostics: { apiError: { status, code: null } } }));
     assert.notEqual(failure.kind, "model-not-found");
+  }
+});
+
+test("a lost held worker is one recognised rule on every engine, and never availability", () => {
+  for (const engine of ["codex", "claude", "opencode"] as const) {
+    assert.deepEqual(
+      classifyAttemptFailure(evidence({ engine, failure: { kind: "session-lost", message: "the held worker is gone" } })),
+      { class: "unclassified", rule: "session.lost" }
+    );
+  }
+});
+
+test("a lost held worker keeps its kind whatever the session's last diagnostic said", () => {
+  const failure = { kind: "session-lost", message: "the session left the roster after: 401 Unauthorized" };
+  assert.deepEqual(
+    diagnoseAttemptFailure(evidence({ engine: "claude", failure, diagnostics: { apiError: { status: 401, code: "authentication_error" } } })),
+    failure
+  );
+});
+
+test("only a failure a retry would meet again settles its call without one", () => {
+  for (const kind of ["CodexSchemaSubsetUnsupportedError", "session-lost"]) {
+    assert.equal(settlesWithoutRetry({ kind }), true, kind);
+  }
+  for (const kind of ["empty-output", "claude-valve-error", "claude-poll-timeout", "TurnTimeoutError", "AppServerExitedError"]) {
+    assert.equal(settlesWithoutRetry({ kind }), false, kind);
   }
 });

@@ -2144,7 +2144,7 @@ test("the tally hook records a named count into the run, replacing on repeat, an
   for (const [source, expected] of [
     ['await tally("", 1);', /tally name must be a non-empty string/],
     ['await tally("count", Number.NaN);', /must be a finite number/],
-    ['await tally("count", "3");', /must be a finite number/]
+    ['await tally("count", "3");', /got "3" \(string\)/]
   ] as const) {
     await assert.rejects(
       () =>

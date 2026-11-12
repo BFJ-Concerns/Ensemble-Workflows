@@ -776,7 +776,7 @@ export class EnsembleRuntime {
       throw new TallyRejectedError(`the tally name must be a non-empty string, got ${JSON.stringify(name)}`);
     }
     if (typeof value !== "number" || !Number.isFinite(value)) {
-      throw new TallyRejectedError(`the tally value for ${JSON.stringify(name)} must be a finite number, got ${String(value)}`);
+      throw new TallyRejectedError(`the tally value for ${JSON.stringify(name)} must be a finite number, got ${typeof value === "string" ? JSON.stringify(value) : String(value)} (${typeof value})`);
     }
     try {
       await this.#runRecorder?.recordTally(name, value);

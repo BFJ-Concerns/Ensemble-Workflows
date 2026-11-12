@@ -17,10 +17,20 @@ absolute invoked path (preserving a symlink’s name).
 Running the launcher with no arguments prints this usage text on stderr. It
 names the launcher by the absolute path it was invoked through, preserving a
 symlink path. Script paths include `node`; executable shims name themselves.
-Blank-prompt errors name the same absolute launcher path. A near-miss agent
-option such as `--modle` suggests `--model`; other unknown agent options explain
-how to pass a dash-leading prompt after `--`, quoting the complete argument
-for a POSIX shell so that variables and command substitutions stay literal.
+Blank-prompt errors name the same absolute launcher path. A near-miss run or
+agent option such as `--modle` suggests `--model`. At run level, agent-only
+options point to `agent` and to `agent()` calls for script models. Other
+unknown agent options explain how to pass a dash-leading prompt after `--`,
+quoting the complete argument for a POSIX shell so that variables and command
+substitutions stay literal.
+
+There is no `run` subcommand: give the script path directly after run options.
+If no file named `run` exists, a leading `run` is rejected with that explanation
+and the invocation form. A real workflow file named `run` remains usable.
+Misplaced run options, a missing agent option value, and an invalid `--cwd`
+name the invoked launcher and explain how to repair the call. Run options for
+`agent` go after the word `agent`, before the prompt.
+
 Paths containing shell metacharacters are quoted for a POSIX shell. The
 launcher path stays whole even when it exceeds 80 columns; the remaining
 usage wraps to that width. For a launcher at `/opt/ensemble.mjs`:
@@ -211,8 +221,9 @@ Logs and diagnostics go to stderr. These lines are written there:
 - `[<engine>] agent <id> (<label>) failed after N attempts — <cause>` — a
   workflow worker that failed, with its cause. A single `ensemble agent` run
   reports its failure in its own final diagnostic instead. When a fallback chain was used, the line
-  reads `failed after N attempts across M chain targets — the last target's
-  failure: <cause>`.
+  reads `failed after N answered attempts, R refused targets across M chain
+  targets — the last target's failure: <cause>`. Refusals that advance the
+  chain and terminal substrate refusals consume no answered attempt.
 - `[<engine>] agent <id> (<label>) answered by fallback entry <n> …` — a
   fallback entry answered. Each refused target is named with its engine,
   model, classification rule and diagnostic; quoted engine stderr is labelled

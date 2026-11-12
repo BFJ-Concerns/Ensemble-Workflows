@@ -448,7 +448,7 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
   const recordsBefore = captured.length;
   await assert.rejects(session.send("second turn"), (error: unknown) => {
     assert.ok(error instanceof BudgetExceededError);
-    assert.equal(error.message, "Token budget exhausted for codex: spent 500 of 100 tokens; refused session turn 2");
+    assert.equal(error.message, "Token budget exhausted for codex: spent 500 of 100 tokens; remaining 0; refused session turn 2");
     assert.doesNotMatch(error.message, /agent was not started/);
     return true;
   });
@@ -472,8 +472,8 @@ test("session budget refusals propagate through combinators before and after ope
         const recordBefore = runtime.lastAgentRecord();
         const progressBefore = runtime.progress.snapshot().agents;
         const message = opened
-          ? "Token budget exhausted for codex: spent 100 of 100 tokens; refused session turn 2"
-          : "Token budget for codex is 0, which admits no dispatch; refused session turn 1";
+          ? "Token budget exhausted for codex: spent 100 of 100 tokens; remaining 0; refused session turn 2"
+          : "Token budget for codex is 0, which admits no dispatch; remaining 0; refused session turn 1";
         for (const combinator of ["parallel", "pipeline"]) {
           const currentPhase = `refused through ${combinator}`;
           runtime.notePhase(currentPhase);

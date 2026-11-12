@@ -498,7 +498,7 @@ export class BudgetExceededError extends EnsembleError {
     const reason = total === 0
       ? `Token budget for ${engine} is 0, which admits no dispatch`
       : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`;
-    super(`${reason}; refused ${admission}`);
+    super(`${reason}; remaining ${Math.max(0, total - spent)}; refused ${admission}`);
     this.engine = engine;
     this.total = total;
     this.spent = spent;

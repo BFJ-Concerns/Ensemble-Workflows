@@ -14099,7 +14099,7 @@ var BudgetExceededError = class extends EnsembleError {
   spent;
   constructor(engine, total, spent, admission = "dispatch") {
     const reason = total === 0 ? `Token budget for ${engine} is 0, which admits no dispatch` : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`;
-    super(`${reason}; refused ${admission}`);
+    super(`${reason}; remaining ${Math.max(0, total - spent)}; refused ${admission}`);
     this.engine = engine;
     this.total = total;
     this.spent = spent;
@@ -25362,7 +25362,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new TallyRejectedError(`the tally name must be a non-empty string, got ${JSON.stringify(name)}`);
     }
     if (typeof value !== "number" || !Number.isFinite(value)) {
-      throw new TallyRejectedError(`the tally value for ${JSON.stringify(name)} must be a finite number, got ${String(value)}`);
+      throw new TallyRejectedError(`the tally value for ${JSON.stringify(name)} must be a finite number, got ${typeof value === "string" ? JSON.stringify(value) : String(value)} (${typeof value})`);
     }
     try {
       await this.#runRecorder?.recordTally(name, value);
@@ -26084,6 +26084,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #announceFailure(engine, identity, agentId, agentRecord, thrown) {
     const failure = settledFailureAccount(agentRecord);
     const diagnosis = thrown === void 0 ? null : presentOperationalError(thrown);
+    const refusedTargets = advancesOf(agentRecord).length + (thrown instanceof SubstrateRefusedError ? 1 : 0);
     this.#emitEvent({
       method: `${engine}/agentFailed`,
       params: {
@@ -26092,6 +26093,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         phase: identity.phase,
         status: agentRecord.status,
         attempts: agentRecord.attempts.length,
+        answeredAttempts: agentRecord.attempts.length - refusedTargets,
+        refusedTargets,
         targetsTried: agentRecord.fallback === null ? null : targetsTriedOf(agentRecord),
         failure: { kind: failure.kind, message: failure.message },
         diagnosis
@@ -34467,7 +34470,7 @@ async function runEnsembleCli(argv, options = {}) {
   const sentinelStoreDir = configuredSentinelDir ? path19.resolve(configuredSentinelDir) : configuredSentinelDir;
   let prepared;
   try {
-    prepared = await prepareRun(invocation, cwd);
+    prepared = await prepareRun(invocation, cwd, program);
     await judgeResources(launcherResourceRequirements(configuredRecordDir, options.runRecordDir !== void 0, ambientSettings, env), env);
   } catch (error) {
     stderr.write(`${presentOperationalError(error) ?? formatError2(error)}
@@ -34678,7 +34681,10 @@ async function runEnsembleCli(argv, options = {}) {
         const count = `${attempts} attempt${attempts === 1 ? "" : "s"}`;
         const targetsTried = typeof event.params.targetsTried === "number" ? event.params.targetsTried : null;
         const account = diagnosis ?? `${kind}: ${message}`;
-        const outcome = targetsTried !== null && targetsTried > 1 ? `${count} across ${targetsTried} chain targets \u2014 the last target's failure: ${account}` : `${count} \u2014 ${account}`;
+        const answered = typeof event.params.answeredAttempts === "number" ? event.params.answeredAttempts : attempts;
+        const refused2 = typeof event.params.refusedTargets === "number" ? event.params.refusedTargets : 0;
+        const chainCount = `${answered} answered attempt${answered === 1 ? "" : "s"}, ${refused2} refused target${refused2 === 1 ? "" : "s"}`;
+        const outcome = targetsTried !== null && targetsTried > 1 ? `${chainCount} across ${targetsTried} chain targets \u2014 the last target's failure: ${account}` : `${count} \u2014 ${account}`;
         stderr.write(`[${engine}] agent ${agentId}${label} failed after ${outcome}
 `);
         return;
@@ -34923,7 +34929,7 @@ function workflowName(meta) {
   }
   return null;
 }
-async function prepareRun(invocation, cwd) {
+async function prepareRun(invocation, cwd, program) {
   if (invocation.kind === "agent") {
     if (invocation.agentOptions.cwd !== void 0) {
       const requestedCwd = path19.resolve(cwd, invocation.agentOptions.cwd);
@@ -34934,7 +34940,7 @@ async function prepareRun(invocation, cwd) {
         isDirectory2 = false;
       }
       if (!isDirectory2) {
-        throw new CliUsageError(`--cwd must name an existing directory; got ${requestedCwd}`);
+        throw new CliUsageError(`${program} agent: --cwd must name an existing directory; got ${requestedCwd}; choose an existing directory or omit --cwd`);
       }
     }
     return {
@@ -35199,6 +35205,14 @@ var WORKFLOW_TUNING_OPTIONS = {
   lean: { type: "boolean" }
 };
 async function parseWorkflowInvocation(argv, cwd, program) {
+  if (argv[0] === "run") {
+    try {
+      await stat6(path19.resolve(cwd, "run"));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      throw new CliUsageError(`${program}: "run" was taken as the script path; there is no run subcommand. Use: ${program} [run options] <script.js> [args...]`);
+    }
+  }
   const split = splitTuningFlags(argv, program);
   rejectDuplicateScalarFlags(split.tuningArgs);
   let parsed;
@@ -35264,7 +35278,8 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const unknown = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ? unknownAgentOption(argv) : void 0;
-    throw new CliUsageError(unknown === void 0 ? message : `${program} agent: ${unknownAgentOptionMessage(unknown)}`);
+    const missing = error instanceof Error && "code" in error && error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" ? missingAgentOptionValue(argv) : void 0;
+    throw new CliUsageError(unknown !== void 0 ? `${program} agent: ${unknownAgentOptionMessage(unknown)}` : missing !== void 0 ? `${program} agent: ${missing} requires a value; put a value immediately after ${missing}, or omit the option` : message);
   }
   if (parsed.positionals.length > 1) {
     throw new CliUsageError(`${program} agent accepts exactly one prompt argument, or reads the prompt from stdin`);
@@ -35326,6 +35341,18 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...parsed.values.lean === true ? { lean: true } : {}
   };
 }
+function missingAgentOptionValue(argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--") return void 0;
+    if (isKnownAgentOption(argument) && !isBooleanAgentFlag(argument)) {
+      const value = argv[index + 1];
+      if (value === void 0 || value.startsWith("-")) return argument;
+      index += 1;
+    }
+  }
+  return void 0;
+}
 function unknownAgentOption(argv) {
   try {
     const { tokens } = parseArgs({
@@ -35342,13 +35369,25 @@ function unknownAgentOption(argv) {
   }
 }
 function unknownAgentOptionMessage(option) {
-  const name = option.split("=", 1)[0];
-  const candidates = Object.keys(AGENT_INVOCATION_OPTIONS).map((key) => ({ flag: `--${key}`, distance: optionDistance(name, `--${key}`) })).filter(({ distance }) => distance <= 2).sort((left, right) => left.distance - right.distance || left.flag.localeCompare(right.flag));
-  const best = candidates[0];
-  if (best !== void 0 && (candidates[1] === void 0 || best.distance < candidates[1].distance)) {
-    return `Unknown option ${JSON.stringify(option)}. Did you mean ${JSON.stringify(best.flag)}?`;
+  const suggestion = suggestedOption(option);
+  if (suggestion !== void 0) {
+    return `Unknown option ${JSON.stringify(option)}. Did you mean ${JSON.stringify(suggestion)}?`;
   }
   return `Unknown option ${JSON.stringify(option)}. For a dash-leading prompt, put it after --, as in: -- ${quoteShellArgument(option)}`;
+}
+function suggestedOption(option, names = Object.keys(AGENT_INVOCATION_OPTIONS)) {
+  const name = option.split("=", 1)[0];
+  const candidates = names.map((key) => ({ flag: `--${key}`, distance: optionDistance(name, `--${key}`) })).filter(({ distance }) => distance <= 2).sort((left, right) => left.distance - right.distance || left.flag.localeCompare(right.flag));
+  const best = candidates[0];
+  return best !== void 0 && (candidates[1] === void 0 || best.distance < candidates[1].distance) ? best.flag : void 0;
+}
+function workflowOptionMessage(option, program) {
+  const name = option.split("=", 1)[0];
+  const known = isKnownAgentOption(name);
+  const suggestion = known ? name : suggestedOption(option, [.../* @__PURE__ */ new Set([...Object.keys(AGENT_INVOCATION_OPTIONS), ...Object.keys(WORKFLOW_TUNING_OPTIONS)])]);
+  const hint = !known && suggestion !== void 0 ? ` Did you mean ${JSON.stringify(suggestion)}?` : "";
+  const placement = suggestion !== void 0 && !Object.hasOwn(WORKFLOW_TUNING_OPTIONS, suggestion.slice(2)) ? ` ${suggestion} belongs to ${program} agent; set script models and other worker options in agent() calls.` : "";
+  return `${known ? "Option" : "Unknown option before script path:"} ${option}${hint || placement ? "." : ""}${hint}${placement}`;
 }
 function optionDistance(left, right) {
   let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
@@ -35409,7 +35448,7 @@ function splitTuningFlags(argv, program) {
       };
     }
     if (value === "agent" && tuningArgs.length > 0) {
-      throw new CliUsageError(`Tuning flags must appear after ${program} agent, not before it`);
+      throw new CliUsageError(`${program}: Run option ${tuningArgs[0]} must come after agent: ${program} agent ${tuningArgs.join(" ")} --engine <engine> <prompt>`);
     }
     if (isKnownInlineOption(value) || isBooleanTuningOption(value)) {
       tuningArgs.push(value);
@@ -35425,7 +35464,7 @@ function splitTuningFlags(argv, program) {
       continue;
     }
     if (value.startsWith("-")) {
-      throw new CliUsageError(`${program}: Unknown option before script path: ${value}`);
+      throw new CliUsageError(`${program}: ${workflowOptionMessage(value, program)}`);
     }
     const scriptArgs = argv.slice(index + 1);
     const misplacedTuningFlag = scriptArgs.find(
@@ -35433,7 +35472,7 @@ function splitTuningFlags(argv, program) {
     );
     if (misplacedTuningFlag !== void 0) {
       throw new CliUsageError(
-        `Tuning flag ${misplacedTuningFlag} appears after the script path; put tuning flags before the script, or put \`--\` before the script path to pass it through`
+        `${program}: Run option ${misplacedTuningFlag} appears after the script path; put run options before the script, or put \`--\` before the script path to pass it through`
       );
     }
     return { tuningArgs, scriptArg: value, scriptArgs };

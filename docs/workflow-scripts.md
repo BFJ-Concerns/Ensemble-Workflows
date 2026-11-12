@@ -165,8 +165,9 @@ not undone.
 
 A budget refusal (`BudgetExceededError`) also propagates when a dispatch or
 session turn is not admitted. If uncaught, it fails the run; the manifest and
-completion sentinel record the refusal as the run's error. When a fallback
-engine's budget refuses re-admission, the error also names every earlier
+completion sentinel record the refusal as the run's error. The message names
+the refused call, spend, ceiling and remaining amount (zero when exhausted).
+When a fallback engine's budget refuses re-admission, the error also names every earlier
 refused target, its classification rule and a bounded diagnostic. These
 accounts reach the partial envelope and stderr, so the budget refusal stays
 legible beside the failures that advanced the chain.
@@ -225,7 +226,8 @@ beside the usage totals — how many findings a check accepted, or how many fix
 rounds ran: `await tally("fix rounds", 3)`. Ensemble cannot know which worker
 checked which, but the script can, and a tally is how it records that. Values
 must be finite numbers; recording a name again replaces its value; a blank
-name or a non-finite value throws.
+name or a non-finite value throws. A rejected value includes its type; strings
+are quoted so `"3"` cannot be mistaken for the number `3`.
 
 ### `budget`, `worktrees`, and `args`
 

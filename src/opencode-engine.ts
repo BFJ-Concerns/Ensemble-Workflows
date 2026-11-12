@@ -581,15 +581,18 @@ function collectProcess(
     const stdout: string[] = [];
     const stderr: string[] = [];
     let settled = false;
-    let exited = false;
-    let closed = false;
+    // Placement is asynchronous. The command may have exited and its pipes
+    // closed before containment handed it back, so events alone are not a
+    // complete lifecycle account.
+    let exited = child.exitCode !== null || child.signalCode !== null;
+    let closed = exited && (child.stdout?.closed ?? true) && (child.stderr?.closed ?? true);
     let stopped = false;
     let deadlineExpired = false;
     let stopping: Promise<void> | undefined;
     let drainTimer: NodeJS.Timeout | undefined;
     let processError: Error | undefined;
-    let exitCode: number | null = null;
-    let exitSignal: NodeJS.Signals | null = null;
+    let exitCode: number | null = child.exitCode;
+    let exitSignal: NodeJS.Signals | null = child.signalCode;
 
     const settle = (): void => {
       if (settled || !stopped || !closed) return;
@@ -627,7 +630,7 @@ function collectProcess(
       if (!settled) stop();
     };
     // Exit ends execution time; draining a completed process is not a timeout.
-    const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
+    const timeout = timeoutMs === undefined || exited ? undefined : setTimeout(() => {
       if (!settled && !exited) {
         deadlineExpired = true;
         stop();
@@ -668,6 +671,7 @@ function collectProcess(
       settle();
     });
     abortSignal?.addEventListener("abort", terminate, { once: true });
+    if (exited) stop();
     // Containment setup is asynchronous; cancellation can race the hand-off.
     if (abortSignal?.aborted) terminate();
   });

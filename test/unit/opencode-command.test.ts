@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
@@ -70,4 +74,47 @@ test("opencode bounds pipe drainage after an unconfirmed stop without losing col
   assert.equal(child.stderr!.destroyed, true);
   assert.equal(stop.mock.callCount(), 1);
   t.mock.timers.reset();
+});
+
+test("opencode settles and preserves the signal when containment hands back an already closed command", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-early-exit-"));
+  const fixture = path.join(dir, "opencode");
+  await writeFile(fixture, "#!/bin/sh\nexec sleep 120\n");
+  await chmod(fixture, 0o755);
+  const commands = new CommandContainment(new NoWorkerScopes());
+  const contain = commands.contain.bind(commands);
+  let handoff!: () => void;
+  const handedOff = new Promise<void>((resolve) => { handoff = resolve; });
+  t.mock.method(commands, "contain", async (...args: Parameters<CommandContainment["contain"]>) => {
+    const command = await contain(...args);
+    const closed = once(command.child, "close");
+    command.child.kill("SIGKILL");
+    await closed;
+    assert.equal(command.child.signalCode, "SIGKILL");
+    assert.equal(command.child.stdout?.closed, true);
+    assert.equal(command.child.stderr?.closed, true);
+    handoff();
+    return command;
+  });
+  const abort = new AbortController();
+  const pending = new OpenCodeCliRunner(fixture, { commands }).run({
+    prompt: "fixture", cwd: dir, providerModel: "fixture/model", signal: abort.signal
+  });
+  let result: Awaited<typeof pending> | undefined;
+  const settled = pending.then((value) => { result = value; });
+  try {
+    await handedOff;
+    // All hand-off and stop promises are now microtasks, with no process or
+    // I/O left to wait for. Advancing a phase is independent of host speed.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(result, "an already closed child must settle without an abort or deadline");
+    assert.equal(result.signal, "SIGKILL");
+    assert.equal(result.exitCode, null);
+    assert.equal(result.deadlineExpired, false);
+  } finally {
+    abort.abort();
+    await settled;
+    await commands.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

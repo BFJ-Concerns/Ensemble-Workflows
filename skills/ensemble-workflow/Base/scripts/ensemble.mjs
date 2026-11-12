@@ -23498,15 +23498,15 @@ function collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal,
     const stdout = [];
     const stderr = [];
     let settled = false;
-    let exited = false;
-    let closed = false;
+    let exited = child.exitCode !== null || child.signalCode !== null;
+    let closed = exited && (child.stdout?.closed ?? true) && (child.stderr?.closed ?? true);
     let stopped = false;
     let deadlineExpired = false;
     let stopping;
     let drainTimer;
     let processError;
-    let exitCode = null;
-    let exitSignal = null;
+    let exitCode = child.exitCode;
+    let exitSignal = child.signalCode;
     const settle = () => {
       if (settled || !stopped || !closed) return;
       settled = true;
@@ -23545,7 +23545,7 @@ function collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal,
     const terminate = () => {
       if (!settled) stop();
     };
-    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(() => {
+    const timeout = timeoutMs === void 0 || exited ? void 0 : setTimeout(() => {
       if (!settled && !exited) {
         deadlineExpired = true;
         stop();
@@ -23590,6 +23590,7 @@ function collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal,
       settle();
     });
     abortSignal?.addEventListener("abort", terminate, { once: true });
+    if (exited) stop();
     if (abortSignal?.aborted) terminate();
   });
 }

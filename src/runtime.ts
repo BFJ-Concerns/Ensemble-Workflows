@@ -94,6 +94,7 @@ import type {
   PreviousAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
+  EngineSessionLoss,
   EngineTurnOptions,
   EngineWorkerSession
 } from "./engines.js";
@@ -105,6 +106,7 @@ import type {
   RunRecordWriter,
   RuntimeAgentAttemptRecord,
   RuntimeAgentRecord,
+  SessionEventRecord,
   TerminalErrorRecord
 } from "./run-record.js";
 import { unknownWorktreeRecord } from "./worktree-isolation.js";
@@ -409,6 +411,8 @@ interface WorkerSessionState {
   /** The unsettled send, so close() can await it before finalising the placement. */
   pendingTurn: Promise<unknown> | null;
   closed: boolean;
+  /** The engine's report that the held worker is gone (`EngineSessionObserver.onLost`); null while none has arrived. */
+  lost: EngineSessionLoss | null;
 }
 
 /**
@@ -485,6 +489,18 @@ export class WorkerSession<Identified extends boolean = false> {
       return false;
     }
     return this.#now() - state.lastTurnEndedAt >= state.stalenessThresholdMs;
+  }
+
+  /**
+   * True once the session's engine has reported its held worker gone for
+   * good. A send to a lost session still dispatches and resolves its
+   * ordinary failed value on one `session-lost` attempt; the context the
+   * worker held is gone with it, so the script's remedy is a fresh session.
+   * False is not proof of a live worker: it says only that no loss has been
+   * observed, and an engine observes what its own watch can see.
+   */
+  get lost(): boolean {
+    return this.#state.lost !== null;
   }
 
   send(prompt: string, turn: SessionTurnOptions & { schema: JsonSchema }): Promise<Identified extends true ? IdentifiedAgentResult : unknown | null>;
@@ -1087,7 +1103,8 @@ export class EnsembleRuntime {
       lastTurnEndedAt: null,
       inFlight: false,
       pendingTurn: null,
-      closed: false
+      closed: false,
+      lost: null
     };
     const session = new WorkerSession<boolean>({
       state,
@@ -1299,13 +1316,26 @@ export class EnsembleRuntime {
     if (createSession === undefined) {
       throw new MultiTurnUnsupportedError(state.engine.name);
     }
-    state.engineSession ??= createSession.call(
-      state.engine,
-      {
-        ...this.#engineTurnOptions(options, state.placement.cwd),
-        ...(preparedStrip !== undefined ? { preparedStrip } : {})
-      }
-    );
+    if (state.engineSession === null) {
+      // The observer is this engine session's own: a chain step replaces the
+      // session, and a report from the one it replaced is nobody's loss.
+      const opened: { session: EngineWorkerSession | null } = { session: null };
+      opened.session = createSession.call(
+        state.engine,
+        {
+          ...this.#engineTurnOptions(options, state.placement.cwd),
+          ...(preparedStrip !== undefined ? { preparedStrip } : {})
+        },
+        {
+          onLost: (loss) => {
+            if (opened.session !== null && state.engineSession === opened.session) {
+              this.#noteSessionLost(state, loss);
+            }
+          }
+        }
+      );
+      state.engineSession = opened.session;
+    }
     const turnInvocation = state.engineSession.beginTurn(prompt, {
       ...(turn.schema !== undefined ? { schema: turn.schema } : {})
     });
@@ -1359,6 +1389,50 @@ export class EnsembleRuntime {
       };
     }
     return outcome;
+  }
+
+  /**
+   * A held worker's engine reported it lost. From here the session's handle
+   * reads `lost`, and the event is archived and announced now, whether or
+   * not one of its turns is executing. Nothing here blocks a send: the
+   * engine fails the session's later turns itself (`session-lost`), each
+   * on its own agent record. A report for a session already closed, or one
+   * arriving as the run ends, is that ending seen late and is dropped.
+   */
+  #noteSessionLost(state: WorkerSessionState, loss: EngineSessionLoss): void {
+    if (state.lost !== null || state.closed || this.#closed) {
+      return;
+    }
+    state.lost = loss;
+    const event: SessionEventRecord = {
+      sessionId: state.id,
+      engine: state.engine.name,
+      event: "lost",
+      nativeSession: loss.nativeSession,
+      turnsSettled: state.turnCount,
+      turnInFlight: state.inFlight ? state.turnCount + 1 : null,
+      reason: loss.reason,
+      observedAt: loss.observedAt
+    };
+    void this.#recordSessionEventSafely(event);
+    this.#emitEvent({
+      method: "session/lost",
+      params: { ...event, label: state.options.label ?? null },
+      receivedAt: loss.observedAt
+    });
+  }
+
+  /** Same observability contract as agent-record writes: failures surface as events, never as a session's failure. */
+  async #recordSessionEventSafely(event: SessionEventRecord): Promise<void> {
+    try {
+      await this.#runRecorder?.recordSessionEvent(event);
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: { sessionEvent: event.event, message: error instanceof Error ? error.message : String(error) },
+        receivedAt: Date.now()
+      });
+    }
   }
 
   async #closeWorkerSession(state: WorkerSessionState): Promise<void> {

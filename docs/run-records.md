@@ -589,6 +589,18 @@ families; their versions are listed in [Schema versions](#schema-versions).
   entries carry `answered_by` (the answerer the decision file named, or
   `null` when absent or unreadable). An `answered` entry also carries the
   decider's `note` (or `null`).
+- `session_events`: what happened to the run's multi-turn workers outside
+  any one turn's own outcome, in event order. Each entry is written when the
+  event is observed, between turns included, and no settled turn's agent
+  record is changed by it. The one `event` is `"lost"`: the session's engine
+  found its worker gone for good while the session was still open; a session
+  the script or the run's ending closed records nothing. Each entry carries
+  `session_id` (the `session.id` on that session's agent records), `engine`,
+  `event`, `native_session` (the engine's own id for the worker, as the
+  session's transcripts carry it in `session_id` on Claude and `thread_id`
+  on Codex, or `null`), `turns_settled` (how many of the session's turns had
+  settled), `turn_in_flight` (the turn then running, or `null` when the
+  session was idle), `reason` (the engine's account), and `at`.
 - `tallies`: `name -> number`, the counts the script recorded with `tally()`,
   stored verbatim (last write per name wins) and written as each is recorded,
   so a count recorded before the run ended is in the archive whether or not

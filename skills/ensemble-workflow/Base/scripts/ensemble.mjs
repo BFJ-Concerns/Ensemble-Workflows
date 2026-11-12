@@ -16182,6 +16182,7 @@ var RunRecordWriter = class _RunRecordWriter {
         }
       ],
       hold_events: [],
+      session_events: [],
       tallies: {},
       tallies_unavailable: "none-recorded",
       cost_rollup: {},
@@ -16297,6 +16298,31 @@ var RunRecordWriter = class _RunRecordWriter {
         return;
       }
       this.manifest.hold_events.push(entry);
+      await this.#writeManifest();
+    });
+  }
+  /**
+   * Append one session lifecycle event. It lands in the manifest at once,
+   * whether or not any of the session's turns is executing, so the event is
+   * in the archive however the run then ends; a manifest already sealed
+   * takes nothing.
+   */
+  async recordSessionEvent(event) {
+    const entry = {
+      session_id: event.sessionId,
+      engine: event.engine,
+      event: event.event,
+      native_session: event.nativeSession,
+      turns_settled: event.turnsSettled,
+      turn_in_flight: event.turnInFlight,
+      reason: event.reason,
+      at: new Date(event.observedAt).toISOString()
+    };
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.session_events.push(entry);
       await this.#writeManifest();
     });
   }
@@ -25143,6 +25169,17 @@ var WorkerSession = class {
     }
     return this.#now() - state.lastTurnEndedAt >= state.stalenessThresholdMs;
   }
+  /**
+   * True once the session's engine has reported its held worker gone for
+   * good. A send to a lost session still dispatches and resolves its
+   * ordinary failed value on one `session-lost` attempt; the context the
+   * worker held is gone with it, so the script's remedy is a fresh session.
+   * False is not proof of a live worker: it says only that no loss has been
+   * observed, and an engine observes what its own watch can see.
+   */
+  get lost() {
+    return this.#state.lost !== null;
+  }
   send(prompt, turn = {}) {
     return this.#sendTurn(prompt, turn);
   }
@@ -25601,7 +25638,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       lastTurnEndedAt: null,
       inFlight: false,
       pendingTurn: null,
-      closed: false
+      closed: false,
+      lost: null
     };
     const session = new WorkerSession({
       state,
@@ -25770,13 +25808,24 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (createSession === void 0) {
       throw new MultiTurnUnsupportedError(state.engine.name);
     }
-    state.engineSession ??= createSession.call(
-      state.engine,
-      {
-        ...this.#engineTurnOptions(options, state.placement.cwd),
-        ...preparedStrip !== void 0 ? { preparedStrip } : {}
-      }
-    );
+    if (state.engineSession === null) {
+      const opened = { session: null };
+      opened.session = createSession.call(
+        state.engine,
+        {
+          ...this.#engineTurnOptions(options, state.placement.cwd),
+          ...preparedStrip !== void 0 ? { preparedStrip } : {}
+        },
+        {
+          onLost: (loss) => {
+            if (opened.session !== null && state.engineSession === opened.session) {
+              this.#noteSessionLost(state, loss);
+            }
+          }
+        }
+      );
+      state.engineSession = opened.session;
+    }
     const turnInvocation = state.engineSession.beginTurn(prompt, {
       ...turn.schema !== void 0 ? { schema: turn.schema } : {}
     });
@@ -25819,6 +25868,48 @@ var EnsembleRuntime = class _EnsembleRuntime {
       };
     }
     return outcome;
+  }
+  /**
+   * A held worker's engine reported it lost. From here the session's handle
+   * reads `lost`, and the event is archived and announced now, whether or
+   * not one of its turns is executing. Nothing here blocks a send: the
+   * engine fails the session's later turns itself (`session-lost`), each
+   * on its own agent record. A report for a session already closed, or one
+   * arriving as the run ends, is that ending seen late and is dropped.
+   */
+  #noteSessionLost(state, loss) {
+    if (state.lost !== null || state.closed || this.#closed) {
+      return;
+    }
+    state.lost = loss;
+    const event = {
+      sessionId: state.id,
+      engine: state.engine.name,
+      event: "lost",
+      nativeSession: loss.nativeSession,
+      turnsSettled: state.turnCount,
+      turnInFlight: state.inFlight ? state.turnCount + 1 : null,
+      reason: loss.reason,
+      observedAt: loss.observedAt
+    };
+    void this.#recordSessionEventSafely(event);
+    this.#emitEvent({
+      method: "session/lost",
+      params: { ...event, label: state.options.label ?? null },
+      receivedAt: loss.observedAt
+    });
+  }
+  /** Same observability contract as agent-record writes: failures surface as events, never as a session's failure. */
+  async #recordSessionEventSafely(event) {
+    try {
+      await this.#runRecorder?.recordSessionEvent(event);
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: { sessionEvent: event.event, message: error instanceof Error ? error.message : String(error) },
+        receivedAt: Date.now()
+      });
+    }
   }
   async #closeWorkerSession(state) {
     if (state.closed) {
@@ -34614,6 +34705,17 @@ async function runEnsembleCli(argv, options = {}) {
           answered_by: event.params.answeredBy ?? null
         })}
 `);
+        return;
+      }
+      if (event.method === "session/lost") {
+        const engine = typeof event.params.engine === "string" ? event.params.engine : "session";
+        const sessionId = typeof event.params.sessionId === "number" ? event.params.sessionId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const when = typeof event.params.turnInFlight === "number" ? `during turn ${event.params.turnInFlight}` : `while idle after turn ${typeof event.params.turnsSettled === "number" ? event.params.turnsSettled : "?"}`;
+        stderr.write(
+          `[${engine}] session ${sessionId}${label} lost its worker ${when}: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}; its context is gone and each later send fails with session-lost
+`
+        );
         return;
       }
       if (event.method === "claude/workerScopeWatchError") {

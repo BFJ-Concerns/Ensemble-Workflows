@@ -828,7 +828,7 @@ await builder.close();
   cache, so a change of model means a new session.
 - **Per turn:** only `schema`. Each turn has the same contract as a one-shot
   `agent()` call — a validated value, the reply text, or `null` — and a failed
-  turn leaves the session usable. Creating a session spawns nothing; the
+  turn leaves the session usable unless its worker was lost. Creating a session spawns nothing; the
   worker starts at the first `send()`. opencode sessions throw before any
   worker spawns.
 - **Identified turns:** `identity: true` at creation makes every `send()`
@@ -861,6 +861,14 @@ await builder.close();
   including before the first turn. `handle.staleAfterMs` gives the active
   threshold, or `null` when marking is disabled. A Claude session below this
   idle threshold may still miss the prompt cache.
+- **Lost workers:** `handle.lost` becomes `true` once the session's engine
+  has found its worker gone for good — not closed by the script or the run.
+  The run says so on stderr when the engine observes it and records a
+  `lost` entry in the manifest's `session_events`, whether or not a turn was
+  running. A send to a lost session still dispatches, fails on one
+  `session-lost` attempt without a retry, and resolves `null`; the context
+  the worker held is gone, so start a fresh session and brief it again.
+  `false` means only that no loss has been observed.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.

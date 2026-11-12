@@ -613,6 +613,15 @@ interface Manifest {
    */
   hold_events: HoldEventEntry[];
   /**
+   * What happened to the run's multi-turn workers outside any one turn's
+   * own outcome, append-only in event order. A turn's outcome is its agent
+   * record's; an entry here is the session's, written when the event is
+   * observed — between turns included — so a worker lost while it sat idle
+   * is on record at once and no settled turn's record is rewritten to say
+   * so. `session_id` is the `session.id` every turn's agent record carries.
+   */
+  session_events: SessionEventEntry[];
+  /**
    * Script-recorded counts: names the author chose, numbers the
    * script recorded through the `tally` hook, stored verbatim beside the
    * usage rollup — a name recorded again replaces its value. The runtime
@@ -641,6 +650,47 @@ interface HoldEventEntry {
   /** On `answered`: the decider's note; null when none, and elsewhere. */
   note: string | null;
   at: string;
+}
+
+/**
+ * The session lifecycle vocabulary. `lost`: the session's engine established
+ * that its held worker is gone for good while the session was still open
+ * (`EngineSessionObserver.onLost`). A session the script closed, or the
+ * run's ending closed, records nothing.
+ */
+type SessionEventKind = "lost";
+
+interface SessionEventEntry {
+  /** The run-scoped session ordinal: `session.id` on each of its turns' agent records. */
+  session_id: number;
+  engine: EngineName;
+  event: SessionEventKind;
+  /**
+   * The engine's own identity for the held worker — the value the session's
+   * archived transcripts carry as `session_id` (Claude) or `thread_id`
+   * (Codex) — or null where the engine had assigned none.
+   */
+  native_session: string | null;
+  /** How many of the session's turns had settled when the event was observed. */
+  turns_settled: number;
+  /** The turn executing when the event was observed, or null when the session sat idle between turns. */
+  turn_in_flight: number | null;
+  /** The engine's account of the event, in its own words. */
+  reason: string;
+  at: string;
+}
+
+/** One session lifecycle event, as the runtime hands it to `recordSessionEvent`. */
+export interface SessionEventRecord {
+  sessionId: number;
+  engine: EngineName;
+  event: SessionEventKind;
+  nativeSession: string | null;
+  turnsSettled: number;
+  turnInFlight: number | null;
+  reason: string;
+  /** Epoch ms the engine observed the event. */
+  observedAt: number;
 }
 
 interface WorkflowInvocationEntry {
@@ -810,6 +860,7 @@ export class RunRecordWriter {
         }
       ],
       hold_events: [],
+      session_events: [],
       tallies: {},
       tallies_unavailable: "none-recorded",
       cost_rollup: {},
@@ -944,6 +995,32 @@ export class RunRecordWriter {
         return;
       }
       this.manifest.hold_events.push(entry);
+      await this.#writeManifest();
+    });
+  }
+
+  /**
+   * Append one session lifecycle event. It lands in the manifest at once,
+   * whether or not any of the session's turns is executing, so the event is
+   * in the archive however the run then ends; a manifest already sealed
+   * takes nothing.
+   */
+  async recordSessionEvent(event: SessionEventRecord): Promise<void> {
+    const entry: SessionEventEntry = {
+      session_id: event.sessionId,
+      engine: event.engine,
+      event: event.event,
+      native_session: event.nativeSession,
+      turns_settled: event.turnsSettled,
+      turn_in_flight: event.turnInFlight,
+      reason: event.reason,
+      at: new Date(event.observedAt).toISOString()
+    };
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.session_events.push(entry);
       await this.#writeManifest();
     });
   }

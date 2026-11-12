@@ -180,10 +180,56 @@ export interface EngineSessionTurn {
  * carry no `close`; only the session's own `close()` (or the adapter's)
  * tears the held worker down. Engine, model, and effort were fixed at
  * creation; the turn brings only its prompt and schema.
+ *
+ * A held worker can be lost: gone for good while its session was still
+ * open, by nothing the session's `close()` or the run's ending did. The
+ * engine alone establishes that, and from then on the session is terminal:
+ * it reports the loss once (`EngineSessionObserver.onLost`), and every
+ * attempt of every later turn returns a `session-lost` attempt failure
+ * without submitting anything or starting a replacement worker. `close()`
+ * stays safe to call.
  */
 export interface EngineWorkerSession {
   beginTurn(prompt: string, turn: EngineSessionTurn): EngineInvocation;
   close(): Promise<void>;
+}
+
+/** A held worker's loss, as the engine that established it reports it. */
+export interface EngineSessionLoss {
+  /**
+   * The engine's own identity for the lost worker, as the session's turn
+   * transcripts carry it (a Claude session id, a Codex thread id); null
+   * where the engine had assigned none.
+   */
+  nativeSession: string | null;
+  /** How the engine established the loss, in one sentence an operator can act on. */
+  reason: string;
+  /** Epoch ms of the observation that established it. */
+  observedAt: number;
+}
+
+/**
+ * What the runtime hands an engine with each session it asks for
+ * (`EngineAdapter.createSession`), so the engine can report on the held
+ * worker at any moment of the session's life, in a turn or between turns.
+ */
+export interface EngineSessionObserver {
+  /**
+   * The held worker is lost. Called at most once per session, when the
+   * engine establishes the loss and however it does: a watch that runs
+   * between turns, or an attempt that found the worker gone, which reports
+   * here before it returns its `session-lost` failure. Three things are
+   * never a loss, and the engine tells them apart before it reports: an
+   * observation that itself failed (a roster query that errored says
+   * nothing about the worker), an absence the engine's substrate produces
+   * on its way to restoring the worker (the engine reports only once its
+   * own rule says the worker will not come back), and the worker ending
+   * because the session was closed or the run ended. The call is
+   * synchronous, and like every observer callback it is reporting: the
+   * engine guards it, so a throw out of it never fails a turn or stops a
+   * watch.
+   */
+  onLost(loss: EngineSessionLoss): void;
 }
 
 export interface EngineAdapter {
@@ -223,9 +269,10 @@ export interface EngineAdapter {
    * (opencode, which is held at the one-shot surface, and any future engine
    * that never considered sessions, are safe by construction).
    * `options.schema` is ignored here — schema is per-turn, carried by each
-   * `beginTurn`.
+   * `beginTurn`. `observer` is the session's own, for its whole life: an
+   * engine whose held worker can be lost reports the loss through it.
    */
-  createSession?(options: EngineTurnOptions): EngineWorkerSession;
+  createSession?(options: EngineTurnOptions, observer: EngineSessionObserver): EngineWorkerSession;
   /**
    * Tear the adapter down, cancelling active invocations. Contract: every
    * active invocation's attempt must settle (resolve or reject) as a

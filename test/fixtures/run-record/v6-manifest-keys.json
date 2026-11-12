@@ -28,6 +28,7 @@
     "run_timeout_ms",
     "run_uuid",
     "schema_version",
+    "session_events",
     "started_at",
     "status",
     "tallies",

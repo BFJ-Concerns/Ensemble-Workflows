@@ -185,6 +185,8 @@ export type {
   EngineAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
+  EngineSessionLoss,
+  EngineSessionObserver,
   EngineSessionTurn,
   EngineTurnOptions,
   EngineWorkerSession,

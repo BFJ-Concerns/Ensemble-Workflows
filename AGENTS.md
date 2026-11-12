@@ -60,4 +60,8 @@ record field — update the matching page in the same change. Describe the
 current behaviour only; how it used to work belongs in the commit message.
 `test/unit/progress.test.ts` parses the status-file schema section of
 `docs/run-records.md` and fails unless its field bullets match the snapshot
-the code publishes.
+the code publishes. That page states each artefact family's current schema
+version once, in the table under its "Schema versions" heading; a test reads
+a family's row with `documentedSchemaVersion()`
+(`test/documented-schema-versions.ts`) and compares it with what the runtime
+writes.

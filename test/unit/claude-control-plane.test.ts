@@ -9,6 +9,7 @@ import { execFileSync, spawn } from "node:child_process";
 
 import {
   ClaudeCliControlPlane,
+  LEAN_START_FLAGS,
   WORKER_MARKER_VARIABLE
 } from "../../src/claude-control-plane.js";
 import { SANDBOXED_WORKSPACE_VARIABLE } from "../../src/engine-environment.js";
@@ -1850,7 +1851,11 @@ test("a tool-surface probe fixes its provider route in settings, carries deny ru
     CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0"
   } });
   try {
-    const surface = await plane.probeToolSurface({ cwd: dir, permissionDenyRules: ["Agent"], settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_USE_VERTEX: "1", CLAUDE_CODE_USE_FOUNDRY: "1" }, signal: AbortSignal.timeout(10_000) });
+    const surface = await plane.probeToolSurface({ cwd: dir, lean: true, permissionDenyRules: ["Agent"], settingsEnv: { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_USE_VERTEX: "1", CLAUDE_CODE_USE_FOUNDRY: "1" }, signal: AbortSignal.timeout(10_000) });
+    const leanArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+    const leanFlag = leanArgv.indexOf("--safe-mode");
+    assert.notEqual(leanFlag, -1);
+    assert.deepEqual(leanArgv.slice(leanFlag, leanFlag + LEAN_START_FLAGS.length), [...LEAN_START_FLAGS]);
     assert.equal(surface.cliVersion, "2.1.fixture");
     assert.deepEqual(surface.tools, [{ name: "Read", exposure: "loaded" }]);
     assert.equal(await readFile(actionsPath, "utf8"), "stop\nrm\n");
@@ -1861,6 +1866,8 @@ test("a tool-surface probe fixes its provider route in settings, carries deny ru
     assert.equal(settings[0]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "1");
     assert.deepEqual(settings[0]?.permissions?.deny, ["Agent"]);
     const handle = await plane.dispatch({ cwd: dir, name: "unstripped", prompt: "ordinary" });
+    const ordinaryArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+    assert.equal(ordinaryArgv.includes("--safe-mode"), false);
     await plane.stop(handle);
     assert.equal(settings[1]?.env.ANTHROPIC_BASE_URL, "https://worker.invalid");
     assert.equal(settings[1]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "0");
@@ -1912,4 +1919,56 @@ test("a cancelled probe retains ownership of a session registering after the nat
     assert.match(await readFile(actions, "utf8"), /stop\nrm\n/);
     await assert.rejects(access(registered), { code: "ENOENT" });
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a lean dispatch adds safe mode and an ordinary dispatch adds nothing", async (context) => {
+  for (const lean of [true, false]) {
+    await context.test(lean ? "lean" : "ordinary", async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-lean-"));
+      try {
+        const argvPath = path.join(dir, "dispatch-argv.json");
+        const stubPath = path.join(dir, "claude-stub.mjs");
+        const sessionId = "00000000-0000-4000-8000-000000000032";
+        const name = "lean-probe";
+        await writeFile(
+          stubPath,
+          `#!/usr/bin/env node
+            import { writeFile } from "node:fs/promises";
+            const args = process.argv.slice(2);
+            if (args[0] === "--bg") {
+              await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
+              process.exit(0);
+            }
+            if (args[0] === "agents" && args[1] === "--json") {
+              process.stdout.write(JSON.stringify([{
+                id: "lean-1",
+                sessionId: ${JSON.stringify(sessionId)},
+                name: ${JSON.stringify(name)},
+                kind: "background",
+                cwd: ${JSON.stringify(dir)},
+                status: "busy",
+                state: "working"
+              }]));
+            }
+            process.exit(0);
+          `
+        );
+        await chmod(stubPath, 0o755);
+        const controlPlane = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000 });
+        const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir, ...(lean ? { lean: true } : {}) });
+        const argv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+        const flagIndex = argv.indexOf("--safe-mode");
+        if (lean) {
+          assert.notEqual(flagIndex, -1);
+          assert.deepEqual(argv.slice(flagIndex, flagIndex + LEAN_START_FLAGS.length), [...LEAN_START_FLAGS]);
+        } else {
+          assert.equal(flagIndex, -1);
+          assert.equal(argv.includes("--strict-mcp-config"), false);
+        }
+        await controlPlane.stop(handle);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
 });

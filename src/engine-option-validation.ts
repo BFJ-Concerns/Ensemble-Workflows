@@ -61,7 +61,8 @@ const AGENT_OPTION_KEYS = Object.keys({
   label: true,
   phase: true,
   identity: true,
-  strip: true
+  strip: true,
+  lean: true
 } satisfies Record<keyof AgentOptions, true>);
 const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
 /**
@@ -164,6 +165,14 @@ export function assertValidAgentOptions(options: object): void {
       }
     });
   }
+  const lean = read("lean", "a boolean");
+  if (lean !== unreadable) {
+    collect(() => {
+      if (lean !== undefined && typeof lean !== "boolean") {
+        throw new InvalidAgentOptionValueError("lean", lean, "a boolean");
+      }
+    });
+  }
   const strip = read("strip", "a list of capabilities");
   if (strip !== unreadable && strip !== undefined) {
     collect(() => assertValidStripOption(strip));
@@ -192,6 +201,7 @@ const WORKER_SESSION_OPTION_KEYS = Object.keys({
   label: true,
   phase: true,
   strip: true,
+  lean: true,
   stalenessMark: true,
   identity: true
 } satisfies Record<keyof WorkerSessionOptions, true>);
@@ -230,6 +240,9 @@ export function assertValidWorkerSessionOptions(options: object): void {
   }
   if (values.identity !== undefined && typeof values.identity !== "boolean") {
     throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
+  }
+  if (values.lean !== undefined && typeof values.lean !== "boolean") {
+    throw new InvalidAgentOptionValueError("lean", values.lean, "a boolean");
   }
   if (values.strip !== undefined) {
     assertValidStripOption(values.strip);

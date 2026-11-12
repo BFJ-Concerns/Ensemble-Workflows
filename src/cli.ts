@@ -55,7 +55,8 @@ const AGENT_INVOCATION_OPTIONS = {
   timeout: { type: "string" },
   "caller-identity": { type: "string" },
   "hold-scope": { type: "string" },
-  "worker-scope": { type: "string" }
+  "worker-scope": { type: "string" },
+  lean: { type: "boolean" }
 } as const;
 
 export interface EnsembleCliOptions {
@@ -377,6 +378,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       ...(invocation.budgetCeilings !== undefined ? { budgetCeilings: invocation.budgetCeilings } : {}),
       ...(holdScope !== null ? { holdScope } : {}),
       ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
+      ...(invocation.lean === true ? { lean: true } : {}),
       ...(Object.keys(ambientSettings.workerEnvironment).length > 0
         ? { workerEnvironment: ambientSettings.workerEnvironment }
         : {}),
@@ -934,6 +936,8 @@ interface InvocationTuning {
   callerIdentity?: string;
   /** The scope this run's holds publish under; outranks the inherited env variable. */
   holdScope?: string;
+  /** Run-wide lean start: every worker begins without the operator's interactive context. */
+  lean?: boolean;
 }
 
 interface ParsedWorkflowInvocation extends InvocationTuning {
@@ -1050,6 +1054,7 @@ function cliFlags(invocation: ParsedInvocation): {
   concurrency?: Record<string, number>;
   timeoutMs?: number;
   strip?: string[];
+  lean?: boolean;
   jsonArgs: boolean;
 } {
   return {
@@ -1059,6 +1064,7 @@ function cliFlags(invocation: ParsedInvocation): {
     ...(invocation.concurrencyCaps !== undefined ? { concurrency: invocation.concurrencyCaps } : {}),
     ...(invocation.timeoutMs !== undefined ? { timeoutMs: invocation.timeoutMs } : {}),
     ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
+    ...(invocation.lean === true ? { lean: true } : {}),
     jsonArgs: invocation.kind === "workflow" && invocation.jsonArgsProvided
   };
 }
@@ -1377,6 +1383,20 @@ async function parseInvocation(argv: string[], cwd: string, stdin: Readable, pro
   return parseWorkflowInvocation(argv, cwd, program);
 }
 
+/** The run-tuning flags a workflow invocation takes before the script path; a value-less flag is one whose `type` is `boolean`. */
+const WORKFLOW_TUNING_OPTIONS = {
+  "json-args": { type: "string" },
+  budget: { type: "string", multiple: true },
+  "agent-ceiling": { type: "string" },
+  concurrency: { type: "string", multiple: true },
+  timeout: { type: "string" },
+  strip: { type: "string", multiple: true },
+  "caller-identity": { type: "string" },
+  "hold-scope": { type: "string" },
+  "worker-scope": { type: "string" },
+  lean: { type: "boolean" }
+} as const;
+
 async function parseWorkflowInvocation(argv: string[], cwd: string, program: string): Promise<ParsedWorkflowInvocation> {
   const split = splitTuningFlags(argv, program);
   rejectDuplicateScalarFlags(split.tuningArgs);
@@ -1384,17 +1404,7 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
   try {
     parsed = parseArgs({
       args: split.tuningArgs,
-      options: {
-        "json-args": { type: "string" },
-        budget: { type: "string", multiple: true },
-        "agent-ceiling": { type: "string" },
-        concurrency: { type: "string", multiple: true },
-        timeout: { type: "string" },
-        strip: { type: "string", multiple: true },
-        "caller-identity": { type: "string" },
-        "hold-scope": { type: "string" },
-        "worker-scope": { type: "string" }
-      },
+      options: WORKFLOW_TUNING_OPTIONS,
       strict: true,
       allowPositionals: false
     });
@@ -1429,7 +1439,8 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
     ...(strip !== undefined ? { strip } : {}),
     ...(callerIdentity !== undefined ? { callerIdentity } : {}),
     ...(workerScope !== undefined ? { workerScope } : {}),
-    ...(holdScope !== undefined ? { holdScope } : {})
+    ...(holdScope !== undefined ? { holdScope } : {}),
+    ...(parsed.values.lean === true ? { lean: true } : {})
   };
 }
 
@@ -1530,7 +1541,8 @@ async function parseAgentInvocation(
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(callerIdentity !== undefined ? { callerIdentity } : {}),
     ...(workerScope !== undefined ? { workerScope } : {}),
-    ...(holdScope !== undefined ? { holdScope } : {})
+    ...(holdScope !== undefined ? { holdScope } : {}),
+    ...(parsed.values.lean === true ? { lean: true } : {})
   };
 }
 
@@ -1638,7 +1650,7 @@ function splitTuningFlags(
       throw new CliUsageError(`Tuning flags must appear after ${program} agent, not before it`);
     }
 
-    if (isKnownInlineOption(value)) {
+    if (isKnownInlineOption(value) || isBooleanTuningOption(value)) {
       tuningArgs.push(value);
       continue;
     }
@@ -1658,7 +1670,9 @@ function splitTuningFlags(
     }
 
     const scriptArgs = argv.slice(index + 1);
-    const misplacedTuningFlag = scriptArgs.find((argument) => isKnownOption(argument) || isKnownInlineOption(argument));
+    const misplacedTuningFlag = scriptArgs.find(
+      (argument) => isKnownOption(argument) || isKnownInlineOption(argument) || isBooleanTuningOption(argument)
+    );
     if (misplacedTuningFlag !== undefined) {
       throw new CliUsageError(
         `Tuning flag ${misplacedTuningFlag} appears after the script path; put tuning flags before the script, or put \`--\` before the script path to pass it through`
@@ -1776,18 +1790,20 @@ function isKnownOption(value: string): boolean {
   );
 }
 
+/** A tuning flag that consumes no value token, read off the option map's own `type` — not a hand-kept flag list. */
+function isBooleanTuningOption(value: string): boolean {
+  if (!value.startsWith("--")) {
+    return false;
+  }
+  const name = value.slice(2);
+  return Object.hasOwn(WORKFLOW_TUNING_OPTIONS, name) && WORKFLOW_TUNING_OPTIONS[name as keyof typeof WORKFLOW_TUNING_OPTIONS].type === "boolean";
+}
+
 function isKnownInlineOption(value: string): boolean {
-  return (
-    value.startsWith("--json-args=") ||
-    value.startsWith("--budget=") ||
-    value.startsWith("--agent-ceiling=") ||
-    value.startsWith("--concurrency=") ||
-    value.startsWith("--timeout=") ||
-    value.startsWith("--strip=") ||
-    value.startsWith("--caller-identity=") ||
-    value.startsWith("--worker-scope=") ||
-    value.startsWith("--hold-scope=")
-  );
+  if (!value.startsWith("--") || !value.includes("=")) {
+    return false;
+  }
+  return Object.hasOwn(WORKFLOW_TUNING_OPTIONS, value.slice(2, value.indexOf("=")));
 }
 
 async function parseJsonArgs(value: string, cwd: string): Promise<unknown> {
@@ -2127,7 +2143,8 @@ const RUN_OPTION_SYNOPSES: readonly string[] = [
   "--strip capability",
   "--caller-identity <identity>",
   "--hold-scope <scope>",
-  "--worker-scope worker|run"
+  "--worker-scope worker|run",
+  "--lean"
 ];
 
 /** The flags `agent` accepts between the subcommand and the prompt (`--engine` is in the synopsis). */
@@ -2149,7 +2166,8 @@ const AGENT_OPTION_SYNOPSES: readonly string[] = [
   "--timeout ms",
   "--caller-identity <identity>",
   "--hold-scope <scope>",
-  "--worker-scope worker|run"
+  "--worker-scope worker|run",
+  "--lean"
 ];
 
 /**

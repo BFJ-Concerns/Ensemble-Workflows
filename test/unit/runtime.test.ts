@@ -7,7 +7,7 @@ import test from "node:test";
 import type { LiveAgentSnapshot } from "../../src/progress.js";
 import type { TurnProgressObserver } from "../../src/app-server.js";
 import { appServerErrorFromPayload } from "../../src/app-server.js";
-import { CodexEngineAdapter, EngineRegistry } from "../../src/engines.js";
+import { CodexEngineAdapter, OpenCodeEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import { createWorkflowHooks, parallel, pipeline } from "../../src/hooks.js";
 import { isRunEnding } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -30,6 +30,7 @@ import {
   CapabilityStripUnsupportedError,
   FallbackTargetRejectedError,
   InvalidAgentOptionValueError,
+  LeanStartUnsupportedError,
   InvalidAgentSchemaError,
   MissingEngineError,
   RemovedAgentOptionError,
@@ -5568,3 +5569,316 @@ for (const engineName of ["codex", "claude", "opencode"] as const) {
     } finally { await runtime.close(); }
   });
 }
+
+/** A ChainEngine that also holds sessions: each turn answers the next scripted step on the same engine. */
+class SessionEngine extends ChainEngine {
+  readonly sessionsCreated: Array<{ model: string | undefined }> = [];
+
+  createSession(options: EngineTurnOptions): EngineWorkerSession {
+    this.sessionsCreated.push({ model: options.model });
+    const invocation = this.createInvocation.bind(this);
+    return {
+      beginTurn: (prompt, turn) => invocation(prompt, { ...options, ...(turn.schema !== undefined ? { schema: turn.schema } : {}) }),
+      close: async () => {}
+    };
+  }
+}
+
+test("a lean start reaches the engine's turn options and the durable record, and a worker nobody asked to be lean is unchanged", async () => {
+  const seen: Array<boolean | undefined> = [];
+  const engine: EngineAdapter = {
+    name: "claude",
+    concurrency: 1,
+    leanStart: { route: "config", detail: "setting sources withheld" },
+    schedule: async (task) => task(),
+    createInvocation: (_prompt, options) => {
+      seen.push(options.lean);
+      return { runAttempt: async () => turn("done") };
+    },
+    close: async () => undefined
+  };
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  try {
+    await runtime.agent("lean work", { engine: "claude", lean: true });
+    await runtime.agent("ordinary work", { engine: "claude" });
+    assert.deepEqual(seen, [true, undefined]);
+    assert.deepEqual(records.find((record) => record.prompt === "lean work")?.lean, {
+      requested: true,
+      route: "config",
+      detail: "setting sources withheld"
+    });
+    assert.equal(records.find((record) => record.prompt === "ordinary work")?.lean, null);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a lean start an engine cannot arrange fails loud before any worker spawns — on the call's engine and on a chain entry alike", async () => {
+  const invocations: string[] = [];
+  const codex: EngineAdapter = {
+    name: "codex",
+    concurrency: 1,
+    leanStart: { route: "unsupported", detail: "no measured route" },
+    schedule: async (task) => task(),
+    createInvocation: () => {
+      invocations.push("codex");
+      return { runAttempt: async () => turn("never") };
+    },
+    close: async () => undefined
+  };
+  const claude: EngineAdapter = {
+    name: "claude",
+    concurrency: 1,
+    leanStart: { route: "config", detail: "setting sources withheld" },
+    schedule: async (task) => task(),
+    createInvocation: () => {
+      invocations.push("claude");
+      return { runAttempt: async () => turn("never") };
+    },
+    close: async () => undefined
+  };
+  const records: unknown[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([codex, claude]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(record); } } as RunRecordWriter);
+  try {
+    await assert.rejects(
+      () => runtime.agent("lean work", { engine: "codex", lean: true }),
+      (error: unknown) => error instanceof LeanStartUnsupportedError && error.message.includes("no measured route")
+    );
+    // The chain entry is a dispatch of its own: judged now, not on the day the chain first advances.
+    await assert.rejects(
+      () => runtime.agent("lean work", { engine: "claude", lean: true, fallback: [{ engine: "codex", model: "gpt-6.1-sol" }] }),
+      LeanStartUnsupportedError
+    );
+    assert.deepEqual(invocations, []);
+    assert.deepEqual(records, []);
+    // The option is a boolean: anything else is a rejected option, pre-spawn.
+    await assert.rejects(() => runtime.agent("x", { engine: "claude", lean: "yes" as unknown as boolean }), /lean/);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a run-wide lean start reaches every worker, a call cannot lift it, and a session carries it for its life", async () => {
+  const seen: Array<{ engine: string; lean: boolean | undefined }> = [];
+  const claude = new SessionEngine("claude", [answers("one"), answers("two"), answers("three")]);
+  const leanClaude: EngineAdapter = Object.assign(claude, { leanStart: { route: "config" as const, detail: "setting sources withheld" } });
+  const createInvocation = claude.createInvocation.bind(claude);
+  claude.createInvocation = (prompt, options) => {
+    seen.push({ engine: "claude", lean: options.lean });
+    return createInvocation(prompt, options);
+  };
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([leanClaude]), defaultMaxAttempts: 1, lean: true });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  try {
+    assert.equal(await runtime.agent("one", { engine: "claude", lean: false }), "one");
+    const session = runtime.createWorkerSession({ engine: "claude" });
+    assert.equal(await session.send("two"), "two");
+    assert.equal(await session.send("three"), "three");
+    await session.close();
+    // The one-shot call and each of the session's two turns, every dispatch lean.
+    assert.deepEqual(seen.map((entry) => entry.lean), [true, true, true]);
+    assert.deepEqual(claude.sessionsCreated, [{ model: undefined }]);
+    for (const record of records) {
+      assert.deepEqual(record.lean, { requested: true, route: "config", detail: "setting sources withheld" }, record.prompt);
+    }
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a run-wide lean start lays its flag over the author's options without copying them: a Proxy's get trap still supplies the rest", async () => {
+  const seen: EngineTurnOptions[] = [];
+  const engine: EngineAdapter = {
+    name: "claude",
+    concurrency: 1,
+    capabilities: { skills: { route: "config", detail: "deny rules" }, agents: { route: "config", detail: "deny rules" } },
+    leanStart: { route: "config", detail: "setting sources withheld" },
+    schedule: async (task) => task(),
+    createInvocation: (_prompt, options) => {
+      seen.push(options);
+      return { runAttempt: async () => turn('{"ok":true}') };
+    },
+    close: async () => undefined
+  };
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1, lean: true, strip: ["skills"] });
+  try {
+    // Only `engine` is an own property; the deadline and schema come from
+    // the get trap alone, as an author's accessor-backed options would.
+    const options = new Proxy({ engine: "claude" } as Partial<AgentOptions>, {
+      get(target, property, receiver) {
+        if (property === "timeoutMs") {
+          return 1234;
+        }
+        if (property === "schema") {
+          return { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] };
+        }
+        return Reflect.get(target, property, receiver);
+      }
+    });
+    assert.deepEqual(await runtime.agent("go", options), { ok: true });
+    assert.equal(seen[0]?.lean, true);
+    assert.deepEqual(seen[0]?.strip, ["skills"]);
+    assert.equal(seen[0]?.timeoutMs, 1234);
+    assert.deepEqual(seen[0]?.schema, { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("run-wide lean overrides frozen per-call and session options without changing them", async () => {
+  const seen: EngineTurnOptions[] = [];
+  const engine: EngineAdapter = {
+    name: "claude", concurrency: 1,
+    leanStart: { route: "config", detail: "safe mode" },
+    schedule: async task => task(),
+    createInvocation: (_prompt, options) => {
+      seen.push(options);
+      return { runAttempt: async () => turn("done") };
+    },
+    createSession: options => ({
+      beginTurn: () => {
+        seen.push(options);
+        return { runAttempt: async () => turn("done") };
+      },
+      close: async () => undefined
+    }),
+    close: async () => undefined
+  };
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1, lean: true });
+  const options = Object.freeze({ engine: "claude" as const, lean: false });
+  try {
+    assert.equal(await runtime.agent("go", options), "done");
+    const session = runtime.createWorkerSession(options);
+    assert.equal(await session.send("go"), "done");
+    assert.deepEqual(seen.map(option => option.lean), [true, true]);
+    assert.equal(options.lean, false);
+    await session.close();
+  } finally { await runtime.close(); }
+});
+
+test("malformed run-wide and session lean options refuse before dispatch", () => {
+  const engines = new EngineRegistry([]);
+  assert.throws(() => new EnsembleRuntime({ engines, defaultMaxAttempts: 1, lean: "yes" as unknown as boolean }), InvalidAgentOptionValueError);
+  const runtime = new EnsembleRuntime({ engines, defaultMaxAttempts: 1 });
+  assert.throws(() => runtime.createWorkerSession({ engine: "claude", lean: 1 as unknown as boolean }), InvalidAgentOptionValueError);
+});
+
+
+test("shipped Codex and opencode adapters refuse lean before invoking a worker", async () => {
+  const transport = new FakeTransport([]);
+  let opencodeRuns = 0;
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([
+      new CodexEngineAdapter({ transport, concurrency: 1 }),
+      new OpenCodeEngineAdapter({ runner: {
+        run: async () => { opencodeRuns++; throw new Error("unexpected dispatch"); },
+        exportSession: async () => { throw new Error("unexpected export"); }
+      } })
+    ]),
+    defaultMaxAttempts: 1
+  });
+  try {
+    await assert.rejects(runtime.agent("go", { engine: "codex", lean: true }), LeanStartUnsupportedError);
+    await assert.rejects(runtime.agent("go", { engine: "opencode", lean: true }), LeanStartUnsupportedError);
+    assert.throws(() => runtime.createWorkerSession({ engine: "codex", lean: true }), LeanStartUnsupportedError);
+    assert.deepEqual(transport.openedThreads, []);
+    assert.equal(opencodeRuns, 0);
+    assert.equal(runtime.lastAgentRecord(), null);
+  } finally { await runtime.close(); }
+});
+
+test("a lean fallback records and dispatches its own route while retaining lean mode", async () => {
+  const claude = Object.assign(new ChainEngine("claude", [claudeRefusal(429, "rate_limit_error")]), {
+    leanStart: { route: "config" as const, detail: "primary route" }
+  });
+  const codex = Object.assign(new ChainEngine("codex", [answers("done")]), {
+    leanStart: { route: "config" as const, detail: "fallback route" }
+  });
+  let fallbackLean: boolean | undefined;
+  const create = codex.createInvocation.bind(codex);
+  codex.createInvocation = (prompt, options) => { fallbackLean = options.lean; return create(prompt, options); };
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([claude, codex]), defaultMaxAttempts: 1 });
+  try {
+    assert.equal(await runtime.agent("go", { engine: "claude", lean: true, fallback: [{ engine: "codex", model: "test" }] }), "done");
+    assert.equal(fallbackLean, true);
+    assert.deepEqual(runtime.lastAgentRecord()?.lean, { requested: true, route: "config", detail: "fallback route" });
+  } finally { await runtime.close(); }
+});
+
+
+for (const held of [false, true]) {
+  test(`${held ? "held" : "one-shot"} strip preparation receives the effective lean context`, async () => {
+    const contexts: Array<{ lean?: boolean }> = [];
+    const engine: EngineAdapter = {
+      name: "claude", concurrency: 1,
+      leanStart: { route: "config", detail: "safe mode" },
+      capabilities: { skills: { route: "config", detail: "test strip" }, agents: { route: "config", detail: "test strip" } },
+      prepareStrip: async (requested, context) => {
+        contexts.push(context);
+        return { engine: "claude", requested, enforcement: { skills: { route: "config", detail: "prepared" } } };
+      },
+      schedule: async task => task(),
+      createInvocation: () => ({ runAttempt: async () => turn("done") }),
+      createSession: () => ({ beginTurn: () => ({ runAttempt: async () => turn("done") }), close: async () => {} }),
+      close: async () => {}
+    };
+    const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1, lean: true });
+    try {
+      const options = { engine: "claude" as const, lean: false, strip: ["skills" as const] };
+      if (held) {
+        const session = runtime.createWorkerSession(options);
+        assert.equal(await session.send("first"), "done");
+        assert.equal(await session.send("second"), "done");
+        await session.close();
+      } else {
+        assert.equal(await runtime.agent("go", options), "done");
+      }
+      assert.equal(contexts.length, 1);
+      assert.equal(contexts[0]?.lean, true);
+    } finally { await runtime.close(); }
+  });
+}
+
+test("a lean held session refuses an unsupported fallback before creating a worker", async () => {
+  const claude = Object.assign(new SessionEngine("claude", []), {
+    leanStart: { route: "config" as const, detail: "primary route" }
+  });
+  const codex = new SessionEngine("codex", []);
+  const { runtime, records } = chainRuntime([claude, codex], 1);
+  try {
+    assert.throws(() => runtime.createWorkerSession({
+      engine: "claude", lean: true, fallback: [{ engine: "codex", model: "test" }]
+    }), LeanStartUnsupportedError);
+    assert.deepEqual(claude.sessionsCreated, []);
+    assert.deepEqual(codex.sessionsCreated, []);
+    assert.deepEqual(records, []);
+  } finally { await runtime.close(); }
+});
+
+test("a lean held session retains its fallback context route on later turns", async () => {
+  const claude = Object.assign(new SessionEngine("claude", [claudeRefusal(429, "rate_limit_error")]), {
+    leanStart: { route: "config" as const, detail: "primary route" }
+  });
+  const codex = Object.assign(new SessionEngine("codex", [answers("first"), answers("second")]), {
+    leanStart: { route: "config" as const, detail: "fallback route" }
+  });
+  const { runtime, records } = chainRuntime([claude, codex], 1);
+  const session = runtime.createWorkerSession({
+    engine: "claude", lean: true, fallback: [{ engine: "codex", model: "test" }]
+  });
+  try {
+    assert.equal(await session.send("first"), "first");
+    assert.equal(await session.send("second"), "second");
+    const complete = records.filter(record => record.status === "complete");
+    assert.equal(complete.length, 2);
+    for (const record of complete) {
+      assert.equal(record.session?.id, complete[0]?.session?.id);
+      assert.deepEqual(record.lean, { requested: true, route: "config", detail: "fallback route" });
+    }
+    assert.equal(codex.sessionsCreated.length, 1);
+  } finally { await runtime.close(); }
+});

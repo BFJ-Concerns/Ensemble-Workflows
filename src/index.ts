@@ -98,6 +98,7 @@ export {
 export type { WorkerExitStatus } from "./errors.js";
 export { ResourcePreflightRefusedError } from "./resource-preflight.js";
 export type { CallerSandbox, ResourceDenial, ResourceRequirement } from "./resource-preflight.js";
+export type { LocatedDirectory, ResourceLocation, SettingName, SettingReading } from "./resource-location.js";
 export {
   AmbientConfigError,
   CONFIG_SCHEMA_VERSION,

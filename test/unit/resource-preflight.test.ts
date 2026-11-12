@@ -35,7 +35,7 @@ async function withDirectory(run: (dir: string) => Promise<void>, root = tmpdir(
 }
 
 function requirement(overrides: Partial<ResourceRequirement> & { path: string }): ResourceRequirement {
-  return { owner: "launcher", role: "test store", access: "create-entries", resolvedFrom: "the test", ...overrides };
+  return { owner: "launcher", role: "test store", access: "create-entries", location: { kind: "fixed", rule: "the test" }, ...overrides };
 }
 
 function recordingAdapter(name: EngineName, ran: EngineName[]): EngineAdapter {
@@ -168,24 +168,27 @@ test("a preflight refusal is an availability failure on every engine", () => {
   }
 });
 
-test("the Codex home resolves from the environment Codex is launched with", () => {
+test("the Codex home resolves from the environment Codex is launched with, and records how it was chosen", () => {
   const launcher = { HOME: "/home/launcher", CODEX_HOME: "/inherited/codex" };
   assert.deepEqual(
-    engineResourceRequirements("codex", undefined, "/work", launcher).map((r) => [r.path, r.resolvedFrom]),
-    [["/inherited/codex", "CODEX_HOME"]]
+    engineResourceRequirements("codex", undefined, "/work", launcher).map((r) => [r.path, r.location]),
+    [["/inherited/codex", { kind: "declared", reading: { setting: "CODEX_HOME", value: "/inherited/codex", resolvedAgainst: null } }]]
   );
   assert.deepEqual(
-    engineResourceRequirements("codex", { CODEX_HOME: "declared" }, "/work", launcher).map((r) => [r.path, r.resolvedFrom]),
-    [["/work/declared", "CODEX_HOME"]]
+    engineResourceRequirements("codex", { CODEX_HOME: "declared" }, "/work", launcher).map((r) => [r.path, r.location]),
+    [["/work/declared", { kind: "declared", reading: { setting: "CODEX_HOME", value: "declared", resolvedAgainst: "/work" } }]]
   );
   assert.deepEqual(
-    engineResourceRequirements("codex", { HOME: "/home/declared" }, "/work", { HOME: "/home/launcher" }).map((r) => [r.path, r.resolvedFrom]),
-    [["/home/declared/.codex", "default: $HOME/.codex"]]
+    engineResourceRequirements("codex", { HOME: "/home/declared" }, "/work", { HOME: "/home/launcher" }).map((r) => [r.path, r.location]),
+    [["/home/declared/.codex", {
+      kind: "default", rule: "$HOME/.codex", movedBy: "CODEX_HOME",
+      from: { setting: "HOME", value: "/home/declared", resolvedAgainst: null }
+    }]]
   );
 });
 
 test("every engine declares the filesystem resources it needs", () => {
-  const env = { worker: { HOME: "/home/someone" }, launcher: { HOME: "/home/someone" }, cwd: "/work" };
+  const env = { worker: { HOME: "/home/someone" }, written: { HOME: "/home/someone" }, launcher: { HOME: "/home/someone" }, cwd: "/work" };
   for (const [engine, resolve] of Object.entries(ENGINE_RESOURCE_RESOLVERS)) {
     const requirements = resolve(env);
     assert.ok(requirements.length > 0, `${engine} declares no resources`);
@@ -377,6 +380,10 @@ test("an empty Claude config override keeps the default home and daemon identity
 test("a relative Codex HOME is resolved against the app-server launch directory", () => {
   const resources = engineResourceRequirements("codex", { HOME: "relative-home", CODEX_HOME: "" }, "/run/base", {});
   assert.equal(resources[0]?.path, "/run/base/relative-home/.codex");
+  assert.deepEqual(resources[0]?.location, {
+    kind: "default", rule: "$HOME/.codex", movedBy: "CODEX_HOME",
+    from: { setting: "HOME", value: "relative-home", resolvedAgainst: "/run/base" }
+  });
 });
 
 

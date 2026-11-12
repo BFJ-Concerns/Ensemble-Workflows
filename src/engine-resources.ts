@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { launchEnvironment } from "./engine-environment.js";
+import { launchEnvironment, writtenEnvironment } from "./engine-environment.js";
+import { declaredDirectory, defaultDirectory, readSetting } from "./resource-location.js";
 
+import type { SettingReading } from "./resource-location.js";
 import type { ResourceRequirement } from "./resource-preflight.js";
 import type { EngineName } from "./types.js";
 
@@ -24,13 +26,29 @@ export interface EngineResourceEnvironment {
    */
   worker: NodeJS.ProcessEnv;
   /**
+   * `worker` with each value as the operator wrote it (`writtenEnvironment`).
+   * A reading quotes its value from here. The two differ only where the
+   * launch rewrites a value — a relative Claude `CLAUDE_CONFIG_DIR`, made
+   * absolute against the launcher's working directory — and there the
+   * directory is still the one `worker` names: pair that path with the
+   * reading of the written value, whose base is the directory the launch
+   * resolved it against, rather than computing the path a second time.
+   */
+  written: NodeJS.ProcessEnv;
+  /**
    * The launcher's own environment. Paths the adapter creates on the
    * engine's behalf from this process — temporary files under `tmpdir()`,
    * socket directories under `TMUX_TMPDIR` — resolve from this, because
-   * the adapter makes them here and not in the engine's process.
+   * the adapter makes them here and not in the engine's process. A
+   * relative value here resolves against the launcher's working directory,
+   * never `cwd`.
    */
   launcher: NodeJS.ProcessEnv;
-  /** The directory the engine's process is launched in, against which a relative path resolves. */
+  /**
+   * The directory the engine's process is launched in, against which a
+   * relative value in `worker` resolves: the worker's own placement, or
+   * the run's base for an engine whose server the whole run shares.
+   */
   cwd: string;
 }
 
@@ -42,14 +60,18 @@ export type EngineResourceResolver = (env: EngineResourceEnvironment) => Resourc
  * Codex caller in a sandbox that leaves that home read-only sees the
  * app-server refuse with `Read-only file system` after the run has begun;
  * this requirement turns that into a refusal before the app-server starts.
+ *
+ * Each branch builds the directory and its location in one call: the
+ * setting in force, read as written against the directory Codex starts in;
+ * or the default rule, with the setting that would place the home and the
+ * `HOME` the rule starts from.
  */
 export function codexResources(env: EngineResourceEnvironment): ResourceRequirement[] {
-  const declared = env.worker.CODEX_HOME;
-  const home =
-    declared !== undefined && declared.length > 0
-      ? { path: path.resolve(env.cwd, declared), from: "CODEX_HOME" }
-      : { path: path.resolve(env.cwd, homeOf(env.worker), ".codex"), from: "default: $HOME/.codex" };
-  return [{ owner: "codex", role: "Codex home", path: home.path, access: "create-entries", resolvedFrom: home.from }];
+  const declared = env.written.CODEX_HOME;
+  const home = declared
+    ? declaredDirectory(readSetting("CODEX_HOME", declared, env.cwd))
+    : defaultDirectory({ rule: "$HOME/.codex", movedBy: "CODEX_HOME" }, homeRoot(env.written, env.cwd), ".codex");
+  return [{ owner: "codex", role: "Codex home", access: "create-entries", ...home }];
 }
 
 /** Claude Code 2.1.321: its daemon sockets are independent of TMPDIR. */
@@ -125,7 +147,21 @@ export function engineResourceRequirements(
   cwd: string,
   launcher: NodeJS.ProcessEnv = process.env
 ): ResourceRequirement[] {
-  return ENGINE_RESOURCE_RESOLVERS[engine]({ worker: launchEnvironment(engine, declared, launcher), launcher, cwd });
+  return ENGINE_RESOURCE_RESOLVERS[engine]({
+    worker: launchEnvironment(engine, declared, launcher),
+    written: writtenEnvironment(engine, declared, launcher),
+    launcher,
+    cwd
+  });
+}
+
+/**
+ * Where a default under the home directory starts: `HOME` as written,
+ * read against `base`, or the account's home directory where the
+ * environment sets none.
+ */
+function homeRoot(env: NodeJS.ProcessEnv, base: string): SettingReading | string {
+  return env.HOME ? readSetting("HOME", env.HOME, base) : homedir();
 }
 
 function homeOf(env: NodeJS.ProcessEnv): string {

@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { SubstrateRefusedError } from "./errors.js";
 
+import type { LocatedDirectory } from "./resource-location.js";
 import type { EngineName } from "./types.js";
 
 /**
@@ -52,19 +53,19 @@ export type ResourceAccess = "create-entries" | "bind-socket";
 /** Whose resource it is: the launcher's own, or one engine's. */
 export type ResourceOwner = "launcher" | EngineName;
 
-export interface ResourceRequirement {
+/**
+ * A directory the owner uses, the access it needs there, and — as
+ * `location` — how the directory was chosen, from which a refusal names
+ * the setting to change, shows a relative value against the directory it
+ * was resolved against, and offers no setting where none moves it.
+ * Producers build `path` and `location` together with the constructors in
+ * `resource-location.ts`.
+ */
+export interface ResourceRequirement extends LocatedDirectory {
   owner: ResourceOwner;
   /** What the resource is for, as the refusal names it ("Codex home", "durable run record store"). */
   role: string;
-  /** Absolute path of the directory the owner uses. Need not exist yet. */
-  path: string;
   access: ResourceAccess;
-  /**
-   * Where `path` came from, as the refusal names it, so the operator knows
-   * which setting moves it: "CODEX_HOME", "default: $HOME/.codex",
-   * "ENSEMBLE_RUN_RECORD_DIR".
-   */
-  resolvedFrom: string;
 }
 
 /** One requirement the launching process failed: the error the probe met, where it met it. */

@@ -1154,7 +1154,8 @@ for (const home of ["relative", "absolute", "default", "empty"] as const) {
             assert.ok(error instanceof ClaudeDispatchError);
             assert.ok(error.message.includes("lacks bypass-permissions consent"));
             assert.ok(error.message.includes(configDir.replaceAll("'", "'\\''")));
-            assert.match(error.message, /--bg with bypassPermissions requires accepting the disclaimer first/);
+            assert.doesNotMatch(error.message, /Run claude --dangerously-skip-permissions/);
+            assert.equal(error.message.match(/--dangerously-skip-permissions/g)?.length, 1);
             const command = error.message.split("Run interactively: ")[1]?.replace(/; then retry\.$/, "");
             assert.ok(command);
             // Run from another ordinary shell directory with a different home.

@@ -738,7 +738,8 @@ or `$HOME/.claude` from the worker environment when unset or empty. This is a
 one-time prerequisite for that home; a fresh or
 isolated Claude configuration home needs its own acceptance. Ensemble does
 not accept the disclaimer on your behalf. A dispatch refused for missing
-consent names that resolved home and gives an interactive command scoped to it.
+consent names that resolved home and gives only an interactive repair command
+scoped to it; the native unscoped suggestion stays in the launch diagnostics.
 
 Every Claude worker is launched with `CLAUDE_CODE_SANDBOXED` set, which tells
 Claude Code to skip its per-directory trust prompt. Once the bypass disclaimer

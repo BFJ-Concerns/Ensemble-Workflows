@@ -684,11 +684,17 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         }
         if (dispatch.result !== null) {
           if (!dispatch.result.ok) {
-            const account = launchAccount(dispatch.result);
-            const configDir = claudeConfigDirectory(this.#env, process.cwd());
-            const consentAdvice = /bypassPermissions requires accepting the disclaimer/i.test(
+            const missingConsent = /bypassPermissions requires accepting the disclaimer/i.test(
               dispatch.result.stderr + "\n" + dispatch.result.stdout
-            )
+            );
+            // The native suggestion targets the default home, which may be
+            // different from this dispatch's home. Keep it in the command
+            // diagnostics, and present only the scoped repair here.
+            const account = missingConsent
+              ? `dispatch exit ${dispatch.result.exitCode ?? "unknown"}, signal ${dispatch.result.signal ?? "none"}`
+              : launchAccount(dispatch.result);
+            const configDir = claudeConfigDirectory(this.#env, process.cwd());
+            const consentAdvice = missingConsent
               ? `; CLAUDE_CONFIG_DIR=${shellQuote(configDir)} lacks bypass-permissions consent. ` +
                 `Run interactively: CLAUDE_CONFIG_DIR=${shellQuote(configDir)} ${shellQuote(this.#claudeBin)} --dangerously-skip-permissions; then retry.`
               : "";

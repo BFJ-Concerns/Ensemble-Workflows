@@ -70,18 +70,18 @@ const child = spawn(
     ? ["--test", "--test-reporter=tap", ...liveSuiteSetup, testGlob]
     : [suiteTestChildProgram],
   {
-  cwd: path.resolve(import.meta.dirname, ".."),
-  env: {
-    ENSEMBLE_RUN_RECORD_DIR: recordStoreDirectory,
-    ...process.env,
-    TMPDIR: suiteDirectory,
-    ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory,
-    ENSEMBLE_SUITE_RUNNER_DEPTH: String(inheritedSuiteDepth + 1)
-  },
-  stdio: ["inherit", "pipe", "pipe"],
-  // A killed suite parent can leave its test process behind. Giving that
-  // process group a durable identity lets a later suite distinguish a live
-  // cache owner from abandoned state before it removes anything.
+    cwd: path.resolve(import.meta.dirname, ".."),
+    env: {
+      ENSEMBLE_RUN_RECORD_DIR: recordStoreDirectory,
+      ...process.env,
+      TMPDIR: suiteDirectory,
+      ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory,
+      ENSEMBLE_SUITE_RUNNER_DEPTH: String(inheritedSuiteDepth + 1)
+    },
+    stdio: ["inherit", "pipe", "pipe"],
+    // A killed suite parent can leave its test process behind. Giving that
+    // process group a durable identity lets a later suite distinguish a live
+    // cache owner from abandoned state before it removes anything.
     detached: true
   }
 );

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { assertFixedClaudeVersion, daemonStatus, selectClaudeExecutable, supervisorLifecycle, supervisorSnapshot } from "./claude-proof-support.js";
 
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
@@ -86,6 +87,7 @@ for (const scenario of scenarios) {
     };
     delete env.ENSEMBLE_WORKER_SCOPE;
     if (scenario.environment) env.ENSEMBLE_WORKER_SCOPE = scenario.environment;
+    let testFailed = false;
     try {
       await mkdir(config, { mode: 0o700 });
       await mkdir(path.join(root, "status"));
@@ -221,6 +223,9 @@ for (const scenario of scenarios) {
         supervisorState = afterRoster;
         assert.equal(containingSlice(afterRoster.identity.cgroup!), parent, "the supervisor moved into the tested run's slice");
       }
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
       // Capture before releasing held workers or stopping proof-owned units:
       // teardown would otherwise hide why the original supervisor ended.
@@ -238,7 +243,7 @@ for (const scenario of scenarios) {
       if (claude) await exec(claude.executable, ["daemon", "stop", "--any"], { env }).catch(() => undefined);
       await exec("systemctl", ["--user", "stop", slice, parent]).catch(() => undefined);
       t.diagnostic(JSON.stringify(observations));
-      await rm(root, { recursive: true, force: true });
+      await removeTestDirectory(root, testFailed);
     }
   });
 }

@@ -7,6 +7,7 @@ import { execFile, spawn } from "node:child_process";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { assertEach } from "./launcher.js";
 import { liveCodexModel, liveCodexScriptOptions, liveOpenCodeModel } from "./live-models.js";
 
@@ -101,6 +102,7 @@ test("live built CLI runs a current Codex model with unusual open-domain metadat
   const script = path.join(directory, "workflow.js");
   const token = `LIVE_OPEN_DOMAIN_${randomUUID()}`;
 
+  let testFailed = false;
   try {
     await writeFile(
       script,
@@ -145,8 +147,11 @@ test("live built CLI runs a current Codex model with unusual open-domain metadat
 
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), { token });
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
 });
 
@@ -155,6 +160,7 @@ test("live built CLI honours the maximum faithful per-turn timeout as a long dea
   const script = path.join(directory, "workflow.js");
   const token = `LIVE_LARGE_TIMEOUT_${randomUUID()}`;
 
+  let testFailed = false;
   try {
     await writeFile(
       script,
@@ -191,8 +197,11 @@ test("live built CLI honours the maximum faithful per-turn timeout as a long dea
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), { token });
     assert.doesNotMatch(result.stderr, /TimeoutOverflowWarning|TurnTimeoutError/);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
 });
 
@@ -201,6 +210,7 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
   const script = path.join(directory, "workflow.js");
   const recordStore = path.join(directory, "records");
 
+  let testFailed = false;
   try {
     await writeFile(
       script,
@@ -292,8 +302,11 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
       ]
     ]);
     t.diagnostic(`model-chosen tokens: finding ${JSON.stringify(parsed.finding)}; verification ${JSON.stringify(parsed.verification)}`);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
 });
 
@@ -302,6 +315,7 @@ test("live CLI accepts prose-wrapped schema output from a real Claude worker", {
   const script = path.join(directory, "workflow.js");
   const maxProseRuns = 3;
 
+  let testFailed = false;
   try {
     await writeFile(
       script,
@@ -367,8 +381,11 @@ test("live CLI accepts prose-wrapped schema output from a real Claude worker", {
       return;
     }
     t.skip(`Claude replied with bare JSON in all ${maxProseRuns} runs, so the prose-tolerant parse was not exercised`);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
 });
 
@@ -384,6 +401,7 @@ test("live built CLI gives Codex workers unrestricted filesystem and network acc
     `curl --silent --show-error --fail --max-time 20 '${registryUrl}' | ` +
     `node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{const p=JSON.parse(s);process.stdout.write(p.name+'@'+p.version)})"`;
 
+  let testFailed = false;
   try {
     await writeFile(
       script,
@@ -420,9 +438,12 @@ test("live built CLI gives Codex workers unrestricted filesystem and network acc
     const recorded = await recordedCommand(recordStore, "unrestricted-posture", registryUrl);
     assert.equal(recorded.exitCode, 0);
     assert.match(recorded.aggregatedOutput ?? "", /typescript@5\.9\.3/);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
     await rm(outsidePath, { force: true });
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
 });
 
@@ -437,6 +458,7 @@ test("live CLI gives a real Codex worker unrestricted filesystem and network acc
   const fileReceipt = `UNRESTRICTED_FILE_${randomUUID()}`;
   const registryUrl = "https://registry.npmjs.org/-/ping";
 
+  let testFailed = false;
   try {
     await writeFile(
       script,
@@ -479,9 +501,12 @@ test("live CLI gives a real Codex worker unrestricted filesystem and network acc
     // 2026-08-07: the proxy answers GET /-/ping with 405 where the origin
     // answers 200), so no one status is pinned.
     assert.match(command.aggregatedOutput ?? "", /\s[1-5]\d{2}\s*$/);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await rm(directory, { recursive: true, force: true });
-    await rm(outsideDirectory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
+    await removeTestDirectory(outsideDirectory, testFailed);
   }
 });
 
@@ -500,6 +525,7 @@ for (const scenario of placementScenarios) {
   const recordStore = path.join(directory, "records");
   const receipt = `CWD_RECEIPT_${randomUUID()}`;
 
+  let testFailed = false;
   try {
     await mkdir(targetCwd);
     await writeFile(path.join(targetCwd, "placement-receipt.txt"), receipt);
@@ -538,8 +564,11 @@ for (const scenario of placementScenarios) {
     assert.equal(agent.resolved_cwd, targetCwd);
     assert.equal(agent.isolation, null);
     assert.equal((await readFile(path.join(targetCwd, "placed.txt"), "utf8")).trimEnd(), receipt);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
   });
 }
@@ -553,6 +582,7 @@ for (const scenario of placementScenarios) {
   const recordStore = path.join(directory, "records");
   const receipt = `WORKTREE_COMMIT_${randomUUID()}`;
 
+  let testFailed = false;
   try {
     await mkdir(repo);
     await git(repo, ["init"]);
@@ -621,8 +651,11 @@ for (const scenario of placementScenarios) {
       changed: true,
       removed: false
     });
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
   });
 }

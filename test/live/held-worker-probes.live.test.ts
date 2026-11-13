@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { createRuntime } from "../../src/index.js";
 import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths, waitForPath } from "./held-worker-probes.js";
@@ -46,6 +47,7 @@ for (const engine of ["claude", "codex"] as const) {
         token: `RELEASED_SECOND_${randomUUID()}`
       };
 
+      let testFailed = false;
       try {
         const firstReply = await observeHeldTurn(session.send(heldProbePrompt(first)), first, async () => {
           const evidence = await readFile(first.paths.evidence, "utf8");
@@ -60,6 +62,7 @@ for (const engine of ["claude", "codex"] as const) {
         });
         assert.match(secondReply ?? "", new RegExp(second.token), `${engine} did not reply with its follow-up token`);
       } catch (error) {
+        testFailed = true;
         t.diagnostic(JSON.stringify(runtime.lastAgentRecord()?.attempts.map(({ failure }) => failure)));
         throw error;
       } finally {
@@ -68,7 +71,7 @@ for (const engine of ["claude", "codex"] as const) {
         await Promise.all([first, second].map((probe) => writeFile(probe.paths.release, "")));
         await session.close();
         await runtime.close();
-        await rm(directory, { recursive: true, force: true });
+        await removeTestDirectory(directory, testFailed);
       }
     }
   );

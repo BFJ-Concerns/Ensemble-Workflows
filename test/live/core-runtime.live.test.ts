@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { createRuntime, resolveAmbientSettings } from "../../src/index.js";
 import { validateJsonSchema } from "../../src/schema.js";
 import { archivedAgent, archivedAgents, assertEach, runLauncher } from "./launcher.js";
@@ -278,6 +279,7 @@ test("live library runtime raises no server requests to an autonomous writable w
       serverRequests.push(event);
     }
   });
+  let testFailed = false;
   try {
     await runtime.agent(
       "Use the shell to create written.txt in the current working directory containing exactly WRITTEN. Then reply with the single word done.",
@@ -288,9 +290,12 @@ test("live library runtime raises no server requests to an autonomous writable w
       ["the engine raised no server request", () => assert.deepEqual(serverRequests.map((event) => event.params), [])],
       ["the worker's write landed without approval", () => assert.equal(written, "WRITTEN")]
     ]);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
     await runtime.close();
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
 });
 
@@ -313,6 +318,7 @@ async function withRun(
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-core-"));
   const recordStore = path.join(directory, "records");
   const script = path.join(directory, "workflow.js");
+  let testFailed = false;
   try {
     await body({
       directory,
@@ -326,8 +332,11 @@ async function withRun(
         });
       }
     });
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
 }
 

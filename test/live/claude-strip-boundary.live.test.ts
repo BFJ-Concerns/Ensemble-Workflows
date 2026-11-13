@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { ClaudeCliControlPlane } from "../../src/claude-control-plane.js";
 import { ClaudeStripPreparer } from "../../src/claude-strip-preparation.js";
 import { CLAUDE_TOOL_CLASSIFICATION, claudeToolSurfaceProbePrompt, readClaudeToolSurface } from "../../src/claude-tool-surface.js";
@@ -41,12 +42,16 @@ async function fixture() {
   const env = { ...workerEnv, XDG_CONFIG_HOME: xdg, TMPDIR: root,
     ENSEMBLE_STATUS: "0", ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records") };
   return { root, workerEnv, env, provider, async close() {
+    let testFailed = false;
     try {
       // This config directory belongs solely to this test. No operator daemon is stopped.
       await exec("claude", ["daemon", "stop", "--any"], { env: { ...process.env, ...env }, timeout: 15_000 });
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
       await provider.close();
-      await rm(root, { recursive: true, force: true });
+      await removeTestDirectory(root, testFailed);
     }
   } };
 }

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { isStatusFileName } from "../../src/status-file.js";
 import { assertEach } from "./launcher.js";
 import { liveCodexScriptOptions } from "./live-models.js";
@@ -24,6 +25,7 @@ test(
     const token = `LIVE_BUDGET_ADMISSION_${randomUUID()}`;
     await mkdir(statusDirectory);
 
+    let testFailed = false;
     try {
       await writeFile(
         workflow,
@@ -97,8 +99,11 @@ test(
       assert.ok((archive.agents[0]?.attempts[0]?.token_usage_events.length ?? 0) > 0);
       assert.ok((archive.agents[0]?.resolved_model?.length ?? 0) > 0);
       assert.equal(archive.result.value.blocked?.name, "BudgetExceededError");
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await removeTestDirectory(directory, testFailed);
     }
   }
 );

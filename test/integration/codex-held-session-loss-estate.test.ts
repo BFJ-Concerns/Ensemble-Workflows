@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { executablePath, findOnlyFile, runNode } from "./estate-process.js";
 
 const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
@@ -12,6 +13,7 @@ const fixture = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 for (const ending of ["close", "unsettled", "signal", "mid-turn"] as const) {
   test(`Codex death ${ending === "mid-turn" ? "during a turn" : "while idle"} is observed and the run seals after ${ending}`, { timeout: 60_000 }, async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-held-loss-"));
+    let testFailed = false;
     try {
       const bin = path.join(directory, "bin");
       const pidFile = path.join(directory, "server.pid");
@@ -122,8 +124,11 @@ return { first, lostBeforeSend, siblingLost, second, third };
           assert.equal(JSON.parse(result.stdout).error.kind, "WorkflowUnsettledError");
         }
       }
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await removeTestDirectory(directory, testFailed);
     }
   });
 }

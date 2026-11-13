@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { readProcessStartTicks } from "../../src/process-owner-evidence.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
@@ -41,6 +42,7 @@ test("Claude settings sweep preserves live owners and handled dispatch teardown 
   });
   const workerProcesses = async (): Promise<Identity[]> => (await processes(work)).filter(row => daemon === undefined || row.pid !== daemon.pid || row.start !== daemon.start);
   const roster = async (): Promise<Session[]> => JSON.parse((await exec("claude", ["agents", "--json"], { env, timeout: 20_000 })).stdout) as Session[];
+  let testFailed = false;
   try {
     for (const directory of [work, config, temporary, bin, path.join(xdg, "ensemble")]) await mkdir(directory, { recursive: true });
     await writeFile(path.join(config, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true }), { mode: 0o600 });
@@ -135,6 +137,9 @@ await worker.close();
     // A cancelled launch not yet visible in the daemon roster retains its
     // settings conservatively until the next launcher sweeps the dead owner.
     t.diagnostic(JSON.stringify({ retainedSettingsAfterShutdown: (await settings()).length }));
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
     // Fixture cleanup is independent of product teardown. In particular, the
     // session whose launcher received SIGKILL is still ours to stop explicitly.
@@ -169,7 +174,7 @@ await worker.close();
     const finalResidue = await workerProcesses();
     t.diagnostic(JSON.stringify({ fixtureCleanupResidue: finalResidue }));
     assert.deepEqual(finalResidue, []);
-    await rm(root, { recursive: true, force: true });
+    await removeTestDirectory(root, testFailed);
   }
 });
 

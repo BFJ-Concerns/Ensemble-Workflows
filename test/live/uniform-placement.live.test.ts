@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { archivedAgent, assertEach, runLauncher } from "./launcher.js";
 import { liveCodexScriptOptions, liveOpenCodeModel } from "./live-models.js";
 
@@ -34,6 +35,7 @@ test(
     await mkdir(markerDir);
     await writeFile(path.join(markerDir, "marker.txt"), marker);
 
+    let testFailed = false;
     try {
       await writeFile(
         script,
@@ -70,8 +72,11 @@ test(
         );
       }
       assertEach(checks);
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await removeTestDirectory(directory, testFailed);
     }
   }
 );
@@ -86,6 +91,7 @@ test(
     await initialiseRepo(repo);
     const tokens = new Map(engines.map((engine) => [engine.name, `UNIFORM_WORKTREE_${engine.name}_${randomUUID()}`]));
 
+    let testFailed = false;
     try {
       await writeFile(
         script,
@@ -138,8 +144,11 @@ test(
         );
       }
       assertEach(checks);
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await removeTestDirectory(directory, testFailed);
     }
   }
 );

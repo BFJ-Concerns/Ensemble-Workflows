@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
 import { promisify } from "node:util";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { assertFixedClaudeVersion, classifySupervisorTransition, daemonPid, selectClaudeExecutable, supervisorLifecycle, supervisorSnapshot } from "./claude-proof-support.js";
 import { suiteClaudeDaemon, suiteClaudeEnvironment } from "./suite-claude-daemon.js";
 
@@ -46,6 +47,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
   const boxes = [`ensemble-live-box-${process.pid}.scope`, `ensemble-live-box-${process.pid}-sibling.scope`];
   const runs: ReturnType<typeof launchInBox>[] = [];
 
+  let testFailed = false;
   try {
     assert.equal(await daemonPid(claude.executable, env), null, "the private config directory already had a daemon");
     const run1 = launchInBox(boxes[0]!, slice, env, heldProbePrompt(first));
@@ -140,6 +142,9 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     supervisorState = afterCompletion;
     assert.equal(containingSlice(afterCompletion.identity.cgroup!), slice === null ? null : parentSlice(slice), "the supervisor moved into the launcher's slice");
     assert.equal((await supervisorLifecycle(env.CLAUDE_CONFIG_DIR!)).filter(row => row.event === "start").length, 1, "the private home had more than one daemon startup");
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
     await Promise.all([first, sibling].map((probe) => writeFile(probe.paths.release, "")));
     // Stop proof-owned boxes before their private supervisor. A failed
@@ -155,7 +160,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     observations.operatorDaemonAfter = operatorAfter;
     observations.operatorTransition = classifySupervisorTransition(operatorDaemon.identity, operatorAfter.identity, operatorDaemon.lifecycle, operatorAfter.lifecycle);
     t.diagnostic(JSON.stringify(observations));
-    await rm(root, { recursive: true, force: true });
+    await removeTestDirectory(root, testFailed);
     assert.notEqual(observations.operatorTransition, "unexplained", "the operator's daemon changed without a recorded upgrade");
   }
 });
@@ -177,6 +182,7 @@ test("the built launcher re-places an idle held session after respawn without an
   const box = `ensemble-live-idle-${process.pid}.scope`;
   const observations: Record<string, unknown> = { slice, claudeExecutable: claude.executable, selectedClaudeVersion: claude.version, operatorDaemonHome: shared.home, operatorDaemonOrigin: shared.origin, operatorDaemonBefore: operatorDaemon };
   let run: ReturnType<typeof launchCliInBox> | undefined;
+  let testFailed = false;
   try {
     await writeFile(workflow, `export const meta = { name: "idle-session-replacement" };
       const { access, writeFile } = await import("node:fs/promises");
@@ -240,6 +246,9 @@ test("the built launcher re-places an idle held session after respawn without an
     assert.equal(result.code, 0, result.stderr);
     assert.ok(result.stdout.includes(probe.token), "the launcher lost the completed first turn");
     assert.equal((await supervisorLifecycle(env.CLAUDE_CONFIG_DIR!)).filter(row => row.event === "start").length, 1, "the private home had more than one daemon startup");
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
     await writeFile(probe.paths.release, ""); await writeFile(close, "");
     await execFileAsync("systemctl", ["--user", "stop", box]).catch(() => undefined);
@@ -251,7 +260,7 @@ test("the built launcher re-places an idle held session after respawn without an
     observations.operatorDaemonAfter = operatorAfter;
     observations.operatorTransition = classifySupervisorTransition(operatorDaemon.identity, operatorAfter.identity, operatorDaemon.lifecycle, operatorAfter.lifecycle);
     t.diagnostic(JSON.stringify(observations));
-    await rm(root, { recursive: true, force: true });
+    await removeTestDirectory(root, testFailed);
     assert.notEqual(observations.operatorTransition, "unexplained", "the operator's daemon changed without a recorded upgrade");
   }
 });

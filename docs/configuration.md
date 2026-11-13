@@ -335,8 +335,11 @@ is removed, the run continues quietly and resumes publication when the
 directory exists again. Disable publication with
 `ENSEMBLE_STATUS=off` or `status.enabled: false`.
 While status is on, a status directory set by `ENSEMBLE_STATUS_DIR` or
-`status.dir` must already exist; otherwise the run stops with an error naming
-it.
+`status.dir` must already exist and allow writing and directory traversal.
+Otherwise the run stops before executing the workflow, with one diagnostic
+naming the setting, the path as written and as resolved against the calling
+cwd, and how to fix it or disable status. A relative explicit path also gets
+a note explaining that resolution and how to make it independent of cwd.
 
 See [Run records and live status](run-records.md) for what these files
 contain.

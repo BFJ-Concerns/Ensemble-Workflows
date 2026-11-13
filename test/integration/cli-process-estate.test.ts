@@ -3227,3 +3227,31 @@ for (const diagnostic of [
     }
   });
 }
+
+
+test("built CLI refuses unwritable status paths with one actionable line before executing", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-denied-"));
+  const denied = path.join(directory, "denied");
+  const script = path.join(directory, "workflow.js");
+  try {
+    await mkdir(denied);
+    await chmod(denied, 0o500);
+    await writeFile(script, 'export const meta = { name: "must-not-run" }; throw new Error("BODY RAN");');
+    for (const written of [denied, path.relative(process.cwd(), denied)]) {
+      const env = isolatedEnvironment(directory);
+      delete env.ENSEMBLE_STATUS;
+      env.ENSEMBLE_STATUS_DIR = written;
+      const result = await runNode([bundledCliPath, script], env);
+      assert.equal(result.code, 2, result.stderr);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr.trim().split("\n").length, 1, result.stderr);
+      assert.match(result.stderr, /ENSEMBLE_STATUS_DIR/);
+      assert.ok(result.stderr.includes(`path ${JSON.stringify(written)}, resolved ${JSON.stringify(denied)}`));
+      assert.match(result.stderr, /create the directory.*grant write and search permission.*ENSEMBLE_STATUS=off/);
+      assert.doesNotMatch(result.stderr, /BODY RAN|EACCES|\[status-file\]|\[sentinel\]/);
+    }
+  } finally {
+    await chmod(denied, 0o700).catch(() => undefined);
+    await rm(directory, { recursive: true, force: true });
+  }
+});

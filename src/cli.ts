@@ -306,6 +306,12 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     return 2;
   }
 
+  const configuredStatus = ambientSettings.statusDir;
+  if (configuredStatus.value !== null && configuredStatus.layer !== "default" && !path.isAbsolute(configuredStatus.value)) {
+    const setting = configuredStatus.layer === "env" ? "ENSEMBLE_STATUS_DIR" : `status.dir in ${JSON.stringify(ambientSettings.configFile)}`;
+    stderr.write(`[status] ${setting}: path ${JSON.stringify(configuredStatus.value)} resolves to ${JSON.stringify(path.resolve(cwd, configuredStatus.value))} against cwd ${JSON.stringify(cwd)}; use an absolute path to choose a directory independently of cwd\n`);
+  }
+
   if (invocation.kind === "workflow" && invocation.scriptArg === undefined) {
     stderr.write(usage(program));
     return 2;
@@ -450,7 +456,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     if (progress !== undefined && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
         progress,
-        dir: statusDir,
+        dir: path.resolve(cwd, statusDir),
         createDirectory: options.statusDir === undefined && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError(error)}\n`);

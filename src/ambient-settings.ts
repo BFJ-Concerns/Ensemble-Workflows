@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -194,7 +194,7 @@ export function resolveAmbientSettings(input: {
     ) as Record<EngineName, Resolved<number>>,
     runRecordDir: resolveRunRecord(config, input.env),
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env),
+    statusDir: resolveStatus(config, input.env, input.cwd, configFile),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
@@ -525,7 +525,9 @@ function resolveRunRecordStoreDir(
 
 function resolveStatus(
   config: MachineConfig | null,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  configFile: string
 ): Resolved<string | null> {
   const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
   if (!enabled.value) {
@@ -537,14 +539,25 @@ function resolveStatus(
     config?.status?.dir,
     path.join(dataHome(env), "ensemble", "status")
   );
-  if (isDirectory(directory.value)) {
-    return directory;
-  }
   if (directory.layer !== "default") {
-    throw new AmbientConfigError(
-      `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} ` +
-        `(from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
-    );
+    const resolved = path.resolve(cwd, directory.value);
+    let problem: string | null = null;
+    if (!isDirectory(resolved)) {
+      problem = "does not exist or is not a directory";
+    } else {
+      try {
+        accessSync(resolved, constants.W_OK | constants.X_OK);
+      } catch {
+        problem = "is not writable and searchable";
+      }
+    }
+    if (problem !== null) {
+      const setting = directory.layer === "env" ? "ENSEMBLE_STATUS_DIR" : `status.dir in ${JSON.stringify(configFile)}`;
+      throw new AmbientConfigError(
+        `Configured status directory ${problem}: ${setting}, path ${JSON.stringify(directory.value)}, resolved ${JSON.stringify(resolved)}; ` +
+        "create the directory and grant write and search permission, choose another path, or disable status with ENSEMBLE_STATUS=off"
+      );
+    }
   }
   return directory;
 }

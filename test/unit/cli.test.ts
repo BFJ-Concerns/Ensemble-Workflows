@@ -4963,3 +4963,30 @@ test("misplaced --lean and run-level --model give complete launcher-specific ref
     assert.equal(stderr.text(), `No run was started and nothing was recorded. ${diagnostic}\n`);
   }
 });
+
+
+test("CLI explains an explicit relative status path against its calling cwd", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-relative-status-"));
+  const stderr = new CaptureStream();
+  try {
+    await mkdir(path.join(directory, "status space"));
+    const script = path.join(directory, "empty.js");
+    await writeFile(script, 'export const meta = { name: "relative-status" }; return "done";');
+    const code = await runEnsembleCli([script], {
+      cwd: directory, stdout: new CaptureStream(), stderr, runRecordDir: null,
+      env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data"), ENSEMBLE_STATUS_DIR: "status space" },
+      createRuntime: async (options) => fixedEngineRuntime(new FixedResponseEngine("codex", "done"), 1, options)
+    });
+    assert.equal(code, 0, stderr.text());
+    const note = stderr.text().split("\n").filter((line) => line.startsWith("[status]"));
+    assert.equal(note.length, 1);
+    assert.ok(note[0]?.includes(`ENSEMBLE_STATUS_DIR: path "status space" resolves to ${JSON.stringify(path.join(directory, "status space"))}`));
+    assert.match(note[0]!, /use an absolute path/);
+    const announcement = stderr.text().split("\n").find((line) => line.startsWith("[status-file] "));
+    assert.ok(announcement);
+    const status = JSON.parse(announcement.slice("[status-file] ".length)) as { status_path: string };
+    assert.equal(path.dirname(status.status_path), path.join(directory, "status space"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

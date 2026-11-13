@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -401,7 +401,13 @@ test("a configured status directory that does not exist is refused quoting the p
   const missing = "/definitely/absent/status dir";
   assert.throws(
     () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: "/definitely/absent", ENSEMBLE_STATUS_DIR: missing }, cwd: "/tmp" }),
-    (error: Error) => error.message.includes(`not a directory: ${JSON.stringify(missing)} (from the ENSEMBLE_STATUS_DIR`)
+    (error: Error) => {
+      assert.match(error.message, /Configured status directory does not exist or is not a directory/);
+      assert.ok(error.message.includes(`ENSEMBLE_STATUS_DIR, path ${JSON.stringify(missing)}, resolved ${JSON.stringify(missing)}`));
+      assert.match(error.message, /create the directory.*ENSEMBLE_STATUS=off/);
+      assert.equal(error.message.split("\n").length, 1);
+      return true;
+    }
   );
 });
 
@@ -445,6 +451,29 @@ test("worker scope grouping resolves and validates every setting layer", async (
     await writeFile(path.join(fixture.configHome, "ensemble", "config.json"), JSON.stringify({ schema_version: 1, worker_scope: false }));
     assert.throws(() => resolveAmbientSettings({ cwd: fixture.cwd, env }), /worker_scope.*worker or run/);
   } finally {
+    await fixture.cleanup();
+  }
+});
+
+
+test("explicit status paths resolve against the caller cwd and name config and permission remedies", async () => {
+  const fixture = await configFixture({ schema_version: 1, status: { dir: "status space" } });
+  const resolved = path.join(fixture.cwd, "status space");
+  const resolve = () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd });
+  try {
+    assert.throws(resolve, (error: Error) => {
+      assert.ok(error.message.includes("status.dir in "));
+      assert.ok(error.message.includes('path "status space"'));
+      assert.ok(error.message.includes(`resolved ${JSON.stringify(resolved)}`));
+      assert.match(error.message, /create the directory.*disable status/);
+      return true;
+    });
+    await mkdir(resolved);
+    assert.equal(resolve().statusDir.value, "status space");
+    await chmod(resolved, 0o500);
+    assert.throws(resolve, /is not writable and searchable: status.dir.*grant write and search permission/);
+  } finally {
+    await chmod(resolved, 0o700).catch(() => undefined);
     await fixture.cleanup();
   }
 });

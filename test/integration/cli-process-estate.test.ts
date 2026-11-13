@@ -1044,7 +1044,7 @@ test("built CLI keeps the complete engine map and gives mapped flags their own i
       const rejected = await fixture.runArgs([`${flag}=unknown=1`, fixture.script]);
       assert.equal(rejected.code, 2);
       assert.equal(rejected.stdout, "");
-      assert.equal(rejected.stderr, `${flag} engine must be codex, claude, or opencode; got unknown\n`);
+      assert.equal(rejected.stderr, `No run was started and nothing was recorded. ${flag} engine must be codex, claude, or opencode; got unknown\n`);
     }
   } finally {
     await fixture.cleanup();
@@ -1065,7 +1065,7 @@ test("built CLI refuses malformed --schema with its source and remedy before any
         const result = await fixture.runArgs(["agent", `--engine=${engine}`, `--schema=${schema}`, "return a receipt"]);
         assert.equal(result.code, 2);
         assert.equal(result.stdout, "");
-        assert.ok(result.stderr.startsWith(`--schema from ${source}:`), result.stderr);
+        assert.ok(result.stderr.startsWith(`No run was started and nothing was recorded. --schema from ${source}:`), result.stderr);
         assert.ok(result.stderr.includes(`at ${location}:`), result.stderr);
         assert.match(result.stderr, remedy);
         assert.equal(result.stderr.split("\n").length, 2);

@@ -19437,6 +19437,7 @@ var LazyCodexAppServerTransport = class {
   cwd;
   #options;
   #transportPromise;
+  #startupCancellation = new AbortController();
   #closed = false;
   #terminationListeners = /* @__PURE__ */ new Set();
   #terminationError;
@@ -19475,6 +19476,7 @@ var LazyCodexAppServerTransport = class {
   async close() {
     this.#closed = true;
     this.#terminationListeners.clear();
+    this.#startupCancellation.abort(new AppServerExitedError("codex app-server transport is closed"));
     if (this.#transportPromise === void 0) {
       return;
     }
@@ -19490,7 +19492,7 @@ var LazyCodexAppServerTransport = class {
     if (this.#closed) {
       return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
     }
-    this.#transportPromise ??= CodexAppServerTransport.start(this.#options).then((transport) => {
+    this.#transportPromise ??= CodexAppServerTransport.start(this.#options, this.#startupCancellation.signal).then((transport) => {
       transport.onTermination((error) => this.#noteTermination(error));
       return transport;
     }).catch((error) => {
@@ -19571,8 +19573,13 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       this.#failAll(new AppServerExitedError(`codex app-server process error: ${error.message}`));
     });
   }
-  static async start(options) {
+  static async start(options, signal) {
+    signal?.throwIfAborted();
     const transport = new _CodexAppServerTransport(options);
+    const cancelStartup = () => {
+      transport.#failAll(new AppServerExitedError("codex app-server startup cancelled"));
+    };
+    signal?.addEventListener("abort", cancelStartup, { once: true });
     try {
       if (transport.#process.pid !== void 0 && options.scopes !== void 0) {
         const pid = transport.#process.pid;
@@ -19585,10 +19592,13 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
           });
         }
       }
+      signal?.throwIfAborted();
       await transport.#handshake(options.clientName, options.clientVersion);
     } catch (error) {
       await transport.close();
       throw error;
+    } finally {
+      signal?.removeEventListener("abort", cancelStartup);
     }
     return transport;
   }

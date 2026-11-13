@@ -1973,3 +1973,24 @@ test("a lean dispatch adds safe mode and an ordinary dispatch adds nothing", asy
     });
   }
 });
+
+test("an unexecutable Claude command names its resolved path before the sandbox note", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-unexecutable-"));
+  const executable = path.join(dir, "claude");
+  await writeFile(executable, "#!/nonexistent-ensemble-interpreter\n");
+  await chmod(executable, 0o755);
+  const controlPlane = new DeliveryStubControlPlane({
+    claudeBin: executable, projectsDir: dir
+  });
+  try {
+    await assert.rejects(controlPlane.dispatch({ prompt: "hello", name: "unexecutable-probe", cwd: dir }), (error: unknown) => {
+      assert.ok(error instanceof ClaudeDispatchError);
+      assert.ok(error.message.startsWith(`Cannot execute '${executable}'; check the Claude installation or PATH.`), error.message);
+      assert.match(error.message, /workspace declared sandboxed/);
+      return true;
+    });
+  } finally {
+    await controlPlane.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

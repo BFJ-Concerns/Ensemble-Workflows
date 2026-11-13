@@ -538,7 +538,9 @@ A launch failure retains the command's exit code, signal, stdout and stderr,
 the last observed session identity and PID, native logs and any transcript in
 the attempt's `diagnostics.claudeLaunch` and transcript references. The
 dispatch command's status is separate from `worker_exit`, which names the
-worker process itself. A PID-less roster seed is insufficient for registration.
+worker process itself. If the Claude executable cannot execute, the refusal
+names its resolved path and suggests checking the installation or PATH before
+the sandbox declaration. A PID-less roster seed is insufficient for registration.
 A refused launch, or one that never acquires a process, is an availability
 failure and advances a declared fallback after its session and tagged
 processes have been removed. If cleanup cannot be confirmed, dispatch keeps

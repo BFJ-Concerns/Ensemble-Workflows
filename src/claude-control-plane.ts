@@ -698,7 +698,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
               ? `; CLAUDE_CONFIG_DIR=${shellQuote(configDir)} lacks bypass-permissions consent. ` +
                 `Run interactively: CLAUDE_CONFIG_DIR=${shellQuote(configDir)} ${shellQuote(this.#claudeBin)} --dangerously-skip-permissions; then retry.`
               : "";
+            const executableAdvice = /Failed to execute|bad interpreter|spawn .*\b(?:ENOENT|EACCES)\b/i.test(
+              dispatch.result.stderr + "\n" + dispatch.result.stdout
+            ) ? `Cannot execute ${shellQuote(await this.#dispatchExecutable(options.cwd))}; check the Claude installation or PATH. ` : "";
             throw new ClaudeDispatchError(
+              executableAdvice +
               `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} ` +
               `(workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` +
               account + consentAdvice
@@ -1457,6 +1461,21 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
   #run(file: string, args: string[], signal?: AbortSignal): Promise<CommandResult> {
     return this.#launch(file, args, { input: null, ...(signal !== undefined ? { signal } : {}) });
+  }
+
+  async #dispatchExecutable(cwd: string): Promise<string> {
+    if (this.#claudeBin.includes(path.sep)) return path.resolve(cwd, this.#claudeBin);
+    for (const directory of (this.#env.PATH ?? "/usr/bin:/bin").split(path.delimiter)) {
+      const candidate = path.resolve(cwd, directory, this.#claudeBin);
+      try {
+        await access(candidate);
+        return candidate;
+      } catch (error) {
+        if (!(error instanceof Error) || !("code" in error) ||
+            (error.code !== "ENOENT" && error.code !== "ENOTDIR")) return candidate;
+      }
+    }
+    return this.#claudeBin;
   }
 
   /**

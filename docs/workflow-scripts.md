@@ -763,6 +763,10 @@ rejects, such as for an unknown model, is the attempt's own failure.
 
 ### Claude background tasks
 
+Claude Code may refuse long foreground commands, such as `sleep 240`. Ask the
+worker to run long commands as background tasks; Ensemble waits for their
+completion as described below.
+
 A Claude worker's answer is its final reply, never an interim one. Claude Code
 can run a long command, a Monitor or a native `Workflow` task in the
 background and let the model end its turn with a "waiting" message, then wake

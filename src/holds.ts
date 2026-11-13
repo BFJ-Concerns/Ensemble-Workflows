@@ -130,6 +130,8 @@ export interface HoldAnswerRejection {
   rejected_at: string;
   /** The answerer named by the decision file, or null when unavailable. */
   answered_by?: string | null;
+  /** Allowed choices returned to an answerer whose verdict was off-list. */
+  allowed_verdicts?: string[];
 }
 
 /** One enumerated open hold. */
@@ -472,7 +474,7 @@ export interface AnswerHoldOptions {
 export type AnswerHoldOutcome =
   | { outcome: "consumed"; hold_id: string; verdict: string }
   | { outcome: "retired"; hold_id: string; verdict: string }
-  | { outcome: "bounced"; hold_id: string; verdict: string; rejection: HoldAnswerRejection }
+  | { outcome: "bounced"; hold_id: string; verdict: string; rejection: HoldAnswerRejection; verdicts: string[] }
   | { outcome: "not-consumed"; hold_id: string; verdict: string; decision_path: string; waited_ms: number }
   | { outcome: "not-found"; hold_id: string };
 
@@ -532,7 +534,14 @@ export async function answerHold(options: AnswerHoldOptions): Promise<AnswerHold
       return { outcome: "retired", hold_id: record.hold_id, verdict: options.verdict };
     }
     if (current.answer_rejection !== undefined && JSON.stringify(current.answer_rejection) !== priorRejection) {
-      return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: current.answer_rejection };
+      return {
+        outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict,
+        rejection: {
+          ...current.answer_rejection,
+          ...(current.answer_rejection.reason === "invalid-verdict" ? { allowed_verdicts: current.verdicts } : {})
+        },
+        verdicts: current.verdicts
+      };
     }
     const waited = Date.now() - started;
     if (waited >= waitMs) {

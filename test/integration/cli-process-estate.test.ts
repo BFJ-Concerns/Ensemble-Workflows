@@ -273,7 +273,7 @@ test("built CLI fails loud when an explicitly configured status directory is mis
   }
 });
 
-test("built CLI shuts down cleanly when its status reporter throws", async () => {
+test("built CLI shuts down cleanly when its status reporter throws", { skip: process.getuid?.() === 0 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-reporter-estate-"));
   const script = path.join(directory, "workflow.js");
   const statusTarget = path.join(directory, "status-target");
@@ -289,11 +289,10 @@ test("built CLI shuts down cleanly when its status reporter throws", async () =>
         return { completed: true };
       `
     );
-    // A real directory the writer cannot write into: publication resolves
-    // (the explicit directory exists), every snapshot write fails, and the
-    // "[status]" error report is what the preload turns into a throwing
-    // reporter — the journey this test exists for.
-    await mkdir(statusTarget, { mode: 0o500 });
+    // Validation accepts this directory. The preload removes write permission
+    // after validation, when the sentinel is announced, so publication fails
+    // and its error reporter throws during an accepted run.
+    await mkdir(statusTarget, { mode: 0o700 });
     const env = isolatedEnvironment(directory);
     delete env.ENSEMBLE_STATUS;
     env.ENSEMBLE_STATUS_DIR = statusTarget;
@@ -305,7 +304,9 @@ test("built CLI shuts down cleanly when its status reporter throws", async () =>
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, `{"completed":true}\n`);
     assert.equal(withoutSentinelAnnouncement(result.stderr), "");
+    assert.equal(await readFile(`${statusTarget}.reporter-threw`, "utf8"), "ESTATE_THROWING_STATUS_REPORTER\n");
   } finally {
+    await chmod(statusTarget, 0o700).catch(() => undefined);
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -3227,3 +3228,31 @@ for (const diagnostic of [
     }
   });
 }
+
+
+test("built CLI refuses unwritable status paths with one actionable line before executing", { skip: process.getuid?.() === 0 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-denied-"));
+  const denied = path.join(directory, "denied");
+  const script = path.join(directory, "workflow.js");
+  try {
+    await mkdir(denied);
+    await chmod(denied, 0o500);
+    await writeFile(script, 'export const meta = { name: "must-not-run" }; throw new Error("BODY RAN");');
+    for (const written of [denied, path.relative(process.cwd(), denied)]) {
+      const env = isolatedEnvironment(directory);
+      delete env.ENSEMBLE_STATUS;
+      env.ENSEMBLE_STATUS_DIR = written;
+      const result = await runNode([bundledCliPath, script], env);
+      assert.equal(result.code, 2, result.stderr);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr.trim().split("\n").length, 1, result.stderr);
+      assert.match(result.stderr, /ENSEMBLE_STATUS_DIR/);
+      assert.ok(result.stderr.includes(`path ${JSON.stringify(written)}, resolved ${JSON.stringify(denied)}`));
+      assert.match(result.stderr, /create the directory.*grant write and search permission.*ENSEMBLE_STATUS=off/);
+      assert.doesNotMatch(result.stderr, /BODY RAN|EACCES|\[status-file\]|\[sentinel\]/);
+    }
+  } finally {
+    await chmod(denied, 0o700).catch(() => undefined);
+    await rm(directory, { recursive: true, force: true });
+  }
+});

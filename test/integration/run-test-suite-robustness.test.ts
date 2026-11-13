@@ -279,8 +279,9 @@ function startSuite(pipeHolder: PipeHolder, overrides: NodeJS.ProcessEnv = {}) {
   });
 }
 
-function startSuiteProgram(program: string, overrides: NodeJS.ProcessEnv = {}) {
+function startSuiteProgram(program: string, overrides: NodeJS.ProcessEnv = {}, cwd = process.cwd()) {
   const child = spawn(process.execPath, [runnerPath, program], {
+    cwd,
     env: hermeticEstateEnvironment({
       ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: program,
       ENSEMBLE_SUITE_TEST_CONTEXT: "1",
@@ -390,3 +391,29 @@ async function awaitCompletion<T>(completion: Promise<T>, message: string): Prom
     if (timer !== undefined) clearTimeout(timer);
   }
 }
+
+
+test("suite runner uses its checkout when invoked from another directory", async () => {
+  assertNotInsideSuiteSpawningTest();
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-wrong-cwd-"));
+  try {
+    const childProgram = path.join(directory, "probe.mjs");
+    await writeFile(childProgram, `
+      import assert from "node:assert/strict";
+      import { accessSync } from "node:fs";
+      assert.equal(process.cwd(), ${JSON.stringify(path.dirname(path.dirname(runnerPath)))});
+      accessSync("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+      console.log("# tests 1");
+    `);
+    const run = startSuiteProgram(childProgram, {}, directory);
+    try {
+      const result = await awaitCompletion(run.completed, "wrong-cwd runner did not settle");
+      assert.equal(result.code, 0, result.output);
+      assert.match(result.output, /# tests 1/);
+    } finally {
+      await stopSuite(run);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

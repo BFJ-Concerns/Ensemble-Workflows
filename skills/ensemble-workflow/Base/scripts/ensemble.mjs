@@ -423,11 +423,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants3);
+          this.rhs = optimizeExpr(this.rhs, names, constants4);
         return this;
       }
       get names() {
@@ -444,10 +444,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants3);
+        this.rhs = optimizeExpr(this.rhs, names, constants4);
         return this;
       }
       get names() {
@@ -508,8 +508,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants3) {
-        this.code = optimizeExpr(this.code, names, constants3);
+      optimizeNames(names, constants4) {
+        this.code = optimizeExpr(this.code, names, constants4);
         return this;
       }
       get names() {
@@ -538,12 +538,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         const { nodes } = this;
         let i2 = nodes.length;
         while (i2--) {
           const n = nodes[i2];
-          if (n.optimizeNames(names, constants3))
+          if (n.optimizeNames(names, constants4))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i2, 1);
@@ -596,12 +596,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         var _a;
-        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants3);
-        if (!(super.optimizeNames(names, constants3) || this.else))
+        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants4);
+        if (!(super.optimizeNames(names, constants4) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants3);
+        this.condition = optimizeExpr(this.condition, names, constants4);
         return this;
       }
       get names() {
@@ -624,10 +624,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants3) {
-        if (!super.optimizeNames(names, constants3))
+      optimizeNames(names, constants4) {
+        if (!super.optimizeNames(names, constants4))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants3);
+        this.iteration = optimizeExpr(this.iteration, names, constants4);
         return this;
       }
       get names() {
@@ -663,10 +663,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants3) {
-        if (!super.optimizeNames(names, constants3))
+      optimizeNames(names, constants4) {
+        if (!super.optimizeNames(names, constants4))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants3);
+        this.iterable = optimizeExpr(this.iterable, names, constants4);
         return this;
       }
       get names() {
@@ -708,11 +708,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         var _a, _b;
-        super.optimizeNames(names, constants3);
-        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants3);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants3);
+        super.optimizeNames(names, constants4);
+        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants4);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants4);
         return this;
       }
       get names() {
@@ -1013,7 +1013,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants3) {
+    function optimizeExpr(expr, names, constants4) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1028,14 +1028,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants3[n.str];
+        const c = constants4[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants3[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants4[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -13844,7 +13844,7 @@ import path19 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/ambient-settings.ts
-import { readFileSync, statSync } from "node:fs";
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import path4 from "node:path";
 
@@ -15171,7 +15171,16 @@ async function answerHold(options) {
       return { outcome: "retired", hold_id: record.hold_id, verdict: options.verdict };
     }
     if (current2.answer_rejection !== void 0 && JSON.stringify(current2.answer_rejection) !== priorRejection) {
-      return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: current2.answer_rejection };
+      return {
+        outcome: "bounced",
+        hold_id: record.hold_id,
+        verdict: options.verdict,
+        rejection: {
+          ...current2.answer_rejection,
+          ...current2.answer_rejection.reason === "invalid-verdict" ? { allowed_verdicts: current2.verdicts } : {}
+        },
+        verdicts: current2.verdicts
+      };
     }
     const waited = Date.now() - started;
     if (waited >= waitMs) {
@@ -15358,7 +15367,7 @@ function resolveAmbientSettings(input) {
     ),
     runRecordDir: resolveRunRecord(config, input.env),
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env),
+    statusDir: resolveStatus(config, input.env, input.cwd, configFile),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
@@ -15596,7 +15605,7 @@ function resolveRunRecordStoreDir(config, env) {
     path4.join(dataHome(env), "ensemble")
   );
 }
-function resolveStatus(config, env) {
+function resolveStatus(config, env, cwd, configFile) {
   const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
   if (!enabled.value) {
     return { value: null, layer: enabled.layer };
@@ -15607,13 +15616,24 @@ function resolveStatus(config, env) {
     config?.status?.dir,
     path4.join(dataHome(env), "ensemble", "status")
   );
-  if (isDirectory(directory.value)) {
-    return directory;
-  }
   if (directory.layer !== "default") {
-    throw new AmbientConfigError(
-      `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} (from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
-    );
+    const resolved = path4.resolve(cwd, directory.value);
+    let problem = null;
+    if (!isDirectory(resolved)) {
+      problem = "does not exist or is not a directory";
+    } else {
+      try {
+        accessSync(resolved, constants.W_OK | constants.X_OK);
+      } catch {
+        problem = "is not writable and searchable";
+      }
+    }
+    if (problem !== null) {
+      const setting = directory.layer === "env" ? "ENSEMBLE_STATUS_DIR" : `status.dir in ${JSON.stringify(configFile)}`;
+      throw new AmbientConfigError(
+        `Configured status directory ${problem}: ${setting}, path ${JSON.stringify(directory.value)}, resolved ${JSON.stringify(resolved)}; create the directory and grant write and search permission, choose another path, or disable status with ENSEMBLE_STATUS=off`
+      );
+    }
   }
   return directory;
 }
@@ -17801,7 +17821,7 @@ function resolveLeanStart(engine, support) {
 // src/contained-command.ts
 import { spawn as spawn2 } from "node:child_process";
 import { randomUUID as randomUUID3 } from "node:crypto";
-import { constants } from "node:fs";
+import { constants as constants2 } from "node:fs";
 import { access, readFile as readFile6, readdir as readdir5, stat as stat4 } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import path11 from "node:path";
@@ -18449,7 +18469,7 @@ async function resolveExecutable(file, args, options) {
       () => false
     );
     if (!isFile) continue;
-    const executable = await access(candidate, constants.X_OK).then(
+    const executable = await access(candidate, constants2.X_OK).then(
       () => true,
       () => false
     );
@@ -33621,7 +33641,7 @@ function parseExpressionAt2(input, pos, options) {
 var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 
 // src/workflow-registry.ts
-import { constants as constants2 } from "node:fs";
+import { constants as constants3 } from "node:fs";
 import { access as access3, readdir as readdir7, readFile as readFile9 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
 import path17 from "node:path";
@@ -33648,7 +33668,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   }
   const scriptPath = path17.resolve(options.cwd, nameOrRef.scriptPath);
   try {
-    await access3(scriptPath, constants2.R_OK);
+    await access3(scriptPath, constants3.R_OK);
   } catch (error) {
     throw new WorkflowResolutionError(`workflow({ scriptPath }) could not read ${scriptPath}`, { cause: error });
   }
@@ -34934,6 +34954,12 @@ async function runEnsembleCli(argv, options = {}) {
 `);
     return 2;
   }
+  const configuredStatus = ambientSettings.statusDir;
+  if (configuredStatus.value !== null && configuredStatus.layer !== "default" && !path19.isAbsolute(configuredStatus.value)) {
+    const setting = configuredStatus.layer === "env" ? "ENSEMBLE_STATUS_DIR" : `status.dir in ${JSON.stringify(ambientSettings.configFile)}`;
+    stderr.write(`[status] ${setting}: path ${JSON.stringify(configuredStatus.value)} resolves to ${JSON.stringify(path19.resolve(cwd, configuredStatus.value))} against cwd ${JSON.stringify(cwd)}; use an absolute path to choose a directory independently of cwd
+`);
+  }
   if (invocation.kind === "workflow" && invocation.scriptArg === void 0) {
     stderr.write(usage(program));
     return 2;
@@ -35032,7 +35058,7 @@ async function runEnsembleCli(argv, options = {}) {
     if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
         progress,
-        dir: statusDir,
+        dir: path19.resolve(cwd, statusDir),
         createDirectory: options.statusDir === void 0 && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
@@ -35051,9 +35077,7 @@ async function runEnsembleCli(argv, options = {}) {
       if (event.method === "hold/raised") {
         const holdId = String(event.params.holdId);
         const verdicts = event.params.verdicts;
-        const answerCommands = verdicts.map(
-          (verdict) => `${program} holds answer '${holdId.replaceAll("'", `'"'"'`)}' --verdict='${verdict.replaceAll("'", `'"'"'`)}'`
-        );
+        const answerCommands = holdAnswerCommands(program, holdId, verdicts);
         stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, event: "raised", verdicts, answer_commands: answerCommands })}
 `);
         return;
@@ -35095,7 +35119,7 @@ async function runEnsembleCli(argv, options = {}) {
         return;
       }
       if (event.method === "codex/workerScopePlacement") {
-        if (event.params.kind === "refused") {
+        if (event.params.kind === "refused" && event.params.reason !== "every process to place had already exited") {
           const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
           stderr.write(`[codex] app-server (pid ${pid}) scope placement refused: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
 `);
@@ -36216,6 +36240,11 @@ function announceRunRecord(writer, stderr) {
   } catch {
   }
 }
+function holdAnswerCommands(program, holdId, verdicts) {
+  return verdicts.map(
+    (verdict) => `${program} holds answer '${holdId.replaceAll("'", `'"'"'`)}' --verdict='${verdict.replaceAll("'", `'"'"'`)}'`
+  );
+}
 function holdsAnswerUsage(program) {
   return subcommandSynopsis(program, ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]) + "Answers an open hold: writes the decision file the hold names (nonce copied\nfrom the hold), then reports what the raiser did with it, as one JSON object\non stdout. The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set,\notherwise host:pid.\nExit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected;\nthe hold keeps waiting and the reason is reported); 4 not yet consumed (the\nraiser has not read it within its poll cadence; the answer file stays in\nplace); 5 no open hold with that id; 6 retired (the hold settled without\njudging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n";
 }
@@ -36268,7 +36297,8 @@ async function answerHoldCommand(args, env, stdout, stderr, program) {
 `);
     return 1;
   }
-  stdout.write(`${JSON.stringify({ ...result, answered_by: answeredBy })}
+  const answerCommands = result.outcome === "bounced" ? holdAnswerCommands(program, holdId, result.verdicts) : void 0;
+  stdout.write(`${JSON.stringify({ ...result, answered_by: answeredBy, ...answerCommands !== void 0 ? { answer_commands: answerCommands } : {} })}
 `);
   switch (result.outcome) {
     case "consumed":
@@ -36281,9 +36311,11 @@ async function answerHoldCommand(args, env, stdout, stderr, program) {
       return 6;
     case "bounced":
       stderr.write(
-        `hold ${holdId}: answer bounced (${result.rejection.reason}) \u2014 the hold is still waiting for a valid answer
+        `hold ${holdId}: answer bounced (${result.rejection.reason}) \u2014 allowed verdicts: ${JSON.stringify(result.verdicts)}; the hold is still waiting for a valid answer
 `
       );
+      stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, verdicts: result.verdicts, answer_commands: answerCommands })}
+`);
       return 3;
     case "not-consumed":
       stderr.write(

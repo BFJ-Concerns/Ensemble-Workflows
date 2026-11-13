@@ -306,6 +306,12 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     return 2;
   }
 
+  const configuredStatus = ambientSettings.statusDir;
+  if (configuredStatus.value !== null && configuredStatus.layer !== "default" && !path.isAbsolute(configuredStatus.value)) {
+    const setting = configuredStatus.layer === "env" ? "ENSEMBLE_STATUS_DIR" : `status.dir in ${JSON.stringify(ambientSettings.configFile)}`;
+    stderr.write(`[status] ${setting}: path ${JSON.stringify(configuredStatus.value)} resolves to ${JSON.stringify(path.resolve(cwd, configuredStatus.value))} against cwd ${JSON.stringify(cwd)}; use an absolute path to choose a directory independently of cwd\n`);
+  }
+
   if (invocation.kind === "workflow" && invocation.scriptArg === undefined) {
     stderr.write(usage(program));
     return 2;
@@ -450,7 +456,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     if (progress !== undefined && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
         progress,
-        dir: statusDir,
+        dir: path.resolve(cwd, statusDir),
         createDirectory: options.statusDir === undefined && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError(error)}\n`);
@@ -471,9 +477,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         const verdicts = event.params.verdicts as string[];
         // JSON keeps opaque verdicts on one terminal line; single-quoted
         // shell arguments preserve their exact spelling in answer commands.
-        const answerCommands = verdicts.map((verdict) =>
-          `${program} holds answer '${holdId.replaceAll("'", "'\"'\"'")}' --verdict='${verdict.replaceAll("'", "'\"'\"'")}'`
-        );
+        const answerCommands = holdAnswerCommands(program, holdId, verdicts);
         stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, event: "raised", verdicts, answer_commands: answerCommands })}\n`);
         return;
       }
@@ -517,7 +521,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         return;
       }
       if (event.method === "codex/workerScopePlacement") {
-        if (event.params.kind === "refused") {
+        if (event.params.kind === "refused" && event.params.reason !== "every process to place had already exited") {
           const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
           stderr.write(`[codex] app-server (pid ${pid}) scope placement refused: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}\n`);
         }
@@ -2095,6 +2099,12 @@ function announceRunRecord(writer: RunRecordWriter, stderr: Writable): void {
   }
 }
 
+function holdAnswerCommands(program: string, holdId: string, verdicts: string[]): string[] {
+  return verdicts.map((verdict) =>
+    `${program} holds answer '${holdId.replaceAll("'", "'\"'\"'")}' --verdict='${verdict.replaceAll("'", "'\"'\"'")}'`
+  );
+}
+
 function holdsAnswerUsage(program: string): string {
   return (
     subcommandSynopsis(program, ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]) +
@@ -2169,7 +2179,8 @@ async function answerHoldCommand(
     stderr.write(`cannot answer hold ${holdId}: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
-  stdout.write(`${JSON.stringify({ ...result, answered_by: answeredBy })}\n`);
+  const answerCommands = result.outcome === "bounced" ? holdAnswerCommands(program, holdId, result.verdicts) : undefined;
+  stdout.write(`${JSON.stringify({ ...result, answered_by: answeredBy, ...(answerCommands !== undefined ? { answer_commands: answerCommands } : {}) })}\n`);
   switch (result.outcome) {
     case "consumed":
       stderr.write(`hold ${holdId}: answer consumed — the run resumed with verdict ${JSON.stringify(verdict)}\n`);
@@ -2179,8 +2190,9 @@ async function answerHoldCommand(
       return 6;
     case "bounced":
       stderr.write(
-        `hold ${holdId}: answer bounced (${result.rejection.reason}) — the hold is still waiting for a valid answer\n`
+        `hold ${holdId}: answer bounced (${result.rejection.reason}) — allowed verdicts: ${JSON.stringify(result.verdicts)}; the hold is still waiting for a valid answer\n`
       );
+      stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, verdicts: result.verdicts, answer_commands: answerCommands })}\n`);
       return 3;
     case "not-consumed":
       stderr.write(

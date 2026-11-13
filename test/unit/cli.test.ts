@@ -4342,13 +4342,22 @@ test("ensemble holds answer writes the decision, reports what the raiser did wit
 
     // An unlisted verdict bounces: exit 3, the reason on stdout, the hold still waiting.
     const bounced = new CaptureStream();
+    const bouncedStderr = new CaptureStream();
     assert.equal(
-      await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict", "maybe"], { cwd: directory, stdout: bounced, stderr: new CaptureStream(), env }),
+      await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict", "maybe"], { cwd: directory, stdout: bounced, stderr: bouncedStderr, env }),
       3
     );
-    const bouncedReport = JSON.parse(bounced.text()) as { outcome: string; rejection: { reason: string } };
+    const bouncedReport = JSON.parse(bounced.text()) as { outcome: string; rejection: { reason: string; allowed_verdicts: string[] }; answer_commands: string[] };
     assert.equal(bouncedReport.outcome, "bounced");
     assert.equal(bouncedReport.rejection.reason, "invalid-verdict");
+    assert.deepEqual(bouncedReport.rejection.allowed_verdicts, ["yes", "no"]);
+    assert.match(bouncedStderr.text(), /allowed verdicts: \["yes","no"\]/);
+    assert.deepEqual(bouncedReport.answer_commands, [
+      "ensemble holds answer 'run-cli-answer-1' --verdict='yes'",
+      "ensemble holds answer 'run-cli-answer-1' --verdict='no'"
+    ]);
+    const repeated = JSON.parse(bouncedStderr.text().split("\n").find((line) => line.startsWith("[hold] "))!.slice(7)) as { answer_commands: string[] };
+    assert.deepEqual(repeated.answer_commands, bouncedReport.answer_commands);
     const afterBounce = new CaptureStream();
     assert.equal(await runEnsembleCli(["holds", "--json"], { cwd: directory, stdout: afterBounce, stderr: new CaptureStream(), env }), 0);
     assert.deepEqual(
@@ -4515,6 +4524,7 @@ test("CLI renders Codex app-server placement refusals as bounded notices", async
       const invocation = original(prompt, options);
       return { async runAttempt(context) {
         runtime.handleEngineEvent("codex", { method: "codex/workerScopePlacement", params: { kind: "refused", pid: 123, reason: "manager\nrefused" }, receivedAt: Date.now() });
+        runtime.handleEngineEvent("codex", { method: "codex/workerScopePlacement", params: { kind: "refused", pid: 124, reason: "every process to place had already exited" }, receivedAt: Date.now() });
         return invocation.runAttempt(context);
       } };
     };
@@ -4524,6 +4534,7 @@ test("CLI renders Codex app-server placement refusals as bounded notices", async
     });
     assert.equal(code, 0, stderr.text());
     assert.match(stderr.text(), /\[codex\] app-server \(pid 123\) scope placement refused: manager refused\n/);
+    assert.doesNotMatch(stderr.text(), /pid 124|every process to place/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -5014,3 +5025,29 @@ for (const [ending, withHold] of [
     }
   });
 }
+
+test("CLI explains an explicit relative status path against its calling cwd", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-relative-status-"));
+  const stderr = new CaptureStream();
+  try {
+    await mkdir(path.join(directory, "status space"));
+    const script = path.join(directory, "empty.js");
+    await writeFile(script, 'export const meta = { name: "relative-status" }; return "done";');
+    const code = await runEnsembleCli([script], {
+      cwd: directory, stdout: new CaptureStream(), stderr, runRecordDir: null,
+      env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data"), ENSEMBLE_STATUS_DIR: "status space" },
+      createRuntime: async (options) => fixedEngineRuntime(new FixedResponseEngine("codex", "done"), 1, options)
+    });
+    assert.equal(code, 0, stderr.text());
+    const note = stderr.text().split("\n").filter((line) => line.startsWith("[status]"));
+    assert.equal(note.length, 1);
+    assert.ok(note[0]?.includes(`ENSEMBLE_STATUS_DIR: path "status space" resolves to ${JSON.stringify(path.join(directory, "status space"))}`));
+    assert.match(note[0]!, /use an absolute path/);
+    const announcement = stderr.text().split("\n").find((line) => line.startsWith("[status-file] "));
+    assert.ok(announcement);
+    const status = JSON.parse(announcement.slice("[status-file] ".length)) as { status_path: string };
+    assert.equal(path.dirname(status.status_path), path.join(directory, "status space"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

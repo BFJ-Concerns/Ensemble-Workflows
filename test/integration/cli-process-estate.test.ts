@@ -273,7 +273,7 @@ test("built CLI fails loud when an explicitly configured status directory is mis
   }
 });
 
-test("built CLI shuts down cleanly when its status reporter throws", async () => {
+test("built CLI shuts down cleanly when its status reporter throws", { skip: process.getuid?.() === 0 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-reporter-estate-"));
   const script = path.join(directory, "workflow.js");
   const statusTarget = path.join(directory, "status-target");
@@ -3230,7 +3230,7 @@ for (const diagnostic of [
 }
 
 
-test("built CLI refuses unwritable status paths with one actionable line before executing", async () => {
+test("built CLI refuses unwritable status paths with one actionable line before executing", { skip: process.getuid?.() === 0 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-denied-"));
   const denied = path.join(directory, "denied");
   const script = path.join(directory, "workflow.js");

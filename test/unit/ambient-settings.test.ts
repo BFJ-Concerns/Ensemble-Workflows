@@ -456,7 +456,7 @@ test("worker scope grouping resolves and validates every setting layer", async (
 });
 
 
-test("explicit status paths resolve against the caller cwd and name config and permission remedies", async () => {
+test("explicit status paths resolve against the caller cwd and name config and permission remedies", async (t) => {
   const fixture = await configFixture({ schema_version: 1, status: { dir: "status space" } });
   const resolved = path.join(fixture.cwd, "status space");
   const resolve = () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd });
@@ -470,8 +470,10 @@ test("explicit status paths resolve against the caller cwd and name config and p
     });
     await mkdir(resolved);
     assert.equal(resolve().statusDir.value, "status space");
-    await chmod(resolved, 0o500);
-    assert.throws(resolve, /is not writable and searchable: status.dir.*grant write and search permission/);
+    await t.test("an unwritable directory names the permission remedy", { skip: process.getuid?.() === 0 }, async () => {
+      await chmod(resolved, 0o500);
+      assert.throws(resolve, /is not writable and searchable: status.dir.*grant write and search permission/);
+    });
   } finally {
     await chmod(resolved, 0o700).catch(() => undefined);
     await fixture.cleanup();

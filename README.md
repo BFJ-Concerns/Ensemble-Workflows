@@ -73,7 +73,8 @@ The launcher can also be copied anywhere on its own and run with `node`.
 ## A first workflow
 
 This script asks Codex for likely bugs in a file, then has Claude check each
-claim independently and keeps only the confirmed ones:
+claim independently. It returns each confirmed claim with its file and line,
+and Claude's verdict and reason:
 
 ```js
 export const meta = {
@@ -132,7 +133,9 @@ const verdicts = await parallel(
   ),
 );
 
-return found.bugs.filter((_, i) => verdicts[i]?.real === true);
+return found.bugs
+  .map((bug, i) => ({ file, ...bug, verdict: verdicts[i] }))
+  .filter(finding => finding.verdict?.real === true);
 ```
 
 Run it with the file to check as its argument, keeping the result and the log

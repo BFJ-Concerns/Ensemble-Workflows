@@ -5918,3 +5918,34 @@ test("a lean held session retains its fallback context route on later turns", as
     assert.equal(codex.sessionsCreated.length, 1);
   } finally { await runtime.close(); }
 });
+
+
+for (const held of [false, true]) {
+  test(`requested identity is present at registration for ${held ? "held turns" : "one-shot calls"}`, async () => {
+    const runtime = new EnsembleRuntime({ transport: new FakeTransport([turn("answer")]), defaultMaxAttempts: 1 });
+    const snapshots: LiveAgentSnapshot[] = [];
+    const unsubscribe = runtime.progress.onChange(() => {
+      const agent = runtime.progress.snapshot().agents[0];
+      if (agent !== undefined) snapshots.push(structuredClone(agent));
+    });
+    try {
+      const options = { engine: "codex" as const, model: "original-model", effort: "high" as const };
+      if (held) {
+        const session = runtime.createWorkerSession(options);
+        await session.send("go");
+        await session.close();
+      } else {
+        await runtime.agent("go", options);
+      }
+      assert.ok(snapshots.length > 0);
+      assert.equal(snapshots[0]?.state, "queued");
+      for (const snapshot of snapshots) {
+        assert.equal(snapshot.requestedModel, "original-model");
+        assert.equal(snapshot.requestedEffort, "high");
+      }
+    } finally {
+      unsubscribe();
+      await runtime.close();
+    }
+  });
+}

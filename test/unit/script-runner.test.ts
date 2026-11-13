@@ -130,8 +130,7 @@ test("onBodySettled fires in the body promise's own continuation, before a zero-
   // The launcher marks the body settled here. A timer the body arms before
   // returning fires on the macrotask queue: after the body promise's
   // continuation, and before any await the runner takes on its own account
-  // completes (`onMeta` is invoked synchronously ahead of that
-  // continuation; its await is where the timer would otherwise land) — so
+  // completes — so
   // what the timer does is late, and the returned result stands. Called for
   // the root body only.
   const order: string[] = [];
@@ -148,8 +147,7 @@ test("onBodySettled fires in the body promise's own continuation, before a zero-
       log: () => {},
       onMeta: async () => {
         order.push("meta");
-        // An await on I/O between the body's return and the runner's
-        // settlement: the timer fires during it.
+        // Metadata publication completes before the body starts.
         await new Promise((resolve) => setTimeout(resolve, 5));
       },
       onBodySettled: () => order.push("settled"),
@@ -2182,4 +2180,29 @@ test("the tally hook records a named count into the run, replacing on repeat, an
       }),
     /does not support tallies/
   );
+});
+
+
+test("metadata publication completes before the body registers its first worker", async () => {
+  let published = false;
+  let called = false;
+  const observingRuntime: WorkflowRuntime = {
+    ...runtime,
+    agent: (async () => {
+      called = true;
+      assert.equal(published, true, "worker registration must follow metadata publication");
+      return "answer";
+    }) as unknown as WorkflowRuntime["agent"]
+  };
+  const result = await runWorkflowScript({
+    filename: "identity-before-body.js", runtime: observingRuntime, log: () => {},
+    source: 'export const meta = { name: "identity-before-body" }; return await agent("go", { engine: "codex" });',
+    onMeta: async (meta) => {
+      assert.deepEqual(meta, { name: "identity-before-body" });
+      await Promise.resolve();
+      assert.equal(called, false);
+      published = true;
+    }
+  });
+  assert.equal(result.result, "answer");
 });

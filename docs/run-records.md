@@ -113,12 +113,14 @@ Each status file contains one JSON object with these fields:
   the publishing process id; and `start_ticks`, a string identifying that
   process's start time in proc clock ticks, or `null` when unreadable.
 - `archiveDir`: string or `null`, the run archive directory when published.
-- `workflow`: string or `null`, from `meta.name` when present.
+- `workflow`: string or `null`, from `meta.name` when present, published
+  before the script body starts.
 - `state`: `"running"` or `"finished"`. A finished snapshot may exist briefly
   while the writer closes; `close()` then removes the file. Readers should treat
   absence as no active run and tolerate `"finished"` during that close window.
-  A finished snapshot may still list running workers while teardown settles
-  them; read their individual states and counts as teardown progresses.
+  The launcher marks the run finished after worker teardown and hold
+  withdrawal; finished snapshots contain no queued or running workers or open
+  decision holds.
 - `startedAt`: number, Unix epoch milliseconds.
 - `updatedAt`: number, Unix epoch milliseconds.
 - `finishedAt`: number or `null`, Unix epoch milliseconds when the run has
@@ -146,16 +148,18 @@ judges a queued worker against. Admission takes a worker's slots just before
 the worker starts running and gives them back just after it settles, so the
 ceiling's active count can briefly be higher than the `active` total, and an
 engine's cap can be full for a moment while its `active` count reads one
-below it. The ceiling's count is kept whether or not the run has a ceiling.
+below it. Finished snapshots have no held slots. The ceiling's count is kept
+whether or not the run has a ceiling.
 
 Worker spend is cumulative across attempts and fallback targets; null means
 unobserved, not zero. Identity and paths are producer-supplied evidence, never
-inferred. Requested identity describes the original call; resolved identity
-names what was served. Transcript paths match the running agent record's
-current attempt: archive-relative for Codex, absolute native paths for
-Claude. Resolve relative paths against archiveDir. A settled Claude record
+inferred. Requested identity describes the original call and is present from
+the first snapshot listing the worker; resolved identity names what was
+served. Transcript paths match the running agent record's current attempt:
+archive-relative for Codex, absolute native paths for Claude. Resolve relative paths against archiveDir. A settled Claude record
 archives a copy of the native transcript; the status entry retains its
-live path.
+live path. Evidence timestamps advance as the engine streams output;
+opencode reports each decoded step, text or tool event as evidence.
 
 A finished worker's state is its disposition, and each disposition has the
 count of the same name (`cut-short` counts under `cutShort`):

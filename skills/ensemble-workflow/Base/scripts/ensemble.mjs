@@ -18883,8 +18883,8 @@ var RunProgress = class {
     const id = this.#nextAgentId += 1;
     this.#live.set(id, {
       id,
-      requestedModel: null,
-      requestedEffort: null,
+      requestedModel: input.requestedModel ?? null,
+      requestedEffort: input.requestedEffort ?? null,
       resolvedModel: null,
       resolvedEffort: null,
       transcript: null,
@@ -23666,7 +23666,10 @@ var OpenCodeEngineInvocation = class {
       streamBuffer = lines.pop() ?? "";
       for (const line of lines) {
         const parsed = parseRunEvents(line);
-        streamEvents.push(...parsed.events);
+        for (const event of parsed.events) {
+          streamEvents.push(event);
+          context.onOutput?.();
+        }
         streamSessionId ??= parsed.sessionId;
       }
       const usage2 = usageFromStream(streamEvents);
@@ -25587,6 +25590,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /** Injectable clock (tests): drives the staleness mark's idle reading. */
   #now;
   #holdManager = null;
+  #openHolds = /* @__PURE__ */ new Set();
   #lastSettledAgentRecord = null;
   #holdsDir;
   #holdScope;
@@ -25843,7 +25847,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
-      phase: options.phase ?? null
+      phase: options.phase ?? null,
+      requestedModel: options.model ?? null,
+      requestedEffort: options.effort ?? null
     });
     const phase = this.progress.queuedAgentPhase(agentId);
     if (engine.name === "claude" && options.model === void 0) {
@@ -25915,7 +25921,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
       onOpen: (hold) => this.progress.noteHoldRaised(hold),
       onSettled: (id) => this.progress.noteHoldSettled(id)
     });
-    return this.#holdManager.raise(options);
+    const pending = this.#holdManager.raise(options);
+    this.#openHolds.add(pending);
+    try {
+      return await pending;
+    } finally {
+      this.#openHolds.delete(pending);
+    }
   }
   /** Same observability contract as agent-record writes: failures surface as events, never as hold failures. */
   async #recordHoldEventSafely(event) {
@@ -26028,7 +26040,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const agentId = this.progress.queueAgent({
         engine: engine.name,
         label: options.label ?? null,
-        phase: options.phase ?? null
+        phase: options.phase ?? null,
+        requestedModel: options.model ?? null,
+        requestedEffort: options.effort ?? null
       });
       phase = this.progress.queuedAgentPhase(agentId);
       if (engine.name === "claude" && options.model === void 0 && state.turnCount === 0) {
@@ -26840,6 +26854,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const totalsAtClose = this.progress.snapshot().totals;
     const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     this.#holdManager?.close();
+    const holdCloses = Promise.allSettled([...this.#openHolds]);
     this.#admission.close();
     const abandonedEvidence = abandoning.map((record) => {
       this.#abandonedAgentIds.add(record.id);
@@ -26860,6 +26875,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
     this.#workerSessions.clear();
+    await holdCloses;
     await settlementBarrier;
     let done = totalsAtClose.done;
     let failed = totalsAtClose.failed;
@@ -33910,6 +33926,7 @@ async function runWorkflowScript(options) {
     // sitting where the script sits.
     require: createRequire(resolvedFilename)
   };
+  await options.onMeta?.(declaredMeta);
   const resultPromise = run(bindings);
   const noteBodySettled = () => {
     if (workflowDepth === 0) {
@@ -33926,7 +33943,6 @@ async function runWorkflowScript(options) {
       return { status: "rejected", error };
     }
   );
-  await options.onMeta?.(declaredMeta);
   const settlement = await withTimeout(resultSettlement, options.timeoutMs);
   if (settlement.status === "rejected") {
     if (workflowDepth === 0) {
@@ -35249,6 +35265,7 @@ async function runEnsembleCli(argv, options = {}) {
       onMeta: async (meta) => {
         progress?.setWorkflow(workflowName(meta));
         await runRecordWriter?.noteMeta(meta);
+        ending.throwIfEnded();
       },
       // From the body's own settlement an ending is late: a signal or a
       // lingering callback's exit changes nothing, and an uncaught
@@ -35302,7 +35319,6 @@ async function runEnsembleCli(argv, options = {}) {
     const judgeLateEnding = lateEndingJudge(ending, stderr);
     try {
       try {
-        progress?.finish();
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
           const pendingWorkers = progress?.snapshot().totals;
@@ -35322,6 +35338,7 @@ async function runEnsembleCli(argv, options = {}) {
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError2(error)}
 `);
       }
+      progress?.finish();
       if (finalRecord !== null && finalRecord.status !== "complete" && terminalError !== null) {
         const serialised = serialiseResult(partialResult(runtime, finalRecord.status, terminalError));
         stdout.write(`${serialised}

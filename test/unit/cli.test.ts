@@ -1463,7 +1463,7 @@ test("ensemble agent rejects misplaced tuning flags, duplicate scalar flags, and
     },
     {
       argv: ["agent", "--engine=codex", "prompt", "--timeout", "1000"],
-      diagnostic: "Tuning flag --timeout appears after the agent prompt; put tuning flags before the prompt"
+      diagnostic: "ensemble: Tuning flag --timeout appears after the agent prompt; put tuning flags before the prompt"
     },
     {
       argv: ["agent", "--engine=codex", "--agent-ceiling=1", "--agent-ceiling=null", "prompt"],
@@ -1548,7 +1548,7 @@ test("a boolean agent flag is scanned by its declared type, not a literal", asyn
   );
 
   assert.equal(exitCode, 2);
-  assert.equal(stderr.text(), "Tuning flag --timeout appears after the agent prompt; put tuning flags before the prompt\n");
+  assert.equal(stderr.text(), "ensemble: Tuning flag --timeout appears after the agent prompt; put tuning flags before the prompt\n");
 });
 
 test("workflow invocation rejects duplicate scalar tuning flags before runtime creation", async () => {
@@ -4936,4 +4936,20 @@ test("built launcher refusal repairs preserve the invoked symlink path", async (
       assert.equal(result.stderr.trimEnd().split("\n").length, 1, result.stderr);
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("misplaced --lean and run-level --model give complete launcher-specific refusals", async () => {
+  const program = "node /opt/ensemble/ensemble.mjs";
+  for (const [argv, diagnostic] of [
+    [["agent", "--engine", "codex", "prompt", "--lean"], `${program}: Flag --lean appears after the agent prompt; put flags before the prompt, or put \`--\` before a dash-leading prompt`],
+  ] as const) {
+    const stderr = new CaptureStream();
+    const stdout = new CaptureStream();
+    assert.equal(await runEnsembleCli([...argv], {
+      programName: program, stdout, stderr,
+      createRuntime: async () => { throw new Error("no runtime should start"); }
+    }), 2);
+    assert.equal(stdout.text(), "");
+    assert.equal(stderr.text(), `${diagnostic}\n`);
+  }
 });

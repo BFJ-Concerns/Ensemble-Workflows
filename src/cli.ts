@@ -1510,7 +1510,7 @@ async function parseAgentInvocation(
       );
     }
   }
-  rejectMisplacedAgentTuningFlags(argv);
+  rejectMisplacedAgentTuningFlags(argv, program);
   rejectDuplicateScalarFlags(argv);
   let parsed;
   try {
@@ -1772,7 +1772,7 @@ function splitTuningFlags(
   return { tuningArgs, scriptArg: undefined, scriptArgs: [] };
 }
 
-function rejectMisplacedAgentTuningFlags(argv: string[]): void {
+function rejectMisplacedAgentTuningFlags(argv: string[], program: string): void {
   let promptSeen = false;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -1783,14 +1783,14 @@ function rejectMisplacedAgentTuningFlags(argv: string[]): void {
       return;
     }
     if (promptSeen && (isKnownOption(value) || isKnownInlineOption(value))) {
-      throw new CliUsageError(`Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
+      throw new CliUsageError(`${program}: Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
     }
     if (promptSeen && (isKnownAgentOption(value) || isKnownInlineAgentOption(value))) {
       // Same misplacement contract as the workflow form's post-script scan:
       // a flag after the prompt is a placement mistake to name, never an
       // option to quietly apply or a second positional to misroute.
       throw new CliUsageError(
-        `Flag ${value} appears after the agent prompt; put flags before the prompt, or put \`--\` before a dash-leading prompt`
+        `${program}: Flag ${value} appears after the agent prompt; put flags before the prompt, or put \`--\` before a dash-leading prompt`
       );
     }
     // Whether a flag consumes the next token is the option map's `type`,

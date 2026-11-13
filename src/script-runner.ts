@@ -154,7 +154,7 @@ export interface RunWorkflowScriptOptions {
   env?: NodeJS.ProcessEnv;
   workflowDepth?: number;
   log: WorkflowLogSink;
-  /** Called with the parsed `meta` as soon as the script evaluates, before its body resolves. */
+  /** Called with the parsed `meta` before the script body starts. */
   onMeta?: (meta: unknown) => void | Promise<void>;
   /**
    * Called the moment the root body's own promise settles — fulfilled or
@@ -300,6 +300,8 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     // sitting where the script sits.
     require: createRequire(resolvedFilename)
   };
+  // Publish the declared identity before the body can register any workers.
+  await options.onMeta?.(declaredMeta);
   // The body starts here: its synchronous prefix runs inside this call, and
   // everything after its first await settles through the returned promise.
   const resultPromise = run(bindings);
@@ -322,9 +324,6 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
       return { status: "rejected" as const, error };
     }
   );
-  // Meta is known the moment the script evaluates — surface it before awaiting
-  // the body so a live status view can name the run from the start.
-  await options.onMeta?.(declaredMeta);
   const settlement = await withTimeout(resultSettlement, options.timeoutMs);
   if (settlement.status === "rejected") {
     if (workflowDepth === 0) {

@@ -113,7 +113,8 @@ Each status file contains one JSON object with these fields:
   the publishing process id; and `start_ticks`, a string identifying that
   process's start time in proc clock ticks, or `null` when unreadable.
 - `archiveDir`: string or `null`, the run archive directory when published.
-- `workflow`: string or `null`, from `meta.name` when present.
+- `workflow`: string or `null`, from `meta.name` when present, published
+  before the script body starts.
 - `state`: `"running"` or `"finished"`. A finished snapshot may exist briefly
   while the writer closes; `close()` then removes the file. Readers should treat
   absence as no active run and tolerate `"finished"` during that close window.

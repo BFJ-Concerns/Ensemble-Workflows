@@ -33910,6 +33910,7 @@ async function runWorkflowScript(options) {
     // sitting where the script sits.
     require: createRequire(resolvedFilename)
   };
+  await options.onMeta?.(declaredMeta);
   const resultPromise = run(bindings);
   const noteBodySettled = () => {
     if (workflowDepth === 0) {
@@ -33926,7 +33927,6 @@ async function runWorkflowScript(options) {
       return { status: "rejected", error };
     }
   );
-  await options.onMeta?.(declaredMeta);
   const settlement = await withTimeout(resultSettlement, options.timeoutMs);
   if (settlement.status === "rejected") {
     if (workflowDepth === 0) {
@@ -35249,6 +35249,7 @@ async function runEnsembleCli(argv, options = {}) {
       onMeta: async (meta) => {
         progress?.setWorkflow(workflowName(meta));
         await runRecordWriter?.noteMeta(meta);
+        ending.throwIfEnded();
       },
       // From the body's own settlement an ending is late: a signal or a
       // lingering callback's exit changes nothing, and an uncaught

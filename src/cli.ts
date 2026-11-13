@@ -691,6 +691,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       onMeta: async (meta: unknown) => {
         progress?.setWorkflow(workflowName(meta));
         await runRecordWriter?.noteMeta(meta);
+        ending.throwIfEnded();
       },
       // From the body's own settlement an ending is late: a signal or a
       // lingering callback's exit changes nothing, and an uncaught

@@ -36,7 +36,10 @@ test("default engine registry performs no Codex I/O at construction or unused cl
   const registry = await createDefaultEngineRegistry(defaultRegistryOptions(codexBin));
 
   assert.deepEqual(registry.names(), ["codex", "claude", "opencode"]);
+  let losses = 0;
+  registry.get("codex")!.createSession!({}, { onLost: () => { losses++; } });
   await registry.close();
+  assert.equal(losses, 0);
 });
 
 test("a missing Codex binary fails the first use and the failure is memoised", async () => {
@@ -79,6 +82,8 @@ test("lazy Codex transport spawns once even after a startup failure", async () =
   const capturePath = path.join(directory, "starts.txt");
   const codexBin = await fakeCodexExitingServer(capturePath);
   const transport = new LazyCodexAppServerTransport(defaultTransportOptions(codexBin));
+  const observed: Error[] = [];
+  transport.onTermination(error => observed.push(error));
 
   let firstError: unknown;
   try {
@@ -87,6 +92,10 @@ test("lazy Codex transport spawns once even after a startup failure", async () =
     firstError = error;
   }
   assert.ok(firstError instanceof AppServerExitedError);
+  assert.deepEqual(observed, [firstError]);
+  let replayed: Error | undefined;
+  transport.onTermination(error => { replayed = error; });
+  assert.strictEqual(replayed, firstError);
 
   await assert.rejects(
     () => transport.openThread({}),
@@ -123,6 +132,53 @@ test("an observed app-server exit remains the cause of a later thread-open refus
     await transport.close();
   }
 });
+
+for (const lazy of [false, true]) {
+  test(`${lazy ? "lazy" : "eager"} Codex transport reports termination once, replays it and isolates observers`, async () => {
+    const codexBin = await fakeCodexFailingTurnServer("exit-mid-turn");
+    const options = defaultTransportOptions(codexBin);
+    const transport = lazy ? new LazyCodexAppServerTransport(options) : await CodexAppServerTransport.start(options);
+    const observed: Error[] = [];
+    let removedCalls = 0;
+    transport.onTermination(() => { throw new Error("observer failure"); });
+    const removed = transport.onTermination(() => { removedCalls++; });
+    removed();
+    transport.onTermination(error => observed.push(error));
+    try {
+      const thread = await transport.openThread({});
+      await assert.rejects(transport.runTurn(thread, "die", {}), AppServerExitedError);
+      assert.equal(observed.length, 1);
+      const terminal = observed[0]!;
+      assert.deepEqual(workerExitStatusOf(terminal), { exitCode: 7, signal: null });
+      let replayed: Error | undefined;
+      transport.onTermination(error => { replayed = error; });
+      assert.strictEqual(replayed, terminal);
+      await assert.rejects(transport.runTurn(thread, "still dead", {}), AppServerExitedError);
+      assert.equal(observed.length, 1);
+      assert.equal(removedCalls, 0);
+    } finally {
+      await transport.close();
+      await rm(path.dirname(codexBin), { recursive: true, force: true });
+    }
+  });
+
+  test(`${lazy ? "lazy" : "eager"} Codex transport intentional close never reports loss`, async () => {
+    const codexBin = await fakeCodexTurnServer({});
+    const options = defaultTransportOptions(codexBin);
+    const transport = lazy ? new LazyCodexAppServerTransport(options) : await CodexAppServerTransport.start(options);
+    let losses = 0;
+    transport.onTermination(() => { losses++; });
+    try {
+      await transport.openThread({});
+      await transport.close();
+      transport.onTermination(() => { losses++; });
+      assert.equal(losses, 0);
+    } finally {
+      await transport.close();
+      await rm(path.dirname(codexBin), { recursive: true, force: true });
+    }
+  });
+}
 
 test("concurrent first Codex uses share a single app-server handshake", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-lazy-codex-"));

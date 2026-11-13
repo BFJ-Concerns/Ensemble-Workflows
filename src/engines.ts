@@ -19,6 +19,9 @@ import {
   EngineShutdownError,
   InvalidAgentOptionValueError,
   OpenCodeModelRequiredError,
+  firstDeltaMsOf,
+  partialTranscriptOf,
+  partialWorkerTextOf,
   workerExitStatusOf
 } from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation } from "./opencode-engine.js";
@@ -504,6 +507,8 @@ export class CodexEngineAdapter implements EngineAdapter {
 
   #transport: RuntimeTransport;
   #scheduler: Scheduler;
+  #sessions = new Set<CodexWorkerSession>();
+  #closed = false;
 
   constructor(options: CodexEngineAdapterOptions) {
     this.concurrency = options.concurrency;
@@ -523,12 +528,21 @@ export class CodexEngineAdapter implements EngineAdapter {
     });
   }
 
-  createSession(options: EngineTurnOptions): EngineWorkerSession {
-    return new CodexWorkerSession({ options, transport: this.#transport });
+  createSession(options: EngineTurnOptions, observer?: EngineSessionObserver): EngineWorkerSession {
+    if (this.#closed) throw new EngineShutdownError(this.name);
+    const session = new CodexWorkerSession({
+      options, transport: this.#transport,
+      ...(observer !== undefined ? { observer } : {}),
+      onClose: (closed) => { this.#sessions.delete(closed); }
+    });
+    this.#sessions.add(session);
+    return session;
   }
 
   async close(): Promise<void> {
+    this.#closed = true;
     this.#scheduler.close(new EngineShutdownError(this.name));
+    await Promise.all([...this.#sessions].map((session) => session.close()));
     await this.#transport.close();
   }
 }
@@ -545,10 +559,28 @@ class CodexWorkerSession implements EngineWorkerSession {
   #transport: RuntimeTransport;
   #threadId: string | null = null;
   #opening: Promise<string> | null = null;
+  #observer: EngineSessionObserver | undefined;
+  #onClose: (session: CodexWorkerSession) => void;
+  #unsubscribe: (() => void) | undefined;
+  #closed = false;
+  #lost: EngineSessionLoss | null = null;
+  #transportFailure: Error | undefined;
+  #lossKeepAlive: NodeJS.Timeout | undefined;
 
-  constructor(options: { options: EngineTurnOptions; transport: RuntimeTransport }) {
+  constructor(options: {
+    options: EngineTurnOptions;
+    transport: RuntimeTransport;
+    observer?: EngineSessionObserver;
+    onClose: (session: CodexWorkerSession) => void;
+  }) {
     this.#options = options.options;
     this.#transport = options.transport;
+    this.#observer = options.observer;
+    this.#onClose = options.onClose;
+    this.#unsubscribe = this.#transport.onTermination?.((error) => {
+      this.#transportFailure = error;
+      this.#noteLost(error);
+    });
   }
 
   beginTurn(prompt: string, turn: EngineSessionTurn): EngineInvocation {
@@ -562,7 +594,11 @@ class CodexWorkerSession implements EngineWorkerSession {
     schema: JsonSchema | undefined,
     context: EngineAttemptContext
   ): Promise<EngineAttemptResult> {
+    if (this.#lost !== null) return this.#lostResult();
+    if (this.#closed) throw new EngineShutdownError("codex");
     const threadId = await this.#ensureThread();
+    if (this.#lost !== null) return this.#lostResult();
+    if (this.#closed) throw new EngineShutdownError("codex");
     // In-session correction: the thread already holds the prompt and the
     // failed reply, so the correction names only the failure — restating
     // the whole prompt would spend cache re-reading what the thread knows.
@@ -570,14 +606,49 @@ class CodexWorkerSession implements EngineWorkerSession {
       context.previousFailure === undefined
         ? prompt
         : `A previous attempt failed (${context.previousFailure.kind}): ${context.previousFailure.message}. Correct it this time.`;
-    return this.#transport.runTurn(threadId, message, {
-      ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
-      ...(schema !== undefined ? { schema: normaliseForCodexOutputSchema(schema) } : {}),
-      ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...codexProgressObservers(context),
-      ...(context.onTranscriptEvent !== undefined ? { onTranscriptEvent: context.onTranscriptEvent } : {}),
-      ...(context.onTranscriptPath !== undefined ? { onTranscriptPath: context.onTranscriptPath } : {})
-    });
+    try {
+      return await this.#transport.runTurn(threadId, message, {
+        ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
+        ...(schema !== undefined ? { schema: normaliseForCodexOutputSchema(schema) } : {}),
+        ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
+        ...codexProgressObservers(context),
+        ...(context.onTranscriptEvent !== undefined ? { onTranscriptEvent: context.onTranscriptEvent } : {}),
+        ...(context.onTranscriptPath !== undefined ? { onTranscriptPath: context.onTranscriptPath } : {})
+      });
+    } catch (error) {
+      if (!this.#closed && error instanceof AppServerExitedError) {
+        this.#transportFailure ??= error;
+        this.#noteLost(error);
+        return this.#lostResult(error);
+      }
+      throw error;
+    }
+  }
+
+  #noteLost(error: Error): void {
+    // Until thread/start succeeds there is no held worker to lose: startup
+    // and thread-open refusals keep their ordinary availability handling.
+    if (this.#closed || this.#threadId === null || this.#lost !== null) return;
+    this.#lost = { nativeSession: this.#threadId, reason: error.message, observedAt: Date.now() };
+    // The app-server's pipes kept an idle workflow alive. Retain that
+    // liveness after death until close, so a pending script can still time
+    // out, be interrupted or close its lost session and seal its run.
+    this.#lossKeepAlive = setInterval(() => {}, 60 * 60 * 1_000);
+    try { this.#observer?.onLost(this.#lost); }
+    catch { /* Observability cannot fail a turn or another session's notice. */ }
+  }
+
+  #lostResult(error: unknown = this.#transportFailure): EngineAttemptResult {
+    const text = partialWorkerTextOf(error) ?? "";
+    const transcript = partialTranscriptOf(error);
+    const exit = workerExitStatusOf(error);
+    return {
+      text, deltaText: text, durationMs: null, firstDeltaMs: firstDeltaMsOf(error),
+      items: {}, tokenUsageEvents: [],
+      attemptFailure: { kind: "session-lost", message: this.#lost!.reason },
+      ...(transcript === null ? {} : { transcripts: [transcript] }),
+      ...(exit === null ? {} : { workerExit: exit })
+    };
   }
 
   /**
@@ -594,6 +665,7 @@ class CodexWorkerSession implements EngineWorkerSession {
       try {
         const threadId = await openCodexThread(this.#transport, this.#options, this.#options.cwd);
         this.#threadId = threadId;
+        if (this.#transportFailure !== undefined) this.#noteLost(this.#transportFailure);
         return threadId;
       } finally {
         this.#opening = null;
@@ -605,7 +677,11 @@ class CodexWorkerSession implements EngineWorkerSession {
   async close(): Promise<void> {
     // An app-server thread needs no per-thread teardown: it is server-side
     // state that dies with the shared transport, which the adapter owns.
-    this.#threadId = null;
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#unsubscribe?.();
+    clearInterval(this.#lossKeepAlive);
+    this.#onClose(this);
   }
 }
 

@@ -70,6 +70,7 @@ const child = spawn(
     ? ["--test", "--test-reporter=tap", ...liveSuiteSetup, testGlob]
     : [suiteTestChildProgram],
   {
+  cwd: path.resolve(import.meta.dirname, ".."),
   env: {
     ENSEMBLE_RUN_RECORD_DIR: recordStoreDirectory,
     ...process.env,

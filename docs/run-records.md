@@ -441,6 +441,12 @@ atomic temp-then-rename writes, and the final manifest records `complete`,
 `failed`, `timed-out`, `interrupted`, or `incomplete`. A stopped run therefore
 leaves a usable partial archive.
 
+Concurrent agent-record writes share a manifest publication. Each call waits
+for its agent files and that manifest to reach disk before execution can
+proceed. Attempts, script tallies and sealing retain their order between
+publications; a large queued fan-out does not rewrite the growing manifest
+for every cancelled call.
+
 When the archive is sealed, the writer checks that every file in its
 integrity table still exists with the size that was hashed. A file that has
 gone missing, or whose size no longer matches, is listed in

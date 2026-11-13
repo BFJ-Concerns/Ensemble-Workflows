@@ -375,11 +375,13 @@ code. Other stdout errors remain failures.
   without awaiting the worker, and the launcher prints one `[teardown]` line
   per such worker.
 - **Unsettled promises.** If the script is still awaiting a promise when the
-  event loop has no work left, a run without `--timeout` ends `failed` with
-  `WorkflowUnsettledError` naming the script. With `--timeout`, the launcher
-  stays alive until the deadline and ends `timed-out`. Both endings print the
-  partial-result envelope, seal the archive, write the completion sentinel,
-  and remove the live status file.
+  event loop has no work left to settle it, the run ends `failed` with
+  `WorkflowUnsettledError` naming the script, with or without `--timeout`.
+  Finished workers and idle engine connections do not keep a run alive.
+  Script-owned timers and active workers can still settle the script, and
+  remain bounded by `--timeout` when set. The failed ending prints the
+  partial-result envelope, seals the archive, writes the completion sentinel,
+  and removes the live status file.
 - **`--timeout`.** The whole-run deadline fires from a timer, so it can only
   end the run while the script is waiting on the event loop. It cannot
   interrupt synchronous code: a script spinning in a synchronous loop can only

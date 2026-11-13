@@ -565,7 +565,6 @@ class CodexWorkerSession implements EngineWorkerSession {
   #closed = false;
   #lost: EngineSessionLoss | null = null;
   #transportFailure: Error | undefined;
-  #lossKeepAlive: NodeJS.Timeout | undefined;
 
   constructor(options: {
     options: EngineTurnOptions;
@@ -630,10 +629,6 @@ class CodexWorkerSession implements EngineWorkerSession {
     // and thread-open refusals keep their ordinary availability handling.
     if (this.#closed || this.#threadId === null || this.#lost !== null) return;
     this.#lost = { nativeSession: this.#threadId, reason: error.message, observedAt: Date.now() };
-    // The app-server's pipes kept an idle workflow alive. Retain that
-    // liveness after death until close, so a pending script can still time
-    // out, be interrupted or close its lost session and seal its run.
-    this.#lossKeepAlive = setInterval(() => {}, 60 * 60 * 1_000);
     try { this.#observer?.onLost(this.#lost); }
     catch { /* Observability cannot fail a turn or another session's notice. */ }
   }
@@ -680,7 +675,6 @@ class CodexWorkerSession implements EngineWorkerSession {
     if (this.#closed) return;
     this.#closed = true;
     this.#unsubscribe?.();
-    clearInterval(this.#lossKeepAlive);
     this.#onClose(this);
   }
 }

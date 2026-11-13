@@ -3223,14 +3223,18 @@ function hangingRuntime(): EnsembleRuntime {
     spent: () => 0,
     remaining: () => Number.POSITIVE_INFINITY
   };
+  let liveWorker: NodeJS.Timeout | undefined;
 
   return {
     budget,
     worktrees: [],
     onEvent: () => () => {},
-    // Never resolves — the only way out is the workflow timeout.
-    agent: () => new Promise<string>(() => {}),
-    close: async () => {}
+    // A real active worker owns referenced handles until cancellation.
+    agent: () => {
+      liveWorker ??= setInterval(() => {}, 60_000);
+      return new Promise<string>(() => {});
+    },
+    close: async () => { clearInterval(liveWorker); }
   } as unknown as EnsembleRuntime;
 }
 
@@ -3392,9 +3396,12 @@ class HangOnPromptEngine implements EngineAdapter {
 
   createInvocation(prompt: string): EngineInvocation {
     let rejectHang: ((error: Error) => void) | undefined;
+    let liveWorker: NodeJS.Timeout | undefined;
     const invocation: EngineInvocation = {
       runAttempt: async () => {
         if (prompt === "hang") {
+          // Model the live process handle a real executing worker owns.
+          liveWorker = setInterval(() => {}, 60_000);
           this.onHangStarted();
           await new Promise<never>((_resolve, reject) => {
             rejectHang = reject;
@@ -3403,6 +3410,7 @@ class HangOnPromptEngine implements EngineAdapter {
         return turn(`${this.name}:${prompt}`);
       },
       close: async () => {
+        clearInterval(liveWorker);
         this.#activeInvocations.delete(invocation);
         if (rejectHang !== undefined) {
           this.cancelCount += 1;

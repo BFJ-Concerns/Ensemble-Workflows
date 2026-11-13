@@ -1,6 +1,7 @@
 import type { WorkerScopes } from "./worker-scopes.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
+import type { Socket } from "node:net";
 
 import {
   AppServerBackpressureError,
@@ -364,6 +365,19 @@ export class CodexAppServerTransport implements RuntimeTransport {
     return transport;
   }
 
+  /** Idle server state cannot settle a script; only a request or turn can. */
+  #updateLiveness(): void {
+    const referenced = this.#pending.size > 0 || this.#turns.size > 0;
+    if (referenced) this.#process.ref();
+    else this.#process.unref();
+    // Node creates sockets for spawned stdio pipes. The child process and
+    // each pipe hold independent event-loop references.
+    for (const pipe of [this.#process.stdin, this.#process.stdout, this.#process.stderr]) {
+      if (referenced) (pipe as Socket).ref();
+      else (pipe as Socket).unref();
+    }
+  }
+
   async openThread(options: ThreadStartOptions): Promise<string> {
     const config = threadStartConfig(options);
     const requestParams = {
@@ -536,6 +550,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     state.progress = options;
     this.#reportTurnIdentity(threadId, state);
     this.#turns.set(threadId, state);
+    this.#updateLiveness();
     for (const event of this.#transcripts.get(threadId)!.events) {
       this.#observeTranscriptEvent(state, event);
     }
@@ -581,6 +596,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
       // carrying the turn's real cause and partial text, so surface it in
       // preference to the bare request error.
       return await state.promise;
+    } finally {
+      this.#updateLiveness();
     }
   }
 
@@ -657,12 +674,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }, timeoutMs);
 
       this.#pending.set(id, { method, resolve, reject, timeout });
+      this.#updateLiveness();
       this.#writeLine(payload).catch((error: unknown) => {
         this.#pending.delete(id);
         clearTimeout(timeout);
         reject(error instanceof Error ? error : new Error(String(error)));
       });
-    });
+    }).finally(() => this.#updateLiveness());
   }
 
   #sendNotification(method: string, params: JsonObject): void {

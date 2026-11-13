@@ -367,14 +367,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
   /** Idle server state cannot settle a script; only a request or turn can. */
   #updateLiveness(): void {
-    // A broken pipe can terminalise the transport before the child exits.
-    // Its remaining live handles still need their references released.
-    if (this.#exitStatus !== null) return;
-    const referenced = this.#pending.size > 0 || this.#turns.size > 0;
-    if (referenced) this.#process.ref();
-    else this.#process.unref();
+    const referenced = !this.#hasExited && (this.#pending.size > 0 || this.#turns.size > 0);
+    if (this.#exitStatus === null) {
+      if (referenced) this.#process.ref();
+      else this.#process.unref();
+    }
     // Node creates sockets for spawned stdio pipes. The child process and
-    // each pipe hold independent event-loop references.
+    // each pipe hold independent event-loop references. A descendant can
+    // retain a live pipe after the server exits, so release it independently.
     for (const pipe of [this.#process.stdin, this.#process.stdout, this.#process.stderr]) {
       if (pipe.destroyed) continue;
       if (referenced) (pipe as Socket).ref();

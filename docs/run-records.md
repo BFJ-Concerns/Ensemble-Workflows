@@ -158,7 +158,8 @@ the first snapshot listing the worker; resolved identity names what was
 served. Transcript paths match the running agent record's current attempt:
 archive-relative for Codex, absolute native paths for Claude. Resolve relative paths against archiveDir. A settled Claude record
 archives a copy of the native transcript; the status entry retains its
-live path.
+live path. Evidence timestamps advance as the engine streams output;
+opencode reports each decoded step, text or tool event as evidence.
 
 A finished worker's state is its disposition, and each disposition has the
 count of the same name (`cut-short` counts under `cutShort`):

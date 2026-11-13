@@ -241,7 +241,10 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       streamBuffer = lines.pop() ?? "";
       for (const line of lines) {
         const parsed = parseRunEvents(line);
-        streamEvents.push(...parsed.events);
+        for (const event of parsed.events) {
+          streamEvents.push(event);
+          context.onOutput?.();
+        }
         streamSessionId ??= parsed.sessionId;
       }
       const usage = usageFromStream(streamEvents);

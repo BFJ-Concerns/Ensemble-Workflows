@@ -1880,3 +1880,39 @@ test("opencode forwards liveness evidence, fired by the real runner's first stdo
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+
+test("opencode advances live evidence on every decoded streamed event", async () => {
+  let clock = 100;
+  const observations: Array<{ partial: number | null; complete: number | null; state: string }> = [];
+  const runner: FakeOpenCodeRunner = new FakeOpenCodeRunner({ beforeResolve: async (): Promise<void> => {
+    const options = runner.runs[0]!;
+    const events = [
+      { type: "step_start", sessionID: "ses_test", part: { type: "step-start" } },
+      { type: "text", sessionID: "ses_test", part: { type: "text", text: "working" } },
+      { type: "step_finish", sessionID: "ses_test", part: { type: "step-finish", reason: "stop" } }
+    ];
+    for (const event of events) {
+      clock += 10;
+      const line = JSON.stringify(event);
+      options.onData?.(line.slice(0, 10));
+      const partial = runtime.progress.snapshot().agents[0]!.lastEvidenceAtMs;
+      options.onData?.(`${line.slice(10)}\n`);
+      const agent = runtime.progress.snapshot().agents[0]!;
+      observations.push({ partial, complete: agent.lastEvidenceAtMs, state: agent.state });
+    }
+  } });
+  const adapter = new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry });
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([adapter]), defaultMaxAttempts: 1, now: () => clock });
+  try {
+    assert.equal(await runtime.agent("go", { engine: "opencode", model: "glm-5.2" }), "final answer");
+    assert.deepEqual(observations, [
+      { partial: null, complete: 110, state: "running" },
+      { partial: 110, complete: 120, state: "running" },
+      { partial: 120, complete: 130, state: "running" }
+    ]);
+    assert.equal(runtime.progress.snapshot().agents[0]?.firstEvidenceAtMs, 110);
+  } finally {
+    await runtime.close();
+  }
+});

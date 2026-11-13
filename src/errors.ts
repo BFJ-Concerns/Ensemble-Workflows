@@ -670,6 +670,12 @@ function renderDiagnostic(value: unknown): string {
   }
 }
 
+export class WorktreeGitUnavailableError extends AgentOptionRejectedError {
+  constructor(options?: ErrorOptions) {
+    super("isolation:'worktree' requires the git executable, which was not found on PATH; install git or put it on PATH", options);
+  }
+}
+
 export class WorktreePlacementRejectedError extends AgentOptionRejectedError {
   constructor(cwd: string, options?: ErrorOptions) {
     super(`isolation:'worktree' requires cwd to be inside a git repository: ${cwd}`, options);

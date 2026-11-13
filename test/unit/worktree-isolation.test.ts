@@ -20,6 +20,18 @@ test("GitWorktreeIsolationManager rejects non-git cwd with a clear error", async
   }
 });
 
+test("GitWorktreeIsolationManager does not blame git when cwd is missing", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-missing-cwd-"));
+  try {
+    const manager = new GitWorktreeIsolationManager();
+    await assert.rejects(() => manager.create(path.join(directory, "missing")), {
+      name: "WorktreePlacementRejectedError"
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("GitWorktreeIsolationManager removes unchanged worktrees and their temporary branch", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-"));
   const repo = path.join(directory, "repo");

@@ -289,11 +289,10 @@ test("built CLI shuts down cleanly when its status reporter throws", async () =>
         return { completed: true };
       `
     );
-    // A real directory the writer cannot write into: publication resolves
-    // (the explicit directory exists), every snapshot write fails, and the
-    // "[status]" error report is what the preload turns into a throwing
-    // reporter — the journey this test exists for.
-    await mkdir(statusTarget, { mode: 0o500 });
+    // Validation accepts this directory. The preload removes write permission
+    // after validation, when the sentinel is announced, so publication fails
+    // and its error reporter throws during an accepted run.
+    await mkdir(statusTarget, { mode: 0o700 });
     const env = isolatedEnvironment(directory);
     delete env.ENSEMBLE_STATUS;
     env.ENSEMBLE_STATUS_DIR = statusTarget;
@@ -305,7 +304,9 @@ test("built CLI shuts down cleanly when its status reporter throws", async () =>
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, `{"completed":true}\n`);
     assert.equal(withoutSentinelAnnouncement(result.stderr), "");
+    assert.equal(await readFile(`${statusTarget}.reporter-threw`, "utf8"), "ESTATE_THROWING_STATUS_REPORTER\n");
   } finally {
+    await chmod(statusTarget, 0o700).catch(() => undefined);
     await rm(directory, { recursive: true, force: true });
   }
 });

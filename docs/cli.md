@@ -373,7 +373,8 @@ code. Other stdout errors remain failures.
   whose dispatch was still being recorded is `abandoned` (counted
   `unsettled`). Both records say the script returned
   without awaiting the worker, and the launcher prints one `[teardown]` line
-  per such worker.
+  per such worker, as well as the general
+  `[teardown] stopping workers and their commands` notice.
 - **Unsettled promises.** If the script is still awaiting a promise when the
   event loop has no work left to settle it, the run ends `failed` with
   `WorkflowUnsettledError` naming the script, with or without `--timeout`.

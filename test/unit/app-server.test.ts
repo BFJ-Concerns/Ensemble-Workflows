@@ -1,12 +1,14 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import type { RuntimeEvent } from "../../src/types.js";
 import { SystemdWorkerScopes, createWorkerScopes, type WorkerScopes } from "../../src/worker-scopes.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { Socket } from "node:net";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { CodexAppServerTransport, LazyCodexAppServerTransport, appServerErrorFromPayload } from "../../src/app-server.js";
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
@@ -132,6 +134,72 @@ test("an observed app-server exit remains the cause of a later thread-open refus
     await transport.close();
   }
 });
+
+test("Codex reference updates leave destroyed pipes alone", async (t) => {
+  const codexBin = await fakeCodexFailingTurnServer("exit-mid-turn");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  let terminated = false;
+  let adjustmentsToDestroyedPipes = 0;
+  transport.onTermination(() => { terminated = true; });
+  for (const method of ["ref", "unref"] as const) {
+    const original = Socket.prototype[method];
+    t.mock.method(Socket.prototype, method, function (this: Socket) {
+      if (this.destroyed) adjustmentsToDestroyedPipes++;
+      return original.call(this);
+    });
+  }
+  try {
+    const thread = await transport.openThread({});
+    await assert.rejects(transport.runTurn(thread, "die", {}), AppServerExitedError);
+    assert.equal(terminated, true);
+    await assert.rejects(transport.runTurn(thread, "after death", {}), AppServerExitedError);
+    assert.equal(adjustmentsToDestroyedPipes, 0,
+      "settling a dead server's requests and turns must leave destroyed pipes alone");
+  } finally {
+    await transport.close();
+    await rm(path.dirname(codexBin), { recursive: true, force: true });
+  }
+});
+
+for (const mode of ["close-stdout-mid-turn", "exit-with-inherited-stderr"] as const) {
+  test(`Codex ${mode} does not retain the event loop after turn failure`, async (t) => {
+    const codexBin = await fakeCodexFailingTurnServer(mode);
+    const descendantFile = path.join(path.dirname(codexBin), "descendant.pid");
+    t.after(async () => {
+      const descendant = await readFile(descendantFile, "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (descendant !== null) {
+        try { process.kill(Number(descendant), "SIGTERM"); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
+      await rm(path.dirname(codexBin), { recursive: true, force: true });
+    });
+    const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { readFileSync } from "node:fs";
+      import { CodexAppServerTransport } from ${JSON.stringify(new URL("../../src/app-server.js", import.meta.url).href)};
+      import { AppServerExitedError, workerExitStatusOf } from ${JSON.stringify(new URL("../../src/errors.js", import.meta.url).href)};
+      void (async () => {
+      const transport = await CodexAppServerTransport.start(${JSON.stringify(defaultTransportOptions(codexBin))});
+      const thread = await transport.openThread({});
+      await assert.rejects(transport.runTurn(thread, "close stdout", {}), error => {
+        assert.ok(error instanceof AppServerExitedError);
+        assert.deepEqual(workerExitStatusOf(error), ${mode === "close-stdout-mid-turn" ? "null" : '{ exitCode: 7, signal: null }'});
+        return true;
+      });
+      process.once("beforeExit", () => {
+        ${mode === "exit-with-inherited-stderr" ? `process.kill(Number(readFileSync(${JSON.stringify(descendantFile)}, "utf8")), "SIGTERM");` : ""}
+        void transport.close().then(() => console.log("idle transport cleanup complete"));
+      });
+      await new Promise(() => {});
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `], { timeout: 10_000 });
+    assert.match(stdout, /idle transport cleanup complete/);
+  });
+}
 
 for (const lazy of [false, true]) {
   test(`${lazy ? "lazy" : "eager"} Codex transport reports termination once, replays it and isolates observers`, async () => {
@@ -1909,6 +1977,8 @@ async function fakeCodexFailingTurnServer(
     | "system-error-then-delayed-schema-error"
     | "system-error-then-late-error"
     | "exit-mid-turn"
+    | "close-stdout-mid-turn"
+    | "exit-with-inherited-stderr"
     | "held-loss-before-ack"
     | "held-loss-after-ack"
     | "held-loss-after-notification"
@@ -1939,6 +2009,8 @@ async function fakeCodexFailingTurnServer(
     bin,
     `#!/usr/bin/env node
 import { createInterface } from "node:readline";
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 
 if (process.argv[2] !== "app-server") {
   process.exit(2);
@@ -2072,6 +2144,16 @@ reader.on("line", (line) => {
         send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "the delayed whole answer" } } });
         send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
       }, 450);
+      return;
+    }
+    if (mode === "exit-with-inherited-stderr") {
+      const descendant = spawn("sleep", ["infinity"], { stdio: ["ignore", "ignore", "inherit"] });
+      writeFileSync(${JSON.stringify(path.join(directory, "descendant.pid"))}, String(descendant.pid));
+      process.exit(7);
+    }
+    if (mode === "close-stdout-mid-turn") {
+      // The stdin reader keeps the child alive after its output pipe closes.
+      process.stdout.end();
       return;
     }
     if (mode === "exit-mid-turn") {

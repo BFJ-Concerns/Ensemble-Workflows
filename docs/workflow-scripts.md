@@ -917,10 +917,10 @@ await builder.close();
   can lose several sessions. A turn interrupted by that death, and each
   later send, fails under `session.lost` on one `session-lost` attempt,
   without retry or fallback. Failure before a thread is established remains
-  a substrate availability refusal. Intentional close is not loss. A lost
-  session keeps the run alive until the script closes it or the run ends;
-  a configured run timeout or a catchable signal still settles the archive
-  and writes the completion sentinel.
+  a substrate availability refusal. Intentional close is not loss. If the
+  script is left waiting on nothing live, the run ends failed with
+  `WorkflowUnsettledError`; neither a lost session nor `--timeout` keeps it
+  alive. The archive is settled and the completion sentinel is written.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.

@@ -115,6 +115,9 @@ return { first, lostBeforeSend, siblingLost, second, third };
         }
       } else {
         assert.equal(JSON.parse(result.stdout).reason, expectedStatus);
+        if (ending === "unsettled") {
+          assert.equal(JSON.parse(result.stdout).error.kind, "WorkflowUnsettledError");
+        }
       }
     } finally {
       await rm(directory, { recursive: true, force: true });

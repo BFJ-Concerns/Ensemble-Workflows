@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, rmdir } from "node:fs/promises";
+import { mkdir, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { WorktreePlacementRejectedError } from "./errors.js";
+import { WorktreeGitUnavailableError, WorktreePlacementRejectedError } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -146,6 +146,7 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     let repoRoots = this.#repoRoots.get(resolvedCwd);
     if (repoRoots === undefined) {
       repoRoots = this.#resolveRepoRoots(resolvedCwd).catch((error: unknown) => {
+        if (error instanceof WorktreeGitUnavailableError) throw error;
         throw new WorktreePlacementRejectedError(resolvedCwd, {
           cause: error
         });
@@ -199,6 +200,12 @@ async function git(cwd: string, args: string[]): Promise<string> {
     });
     return stdout;
   } catch (error) {
+    // ENOENT can also mean the working directory vanished. Only name the
+    // executable when the directory still exists.
+    if (error instanceof Error && "code" in error && error.code === "ENOENT" &&
+        await stat(cwd).then((info) => info.isDirectory(), () => false)) {
+      throw new WorktreeGitUnavailableError({ cause: error });
+    }
     throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${formatExecError(error)}`, {
       cause: error
     });

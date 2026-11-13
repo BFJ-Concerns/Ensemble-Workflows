@@ -430,6 +430,8 @@ not manage or remove those native worktrees.
 With `isolation: "worktree"` the worker runs in a fresh linked git worktree on
 a temporary branch. With `cwd` as well, `cwd` selects the source repository; a
 `cwd` that is not in a git repository fails before the worker spawns.
+The `git` executable must be on `PATH`; if it is missing, the request fails
+before the worker spawns with advice to install git or put it on `PATH`.
 The branch starts at the source checkout's `HEAD`. All checkouts of one
 repository share a `<repo>.ensemble-workflows-worktrees/` container. Its
 location comes from shared Git metadata, independently of the dispatch

@@ -13838,7 +13838,7 @@ import path20 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile11, stat as stat6 } from "node:fs/promises";
+import { readFile as readFile11, stat as stat7 } from "node:fs/promises";
 import { homedir as homedir5, hostname as hostname4 } from "node:os";
 import path19 from "node:path";
 import { parseArgs } from "node:util";
@@ -14177,6 +14177,11 @@ function renderDiagnostic(value) {
     return `[unrenderable diagnostic: ${error instanceof Error ? error.message : String(error)}]`;
   }
 }
+var WorktreeGitUnavailableError = class extends AgentOptionRejectedError {
+  constructor(options) {
+    super("isolation:'worktree' requires the git executable, which was not found on PATH; install git or put it on PATH", options);
+  }
+};
 var WorktreePlacementRejectedError = class extends AgentOptionRejectedError {
   constructor(cwd, options) {
     super(`isolation:'worktree' requires cwd to be inside a git repository: ${cwd}`, options);
@@ -17397,13 +17402,13 @@ function findErrorCode(error, code) {
 import { randomUUID as randomUUID8 } from "node:crypto";
 
 // src/agent-placement.ts
-import { stat as stat3 } from "node:fs/promises";
+import { stat as stat4 } from "node:fs/promises";
 import path9 from "node:path";
 
 // src/worktree-isolation.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { execFile as execFile2 } from "node:child_process";
-import { mkdir as mkdir5, rmdir } from "node:fs/promises";
+import { mkdir as mkdir5, rmdir, stat as stat3 } from "node:fs/promises";
 import path8 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var execFileAsync2 = promisify2(execFile2);
@@ -17470,6 +17475,7 @@ var GitWorktreeIsolationManager = class {
     let repoRoots = this.#repoRoots.get(resolvedCwd);
     if (repoRoots === void 0) {
       repoRoots = this.#resolveRepoRoots(resolvedCwd).catch((error) => {
+        if (error instanceof WorktreeGitUnavailableError) throw error;
         throw new WorktreePlacementRejectedError(resolvedCwd, {
           cause: error
         });
@@ -17510,6 +17516,9 @@ async function git2(cwd, args) {
     });
     return stdout;
   } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT" && await stat3(cwd).then((info) => info.isDirectory(), () => false)) {
+      throw new WorktreeGitUnavailableError({ cause: error });
+    }
     throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${formatExecError(error)}`, {
       cause: error
     });
@@ -17535,7 +17544,7 @@ var AgentPlacementManager = class {
   async assertUsableCwd(options) {
     const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
     try {
-      if (!(await stat3(requestedCwd)).isDirectory()) {
+      if (!(await stat4(requestedCwd)).isDirectory()) {
         throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`);
       }
     } catch (error) {
@@ -17822,7 +17831,7 @@ function resolveLeanStart(engine, support) {
 import { spawn as spawn2 } from "node:child_process";
 import { randomUUID as randomUUID3 } from "node:crypto";
 import { constants as constants2 } from "node:fs";
-import { access, readFile as readFile6, readdir as readdir5, stat as stat4 } from "node:fs/promises";
+import { access, readFile as readFile6, readdir as readdir5, stat as stat5 } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import path11 from "node:path";
 
@@ -18464,7 +18473,7 @@ async function resolveExecutable(file, args, options) {
   const candidates = file.includes("/") ? [path11.resolve(cwd, file)] : searchPath.split(":").map((directory) => path11.resolve(cwd, directory.length > 0 ? directory : ".", file));
   let code = "ENOENT";
   for (const candidate of candidates) {
-    const isFile = await stat4(candidate).then(
+    const isFile = await stat5(candidate).then(
       (found) => found.isFile(),
       () => false
     );
@@ -19163,7 +19172,7 @@ function rank(state) {
 
 // src/resource-preflight.ts
 import { randomBytes } from "node:crypto";
-import { mkdtemp as mkdtemp2, rm as rm4, stat as stat5 } from "node:fs/promises";
+import { mkdtemp as mkdtemp2, rm as rm4, stat as stat6 } from "node:fs/promises";
 import { createServer } from "node:net";
 import path13 from "node:path";
 
@@ -19305,7 +19314,7 @@ async function nearestExistingDirectory(target) {
   let current2 = path13.resolve(target);
   for (; ; ) {
     try {
-      const entry = await stat5(current2);
+      const entry = await stat6(current2);
       if (entry.isDirectory()) {
         return { path: current2 };
       }
@@ -35459,7 +35468,7 @@ async function prepareRun(invocation, cwd, program) {
       const requestedCwd = path19.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
-        isDirectory2 = (await stat6(requestedCwd)).isDirectory();
+        isDirectory2 = (await stat7(requestedCwd)).isDirectory();
       } catch {
         isDirectory2 = false;
       }
@@ -35759,7 +35768,7 @@ var WORKFLOW_TUNING_OPTIONS = {
 async function parseWorkflowInvocation(argv, cwd, program) {
   if (argv[0] === "run") {
     try {
-      await stat6(path19.resolve(cwd, "run"));
+      await stat7(path19.resolve(cwd, "run"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       throw new CliUsageError(`${program}: "run" was taken as the script path; there is no run subcommand. Use: ${program} [run options] <script.js> [args...]`);

@@ -2469,6 +2469,65 @@ test("a turn ending while a background task is outstanding is not collected; the
   }
 });
 
+for (const shape of ["slow", "workflow"] as const) {
+  test(`shutdown closes a native ${shape} wait when its final arrives during the poll`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-shutdown-wait-"));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let runtime: EnsembleRuntime | undefined;
+    try {
+      const plane = new BackgroundTaskControlPlane(dir, { shape, wakeAtPoll: 1 });
+      const poll = plane.poll.bind(plane);
+      let finalLanded!: () => void;
+      const ready = new Promise<void>((resolve) => { finalLanded = resolve; });
+      plane.poll = async () => {
+        const status = await poll();
+        if (plane.pollCount === 3) {
+          finalLanded();
+          await gate;
+        }
+        return status;
+      };
+      const adapter = new ClaudeEngineAdapter({ controlPlane: plane, config: fastConfig });
+      const close = adapter.close.bind(adapter);
+      let closeStarted!: () => void;
+      const closing = new Promise<void>((resolve) => { closeStarted = resolve; });
+      adapter.close = () => { const result = close(); closeStarted(); return result; };
+      runtime = new EnsembleRuntime({ engines: new EngineRegistry([adapter]), defaultMaxAttempts: 1 });
+      const writer = await RunRecordWriter.start({
+        storeDir: path.join(dir, "records"), cwd: dir, runUuid: "shutdown-wait",
+        workflowPath: path.join(dir, "workflow.js"), workflowSource: "return true;", args: [], cliFlags: { jsonArgs: false }
+      });
+      runtime.setRunRecorder(writer);
+      const agent = runtime.agent("wait then answer", { engine: "claude" });
+      await ready;
+      const waiting = runtime.progress.snapshot().agents[0]?.waitingOn;
+      assert.ok(waiting?.kind === "background-task");
+      assert.equal(waiting.taskId, "bya9z1l44");
+      const ending = runtime.close("interrupted");
+      await closing;
+      release();
+      await ending;
+      assert.equal(await agent, '{"ok":true}');
+      const record = runtime.lastAgentRecord();
+      assert.equal(record?.status, "complete");
+      assert.equal(record?.attempts[0]?.backgroundWaits.length, 1);
+      assert.ok(record?.attempts[0]?.backgroundWaits[0]?.endedAt, "the recovered final closes the existing wait");
+      assert.deepEqual(runtime.shutdownTally(), { done: 1, failed: 0, cutShort: 0, unsettled: 0 });
+      await writer.finish({ status: "interrupted", exitCode: 130, result: null });
+      const archived = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+      assert.equal(archived.status, "complete");
+      assert.equal(archived.attempts[0].background_waits.length, 1);
+      assert.equal(archived.attempts[0].background_waits[0].task_id, "bya9z1l44");
+      assert.ok(archived.attempts[0].background_waits[0].ended_at);
+    } finally {
+      release();
+      await runtime?.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
 for (const shape of ["workflow", "workflow-short"] as const) {
   test(`native ${shape} waits for the reply after delivery and archives background_waits`, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-workflow-task-"));

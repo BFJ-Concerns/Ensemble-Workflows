@@ -23019,6 +23019,7 @@ var ClaudeEngineInvocation = class {
       if (pending.carriesTurn) this.#turn = "verified";
     }
     if (this.#turn !== "verified") return null;
+    this.#noteWaits(outstandingBackgroundTasks(entries, fromIndex));
     this.#pending = null;
     return this.#buildResult(handle, evidence.transcript, fromIndex);
   }

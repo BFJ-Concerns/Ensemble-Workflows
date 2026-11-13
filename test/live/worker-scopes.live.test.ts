@@ -15,6 +15,7 @@ import { ClaudeCliControlPlane, type ClaudeSessionHandle } from "../../src/claud
 import { readProcessStartTicks } from "../../src/process-owner-evidence.js";
 import { SystemdWorkerScopes, containingSlice, processTree } from "../../src/worker-scopes.js";
 import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths, waitForPath, type HeldProbe } from "./held-worker-probes.js";
+import { liveCodexModel } from "./live-models.js";
 
 const exec = promisify(execFile);
 const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
@@ -48,9 +49,11 @@ const scenarios: Scenario[] = [
 ];
 
 for (const scenario of scenarios) {
-  test(`built launcher scopes: ${scenario.name}`, { skip: !live ? "ENSEMBLE_LIVE must be 1" : false, timeout: 1_200_000 }, async (t) => {
-    assert.ok(process.env.ENSEMBLE_LIVE_CODEX_MODEL || scenario.direct === "claude",
-      "UNPROVEN: ENSEMBLE_LIVE_CODEX_MODEL is required for real Codex dispatch");
+  test(`built launcher scopes: ${scenario.name}`, {
+    skip: !live ? "ENSEMBLE_LIVE must be 1"
+      : scenario.direct !== "claude" && liveCodexModel === undefined ? "ENSEMBLE_LIVE_CODEX_MODEL is unset" : false,
+    timeout: 1_200_000
+  }, async (t) => {
     await exec("systemctl", ["--user", "show-environment"]).catch((error: unknown) => {
       throw new Error("UNPROVEN: a reachable systemd user manager is required", { cause: error });
     });
@@ -106,11 +109,11 @@ for (const scenario of scenarios) {
       const flags = scenario.flag ? [`--worker-scope=${scenario.flag}`] : [];
       let args: string[];
       if (scenario.direct) {
-        args = ["agent", `--engine=${scenario.direct}`, `--model=${scenario.direct === "claude" ? claudeModel : process.env.ENSEMBLE_LIVE_CODEX_MODEL}`, ...flags, heldProbePrompt(probes[0]!)];
+        args = ["agent", `--engine=${scenario.direct}`, `--model=${scenario.direct === "claude" ? claudeModel : liveCodexModel}`, ...flags, heldProbePrompt(probes[0]!)];
       } else {
         const script = path.join(root, "workflow.js");
         const calls = engines.map((engine, index) => {
-          const options = JSON.stringify({ engine, model: engine === "claude" ? claudeModel : process.env.ENSEMBLE_LIVE_CODEX_MODEL, cwd: root, label: `scope-${index}`, maxAttempts: 1, timeoutMs: 600_000 });
+          const options = JSON.stringify({ engine, model: engine === "claude" ? claudeModel : liveCodexModel, cwd: root, label: `scope-${index}`, maxAttempts: 1, timeoutMs: 600_000 });
           if (!scenario.followUp) return `agent(${JSON.stringify(heldProbePrompt(probes[index]!))}, ${options})`;
           return `(async () => { const worker = session(${options}); try { const first = await worker.send(${JSON.stringify(heldProbePrompt(probes[index]!))}); const second = await worker.send(${JSON.stringify(heldProbeFollowUpPrompt(follow[index]!))}); return { first, second }; } finally { await worker.close(); } })()`;
         });

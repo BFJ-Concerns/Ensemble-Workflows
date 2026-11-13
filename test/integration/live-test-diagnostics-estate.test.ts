@@ -38,3 +38,21 @@ test("an opted-in opencode partial-output skip names the missing model", async (
   assert.equal(result.code, 0, result.stderr + result.stdout);
   assert.match(result.stdout, /partial opencode text.*# SKIP ENSEMBLE_LIVE_OPENCODE_MODEL is unset/);
 });
+
+for (const model of [undefined, "   "]) {
+  test(`live Codex prerequisites skip consistently with ${model === undefined ? "an unset" : "a blank"} model`, async () => {
+    const result = await runNode([
+      "--test", "--test-reporter=tap",
+      "--test-name-pattern=built launcher scopes: (?!direct claude$|unreachable manager claude$)|live codex status alone|current Codex model",
+      "dist/test/live/worker-scopes.live.test.js",
+      "dist/test/live/live-status.live.test.js",
+      "dist/test/live/script-surface.live.test.js"
+    ], {
+      NODE_TEST_CONTEXT: undefined, ENSEMBLE_LIVE: "1", ENSEMBLE_LIVE_CODEX_MODEL: model
+    }, 15_000);
+    assert.equal(result.code, 0, result.stderr + result.stdout);
+    const skipped = result.stdout.split("\n").filter(line => /# SKIP ENSEMBLE_LIVE_CODEX_MODEL is unset/.test(line));
+    assert.equal(skipped.length, 10, result.stdout);
+    assert.doesNotMatch(result.stdout, /UNPROVEN|not ok/);
+  });
+}

@@ -1,3 +1,5 @@
+import { failureEvidenceMarker, removeTestDirectory } from "../dist/test/failure-evidence.js";
+
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -124,7 +126,7 @@ async function finish(code, signal) {
   if (child.exitCode === null && child.signalCode === null) {
     await childClosed.catch(() => undefined);
   }
-  await rm(temporaryRoot, { recursive: true, force: true });
+  await removeTestDirectory(temporaryRoot, code !== 0 || signal !== null);
   if (signal !== null) {
     process.kill(process.pid, signal);
   }
@@ -210,6 +212,12 @@ async function recoverFinishedSuites(directory) {
       .filter((entry) => entry.isDirectory() && entry.name.startsWith("ensemble-test-suite-"))
       .map(async (entry) => {
         const suiteDirectory = path.join(directory, entry.name);
+        try {
+          await readFile(path.join(suiteDirectory, failureEvidenceMarker));
+          return;
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
         if (entry.name.startsWith("ensemble-test-suite-run-")) {
           await recoverSuiteNamespace(suiteDirectory);
           return;

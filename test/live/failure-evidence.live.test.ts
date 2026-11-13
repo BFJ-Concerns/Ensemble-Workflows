@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { liveOpenCodeModel } from "./live-models.js";
 
 // These destructive legs are separate from the ordinary live estate: each
@@ -47,6 +48,7 @@ for (const scenario of [
       let terminateWorker: (signal: AbortSignal) => Promise<void>;
       let observedWorkerText = token;
 
+      let testFailed = false;
       try {
         if (scenario.engine === "claude") {
           const existingSessions = new Set((await claudeRoster()).map((entry) => entry.sessionId));
@@ -97,8 +99,11 @@ for (const scenario of [
           "The archived attempt omitted text observed from the live worker"
         );
         assert.match(agent.attempts[0]?.failure?.message ?? "", /left the roster|SIG(?:TERM|KILL)|exit code|terminated/i);
+      } catch (error) {
+        testFailed = true;
+        throw error;
       } finally {
-        await rm(directory, { recursive: true, force: true });
+        await removeTestDirectory(directory, testFailed);
       }
     }
   );
@@ -132,6 +137,7 @@ test("a partial-output observer failure waits for launcher cleanup before reject
     () => { settled = true; return null; },
     (error: unknown) => { settled = true; return error; }
   );
+  let testFailed = false;
   try {
     await waitForFile(stopping, t.signal);
     assert.equal(settled, false, "the observation rejected before its launcher finished cleanup");
@@ -141,10 +147,13 @@ test("a partial-output observer failure waits for launcher cleanup before reject
     assert.equal(error.cause, failure);
     assert.match(error.message, /fixture observation failed/);
     await readFile(cleaned);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
     await writeFile(release, "");
     await run;
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
 });
 
@@ -152,6 +161,7 @@ test("an opencode partial-output observer accepts its kill witness after termina
   const directory = await mkdtemp(path.join(tmpdir(), "failure-evidence-opencode-stream-"));
   const stream = path.join(directory, "stream.jsonl");
   const text = "observed partial output";
+  let testFailed = false;
   try {
     await writeFile(stream, [
       { type: "text", part: { type: "text", text } },
@@ -159,14 +169,18 @@ test("an opencode partial-output observer accepts its kill witness after termina
     ].map((event) => JSON.stringify(event)).join("\n") + "\n");
     await writeFile(path.join(directory, "opencode-worker-killed"), "");
     assert.equal(await stopOpenCodeWorkerAfterText(stream, directory, t.signal), text);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
 });
 
 test("a launcher exit cancels and settles its unfinished partial-output observer", { timeout: 15_000 }, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "failure-evidence-early-exit-"));
   let observerSettled = false;
+  let testFailed = false;
   try {
     await assert.rejects(runNode(["-e", "process.exit(0)"], process.env, async (signal) => {
       try {
@@ -176,8 +190,11 @@ test("a launcher exit cancels and settles its unfinished partial-output observer
       }
     }, t.signal), /launcher exited before its worker was observed/);
     assert.equal(observerSettled, true);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
 });
 

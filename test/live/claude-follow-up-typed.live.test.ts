@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { parseTranscriptText } from "../../src/claude-transcript.js";
 import { findOnlyFile, runNode } from "../integration/estate-process.js";
 import {
@@ -30,6 +31,7 @@ test("built Claude follow-ups arrive typed, exact and expanded through the promp
   skip: process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false, timeout: 900_000
 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-typed-follow-up-"));
+  let testFailed = false;
   try {
     await installTypedFollowUpSkill(directory);
     const store = path.join(directory, "records");
@@ -108,7 +110,10 @@ test("built Claude follow-ups arrive typed, exact and expanded through the promp
       assert.equal(inputs.length, index + 1, "a follow-up split into extra native submissions");
     }
     assert.deepEqual(records.map((record) => record.status), ["complete", "complete", "complete", "complete"]);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTestDirectory(directory, testFailed);
   }
 });

@@ -4522,6 +4522,7 @@ test("CLI renders Codex app-server placement refusals as bounded notices", async
       const invocation = original(prompt, options);
       return { async runAttempt(context) {
         runtime.handleEngineEvent("codex", { method: "codex/workerScopePlacement", params: { kind: "refused", pid: 123, reason: "manager\nrefused" }, receivedAt: Date.now() });
+        runtime.handleEngineEvent("codex", { method: "codex/workerScopePlacement", params: { kind: "refused", pid: 124, reason: "every process to place had already exited" }, receivedAt: Date.now() });
         return invocation.runAttempt(context);
       } };
     };
@@ -4531,6 +4532,7 @@ test("CLI renders Codex app-server placement refusals as bounded notices", async
     });
     assert.equal(code, 0, stderr.text());
     assert.match(stderr.text(), /\[codex\] app-server \(pid 123\) scope placement refused: manager refused\n/);
+    assert.doesNotMatch(stderr.text(), /pid 124|every process to place/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

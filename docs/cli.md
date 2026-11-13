@@ -239,7 +239,9 @@ Logs and diagnostics go to stderr. These lines are written there:
 - `[codex] app-server (pid <pid>) scope placement refused: <reason>` — the
   app-server could not be moved into its scope. Placement is best-effort: a
   live app-server can still dispatch threads, but the process may have exited
-  before or during placement, as the reason states. The notice does not
+  during placement, as the reason states. If every process had already exited,
+  the notice is suppressed; the substrate failure or fallback reports the
+  startup outcome. The notice does not
   establish app-server health; startup or worker failures are reported
   separately. The refusal is also available through
   `codex/workerScopePlacement` runtime events.

@@ -35103,7 +35103,7 @@ async function runEnsembleCli(argv, options = {}) {
         return;
       }
       if (event.method === "codex/workerScopePlacement") {
-        if (event.params.kind === "refused") {
+        if (event.params.kind === "refused" && event.params.reason !== "every process to place had already exited") {
           const pid = typeof event.params.pid === "number" ? event.params.pid : "?";
           stderr.write(`[codex] app-server (pid ${pid}) scope placement refused: ${boundedEvidence(String(event.params.reason ?? "unknown reason"))}
 `);

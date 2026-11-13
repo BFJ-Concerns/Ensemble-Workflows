@@ -16093,6 +16093,7 @@ var RunRecordWriter = class _RunRecordWriter {
   #agents = /* @__PURE__ */ new Map();
   #tmpSeq = 0;
   #writeChain = Promise.resolve();
+  #agentBatch = null;
   #sealed = false;
   #currentAttempts = /* @__PURE__ */ new Map();
   #liveCodex = /* @__PURE__ */ new Map();
@@ -16110,6 +16111,7 @@ var RunRecordWriter = class _RunRecordWriter {
    * operations before it. One failed write must not poison later ones.
    */
   #serialise(task) {
+    this.#agentBatch = null;
     const next = this.#writeChain.then(task, task);
     this.#writeChain = next.catch(() => void 0);
     return next;
@@ -16502,13 +16504,29 @@ var RunRecordWriter = class _RunRecordWriter {
     });
   }
   async recordAgent(record) {
-    const snapshot = structuredClone(record);
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      await this.#recordAgent(snapshot);
-    });
+    const entry = { record: structuredClone(record) };
+    let batch = this.#agentBatch;
+    if (batch === null) {
+      const entries = [];
+      const completion = this.#serialise(async () => {
+        if (this.#agentBatch?.entries === entries) this.#agentBatch = null;
+        if (this.#sealed) return;
+        for (const publication of entries) {
+          try {
+            await this.#recordAgent(publication.record);
+          } catch (error) {
+            publication.failure = { error };
+          }
+        }
+        this.manifest.cost_rollup = buildCostRollup(this.#rollupViews());
+        await this.#writeManifest();
+      });
+      batch = { entries, completion };
+      this.#agentBatch = batch;
+    }
+    batch.entries.push(entry);
+    await batch.completion;
+    if (entry.failure !== void 0) throw entry.failure.error;
   }
   async #recordAgent(record) {
     this.#agents.set(record.id, record);
@@ -16635,8 +16653,6 @@ var RunRecordWriter = class _RunRecordWriter {
       transcripts: transcriptRefs,
       transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
     });
-    this.manifest.cost_rollup = buildCostRollup(this.#rollupViews());
-    await this.#writeManifest();
   }
   async finish(options) {
     await this.#serialise(async () => {

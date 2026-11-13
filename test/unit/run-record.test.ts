@@ -2535,6 +2535,115 @@ test("a tally named __proto__ is recorded as an own property, not swallowed by t
 });
 
 
+test("a concurrent agent publication attests the whole burst before callers continue", async (t) => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-burst-"));
+  try {
+    const writer = await RunRecordWriter.start({ storeDir: store, cwd: store, runUuid: "burst",
+      workflowPath: path.join(store, "workflow.js"), workflowSource: "return true;",
+      args: [], cliFlags: { jsonArgs: false } });
+    const originalRename = fsPromises.rename;
+    let publications = 0;
+    const spy = t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
+      if (String(args[1]) === path.join(writer.archiveDir, "manifest.json")) publications += 1;
+      return originalRename(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      const records = Array.from({ length: 32 }, (_, i) => agentRecord(i + 1, "codex", null, 3));
+      const publishedCounts: number[] = [];
+      const writes = records.map((record) => writer.recordAgent(record).then(async () => {
+        const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8"));
+        publishedCounts.push(manifest.files.filter((file: { path: string }) => file.path.endsWith("/agent.json")).length);
+      }));
+      records[0]!.prompt = "mutated after dispatch";
+      await Promise.all(writes);
+      assert.equal(publications, 1, "a burst must not rewrite the growing manifest once per agent");
+      assert.deepEqual([...new Set(publishedCounts)], [32], "callers must not resume before the burst's manifest lands");
+      assert.equal(JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")).prompt, "fixture prompt");
+    } finally {
+      spy.mock.restore();
+      syncBuiltinESMExports();
+    }
+    await writer.finish({ status: "complete", exitCode: 0, result: true });
+    const integrity = await readArchiveIntegrity(writer.archiveDir);
+    assert.equal(integrity.manifestVerified, true);
+    assert.equal(integrity.agentRecordsVerified, 32);
+  } finally {
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
+test("agent bursts preserve intervening attempt and seal ordering", async (t) => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-burst-order-"));
+  try {
+    const writer = await RunRecordWriter.start({ storeDir: store, cwd: store, runUuid: "burst-order",
+      workflowPath: path.join(store, "workflow.js"), workflowSource: "return true;",
+      args: [], cliFlags: { jsonArgs: false } });
+    const running = agentRecord(1, "codex", null, 0);
+    running.status = "in-progress";
+    running.attempts = [];
+    const originalRename = fsPromises.rename;
+    const observed: Array<{ status: string; attempt?: number }> = [];
+    const spy = t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
+      await originalRename(...args);
+      if (String(args[1]) === path.join(writer.archiveDir, "manifest.json")) {
+        const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+        observed.push({ status: agent.status, ...(agent.current_attempt ? { attempt: agent.current_attempt.attempt } : {}) });
+      }
+    });
+    syncBuiltinESMExports();
+    try {
+      await Promise.all([
+        writer.recordAgent(running),
+        writer.recordAttemptStart(1, liveStart(1, "2026-11-13T12:00:00Z")),
+        writer.recordAgent(agentRecord(1, "codex", null, 3)),
+        writer.finish({ status: "complete", exitCode: 0, result: true }),
+        writer.recordAgent(running)
+      ]);
+      assert.deepEqual(observed, [
+        { status: "in-progress" }, { status: "in-progress", attempt: 1 },
+        { status: "complete" }, { status: "complete" }
+      ]);
+    } finally {
+      spy.mock.restore();
+      syncBuiltinESMExports();
+    }
+  } finally {
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
+test("one failed agent artefact does not discard the rest of its burst", async (t) => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-burst-failure-"));
+  try {
+    const writer = await RunRecordWriter.start({ storeDir: store, cwd: store, runUuid: "burst-failure",
+      workflowPath: path.join(store, "workflow.js"), workflowSource: "return true;",
+      args: [], cliFlags: { jsonArgs: false } });
+    const originalRename = fsPromises.rename;
+    const failure = new Error("fixture agent write failed");
+    const spy = t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
+      if (String(args[1]).endsWith("agents/000002/agent.json")) throw failure;
+      return originalRename(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      const outcomes = await Promise.allSettled([1, 2, 3].map((id) => writer.recordAgent(agentRecord(id, "codex", null, 3))));
+      assert.deepEqual(outcomes.map((result) => result.status), ["fulfilled", "rejected", "fulfilled"]);
+      assert.equal((outcomes[1] as PromiseRejectedResult).reason, failure);
+      const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8"));
+      assert.ok(manifest.files.some((file: { path: string }) => file.path === "agents/000003/agent.json"));
+    } finally {
+      spy.mock.restore();
+      syncBuiltinESMExports();
+    }
+    await writer.recordAgent(agentRecord(2, "codex", null, 3));
+    await writer.finish({ status: "complete", exitCode: 0, result: true });
+    assert.equal((await readArchiveIntegrity(writer.archiveDir)).agentRecordsVerified, 3);
+  } finally {
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
 test("live attempts publish readable references, append in order and settle without extra keys", async () => {
   const cwd = await gitRepo("ensemble-live-record-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-live-store-"));

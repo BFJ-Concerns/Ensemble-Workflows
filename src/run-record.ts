@@ -730,6 +730,16 @@ export interface WorkflowInvocationRecord {
   parentOrdinal: number;
 }
 
+interface AgentPublication {
+  record: RuntimeAgentRecord;
+  failure?: { error: unknown };
+}
+
+interface AgentPublicationBatch {
+  entries: AgentPublication[];
+  completion: Promise<void>;
+}
+
 export class RunRecordWriter {
   readonly archiveDir: string;
   readonly manifest: Manifest;
@@ -739,6 +749,7 @@ export class RunRecordWriter {
   #agents = new Map<number, RuntimeAgentRecord>();
   #tmpSeq = 0;
   #writeChain: Promise<unknown> = Promise.resolve();
+  #agentBatch: AgentPublicationBatch | null = null;
   #sealed = false;
   #currentAttempts = new Map<number, LiveAttemptRecord>();
   #liveCodex = new Map<string, string>();
@@ -758,6 +769,9 @@ export class RunRecordWriter {
    * operations before it. One failed write must not poison later ones.
    */
   #serialise<T>(task: () => Promise<T>): Promise<T> {
+    // A different operation is an ordering boundary: later agent writes
+    // must not join a batch ahead of an attempt, tally, or seal.
+    this.#agentBatch = null;
     const next = this.#writeChain.then(task, task);
     this.#writeChain = next.catch(() => undefined);
     return next;
@@ -1193,13 +1207,32 @@ export class RunRecordWriter {
     // roll-up is recomputed from #agents on every later write — a retained
     // alias would let the manifest publish usage the agent's own persisted
     // JSON does not yet contain.
-    const snapshot = structuredClone(record);
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      await this.#recordAgent(snapshot);
-    });
+    const entry: AgentPublication = { record: structuredClone(record) };
+    let batch = this.#agentBatch;
+    if (batch === null) {
+      const entries: AgentPublication[] = [];
+      const completion = this.#serialise(async () => {
+        // Once writing starts, new arrivals queue behind this publication.
+        // Each caller still waits for its files and manifest to reach disk.
+        if (this.#agentBatch?.entries === entries) this.#agentBatch = null;
+        if (this.#sealed) return;
+        for (const publication of entries) {
+          try {
+            await this.#recordAgent(publication.record);
+          } catch (error) {
+            // One failed artefact must not discard the other callers' writes.
+            publication.failure = { error };
+          }
+        }
+        this.manifest.cost_rollup = buildCostRollup(this.#rollupViews());
+        await this.#writeManifest();
+      });
+      batch = { entries, completion };
+      this.#agentBatch = batch;
+    }
+    batch.entries.push(entry);
+    await batch.completion;
+    if (entry.failure !== undefined) throw entry.failure.error;
   }
 
   async #recordAgent(record: RuntimeAgentRecord): Promise<void> {
@@ -1349,8 +1382,6 @@ export class RunRecordWriter {
       transcripts: transcriptRefs,
       transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
     });
-    this.manifest.cost_rollup = buildCostRollup(this.#rollupViews());
-    await this.#writeManifest();
   }
 
   async finish(options: RunRecordFinishOptions): Promise<void> {

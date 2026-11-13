@@ -387,11 +387,17 @@ export class RunProgress {
    * Registers a worker as queued and returns its id. The phase is captured at
    * queue time: an explicit `phase` wins, otherwise the run's current phase.
    */
-  queueAgent(input: { engine: EngineName; label: string | null; phase: string | null }): number {
+  queueAgent(input: {
+    engine: EngineName;
+    label: string | null;
+    phase: string | null;
+    requestedModel?: string | null;
+    requestedEffort?: string | null;
+  }): number {
     const id = (this.#nextAgentId += 1);
     this.#live.set(id, {
       id,
-      requestedModel: null, requestedEffort: null,
+      requestedModel: input.requestedModel ?? null, requestedEffort: input.requestedEffort ?? null,
       resolvedModel: null, resolvedEffort: null,
       transcript: null, worktree: null, spent: null,
       lastEvidenceAtMs: null, finishedAtMs: null, failure: null,

@@ -942,7 +942,9 @@ export class EnsembleRuntime {
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
-      phase: options.phase ?? null
+      phase: options.phase ?? null,
+      requestedModel: options.model ?? null,
+      requestedEffort: options.effort ?? null
     });
     const phase = this.progress.queuedAgentPhase(agentId);
     if (engine.name === "claude" && options.model === undefined) {
@@ -1159,7 +1161,9 @@ export class EnsembleRuntime {
       const agentId = this.progress.queueAgent({
         engine: engine.name,
         label: options.label ?? null,
-        phase: options.phase ?? null
+        phase: options.phase ?? null,
+        requestedModel: options.model ?? null,
+        requestedEffort: options.effort ?? null
       });
       phase = this.progress.queuedAgentPhase(agentId);
       if (engine.name === "claude" && options.model === undefined && state.turnCount === 0) {

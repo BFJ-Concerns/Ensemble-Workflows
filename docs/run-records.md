@@ -151,10 +151,10 @@ below it. The ceiling's count is kept whether or not the run has a ceiling.
 
 Worker spend is cumulative across attempts and fallback targets; null means
 unobserved, not zero. Identity and paths are producer-supplied evidence, never
-inferred. Requested identity describes the original call; resolved identity
-names what was served. Transcript paths match the running agent record's
-current attempt: archive-relative for Codex, absolute native paths for
-Claude. Resolve relative paths against archiveDir. A settled Claude record
+inferred. Requested identity describes the original call and is present from
+the first snapshot listing the worker; resolved identity names what was
+served. Transcript paths match the running agent record's current attempt:
+archive-relative for Codex, absolute native paths for Claude. Resolve relative paths against archiveDir. A settled Claude record
 archives a copy of the native transcript; the status entry retains its
 live path.
 

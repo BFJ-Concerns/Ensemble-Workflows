@@ -18883,8 +18883,8 @@ var RunProgress = class {
     const id = this.#nextAgentId += 1;
     this.#live.set(id, {
       id,
-      requestedModel: null,
-      requestedEffort: null,
+      requestedModel: input.requestedModel ?? null,
+      requestedEffort: input.requestedEffort ?? null,
       resolvedModel: null,
       resolvedEffort: null,
       transcript: null,
@@ -25843,7 +25843,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
-      phase: options.phase ?? null
+      phase: options.phase ?? null,
+      requestedModel: options.model ?? null,
+      requestedEffort: options.effort ?? null
     });
     const phase = this.progress.queuedAgentPhase(agentId);
     if (engine.name === "claude" && options.model === void 0) {
@@ -26028,7 +26030,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const agentId = this.progress.queueAgent({
         engine: engine.name,
         label: options.label ?? null,
-        phase: options.phase ?? null
+        phase: options.phase ?? null,
+        requestedModel: options.model ?? null,
+        requestedEffort: options.effort ?? null
       });
       phase = this.progress.queuedAgentPhase(agentId);
       if (engine.name === "claude" && options.model === void 0 && state.turnCount === 0) {

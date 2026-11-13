@@ -1662,7 +1662,7 @@ function workflowOptionMessage(option: string, program: string): string {
   const placement = suggestion !== undefined && !Object.hasOwn(WORKFLOW_TUNING_OPTIONS, suggestion.slice(2))
     ? ` ${suggestion} belongs to ${program} agent; set script models and other worker options in agent() calls.`
     : "";
-  return `${known ? "Option" : "Unknown option before script path:"} ${option}${hint || placement ? "." : ""}${hint}${placement}`;
+  return `${known ? "Agent option before script path:" : "Unknown option before script path:"} ${option}${hint || placement ? "." : ""}${hint}${placement}`;
 }
 
 function optionDistance(left: string, right: string): number {

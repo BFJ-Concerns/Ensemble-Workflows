@@ -4942,6 +4942,7 @@ test("misplaced --lean and run-level --model give complete launcher-specific ref
   const program = "node /opt/ensemble/ensemble.mjs";
   for (const [argv, diagnostic] of [
     [["agent", "--engine", "codex", "prompt", "--lean"], `${program}: Flag --lean appears after the agent prompt; put flags before the prompt, or put \`--\` before a dash-leading prompt`],
+    [["--model", "example", "workflow.js"], `${program}: Agent option before script path: --model. --model belongs to ${program} agent; set script models and other worker options in agent() calls.`]
   ] as const) {
     const stderr = new CaptureStream();
     const stdout = new CaptureStream();

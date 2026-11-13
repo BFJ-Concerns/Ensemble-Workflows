@@ -8,14 +8,14 @@ import { assertSalvageEnvelope, runNode } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
-for (const timeoutMs of [undefined, 250]) {
+for (const timeoutMs of [undefined, 60_000]) {
   for (const composed of [false, true]) {
-    test(`an unsettled ${composed ? "composed" : "root"} workflow is accounted for ${timeoutMs === undefined ? "without a deadline" : "at its deadline"}`, async () => {
+    test(`an unsettled ${composed ? "composed" : "root"} workflow is accounted for ${timeoutMs === undefined ? "without a deadline" : "with a deadline"}`, async () => {
       const directory = await mkdtemp(path.join(tmpdir(), "ensemble-unsettled-workflow-"));
       try {
         await mkdir(path.join(directory, "status"));
         const script = path.join(directory, "pending.js");
-        const body = `log("BODY_STARTED " + Date.now()); await new Promise(() => {});`;
+        const body = `await new Promise(() => {});`;
         await writeFile(script, `export const meta = { name: "pending" };\n${composed ? `await workflow({ scriptPath: ${JSON.stringify(path.join(directory, "child.js"))} });` : body}`);
         if (composed) {
           await writeFile(path.join(directory, "child.js"), `export const meta = { name: "child" };\n${body}`);
@@ -30,19 +30,12 @@ for (const timeoutMs of [undefined, 250]) {
           },
           20_000
         );
-        const endedAt = Date.now();
-        const outcome = timeoutMs === undefined ? "failed" : "timed-out";
+        const outcome = "failed";
         assert.equal(result.code, 1, result.stderr);
         assert.doesNotMatch(result.stderr, /Detected unsettled top-level await/);
         const envelope = assertSalvageEnvelope(result.stdout, outcome);
-        assert.equal(envelope.error.kind, timeoutMs === undefined ? "WorkflowUnsettledError" : "WorkflowTimeoutError");
-        if (timeoutMs === undefined) {
-          assert.match(envelope.error.message, /pending\.js.*promise.*event loop/);
-        } else {
-          const bodyStarted = result.stderr.match(/BODY_STARTED (\d+)/);
-          assert.ok(bodyStarted, result.stderr);
-          assert.ok(endedAt - Number(bodyStarted[1]) >= timeoutMs, "must wait for the configured deadline");
-        }
+        assert.equal(envelope.error.kind, "WorkflowUnsettledError");
+        assert.match(envelope.error.message, /pending\.js.*promise.*event loop/);
         const announced = result.stderr.match(/\[sentinel\] will write (.+) when the run ends/);
         assert.ok(announced, result.stderr);
         const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
@@ -104,3 +97,19 @@ for (const timeout of [[], ["--timeout=60000"]]) {
     }
   });
 }
+
+
+test("a deadline still bounds script-owned live work", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-work-deadline-"));
+  try {
+    const script = path.join(directory, "live.js");
+    await writeFile(script, `export const meta = { name: "live" }; await new Promise(resolve => setTimeout(resolve, 60000));`);
+    const result = await runNode([bundledCliPath, "--timeout=100", script], {
+      ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records"), ENSEMBLE_STATUS: "0"
+    }, 20_000);
+    assert.equal(result.code, 1, result.stderr);
+    assert.equal(assertSalvageEnvelope(result.stdout, "timed-out").error.kind, "WorkflowTimeoutError");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

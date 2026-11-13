@@ -22,6 +22,7 @@
  * - `ENSEMBLE_FAKE_CLAUDE_STATE` — the roster's JSON state file (required).
  * - `ENSEMBLE_FAKE_CLAUDE_USAGE` — the assistant entry's usage block, as
  *   JSON; defaults to 120 input / 30 output / 9 cache-read.
+ * - `ENSEMBLE_FAKE_CLAUDE_COMPLETE` — finish the received turn normally.
  * - `ENSEMBLE_FAKE_CLAUDE_GENERATING` — leave the worker generating after
  *   its transcript is written, so the caller can interrupt the real CLI.
  * - `ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE` — when set, hold opening
@@ -128,6 +129,7 @@ async function dispatch() {
 }
 
 async function receive(file) {
+  const complete = process.env.ENSEMBLE_FAKE_CLAUDE_COMPLETE === "1";
   const prompt = await readFile(file, "utf8");
   const state = await readState();
   const session = state.sessions[0];
@@ -141,8 +143,8 @@ async function receive(file) {
       message: {
         role: "assistant",
         model: session.model,
-        content: [{ type: "text", text: "started work, calling a tool" }],
-        stop_reason: "tool_use",
+        content: [{ type: "text", text: complete ? "worker-ok" : "started work, calling a tool" }],
+        stop_reason: complete ? "end_turn" : "tool_use",
         usage: usageBlock()
       }
     }
@@ -152,9 +154,9 @@ async function receive(file) {
     `${transcript.map((entry) => JSON.stringify(entry)).join("\n")}\n`
   );
 
-  session.status = "busy";
-  session.state = isGenerating() ? "working" : "blocked";
-  if (!isGenerating()) session.waitingFor = "a permission prompt the fixture never answers";
+  session.status = complete ? "idle" : "busy";
+  session.state = complete ? "done" : isGenerating() ? "working" : "blocked";
+  if (!complete && !isGenerating()) session.waitingFor = "a permission prompt the fixture never answers";
   await writeState(state);
   await writeFile(`${statePath}.delivered`, "");
   await waitForDispatchGate();

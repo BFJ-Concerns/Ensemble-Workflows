@@ -1429,17 +1429,17 @@ async function superviseScriptSettlement<T>(promise: Promise<T>, filename: strin
   let onBeforeExit: (() => void) | undefined;
   const terminal = new Promise<never>((_resolve, reject) => {
     if (timeoutMs !== undefined) {
-      // A promise alone does not keep Node alive. The launcher's opt-in
-      // deadline must own a referenced handle even when the body owns none.
+      // A deadline bounds live work; it cannot settle an otherwise stranded
+      // script and must not suppress the idle ending.
       timeout = setTimeout(() => reject(new WorkflowTimeoutError(timeoutMs)), timeoutMs);
-    } else {
-      onBeforeExit = () => {
-        // A signal sent in the last timer callback can still be queued for
-        // delivery. Give it a turn before declaring the body stranded.
-        idleCheck = setImmediate(() => reject(new WorkflowUnsettledError(filename)));
-      };
-      process.once("beforeExit", onBeforeExit);
+      timeout.unref();
     }
+    onBeforeExit = () => {
+      // A signal sent in the last timer callback can still be queued for
+      // delivery. Give it a turn before declaring the body stranded.
+      idleCheck = setImmediate(() => reject(new WorkflowUnsettledError(filename)));
+    };
+    process.once("beforeExit", onBeforeExit);
   });
   try {
     return await Promise.race([promise, terminal]);

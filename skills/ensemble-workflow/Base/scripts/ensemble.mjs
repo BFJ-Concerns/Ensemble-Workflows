@@ -19567,6 +19567,16 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     }
     return transport;
   }
+  /** Idle server state cannot settle a script; only a request or turn can. */
+  #updateLiveness() {
+    const referenced = this.#pending.size > 0 || this.#turns.size > 0;
+    if (referenced) this.#process.ref();
+    else this.#process.unref();
+    for (const pipe of [this.#process.stdin, this.#process.stdout, this.#process.stderr]) {
+      if (referenced) pipe.ref();
+      else pipe.unref();
+    }
+  }
   async openThread(options) {
     const config = threadStartConfig(options);
     const requestParams = {
@@ -19716,6 +19726,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     state.progress = options;
     this.#reportTurnIdentity(threadId, state);
     this.#turns.set(threadId, state);
+    this.#updateLiveness();
     for (const event of this.#transcripts.get(threadId).events) {
       this.#observeTranscriptEvent(state, event);
     }
@@ -19750,6 +19761,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         throw error;
       }
       return await state.promise;
+    } finally {
+      this.#updateLiveness();
     }
   }
   /** Number of thread transcripts currently held in memory. Observability for tests. */
@@ -19816,12 +19829,13 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         );
       }, timeoutMs);
       this.#pending.set(id, { method, resolve, reject, timeout });
+      this.#updateLiveness();
       this.#writeLine(payload).catch((error) => {
         this.#pending.delete(id);
         clearTimeout(timeout);
         reject(error instanceof Error ? error : new Error(String(error)));
       });
-    });
+    }).finally(() => this.#updateLiveness());
   }
   #sendNotification(method, params) {
     void this.#writeLine(JSON.stringify({ method, params })).catch(() => {
@@ -25002,7 +25016,6 @@ var CodexWorkerSession = class {
   #closed = false;
   #lost = null;
   #transportFailure;
-  #lossKeepAlive;
   constructor(options) {
     this.#options = options.options;
     this.#transport = options.transport;
@@ -25046,8 +25059,6 @@ var CodexWorkerSession = class {
   #noteLost(error) {
     if (this.#closed || this.#threadId === null || this.#lost !== null) return;
     this.#lost = { nativeSession: this.#threadId, reason: error.message, observedAt: Date.now() };
-    this.#lossKeepAlive = setInterval(() => {
-    }, 60 * 60 * 1e3);
     try {
       this.#observer?.onLost(this.#lost);
     } catch {
@@ -25095,7 +25106,6 @@ var CodexWorkerSession = class {
     if (this.#closed) return;
     this.#closed = true;
     this.#unsubscribe?.();
-    clearInterval(this.#lossKeepAlive);
     this.#onClose(this);
   }
 };
@@ -35702,12 +35712,12 @@ async function superviseScriptSettlement(promise, filename, timeoutMs) {
   const terminal = new Promise((_resolve, reject) => {
     if (timeoutMs !== void 0) {
       timeout = setTimeout(() => reject(new WorkflowTimeoutError(timeoutMs)), timeoutMs);
-    } else {
-      onBeforeExit = () => {
-        idleCheck = setImmediate(() => reject(new WorkflowUnsettledError(filename)));
-      };
-      process.once("beforeExit", onBeforeExit);
+      timeout.unref();
     }
+    onBeforeExit = () => {
+      idleCheck = setImmediate(() => reject(new WorkflowUnsettledError(filename)));
+    };
+    process.once("beforeExit", onBeforeExit);
   });
   try {
     return await Promise.race([promise, terminal]);

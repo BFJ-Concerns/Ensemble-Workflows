@@ -9,7 +9,7 @@ import { executablePath, findOnlyFile, runNode } from "./estate-process.js";
 const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const fixture = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 
-for (const ending of ["close", "timeout", "signal", "mid-turn"] as const) {
+for (const ending of ["close", "unsettled", "signal", "mid-turn"] as const) {
   test(`Codex death ${ending === "mid-turn" ? "during a turn" : "while idle"} is observed and the run seals after ${ending}`, { timeout: 30_000 }, async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-held-loss-"));
     try {
@@ -44,10 +44,13 @@ while (!streamed && Date.now() < streamDeadline) {
 if (!streamed) throw new Error("the in-flight turn never streamed its partial answer");
 ` : ""}
 process.kill(Number(await fs.readFile(${JSON.stringify(pidFile)}, "utf8")), "SIGKILL");
-${ending === "timeout" || ending === "signal" ? `
-// No script-owned event-loop reference remains. The run timeout or the
-// unreferenced signal timer must still settle the body after pipe closure.
-${ending === "signal" ? 'setTimeout(() => process.kill(process.pid, "SIGTERM"), 100).unref();' : ""}
+${ending === "unsettled" || ending === "signal" ? `
+const lossDeadline = Date.now() + 5000;
+while ((!held.lost || !sibling.lost) && Date.now() < lossDeadline) await new Promise(resolve => setTimeout(resolve, 10));
+if (!held.lost || !sibling.lost) throw new Error("lost sessions were not observed");
+// An idle lost session owns no event-loop reference. A script-owned
+// signal timer can still settle the body; otherwise it is stranded.
+${ending === "signal" ? 'setTimeout(() => process.kill(process.pid, "SIGTERM"), 100);' : ""}
 await new Promise(() => {});
 ` : `
 const deadline = Date.now() + 5000;
@@ -77,8 +80,8 @@ return { first, lostBeforeSend, siblingLost, second, third };
         ENSEMBLE_STATUS: "0",
         XDG_DATA_HOME: path.join(directory, "data")
       }, 20_000);
-      const expectedStatus = ending === "timeout" ? "timed-out" : ending === "signal" ? "interrupted" : "complete";
-      assert.equal(result.code, ending === "timeout" ? 1 : ending === "signal" ? 143 : 0, result.stderr);
+      const expectedStatus = ending === "unsettled" ? "failed" : ending === "signal" ? "interrupted" : "complete";
+      assert.equal(result.code, ending === "unsettled" ? 1 : ending === "signal" ? 143 : 0, result.stderr);
       assert.match(result.stderr, ending === "mid-turn"
         ? /\[codex\] session 1 \(held-codex\) lost its worker during turn 2/
         : /\[codex\] session 1 \(held-codex\) lost its worker while idle after turn 1/);

@@ -50,7 +50,12 @@ for (const ending of ["failed", "timed-out", "interrupted"] as const) {
               return answer("barrier finished");
             }
             return new Promise<EngineAttemptResult>((resolve) => {
-              releases.push(() => resolve(answer("null")));
+              // Active native workers own handles until their reply settles.
+              const liveWorker = setInterval(() => {}, 60_000);
+              releases.push(() => {
+                clearInterval(liveWorker);
+                resolve(answer("null"));
+              });
               if (releases.length === engines.length) started.resolve();
             });
           }

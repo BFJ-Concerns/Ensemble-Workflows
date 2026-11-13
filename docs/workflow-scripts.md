@@ -167,6 +167,8 @@ A budget refusal (`BudgetExceededError`) also propagates when a dispatch or
 session turn is not admitted. If uncaught, it fails the run; the manifest and
 completion sentinel record the refusal as the run's error. The message names
 the refused call, spend, ceiling and remaining amount (zero when exhausted).
+A refused session turn also names its turn number, label when set, and
+explicit phase or the run’s current phase when available.
 When a fallback engine's budget refuses re-admission, the error also names every earlier
 refused target, its classification rule and a bounded diagnostic. These
 accounts reach the partial envelope and stderr, so the budget refusal stays

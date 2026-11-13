@@ -1425,9 +1425,12 @@ class HangOnPromptEngine implements EngineAdapter {
 
   createInvocation(prompt: string): EngineInvocation {
     let rejectHang: ((error: Error) => void) | undefined;
+    let liveWorker: NodeJS.Timeout | undefined;
     const invocation: EngineInvocation = {
       runAttempt: async () => {
         if (prompt === "hang") {
+          // Model the live process handle a real executing worker owns.
+          liveWorker = setInterval(() => {}, 60_000);
           await new Promise<never>((_resolve, reject) => {
             rejectHang = reject;
           });
@@ -1437,6 +1440,7 @@ class HangOnPromptEngine implements EngineAdapter {
       // The adapter contract: close settles active invocations — the
       // runtime's shutdown accounting waits on those settlements.
       close: async () => {
+        clearInterval(liveWorker);
         this.#activeInvocations.delete(invocation);
         rejectHang?.(new EngineShutdownError(this.name));
         rejectHang = undefined;

@@ -471,9 +471,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         const verdicts = event.params.verdicts as string[];
         // JSON keeps opaque verdicts on one terminal line; single-quoted
         // shell arguments preserve their exact spelling in answer commands.
-        const answerCommands = verdicts.map((verdict) =>
-          `${program} holds answer '${holdId.replaceAll("'", "'\"'\"'")}' --verdict='${verdict.replaceAll("'", "'\"'\"'")}'`
-        );
+        const answerCommands = holdAnswerCommands(program, holdId, verdicts);
         stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, event: "raised", verdicts, answer_commands: answerCommands })}\n`);
         return;
       }
@@ -2094,6 +2092,12 @@ function announceRunRecord(writer: RunRecordWriter, stderr: Writable): void {
   }
 }
 
+function holdAnswerCommands(program: string, holdId: string, verdicts: string[]): string[] {
+  return verdicts.map((verdict) =>
+    `${program} holds answer '${holdId.replaceAll("'", "'\"'\"'")}' --verdict='${verdict.replaceAll("'", "'\"'\"'")}'`
+  );
+}
+
 function holdsAnswerUsage(program: string): string {
   return (
     subcommandSynopsis(program, ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]) +
@@ -2168,7 +2172,8 @@ async function answerHoldCommand(
     stderr.write(`cannot answer hold ${holdId}: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
-  stdout.write(`${JSON.stringify({ ...result, answered_by: answeredBy })}\n`);
+  const answerCommands = result.outcome === "bounced" ? holdAnswerCommands(program, holdId, result.verdicts) : undefined;
+  stdout.write(`${JSON.stringify({ ...result, answered_by: answeredBy, ...(answerCommands !== undefined ? { answer_commands: answerCommands } : {}) })}\n`);
   switch (result.outcome) {
     case "consumed":
       stderr.write(`hold ${holdId}: answer consumed — the run resumed with verdict ${JSON.stringify(verdict)}\n`);
@@ -2178,8 +2183,9 @@ async function answerHoldCommand(
       return 6;
     case "bounced":
       stderr.write(
-        `hold ${holdId}: answer bounced (${result.rejection.reason}) — the hold is still waiting for a valid answer\n`
+        `hold ${holdId}: answer bounced (${result.rejection.reason}) — allowed verdicts: ${JSON.stringify(result.verdicts)}; the hold is still waiting for a valid answer\n`
       );
+      stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, verdicts: result.verdicts, answer_commands: answerCommands })}\n`);
       return 3;
     case "not-consumed":
       stderr.write(

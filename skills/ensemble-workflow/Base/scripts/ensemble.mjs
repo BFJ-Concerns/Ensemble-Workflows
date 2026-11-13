@@ -15171,7 +15171,16 @@ async function answerHold(options) {
       return { outcome: "retired", hold_id: record.hold_id, verdict: options.verdict };
     }
     if (current2.answer_rejection !== void 0 && JSON.stringify(current2.answer_rejection) !== priorRejection) {
-      return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: current2.answer_rejection };
+      return {
+        outcome: "bounced",
+        hold_id: record.hold_id,
+        verdict: options.verdict,
+        rejection: {
+          ...current2.answer_rejection,
+          ...current2.answer_rejection.reason === "invalid-verdict" ? { allowed_verdicts: current2.verdicts } : {}
+        },
+        verdicts: current2.verdicts
+      };
     }
     const waited = Date.now() - started;
     if (waited >= waitMs) {
@@ -35035,9 +35044,7 @@ async function runEnsembleCli(argv, options = {}) {
       if (event.method === "hold/raised") {
         const holdId = String(event.params.holdId);
         const verdicts = event.params.verdicts;
-        const answerCommands = verdicts.map(
-          (verdict) => `${program} holds answer '${holdId.replaceAll("'", `'"'"'`)}' --verdict='${verdict.replaceAll("'", `'"'"'`)}'`
-        );
+        const answerCommands = holdAnswerCommands(program, holdId, verdicts);
         stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, event: "raised", verdicts, answer_commands: answerCommands })}
 `);
         return;
@@ -36199,6 +36206,11 @@ function announceRunRecord(writer, stderr) {
   } catch {
   }
 }
+function holdAnswerCommands(program, holdId, verdicts) {
+  return verdicts.map(
+    (verdict) => `${program} holds answer '${holdId.replaceAll("'", `'"'"'`)}' --verdict='${verdict.replaceAll("'", `'"'"'`)}'`
+  );
+}
 function holdsAnswerUsage(program) {
   return subcommandSynopsis(program, ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]) + "Answers an open hold: writes the decision file the hold names (nonce copied\nfrom the hold), then reports what the raiser did with it, as one JSON object\non stdout. The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set,\notherwise host:pid.\nExit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected;\nthe hold keeps waiting and the reason is reported); 4 not yet consumed (the\nraiser has not read it within its poll cadence; the answer file stays in\nplace); 5 no open hold with that id; 6 retired (the hold settled without\njudging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n";
 }
@@ -36251,7 +36263,8 @@ async function answerHoldCommand(args, env, stdout, stderr, program) {
 `);
     return 1;
   }
-  stdout.write(`${JSON.stringify({ ...result, answered_by: answeredBy })}
+  const answerCommands = result.outcome === "bounced" ? holdAnswerCommands(program, holdId, result.verdicts) : void 0;
+  stdout.write(`${JSON.stringify({ ...result, answered_by: answeredBy, ...answerCommands !== void 0 ? { answer_commands: answerCommands } : {} })}
 `);
   switch (result.outcome) {
     case "consumed":
@@ -36264,9 +36277,11 @@ async function answerHoldCommand(args, env, stdout, stderr, program) {
       return 6;
     case "bounced":
       stderr.write(
-        `hold ${holdId}: answer bounced (${result.rejection.reason}) \u2014 the hold is still waiting for a valid answer
+        `hold ${holdId}: answer bounced (${result.rejection.reason}) \u2014 allowed verdicts: ${JSON.stringify(result.verdicts)}; the hold is still waiting for a valid answer
 `
       );
+      stderr.write(`[hold] ${JSON.stringify({ hold_id: holdId, verdicts: result.verdicts, answer_commands: answerCommands })}
+`);
       return 3;
     case "not-consumed":
       stderr.write(

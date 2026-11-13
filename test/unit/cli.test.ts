@@ -4340,13 +4340,22 @@ test("ensemble holds answer writes the decision, reports what the raiser did wit
 
     // An unlisted verdict bounces: exit 3, the reason on stdout, the hold still waiting.
     const bounced = new CaptureStream();
+    const bouncedStderr = new CaptureStream();
     assert.equal(
-      await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict", "maybe"], { cwd: directory, stdout: bounced, stderr: new CaptureStream(), env }),
+      await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict", "maybe"], { cwd: directory, stdout: bounced, stderr: bouncedStderr, env }),
       3
     );
-    const bouncedReport = JSON.parse(bounced.text()) as { outcome: string; rejection: { reason: string } };
+    const bouncedReport = JSON.parse(bounced.text()) as { outcome: string; rejection: { reason: string; allowed_verdicts: string[] }; answer_commands: string[] };
     assert.equal(bouncedReport.outcome, "bounced");
     assert.equal(bouncedReport.rejection.reason, "invalid-verdict");
+    assert.deepEqual(bouncedReport.rejection.allowed_verdicts, ["yes", "no"]);
+    assert.match(bouncedStderr.text(), /allowed verdicts: \["yes","no"\]/);
+    assert.deepEqual(bouncedReport.answer_commands, [
+      "ensemble holds answer 'run-cli-answer-1' --verdict='yes'",
+      "ensemble holds answer 'run-cli-answer-1' --verdict='no'"
+    ]);
+    const repeated = JSON.parse(bouncedStderr.text().split("\n").find((line) => line.startsWith("[hold] "))!.slice(7)) as { answer_commands: string[] };
+    assert.deepEqual(repeated.answer_commands, bouncedReport.answer_commands);
     const afterBounce = new CaptureStream();
     assert.equal(await runEnsembleCli(["holds", "--json"], { cwd: directory, stdout: afterBounce, stderr: new CaptureStream(), env }), 0);
     assert.deepEqual(

@@ -177,10 +177,14 @@ the raiser's poll intervals. It prints one JSON object on stdout and exits:
 | Exit code | Meaning |
 |---|---|
 | 0 | The answer was consumed: the answer file and the hold both disappeared, which normally means the run accepted the answer and resumed |
-| 3 | The answer bounced; the output includes the rejection reason, and the hold keeps waiting |
+| 3 | The answer bounced; the output includes the rejection reason, allowed verdicts and ready answer commands, and the hold keeps waiting |
 | 4 | The raiser has not read the answer yet; the answer file stays in place |
 | 5 | No open hold has that id |
 | 6 | The hold settled without judging this answer; the stale decision file is removed |
+
+An off-list verdict returns `rejection.allowed_verdicts`. Every bounced answer
+includes `verdicts` and `answer_commands` in its JSON output and repeats the
+choices and commands on stderr.
 
 See [Holds](workflow-scripts.md#holds) for how holds are raised, scoped, and
 answered by hand.

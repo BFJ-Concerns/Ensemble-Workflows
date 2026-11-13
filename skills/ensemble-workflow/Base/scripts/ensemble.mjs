@@ -19393,9 +19393,27 @@ var LazyCodexAppServerTransport = class {
   #options;
   #transportPromise;
   #closed = false;
+  #terminationListeners = /* @__PURE__ */ new Set();
+  #terminationError;
   constructor(options) {
     this.cwd = options.cwd;
     this.#options = options;
+  }
+  onTermination(listener) {
+    if (this.#closed) return () => {
+    };
+    if (this.#terminationError !== void 0) {
+      try {
+        listener(this.#terminationError);
+      } catch {
+      }
+      return () => {
+      };
+    }
+    this.#terminationListeners.add(listener);
+    return () => {
+      this.#terminationListeners.delete(listener);
+    };
   }
   async openThread(options) {
     const transport = await this.#transport();
@@ -19411,6 +19429,7 @@ var LazyCodexAppServerTransport = class {
   }
   async close() {
     this.#closed = true;
+    this.#terminationListeners.clear();
     if (this.#transportPromise === void 0) {
       return;
     }
@@ -19426,8 +19445,25 @@ var LazyCodexAppServerTransport = class {
     if (this.#closed) {
       return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
     }
-    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
+    this.#transportPromise ??= CodexAppServerTransport.start(this.#options).then((transport) => {
+      transport.onTermination((error) => this.#noteTermination(error));
+      return transport;
+    }).catch((error) => {
+      this.#noteTermination(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    });
     return this.#transportPromise;
+  }
+  #noteTermination(error) {
+    if (this.#closed || this.#terminationError !== void 0) return;
+    this.#terminationError = error;
+    for (const listener of this.#terminationListeners) {
+      try {
+        listener(error);
+      } catch {
+      }
+    }
+    this.#terminationListeners.clear();
   }
 };
 var CodexAppServerTransport = class _CodexAppServerTransport {
@@ -19461,6 +19497,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #terminalError;
   #writeFailureWaiters = /* @__PURE__ */ new Set();
   #onEvent;
+  #closing = false;
+  #terminationListeners = /* @__PURE__ */ new Set();
   constructor(options) {
     this.cwd = options.cwd;
     this.#requestTimeoutMs = options.requestTimeoutMs;
@@ -19557,6 +19595,22 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       message: "response did not contain result.thread.id or result.threadId",
       data: result
     });
+  }
+  onTermination(listener) {
+    if (this.#closing) return () => {
+    };
+    if (this.#terminalError !== void 0) {
+      try {
+        listener(this.#terminalError);
+      } catch {
+      }
+      return () => {
+      };
+    }
+    this.#terminationListeners.add(listener);
+    return () => {
+      this.#terminationListeners.delete(listener);
+    };
   }
   async listSkills(cwd = this.cwd) {
     const startedAt = Date.now();
@@ -19683,6 +19737,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     return this.#transcripts.size;
   }
   async close() {
+    this.#closing = true;
+    this.#terminationListeners.clear();
     if (!this.#hasExited) {
       this.#failAll(new AppServerExitedError("codex app-server closed"));
     }
@@ -20387,6 +20443,15 @@ ${this.#stderrTail.join("\n")}` : "";
     if (this.#exitStatus !== null) {
       attachWorkerExitStatus(wrapped, this.#exitStatus);
     }
+    if (!this.#closing) {
+      for (const listener of this.#terminationListeners) {
+        try {
+          listener(wrapped);
+        } catch {
+        }
+      }
+    }
+    this.#terminationListeners.clear();
     for (const reject of this.#writeFailureWaiters) {
       reject(wrapped);
     }
@@ -24833,6 +24898,8 @@ var CodexEngineAdapter = class {
   };
   #transport;
   #scheduler;
+  #sessions = /* @__PURE__ */ new Set();
+  #closed = false;
   constructor(options) {
     this.concurrency = options.concurrency;
     this.#transport = options.transport;
@@ -24848,11 +24915,23 @@ var CodexEngineAdapter = class {
       transport: this.#transport
     });
   }
-  createSession(options) {
-    return new CodexWorkerSession({ options, transport: this.#transport });
+  createSession(options, observer) {
+    if (this.#closed) throw new EngineShutdownError(this.name);
+    const session = new CodexWorkerSession({
+      options,
+      transport: this.#transport,
+      ...observer !== void 0 ? { observer } : {},
+      onClose: (closed) => {
+        this.#sessions.delete(closed);
+      }
+    });
+    this.#sessions.add(session);
+    return session;
   }
   async close() {
+    this.#closed = true;
     this.#scheduler.close(new EngineShutdownError(this.name));
+    await Promise.all([...this.#sessions].map((session) => session.close()));
     await this.#transport.close();
   }
 };
@@ -24861,9 +24940,22 @@ var CodexWorkerSession = class {
   #transport;
   #threadId = null;
   #opening = null;
+  #observer;
+  #onClose;
+  #unsubscribe;
+  #closed = false;
+  #lost = null;
+  #transportFailure;
+  #lossKeepAlive;
   constructor(options) {
     this.#options = options.options;
     this.#transport = options.transport;
+    this.#observer = options.observer;
+    this.#onClose = options.onClose;
+    this.#unsubscribe = this.#transport.onTermination?.((error) => {
+      this.#transportFailure = error;
+      this.#noteLost(error);
+    });
   }
   beginTurn(prompt, turn) {
     return {
@@ -24871,16 +24963,55 @@ var CodexWorkerSession = class {
     };
   }
   async #runTurnAttempt(prompt, schema, context) {
+    if (this.#lost !== null) return this.#lostResult();
+    if (this.#closed) throw new EngineShutdownError("codex");
     const threadId = await this.#ensureThread();
+    if (this.#lost !== null) return this.#lostResult();
+    if (this.#closed) throw new EngineShutdownError("codex");
     const message = context.previousFailure === void 0 ? prompt : `A previous attempt failed (${context.previousFailure.kind}): ${context.previousFailure.message}. Correct it this time.`;
-    return this.#transport.runTurn(threadId, message, {
-      ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
-      ...schema !== void 0 ? { schema: normaliseForCodexOutputSchema(schema) } : {},
-      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...codexProgressObservers(context),
-      ...context.onTranscriptEvent !== void 0 ? { onTranscriptEvent: context.onTranscriptEvent } : {},
-      ...context.onTranscriptPath !== void 0 ? { onTranscriptPath: context.onTranscriptPath } : {}
-    });
+    try {
+      return await this.#transport.runTurn(threadId, message, {
+        ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
+        ...schema !== void 0 ? { schema: normaliseForCodexOutputSchema(schema) } : {},
+        ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
+        ...codexProgressObservers(context),
+        ...context.onTranscriptEvent !== void 0 ? { onTranscriptEvent: context.onTranscriptEvent } : {},
+        ...context.onTranscriptPath !== void 0 ? { onTranscriptPath: context.onTranscriptPath } : {}
+      });
+    } catch (error) {
+      if (!this.#closed && error instanceof AppServerExitedError) {
+        this.#transportFailure ??= error;
+        this.#noteLost(error);
+        return this.#lostResult(error);
+      }
+      throw error;
+    }
+  }
+  #noteLost(error) {
+    if (this.#closed || this.#threadId === null || this.#lost !== null) return;
+    this.#lost = { nativeSession: this.#threadId, reason: error.message, observedAt: Date.now() };
+    this.#lossKeepAlive = setInterval(() => {
+    }, 60 * 60 * 1e3);
+    try {
+      this.#observer?.onLost(this.#lost);
+    } catch {
+    }
+  }
+  #lostResult(error = this.#transportFailure) {
+    const text = partialWorkerTextOf(error) ?? "";
+    const transcript = partialTranscriptOf(error);
+    const exit = workerExitStatusOf(error);
+    return {
+      text,
+      deltaText: text,
+      durationMs: null,
+      firstDeltaMs: firstDeltaMsOf(error),
+      items: {},
+      tokenUsageEvents: [],
+      attemptFailure: { kind: "session-lost", message: this.#lost.reason },
+      ...transcript === null ? {} : { transcripts: [transcript] },
+      ...exit === null ? {} : { workerExit: exit }
+    };
   }
   /**
    * Single-flight thread open, not failure-memoised: a failed open leaves
@@ -24896,6 +25027,7 @@ var CodexWorkerSession = class {
       try {
         const threadId = await openCodexThread(this.#transport, this.#options, this.#options.cwd);
         this.#threadId = threadId;
+        if (this.#transportFailure !== void 0) this.#noteLost(this.#transportFailure);
         return threadId;
       } finally {
         this.#opening = null;
@@ -24904,7 +25036,11 @@ var CodexWorkerSession = class {
     return this.#opening;
   }
   async close() {
-    this.#threadId = null;
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#unsubscribe?.();
+    clearInterval(this.#lossKeepAlive);
+    this.#onClose(this);
   }
 };
 var CodexEngineInvocation = class {

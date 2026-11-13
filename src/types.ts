@@ -459,6 +459,12 @@ export interface ThreadStartOptions {
 
 export interface RuntimeTransport {
   readonly cwd: string;
+  /**
+   * Observe terminal substrate failure, including between turns. Registration
+   * does not start the substrate; a known failure is replayed synchronously.
+   * Intentional close is not a failure. Returns an unsubscribe function.
+   */
+  onTermination?(listener: (error: Error) => void): () => void;
   /** The Codex app-server's stabilised skill discovery result for a worker cwd. */
   listSkills?(cwd?: string): Promise<readonly string[]>;
   openThread(options: ThreadStartOptions): Promise<string>;

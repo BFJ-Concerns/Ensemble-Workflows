@@ -191,10 +191,22 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
   #options: CodexAppServerTransportOptions;
   #transportPromise: Promise<CodexAppServerTransport> | undefined;
   #closed = false;
+  #terminationListeners = new Set<(error: Error) => void>();
+  #terminationError: Error | undefined;
 
   constructor(options: CodexAppServerTransportOptions) {
     this.cwd = options.cwd;
     this.#options = options;
+  }
+
+  onTermination(listener: (error: Error) => void): () => void {
+    if (this.#closed) return () => {};
+    if (this.#terminationError !== undefined) {
+      try { listener(this.#terminationError); } catch { /* Observers cannot fail a transport. */ }
+      return () => {};
+    }
+    this.#terminationListeners.add(listener);
+    return () => { this.#terminationListeners.delete(listener); };
   }
 
   async openThread(options: ThreadStartOptions): Promise<string> {
@@ -216,6 +228,7 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
     // Latch: teardown is terminal. A straggler reaching the substrate after
     // close must fail, not spawn a fresh app-server nothing will ever stop.
     this.#closed = true;
+    this.#terminationListeners.clear();
     if (this.#transportPromise === undefined) {
       return;
     }
@@ -235,8 +248,23 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
     if (this.#closed) {
       return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
     }
-    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
+    this.#transportPromise ??= CodexAppServerTransport.start(this.#options).then((transport) => {
+      transport.onTermination((error) => this.#noteTermination(error));
+      return transport;
+    }).catch((error: unknown) => {
+      this.#noteTermination(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    });
     return this.#transportPromise;
+  }
+
+  #noteTermination(error: Error): void {
+    if (this.#closed || this.#terminationError !== undefined) return;
+    this.#terminationError = error;
+    for (const listener of this.#terminationListeners) {
+      try { listener(error); } catch { /* One observer cannot stop the others. */ }
+    }
+    this.#terminationListeners.clear();
   }
 }
 
@@ -272,6 +300,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #terminalError: AppServerExitedError | undefined;
   #writeFailureWaiters = new Set<(error: AppServerExitedError) => void>();
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  #closing = false;
+  #terminationListeners = new Set<(error: Error) => void>();
 
   private constructor(options: CodexAppServerTransportOptions) {
     this.cwd = options.cwd;
@@ -389,6 +419,16 @@ export class CodexAppServerTransport implements RuntimeTransport {
       message: "response did not contain result.thread.id or result.threadId",
       data: result
     });
+  }
+
+  onTermination(listener: (error: Error) => void): () => void {
+    if (this.#closing) return () => {};
+    if (this.#terminalError !== undefined) {
+      try { listener(this.#terminalError); } catch { /* Observers cannot fail a transport. */ }
+      return () => {};
+    }
+    this.#terminationListeners.add(listener);
+    return () => { this.#terminationListeners.delete(listener); };
   }
 
   async listSkills(cwd = this.cwd): Promise<readonly string[]> {
@@ -550,6 +590,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   async close(): Promise<void> {
+    this.#closing = true;
+    this.#terminationListeners.clear();
     if (!this.#hasExited) {
       this.#failAll(new AppServerExitedError("codex app-server closed"));
     }
@@ -1392,6 +1434,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (this.#exitStatus !== null) {
       attachWorkerExitStatus(wrapped, this.#exitStatus);
     }
+    if (!this.#closing) {
+      for (const listener of this.#terminationListeners) {
+        try { listener(wrapped); } catch { /* One observer cannot stop the others. */ }
+      }
+    }
+    this.#terminationListeners.clear();
     for (const reject of this.#writeFailureWaiters) {
       reject(wrapped);
     }

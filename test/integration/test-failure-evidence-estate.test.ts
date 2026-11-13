@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -9,7 +10,7 @@ for (const store of ["private", "suite"] as const) {
   for (const [failed, optedIn] of [[true, true], [true, false], [false, true]] as const) {
     test(`${store} test archives ${failed && optedIn ? "survive failure and later recovery" : "are cleaned"} (failed=${failed}, evidence=${optedIn})`, { timeout: 30_000 }, async () => {
       assertNotInsideSuiteSpawningTest();
-      const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-failure-evidence-estate-");
+      const directory = await mkdtemp(path.join(tmpdir(), "ensemble-failure-evidence-estate-"));
       try {
         const temporary = path.join(directory, "temporary");
         await mkdir(temporary);

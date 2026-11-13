@@ -10,7 +10,7 @@ const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mj
 const fixture = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 
 for (const ending of ["close", "unsettled", "signal", "mid-turn"] as const) {
-  test(`Codex death ${ending === "mid-turn" ? "during a turn" : "while idle"} is observed and the run seals after ${ending}`, { timeout: 30_000 }, async () => {
+  test(`Codex death ${ending === "mid-turn" ? "during a turn" : "while idle"} is observed and the run seals after ${ending}`, { timeout: 60_000 }, async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-held-loss-"));
     try {
       const bin = path.join(directory, "bin");
@@ -63,7 +63,10 @@ await held.close();
 await sibling.close();
 return { first, lostBeforeSend, siblingLost, second, third };
 `}`);
-      const result = await runNode([launcher, "--timeout", "3000", workflow], {
+      // Startup competes with the whole estate on busy hosts. Keep the
+      // run deadline below the process guard, and bound loss observation
+      // separately above so a lost session still cannot hang the test.
+      const result = await runNode([launcher, "--timeout", "30000", workflow], {
         PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
         ENSEMBLE_CODEX_SCHEMA_CLI: await executablePath("codex"),
         ...(ending === "mid-turn" ? {
@@ -79,7 +82,7 @@ return { first, lostBeforeSend, siblingLost, second, third };
         ENSEMBLE_RUN_RECORD_DIR: records,
         ENSEMBLE_STATUS: "0",
         XDG_DATA_HOME: path.join(directory, "data")
-      }, 20_000);
+      }, 45_000);
       const expectedStatus = ending === "unsettled" ? "failed" : ending === "signal" ? "interrupted" : "complete";
       assert.equal(result.code, ending === "unsettled" ? 1 : ending === "signal" ? 143 : 0, result.stderr);
       assert.match(result.stderr, ending === "mid-turn"

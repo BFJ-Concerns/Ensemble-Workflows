@@ -1235,7 +1235,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
       attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
     }
     const transcript = this.#transcripts.get(threadId);
-    if (transcript?.events.some((event) => event.direction === "server")) {
+    // The outbound prompt is captured before the server replies. Keep that
+    // partial account even when the worker dies before its first notification,
+    // so settlement links the same evidence the live archive already holds.
+    if (transcript !== undefined && transcript.events.length > 0) {
       attachPartialTranscript(error, {
         filename: "transcript.codex.jsonl",
         format: "jsonl",

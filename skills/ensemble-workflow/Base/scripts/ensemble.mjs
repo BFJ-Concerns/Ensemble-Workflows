@@ -25587,6 +25587,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /** Injectable clock (tests): drives the staleness mark's idle reading. */
   #now;
   #holdManager = null;
+  #openHolds = /* @__PURE__ */ new Set();
   #lastSettledAgentRecord = null;
   #holdsDir;
   #holdScope;
@@ -25917,7 +25918,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
       onOpen: (hold) => this.progress.noteHoldRaised(hold),
       onSettled: (id) => this.progress.noteHoldSettled(id)
     });
-    return this.#holdManager.raise(options);
+    const pending = this.#holdManager.raise(options);
+    this.#openHolds.add(pending);
+    try {
+      return await pending;
+    } finally {
+      this.#openHolds.delete(pending);
+    }
   }
   /** Same observability contract as agent-record writes: failures surface as events, never as hold failures. */
   async #recordHoldEventSafely(event) {
@@ -26844,6 +26851,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const totalsAtClose = this.progress.snapshot().totals;
     const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     this.#holdManager?.close();
+    const holdCloses = Promise.allSettled([...this.#openHolds]);
     this.#admission.close();
     const abandonedEvidence = abandoning.map((record) => {
       this.#abandonedAgentIds.add(record.id);
@@ -26864,6 +26872,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
     this.#workerSessions.clear();
+    await holdCloses;
     await settlementBarrier;
     let done = totalsAtClose.done;
     let failed = totalsAtClose.failed;
@@ -35307,7 +35316,6 @@ async function runEnsembleCli(argv, options = {}) {
     const judgeLateEnding = lateEndingJudge(ending, stderr);
     try {
       try {
-        progress?.finish();
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
           const pendingWorkers = progress?.snapshot().totals;
@@ -35327,6 +35335,7 @@ async function runEnsembleCli(argv, options = {}) {
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError2(error)}
 `);
       }
+      progress?.finish();
       if (finalRecord !== null && finalRecord.status !== "complete" && terminalError !== null) {
         const serialised = serialiseResult(partialResult(runtime, finalRecord.status, terminalError));
         stdout.write(`${serialised}

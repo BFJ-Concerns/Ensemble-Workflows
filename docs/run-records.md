@@ -118,8 +118,9 @@ Each status file contains one JSON object with these fields:
 - `state`: `"running"` or `"finished"`. A finished snapshot may exist briefly
   while the writer closes; `close()` then removes the file. Readers should treat
   absence as no active run and tolerate `"finished"` during that close window.
-  A finished snapshot may still list running workers while teardown settles
-  them; read their individual states and counts as teardown progresses.
+  The launcher marks the run finished after worker teardown and hold
+  withdrawal; finished snapshots contain no queued or running workers or open
+  decision holds.
 - `startedAt`: number, Unix epoch milliseconds.
 - `updatedAt`: number, Unix epoch milliseconds.
 - `finishedAt`: number or `null`, Unix epoch milliseconds when the run has
@@ -147,7 +148,8 @@ judges a queued worker against. Admission takes a worker's slots just before
 the worker starts running and gives them back just after it settles, so the
 ceiling's active count can briefly be higher than the `active` total, and an
 engine's cap can be full for a moment while its `active` count reads one
-below it. The ceiling's count is kept whether or not the run has a ceiling.
+below it. Finished snapshots have no held slots. The ceiling's count is kept
+whether or not the run has a ceiling.
 
 Worker spend is cumulative across attempts and fallback targets; null means
 unobserved, not zero. Identity and paths are producer-supplied evidence, never

@@ -576,6 +576,7 @@ export class EnsembleRuntime {
   /** Injectable clock (tests): drives the staleness mark's idle reading. */
   #now: () => number;
   #holdManager: HoldManager | null = null;
+  #openHolds = new Set<Promise<HoldDecision>>();
   #lastSettledAgentRecord: RuntimeAgentRecord | null = null;
   #holdsDir: string;
   #holdScope: string | null;
@@ -1022,7 +1023,13 @@ export class EnsembleRuntime {
       onOpen: (hold) => this.progress.noteHoldRaised(hold),
       onSettled: (id) => this.progress.noteHoldSettled(id)
     });
-    return this.#holdManager.raise(options);
+    const pending = this.#holdManager.raise(options);
+    this.#openHolds.add(pending);
+    try {
+      return await pending;
+    } finally {
+      this.#openHolds.delete(pending);
+    }
   }
 
   /** Same observability contract as agent-record writes: failures surface as events, never as hold failures. */
@@ -2206,6 +2213,7 @@ export class EnsembleRuntime {
     // Open holds are abandoned with the run: the waits reject, and each
     // wait's own cleanup removes its published hold file.
     this.#holdManager?.close();
+    const holdCloses = Promise.allSettled([...this.#openHolds]);
     this.#admission.close();
     const abandonedEvidence = abandoning.map((record) => {
       // The harness knows only that this leg outlived the run. Keep the
@@ -2236,6 +2244,7 @@ export class EnsembleRuntime {
       }
     }
     this.#workerSessions.clear();
+    await holdCloses;
     // Teardown has now reached every classified leg (engine close cancels
     // active invocations; admission and scheduler close reject queued
     // ones), so this wait is bounded by the cancellation contract — and

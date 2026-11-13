@@ -788,7 +788,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // absorbed, never handed to the signal's default.
         // Tear workers down while the archive is still open so their terminal
         // status can replace the dispatch-time snapshot before the run is sealed.
-        progress?.finish();
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
           // A run whose body returned cleanly did not fail, so the workers it
@@ -816,6 +815,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // calls with a stack into the bundle.
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError(error)}\n`);
       }
+      progress?.finish();
       if (finalRecord !== null && finalRecord.status !== "complete" && terminalError !== null) {
         // close() has settled the workers, including any answer that
         // outraced cancellation. stdout and the archive share this one

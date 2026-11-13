@@ -1154,7 +1154,8 @@ for (const home of ["relative", "absolute", "default", "empty"] as const) {
             assert.ok(error instanceof ClaudeDispatchError);
             assert.ok(error.message.includes("lacks bypass-permissions consent"));
             assert.ok(error.message.includes(configDir.replaceAll("'", "'\\''")));
-            assert.match(error.message, /--bg with bypassPermissions requires accepting the disclaimer first/);
+            assert.doesNotMatch(error.message, /Run claude --dangerously-skip-permissions/);
+            assert.equal(error.message.match(/--dangerously-skip-permissions/g)?.length, 1);
             const command = error.message.split("Run interactively: ")[1]?.replace(/; then retry\.$/, "");
             assert.ok(command);
             // Run from another ordinary shell directory with a different home.
@@ -1970,5 +1971,26 @@ test("a lean dispatch adds safe mode and an ordinary dispatch adds nothing", asy
         await rm(dir, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test("an unexecutable Claude command names its resolved path before the sandbox note", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-unexecutable-"));
+  const executable = path.join(dir, "claude");
+  await writeFile(executable, "#!/nonexistent-ensemble-interpreter\n");
+  await chmod(executable, 0o755);
+  const controlPlane = new DeliveryStubControlPlane({
+    claudeBin: executable, projectsDir: dir
+  });
+  try {
+    await assert.rejects(controlPlane.dispatch({ prompt: "hello", name: "unexecutable-probe", cwd: dir }), (error: unknown) => {
+      assert.ok(error instanceof ClaudeDispatchError);
+      assert.ok(error.message.startsWith(`Cannot execute '${executable}'; check the Claude installation or PATH.`), error.message);
+      assert.match(error.message, /workspace declared sandboxed/);
+      return true;
+    });
+  } finally {
+    await controlPlane.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });

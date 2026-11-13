@@ -302,7 +302,8 @@ carry for what ended the run.
 | 143 | Interrupted by SIGTERM (partial-result envelope on stdout) |
 
 An invocation is rejected before any run begins, so exit 2 leaves nothing
-behind: a one-line diagnostic (or the usage text) on stderr, nothing on stdout,
+behind: a one-line diagnostic saying no run was started and nothing was
+recorded (or the usage text) on stderr, nothing on stdout,
 no sentinel, and no archive. Every later ending is a run ending, reported
 through stdout, the sentinel, and the archive when recording is on. The exit
 code is recorded in the manifest, `result.json`, and the sentinel; an uncaught

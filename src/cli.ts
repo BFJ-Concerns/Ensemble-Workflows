@@ -302,7 +302,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // one failure: an invocation that named no work at all (below). An
     // ambient-configuration failure takes the same clean surface through
     // the shared operator seam — the stack behind it is harness interior.
-    stderr.write(`${presentOperationalError(error) ?? formatError(error)}\n`);
+    stderr.write(`No run was started and nothing was recorded. ${presentOperationalError(error) ?? formatError(error)}\n`);
     return 2;
   }
 
@@ -331,7 +331,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     prepared = await prepareRun(invocation, cwd, program);
     await judgeResources(launcherResourceRequirements(configuredRecordDir, options.runRecordDir !== undefined, ambientSettings, env), env);
   } catch (error) {
-    stderr.write(`${presentOperationalError(error) ?? formatError(error)}\n`);
+    stderr.write(`No run was started and nothing was recorded. ${presentOperationalError(error) ?? formatError(error)}\n`);
     return 2;
   }
 
@@ -1510,7 +1510,7 @@ async function parseAgentInvocation(
       );
     }
   }
-  rejectMisplacedAgentTuningFlags(argv);
+  rejectMisplacedAgentTuningFlags(argv, program);
   rejectDuplicateScalarFlags(argv);
   let parsed;
   try {
@@ -1662,7 +1662,7 @@ function workflowOptionMessage(option: string, program: string): string {
   const placement = suggestion !== undefined && !Object.hasOwn(WORKFLOW_TUNING_OPTIONS, suggestion.slice(2))
     ? ` ${suggestion} belongs to ${program} agent; set script models and other worker options in agent() calls.`
     : "";
-  return `${known ? "Option" : "Unknown option before script path:"} ${option}${hint || placement ? "." : ""}${hint}${placement}`;
+  return `${known ? "Agent option before script path:" : "Unknown option before script path:"} ${option}${hint || placement ? "." : ""}${hint}${placement}`;
 }
 
 function optionDistance(left: string, right: string): number {
@@ -1772,7 +1772,7 @@ function splitTuningFlags(
   return { tuningArgs, scriptArg: undefined, scriptArgs: [] };
 }
 
-function rejectMisplacedAgentTuningFlags(argv: string[]): void {
+function rejectMisplacedAgentTuningFlags(argv: string[], program: string): void {
   let promptSeen = false;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -1783,14 +1783,14 @@ function rejectMisplacedAgentTuningFlags(argv: string[]): void {
       return;
     }
     if (promptSeen && (isKnownOption(value) || isKnownInlineOption(value))) {
-      throw new CliUsageError(`Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
+      throw new CliUsageError(`${program}: Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
     }
     if (promptSeen && (isKnownAgentOption(value) || isKnownInlineAgentOption(value))) {
       // Same misplacement contract as the workflow form's post-script scan:
       // a flag after the prompt is a placement mistake to name, never an
       // option to quietly apply or a second positional to misroute.
       throw new CliUsageError(
-        `Flag ${value} appears after the agent prompt; put flags before the prompt, or put \`--\` before a dash-leading prompt`
+        `${program}: Flag ${value} appears after the agent prompt; put flags before the prompt, or put \`--\` before a dash-leading prompt`
       );
     }
     // Whether a flag consumes the next token is the option map's `type`,

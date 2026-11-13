@@ -1149,7 +1149,12 @@ export class EnsembleRuntime {
       // Each turn is its own dispatch: budget admission is judged here, at
       // this send, exactly as for a one-shot call — a held session
       // buys no exemption from the ceiling.
-      this.budget.assertCanStart(engine.name, `session turn ${state.turnCount + 1}`);
+      const dispatchContext = [
+        ...(options.label !== undefined ? [`label ${JSON.stringify(options.label)}`] : []),
+        ...(phase !== null ? [`phase ${JSON.stringify(phase)}`] : [])
+      ];
+      this.budget.assertCanStart(engine.name, `session turn ${state.turnCount + 1}` +
+        (dispatchContext.length > 0 ? ` (${dispatchContext.join(", ")})` : ""));
       const queuedAt = Date.now();
       const agentId = this.progress.queueAgent({
         engine: engine.name,

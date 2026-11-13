@@ -428,7 +428,7 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
     turnResult("spent", { tokenUsageEvents: [spendEvent("thread-1", 500)] })
   ]);
   const runtime = codexRuntime(transport, { codexBudget: 100 });
-  const session = runtime.createWorkerSession({ engine: "codex" });
+  const session = runtime.createWorkerSession({ engine: "codex", label: "budgeted", phase: "build" });
   const captured: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
     recordAttemptStart: ignoreAttemptStart,
@@ -448,7 +448,7 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
   const recordsBefore = captured.length;
   await assert.rejects(session.send("second turn"), (error: unknown) => {
     assert.ok(error instanceof BudgetExceededError);
-    assert.equal(error.message, "Token budget exhausted for codex: spent 500 of 100 tokens; remaining 0; refused session turn 2");
+    assert.equal(error.message, 'Token budget exhausted for codex: spent 500 of 100 tokens; remaining 0; refused session turn 2 (label "budgeted", phase "build")');
     assert.doesNotMatch(error.message, /agent was not started/);
     return true;
   });
@@ -484,7 +484,7 @@ test("session budget refusals propagate through combinators before and after ope
               : pipeline(["go"], [send], () => {}),
             (error: unknown) => {
               assert.ok(error instanceof BudgetExceededError);
-              assert.equal(error.message, message);
+              assert.equal(error.message, message + ` (label "held", phase ${JSON.stringify(phase ?? currentPhase)})`);
               assert.deepEqual(agentIdentityOf(error), identity ? { label: "held", phase: phase ?? currentPhase } : null);
               return true;
             }
@@ -493,7 +493,7 @@ test("session budget refusals propagate through combinators before and after ope
         // Direct sends still reject, and admission never opens or records a turn.
         await assert.rejects(session.send("blocked directly"), (error: unknown) => {
           assert.ok(error instanceof BudgetExceededError);
-          assert.equal(error.message, message);
+          assert.equal(error.message, message + ` (label "held", phase ${JSON.stringify(phase ?? "refused through pipeline")})`);
           return true;
         });
         assert.equal(transport.openedThreads.length, opened ? 1 : 0);

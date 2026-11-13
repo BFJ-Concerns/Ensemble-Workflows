@@ -167,6 +167,8 @@ A budget refusal (`BudgetExceededError`) also propagates when a dispatch or
 session turn is not admitted. If uncaught, it fails the run; the manifest and
 completion sentinel record the refusal as the run's error. The message names
 the refused call, spend, ceiling and remaining amount (zero when exhausted).
+A refused session turn also names its turn number, label when set, and
+explicit phase or the run’s current phase when available.
 When a fallback engine's budget refuses re-admission, the error also names every earlier
 refused target, its classification rule and a bounded diagnostic. These
 accounts reach the partial envelope and stderr, so the budget refusal stays
@@ -536,7 +538,9 @@ A launch failure retains the command's exit code, signal, stdout and stderr,
 the last observed session identity and PID, native logs and any transcript in
 the attempt's `diagnostics.claudeLaunch` and transcript references. The
 dispatch command's status is separate from `worker_exit`, which names the
-worker process itself. A PID-less roster seed is insufficient for registration.
+worker process itself. If the Claude executable cannot execute, the refusal
+names its resolved path and suggests checking the installation or PATH before
+the sandbox declaration. A PID-less roster seed is insufficient for registration.
 A refused launch, or one that never acquires a process, is an availability
 failure and advances a declared fallback after its session and tagged
 processes have been removed. If cleanup cannot be confirmed, dispatch keeps
@@ -736,7 +740,8 @@ or `$HOME/.claude` from the worker environment when unset or empty. This is a
 one-time prerequisite for that home; a fresh or
 isolated Claude configuration home needs its own acceptance. Ensemble does
 not accept the disclaimer on your behalf. A dispatch refused for missing
-consent names that resolved home and gives an interactive command scoped to it.
+consent names that resolved home and gives only an interactive repair command
+scoped to it; the native unscoped suggestion stays in the launch diagnostics.
 
 Every Claude worker is launched with `CLAUDE_CODE_SANDBOXED` set, which tells
 Claude Code to skip its per-directory trust prompt. Once the bypass disclaimer

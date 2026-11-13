@@ -45,7 +45,7 @@ test("printed launcher commands run from another directory through relative and 
         cwd: elsewhere, encoding: "utf8", env: hermeticEstateEnvironment()
       });
       assert.equal(diagnostic.status, 2);
-      assert.equal(diagnostic.stderr, `${command} agent requires --engine\n`);
+      assert.equal(diagnostic.stderr, `No run was started and nothing was recorded. ${command} agent requires --engine\n`);
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

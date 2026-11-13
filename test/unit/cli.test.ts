@@ -723,7 +723,7 @@ test("CLI separates --json-args from its malformed-JSON diagnostic", async () =>
   assert.equal(stdout.text(), "");
   assert.equal(
     stderr.text(),
-    "--json-args: the argument must contain valid JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\n"
+    "No run was started and nothing was recorded. --json-args: the argument must contain valid JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\n"
   );
   // The flag must not run into the sentence with no separator.
   assert.doesNotMatch(stderr.text(), /--json-args the argument must contain valid JSON:/);
@@ -771,7 +771,7 @@ test("CLI refuses over-deep JSON args before a run begins, inline and from a fil
 
       assert.equal(exitCode, 2, `${shape}/${form}: ${stderr.text()}`);
       assert.equal(stdout.text(), "");
-      assert.equal(stderr.text(), "--json-args exceeds maximum nesting depth of 256\n");
+      assert.equal(stderr.text(), "No run was started and nothing was recorded. --json-args exceeds maximum nesting depth of 256\n");
       assert.equal(runtimeCreations, 0);
       await assert.rejects(access(recordDir));
     }
@@ -1284,7 +1284,7 @@ test("the retired --fallback-model flag names its script-side replacement, and a
     assert.equal(stdout.text(), "");
     assert.equal(
       stderr.text(),
-      "--fallback-model was retired; declare a script-side fallback chain in agent() or defaults instead.\n"
+      "No run was started and nothing was recorded. --fallback-model was retired; declare a script-side fallback chain in agent() or defaults instead.\n"
     );
     assert.equal(runtimeCreations, 0);
   }
@@ -1353,7 +1353,7 @@ test("invalid --schema identifies its inline or resolved file source before crea
         assert.equal(exitCode, 2);
         assert.equal(created, false);
         assert.equal(stdout.text(), "");
-        assert.ok(stderr.text().startsWith(`--schema from ${source}:`), stderr.text());
+        assert.ok(stderr.text().startsWith(`No run was started and nothing was recorded. --schema from ${source}:`), stderr.text());
         assert.ok(stderr.text().includes(`at ${location}:`), stderr.text());
         assert.match(stderr.text(), remedy);
         assert.equal(stderr.text().split("\n").length, 2);
@@ -1398,7 +1398,7 @@ test("ensemble agent names an invalid --engine value without repeating the flag"
 
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
-  assert.equal(stderr.text(), "--engine must be codex, claude, or opencode; got nope\n");
+  assert.equal(stderr.text(), "No run was started and nothing was recorded. --engine must be codex, claude, or opencode; got nope\n");
   // The flag name must not be doubled, nor the separator a comma:
   // "--engine engine must be codex, claude, or opencode, got nope".
   assert.doesNotMatch(stderr.text(), /--engine engine must be codex, claude, or opencode, got nope/);
@@ -1450,7 +1450,7 @@ test("CLI renders named value mistakes in the must-be-got register without usage
     });
 
     assert.equal(exitCode, 2);
-    assert.equal(stderr.text(), entry.stderr);
+    assert.equal(stderr.text(), `No run was started and nothing was recorded. ${entry.stderr}`);
     assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
   }
 });
@@ -1491,7 +1491,7 @@ test("ensemble agent rejects misplaced tuning flags, duplicate scalar flags, and
 
     assert.equal(exitCode, 2);
     assert.equal(stdout.text(), "");
-    assert.equal(stderr.text(), `${entry.diagnostic}\n`);
+    assert.equal(stderr.text(), `No run was started and nothing was recorded. ${entry.diagnostic}\n`);
     assert.equal(runtimeCreations, 0);
   }
 });
@@ -1548,7 +1548,7 @@ test("a boolean agent flag is scanned by its declared type, not a literal", asyn
   );
 
   assert.equal(exitCode, 2);
-  assert.equal(stderr.text(), "ensemble: Tuning flag --timeout appears after the agent prompt; put tuning flags before the prompt\n");
+  assert.equal(stderr.text(), "No run was started and nothing was recorded. ensemble: Tuning flag --timeout appears after the agent prompt; put tuning flags before the prompt\n");
 });
 
 test("workflow invocation rejects duplicate scalar tuning flags before runtime creation", async () => {
@@ -1567,7 +1567,7 @@ test("workflow invocation rejects duplicate scalar tuning flags before runtime c
 
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
-  assert.equal(stderr.text(), "Option --agent-ceiling may only be specified once\n");
+  assert.equal(stderr.text(), "No run was started and nothing was recorded. Option --agent-ceiling may only be specified once\n");
   assert.equal(runtimeCreations, 0);
 });
 
@@ -1680,7 +1680,7 @@ test("CLI reports a rejected option as exactly one line, exit 2", async () => {
   // The whole rejection surface: the named diagnostic alone. Usage belongs
   // to the invocation that named no work at all (the bin entrypoint test),
   // never to an option mistake, where it buries the actionable line.
-  assert.equal(stderr.text(), "ensemble: Unknown option before script path: --unknown\n");
+  assert.equal(stderr.text(), "No run was started and nothing was recorded. ensemble: Unknown option before script path: --unknown\n");
 });
 
 test("CLI rejects empty caller identities as usage errors before starting a run", async () => {
@@ -2573,7 +2573,7 @@ test("usage names the program as the caller invoked it and keeps every line with
       await runEnsembleCli(["agent", "prompt"], { stdin: Readable.from([]), stdout: new CaptureStream(), stderr: agentErr, programName }),
       2
     );
-    assert.equal(agentErr.text(), `${programName} agent requires --engine\n`);
+    assert.equal(agentErr.text(), `No run was started and nothing was recorded. ${programName} agent requires --engine\n`);
   }
 });
 
@@ -2630,7 +2630,7 @@ test("blank prompt refusals name the absolute launcher from another directory", 
       });
       assert.equal(result.status, 2);
       assert.equal(result.stdout, "");
-      assert.equal(result.stderr, `node ${launcher} agent requires a prompt argument or a non-empty prompt on stdin\n`);
+      assert.equal(result.stderr, `No run was started and nothing was recorded. node ${launcher} agent requires a prompt argument or a non-empty prompt on stdin\n`);
     }
   }
 });
@@ -2657,7 +2657,7 @@ test("unknown options name the invoked launcher path for agent and workflow runs
         assert.equal(result.stdout, "");
         assert.equal(result.stderr.trimEnd().split("\n").length, 1, result.stderr);
         const command = programNameFor(script);
-        assert.ok(result.stderr.startsWith(`${command}${argv[0] === "agent" ? " agent" : ""}: Unknown option`), result.stderr);
+        assert.ok(result.stderr.startsWith(`No run was started and nothing was recorded. ${command}${argv[0] === "agent" ? " agent" : ""}: Unknown option`), result.stderr);
         assert.ok(result.stderr.includes(argv.find((arg) => arg.startsWith("--modle") || arg === "--unknown")!), result.stderr);
         if (argv.some((arg) => arg.startsWith("--modle"))) {
           assert.match(result.stderr, /Did you mean "--model"\?/);
@@ -2682,7 +2682,7 @@ test("unknown agent option hints round-trip the complete prompt through a POSIX 
     });
     assert.equal(result.status, 2);
     assert.equal(result.stdout, "");
-    const prefix = `node ${launcher} agent: Unknown option ${JSON.stringify(prompt)}. For a dash-leading prompt, put it after --, as in: `;
+    const prefix = `No run was started and nothing was recorded. node ${launcher} agent: Unknown option ${JSON.stringify(prompt)}. For a dash-leading prompt, put it after --, as in: `;
     assert.ok(result.stderr.startsWith(prefix), result.stderr);
     const example = result.stderr.slice(prefix.length).replace(/\n$/, "");
     const pasted = spawnSync("/bin/sh", ["-c", `set -- ${example}; printf '%s\\0' "$@"`], {
@@ -2726,7 +2726,7 @@ test("CLI entrypoint keeps every exit-2 path on stderr", () => {
     if (argv[0] === "workflows") {
       assert.equal(result.stderr.replace(/\s+/g, " ").trim(), stderr.trim(), argv.join(" "));
     } else {
-      assert.equal(result.stderr, stderr, argv.join(" "));
+      assert.equal(result.stderr, argv[0] === "holds" ? stderr : `No run was started and nothing was recorded. ${stderr}`, argv.join(" "));
     }
   }
 });
@@ -3579,7 +3579,7 @@ test("a missing workflow script path is a rejected invocation: exit 2, one clean
   // check would let a builder extend this surface with noisy output unseen.
   assert.equal(
     stderr.text(),
-    `WorkflowScriptReadError: Could not read workflow script ${missing}: no file exists at this path\n`
+    `No run was started and nothing was recorded. WorkflowScriptReadError: Could not read workflow script ${missing}: no file exists at this path\n`
   );
   await assert.rejects(access(runRecordDir), "a rejected invocation writes no archive");
 });
@@ -3605,7 +3605,7 @@ test("a direct agent whose --cwd is missing is rejected the same way, before any
 
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
-  assert.equal(stderr.text(), `ensemble agent: --cwd must name an existing directory; got ${missingCwd}; choose an existing directory or omit --cwd\n`);
+  assert.equal(stderr.text(), `No run was started and nothing was recorded. ensemble agent: --cwd must name an existing directory; got ${missingCwd}; choose an existing directory or omit --cwd\n`);
   assert.equal(engine.attempts, 0);
   await assert.rejects(access(runRecordDir), "a rejected invocation writes no archive");
 });
@@ -4862,7 +4862,7 @@ test("common invocation mistakes give a one-line repair using the invoked launch
         createRuntime: async () => { assert.fail("rejected invocation created a runtime"); }
       }), 2, stderr.text());
       assert.equal(stdout.text(), "");
-      assert.ok(stderr.text().startsWith(program), stderr.text());
+      assert.ok(stderr.text().startsWith(`No run was started and nothing was recorded. ${program}`), stderr.text());
       assert.match(stderr.text(), hint);
       assert.equal(stderr.text().trimEnd().split("\n").length, 1, stderr.text());
       if (argv[0] === "run") assert.ok(stderr.text().includes(`${program} [run options] <script.js>`));
@@ -4931,7 +4931,7 @@ test("built launcher refusal repairs preserve the invoked symlink path", async (
       });
       assert.equal(result.status, 2, result.stderr);
       assert.equal(result.stdout, "");
-      assert.ok(result.stderr.startsWith(programNameFor(invoked)), result.stderr);
+      assert.ok(result.stderr.startsWith(`No run was started and nothing was recorded. ${programNameFor(invoked)}`), result.stderr);
       assert.match(result.stderr, hint);
       assert.equal(result.stderr.trimEnd().split("\n").length, 1, result.stderr);
     }
@@ -4951,6 +4951,6 @@ test("misplaced --lean and run-level --model give complete launcher-specific ref
       createRuntime: async () => { throw new Error("no runtime should start"); }
     }), 2);
     assert.equal(stdout.text(), "");
-    assert.equal(stderr.text(), `${diagnostic}\n`);
+    assert.equal(stderr.text(), `No run was started and nothing was recorded. ${diagnostic}\n`);
   }
 });

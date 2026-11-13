@@ -302,7 +302,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // one failure: an invocation that named no work at all (below). An
     // ambient-configuration failure takes the same clean surface through
     // the shared operator seam — the stack behind it is harness interior.
-    stderr.write(`${presentOperationalError(error) ?? formatError(error)}\n`);
+    stderr.write(`No run was started and nothing was recorded. ${presentOperationalError(error) ?? formatError(error)}\n`);
     return 2;
   }
 
@@ -331,7 +331,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     prepared = await prepareRun(invocation, cwd, program);
     await judgeResources(launcherResourceRequirements(configuredRecordDir, options.runRecordDir !== undefined, ambientSettings, env), env);
   } catch (error) {
-    stderr.write(`${presentOperationalError(error) ?? formatError(error)}\n`);
+    stderr.write(`No run was started and nothing was recorded. ${presentOperationalError(error) ?? formatError(error)}\n`);
     return 2;
   }
 

@@ -111,14 +111,14 @@ if (found === null) throw new Error("the finder failed");
 
 phase("Verify");
 const verdicts = await parallel(
-  found.bugs.map((bug) => () =>
+  found.bugs.map((bug, index) => () =>
     agent(
       `In ${file} at line ${bug.line}, someone claims: "${bug.claim}". ` +
         `Read the code and decide whether this is a real bug.`,
       {
         engine: "claude",
         model: "opus",
-        label: `line ${bug.line}`,
+        label: `finding ${index + 1}, line ${bug.line}`,
         schema: {
           type: "object",
           required: ["real", "reason"],

@@ -191,6 +191,7 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
 
   #options: CodexAppServerTransportOptions;
   #transportPromise: Promise<CodexAppServerTransport> | undefined;
+  #startupCancellation = new AbortController();
   #closed = false;
   #terminationListeners = new Set<(error: Error) => void>();
   #terminationError: Error | undefined;
@@ -230,6 +231,9 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
     // close must fail, not spawn a fresh app-server nothing will ever stop.
     this.#closed = true;
     this.#terminationListeners.clear();
+    // Startup owns a live child before its promise resolves. Cancel its
+    // handshake now so closing never waits for the startup deadline first.
+    this.#startupCancellation.abort(new AppServerExitedError("codex app-server transport is closed"));
     if (this.#transportPromise === undefined) {
       return;
     }
@@ -249,7 +253,7 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
     if (this.#closed) {
       return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
     }
-    this.#transportPromise ??= CodexAppServerTransport.start(this.#options).then((transport) => {
+    this.#transportPromise ??= CodexAppServerTransport.start(this.#options, this.#startupCancellation.signal).then((transport) => {
       transport.onTermination((error) => this.#noteTermination(error));
       return transport;
     }).catch((error: unknown) => {
@@ -343,8 +347,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
     });
   }
 
-  static async start(options: CodexAppServerTransportOptions): Promise<CodexAppServerTransport> {
+  static async start(options: CodexAppServerTransportOptions, signal?: AbortSignal): Promise<CodexAppServerTransport> {
+    signal?.throwIfAborted();
     const transport = new CodexAppServerTransport(options);
+    const cancelStartup = (): void => {
+      transport.#failAll(new AppServerExitedError("codex app-server startup cancelled"));
+    };
+    signal?.addEventListener("abort", cancelStartup, { once: true });
     try {
       if (transport.#process.pid !== undefined && options.scopes !== undefined) {
         const pid = transport.#process.pid;
@@ -357,10 +366,15 @@ export class CodexAppServerTransport implements RuntimeTransport {
           });
         }
       }
+      // Cancellation can arrive during placement, before any request exists
+      // to reject. Do not start the handshake after that cancellation.
+      signal?.throwIfAborted();
       await transport.#handshake(options.clientName, options.clientVersion);
     } catch (error) {
       await transport.close();
       throw error;
+    } finally {
+      signal?.removeEventListener("abort", cancelStartup);
     }
     return transport;
   }

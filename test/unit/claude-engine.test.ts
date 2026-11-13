@@ -497,47 +497,233 @@ test("Claude adapter close stops an active session and winds down its poll loop"
   });
 });
 
-test("an initial-dispatch interruption retains transcript evidence before teardown", async () => {
-  let releaseDispatch: (() => void) | undefined;
-  const dispatchReleased = new Promise<void>((resolve) => {
-    releaseDispatch = resolve;
-  });
-  let dispatchArrived: (() => void) | undefined;
-  const dispatchArrivedPromise = new Promise<void>((resolve) => {
-    dispatchArrived = resolve;
-  });
+for (const launchCancelled of [false, true]) {
+  test(`initial-dispatch interruption retains transcript evidence with launchCancelled=${launchCancelled}`, async () => {
+    let releaseDispatch: (() => void) | undefined;
+    const dispatchReleased = new Promise<void>((resolve) => {
+      releaseDispatch = resolve;
+    });
+    let dispatchArrived: (() => void) | undefined;
+    const dispatchArrivedPromise = new Promise<void>((resolve) => {
+      dispatchArrived = resolve;
+    });
 
-  await withControlPlane(
-    [{ busyPolls: Number.MAX_SAFE_INTEGER, assistant: { text: "raced evidence", stop: "tool_use", model: "claude-raced" } }],
-    async (controlPlane) => {
+    await withControlPlane(
+      [{ busyPolls: Number.MAX_SAFE_INTEGER, assistant: { text: "raced evidence", stop: "tool_use", model: "claude-raced" } }],
+      async (controlPlane) => {
+        if (launchCancelled) {
+          const dispatch = controlPlane.dispatch.bind(controlPlane);
+          controlPlane.dispatch = async options => {
+            const handle = await dispatch(options);
+            handle.launchFailure = { message: "opening cancelled", diagnostics: { claudeLaunch: { failure: "opening cancelled" } } };
+            return handle;
+          };
+        }
+        const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+        const invocation = adapter.createInvocation("keep working", {});
+        const attempt = invocation.runAttempt({ attempt: 1 });
+        await dispatchArrivedPromise;
+
+        const close = adapter.close();
+        let closeCompleted = false;
+        void close.then(() => {
+          closeCompleted = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const closeCompletedBeforeDispatchReleased = closeCompleted;
+        releaseDispatch?.();
+        await close;
+
+        await assert.rejects(attempt, (error: unknown) => {
+          assert.ok(error instanceof EngineShutdownError);
+          assert.equal(partialWorkerTextOf(error), "raced evidence");
+          assert.equal(failedTurnResultOf(error)?.text, "raced evidence");
+          assert.equal(failedTurnResultOf(error)?.resolvedModel, "claude-raced");
+          assert.equal(failedTurnResultOf(error)?.transcripts?.length, 1);
+          if (launchCancelled) assert.deepEqual(failedTurnResultOf(error)?.diagnostics?.claudeLaunch, { failure: "opening cancelled" });
+          return true;
+        });
+        assert.equal(closeCompletedBeforeDispatchReleased, false, "close must wait for the in-flight dispatch and its teardown");
+        assert.equal(controlPlane.stopCount, 1);
+      },
+      { dispatchGate: { arrived: () => dispatchArrived?.(), release: dispatchReleased } }
+    );
+  });
+}
+
+for (const answer of ["text", "schema", "invalid-schema"] as const) {
+  test(`SIGINT validates a Claude ${answer} final written during its roster poll`, async () => {
+    await withControlPlane([{ assistant: { text: "working", stop: "tool_use" } }], async (controlPlane) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "ensemble-claude-final-interrupt-"));
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let closeStarted!: () => void;
+      const plane: ClaudeControlPlane = controlPlane;
+      const polling = new Promise<ClaudeSessionHandle>((resolve) => {
+        plane.poll = async (handle: ClaudeSessionHandle) => {
+          resolve(handle);
+          await gate;
+          return { status: "busy", state: "working", present: true };
+        };
+      });
       const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
-      const invocation = adapter.createInvocation("keep working", {});
+      const close = adapter.close.bind(adapter);
+      const closing = new Promise<void>((resolve) => { closeStarted = resolve; });
+      adapter.close = () => { const result = close(); closeStarted(); return result; };
+      let runtime!: EnsembleRuntime;
+      try {
+        const script = path.join(directory, "workflow.js");
+        const schema = answer === "text" ? {} : { schema: okSchema };
+        await writeFile(script, `export const meta = { name: "final-interrupt" }; await agent("work", ${JSON.stringify({ engine: "claude", ...schema })});`);
+        const stdout = new PassThrough();
+        const stderr = new PassThrough();
+        let output = "";
+        let diagnostics = "";
+        stdout.on("data", (chunk) => { output += String(chunk); });
+        stderr.on("data", (chunk) => { diagnostics += String(chunk); });
+        const run = runEnsembleCli([script], {
+          cwd: directory, stdout, stderr,
+          env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
+          runRecordDir: path.join(directory, "records"),
+          createRuntime: async () => (runtime = new EnsembleRuntime({ engines: new EngineRegistry([adapter]), defaultMaxAttempts: 1 }))
+        });
+        const handle = await Promise.race([polling, run.then(() => { throw new Error(diagnostics); })]);
+        const transcript = await plane.transcriptPath(handle);
+        assert.ok(transcript);
+        const text = answer === "text" ? "RACE-COMPLETE" : answer === "schema" ? '{"ok":true}' : '{"ok":"wrong"}';
+        const accepted = answer !== "invalid-schema";
+        await appendFile(transcript, assistantLine({ text, model: "claude-raced", input: 11, output: 7 }) + "\n");
+        process.emit("SIGINT");
+        await closing;
+        release();
+        assert.equal(await run, 130, diagnostics);
+        const completed = JSON.parse(output).completed;
+        assert.equal(completed.length, accepted ? 1 : 0);
+        if (accepted) assert.deepEqual(completed[0].output, answer === "text" ? text : { ok: true });
+        assert.deepEqual(runtime.shutdownTally(), { done: Number(accepted), failed: Number(!accepted), cutShort: 0, unsettled: 0 });
+        const archive = JSON.parse(diagnostics.match(/\[run-record-archive\] (.+)/)![1]!).archive_path as string;
+        const record = JSON.parse(await readFile(path.join(archive, "agents", "000001", "agent.json"), "utf8"));
+        assert.equal(record.status, accepted ? "complete" : "failed");
+        assert.equal(record.termination_cause, null);
+        assert.equal(record.attempts.length, 1);
+        assert.equal(record.attempts[0].failure?.kind ?? null, accepted ? null : "schema-validation");
+        assert.equal(record.attempts[0].raw_output, text);
+        assert.equal(record.attempts[0].resolved_model, "claude-raced");
+        assert.equal(record.usage.summary.totalTokens, 18);
+        const sentinelPath = diagnostics.match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+        assert.ok(sentinelPath);
+        const sentinel = JSON.parse(await readFile(sentinelPath, "utf8"));
+        assert.deepEqual(sentinel.workers, { done: Number(accepted), failed: Number(!accepted), cut_short: 0, unsettled: 0 });
+        assert.equal(controlPlane.stopCount, 1);
+      } finally {
+        release();
+        await adapter.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+  });
+}
+
+for (const receipt of ["verified", "missing", "differing"] as const) {
+  test(`a final racing dispatch shutdown needs a ${receipt} opening receipt`, async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let arrived!: () => void;
+    const dispatched = new Promise<void>((resolve) => { arrived = resolve; });
+    await withControlPlane([{ assistant: { text: "RACE-COMPLETE" } }], async (controlPlane) => {
+      const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+      const invocation = adapter.createInvocation("work", {});
       const attempt = invocation.runAttempt({ attempt: 1 });
-      await dispatchArrivedPromise;
-
-      const close = adapter.close();
-      let closeCompleted = false;
-      void close.then(() => {
-        closeCompleted = true;
-      });
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      const closeCompletedBeforeDispatchReleased = closeCompleted;
-      releaseDispatch?.();
-      await close;
-
-      await assert.rejects(attempt, (error: unknown) => {
-        assert.ok(error instanceof EngineShutdownError);
-        assert.equal(partialWorkerTextOf(error), "raced evidence");
-        assert.equal(failedTurnResultOf(error)?.text, "raced evidence");
-        assert.equal(failedTurnResultOf(error)?.resolvedModel, "claude-raced");
-        return true;
-      });
-      assert.equal(closeCompletedBeforeDispatchReleased, false, "close must wait for the in-flight dispatch and its teardown");
+      await dispatched;
+      const closing = adapter.close();
+      release();
+      await closing;
+      if (receipt === "verified") {
+        assert.equal((await attempt).text, "RACE-COMPLETE");
+      } else {
+        await assert.rejects(attempt, EngineShutdownError);
+      }
       assert.equal(controlPlane.stopCount, 1);
-    },
-    { dispatchGate: { arrived: () => dispatchArrived?.(), release: dispatchReleased } }
-  );
-});
+    }, {
+      openingArrival: sent => receipt === "verified" ? sent : receipt === "missing" ? null : "different task",
+      dispatchGate: { arrived, release: gate }
+    });
+  });
+}
+
+for (const shape of ["tool-use", "unterminated", "thinking", "background", "synthetic"] as const) {
+  test(`shutdown never promotes a Claude ${shape} reply to success`, async () => {
+    await withControlPlane([{ assistant: { text: "working", stop: "tool_use" } }], async (controlPlane) => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const plane: ClaudeControlPlane = controlPlane;
+      const polling = new Promise<ClaudeSessionHandle>((resolve) => {
+        plane.poll = async (handle: ClaudeSessionHandle) => {
+          resolve(handle);
+          await gate;
+          return { status: "busy", state: "working", present: true };
+        };
+      });
+      const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+      const attempt = adapter.createInvocation("work", {}).runAttempt({ attempt: 1 });
+      const handle = await polling;
+      const transcript = await plane.transcriptPath(handle);
+      assert.ok(transcript);
+      const rows = shape === "background" ? [
+        JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "bg", name: "Bash", input: { command: "sleep 60", run_in_background: true } }], stop_reason: "tool_use" } }),
+        JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "bg", content: "Command running in background with ID: pending" }] } })
+      ] : [];
+      rows.push(assistantLine({
+        ...(shape === "thinking" ? {} : { text: "not a final answer" }),
+        stop: shape === "tool-use" ? "tool_use" : shape === "unterminated" ? null : "end_turn",
+        ...(shape === "synthetic" ? { model: "<synthetic>" } : {})
+      }));
+      await appendFile(transcript, rows.join("\n") + "\n");
+      const closing = adapter.close();
+      release();
+      await closing;
+      await assert.rejects(attempt, EngineShutdownError);
+      assert.equal(controlPlane.stopCount, 1);
+    });
+  });
+}
+
+for (const finished of [true, false]) {
+  test(`shutdown collects only the current held Claude turn when finished=${finished}`, async () => {
+    await withControlPlane([
+      { assistant: { text: "earlier answer" } },
+      { assistant: { text: "current partial", stop: "tool_use" } }
+    ], async (controlPlane) => {
+      const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+      const session = adapter.createSession({});
+      assert.equal((await session.beginTurn("first", {}).runAttempt({ attempt: 1 })).text, "earlier answer");
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const plane: ClaudeControlPlane = controlPlane;
+      const nativePoll = controlPlane.poll.bind(controlPlane);
+      const polling = new Promise<ClaudeSessionHandle>((resolve) => {
+        plane.poll = async (handle: ClaudeSessionHandle) => {
+          if (controlPlane.steerCount === 0) return nativePoll();
+          resolve(handle);
+          await gate;
+          return { status: "busy", state: "working", present: true };
+        };
+      });
+      const attempt = session.beginTurn("second", {}).runAttempt({ attempt: 1 });
+      const handle = await polling;
+      const transcript = await plane.transcriptPath(handle);
+      assert.ok(transcript);
+      if (finished) await appendFile(transcript, assistantLine({ text: "current answer" }) + "\n");
+      const closing = adapter.close();
+      release();
+      await closing;
+      if (finished) assert.equal((await attempt).text, "current answer");
+      else await assert.rejects(attempt, EngineShutdownError);
+      assert.equal(controlPlane.dispatchCount, 1);
+      assert.equal(controlPlane.steerCount, 1);
+    });
+  });
+}
 
 test("SIGTERM during Claude dispatch stops the worker before scopes close and seals the run", async () => {
   let releaseDispatch!: () => void;
@@ -2282,6 +2468,65 @@ test("a turn ending while a background task is outstanding is not collected; the
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+for (const shape of ["slow", "workflow"] as const) {
+  test(`shutdown closes a native ${shape} wait when its final arrives during the poll`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-shutdown-wait-"));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let runtime: EnsembleRuntime | undefined;
+    try {
+      const plane = new BackgroundTaskControlPlane(dir, { shape, wakeAtPoll: 1 });
+      const poll = plane.poll.bind(plane);
+      let finalLanded!: () => void;
+      const ready = new Promise<void>((resolve) => { finalLanded = resolve; });
+      plane.poll = async () => {
+        const status = await poll();
+        if (plane.pollCount === 3) {
+          finalLanded();
+          await gate;
+        }
+        return status;
+      };
+      const adapter = new ClaudeEngineAdapter({ controlPlane: plane, config: fastConfig });
+      const close = adapter.close.bind(adapter);
+      let closeStarted!: () => void;
+      const closing = new Promise<void>((resolve) => { closeStarted = resolve; });
+      adapter.close = () => { const result = close(); closeStarted(); return result; };
+      runtime = new EnsembleRuntime({ engines: new EngineRegistry([adapter]), defaultMaxAttempts: 1 });
+      const writer = await RunRecordWriter.start({
+        storeDir: path.join(dir, "records"), cwd: dir, runUuid: "shutdown-wait",
+        workflowPath: path.join(dir, "workflow.js"), workflowSource: "return true;", args: [], cliFlags: { jsonArgs: false }
+      });
+      runtime.setRunRecorder(writer);
+      const agent = runtime.agent("wait then answer", { engine: "claude" });
+      await ready;
+      const waiting = runtime.progress.snapshot().agents[0]?.waitingOn;
+      assert.ok(waiting?.kind === "background-task");
+      assert.equal(waiting.taskId, "bya9z1l44");
+      const ending = runtime.close("interrupted");
+      await closing;
+      release();
+      await ending;
+      assert.equal(await agent, '{"ok":true}');
+      const record = runtime.lastAgentRecord();
+      assert.equal(record?.status, "complete");
+      assert.equal(record?.attempts[0]?.backgroundWaits.length, 1);
+      assert.ok(record?.attempts[0]?.backgroundWaits[0]?.endedAt, "the recovered final closes the existing wait");
+      assert.deepEqual(runtime.shutdownTally(), { done: 1, failed: 0, cutShort: 0, unsettled: 0 });
+      await writer.finish({ status: "interrupted", exitCode: 130, result: null });
+      const archived = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+      assert.equal(archived.status, "complete");
+      assert.equal(archived.attempts[0].background_waits.length, 1);
+      assert.equal(archived.attempts[0].background_waits[0].task_id, "bya9z1l44");
+      assert.ok(archived.attempts[0].background_waits[0].ended_at);
+    } finally {
+      release();
+      await runtime?.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 for (const shape of ["workflow", "workflow-short"] as const) {
   test(`native ${shape} waits for the reply after delivery and archives background_waits`, async () => {

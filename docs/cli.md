@@ -291,6 +291,13 @@ settled during teardown on any engine. The envelope is printed after worker
 teardown. `error` is the same `{ kind, message }` the run record and sentinel
 carry for what ended the run.
 
+For Claude, teardown reads the native transcript before stopping the worker.
+A terminal text reply with no outstanding background tasks is collected if
+its prompt receipt is verified, even when cancellation reached the runtime
+before its next poll. The reply still goes through normal output and schema
+validation. An unfinished reply, an unverified delivery or a client diagnostic
+does not count as a successful worker.
+
 ## Exit codes
 
 | Code | Meaning |

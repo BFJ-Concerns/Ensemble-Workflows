@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import type { RuntimeEvent } from "../../src/types.js";
 import { SystemdWorkerScopes, createWorkerScopes, type WorkerScopes } from "../../src/worker-scopes.js";
 import assert from "node:assert/strict";
@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { Socket } from "node:net";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { CodexAppServerTransport, LazyCodexAppServerTransport, appServerErrorFromPayload } from "../../src/app-server.js";
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
@@ -134,7 +135,7 @@ test("an observed app-server exit remains the cause of a later thread-open refus
   }
 });
 
-test("a terminal Codex transport stops adjusting its pipe references", async (t) => {
+test("an exited Codex server receives no pipe-reference adjustments", async (t) => {
   const codexBin = await fakeCodexFailingTurnServer("exit-mid-turn");
   const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
   let terminated = false;
@@ -155,6 +156,33 @@ test("a terminal Codex transport stops adjusting its pipe references", async (t)
       "settling a dead server's requests and turns must leave its pipes alone");
   } finally {
     await transport.close();
+    await rm(path.dirname(codexBin), { recursive: true, force: true });
+  }
+});
+
+test("a live Codex child with closed stdout does not retain the event loop after turn failure", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("close-stdout-mid-turn");
+  try {
+    const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { CodexAppServerTransport } from ${JSON.stringify(new URL("../../src/app-server.js", import.meta.url).href)};
+      import { AppServerExitedError, workerExitStatusOf } from ${JSON.stringify(new URL("../../src/errors.js", import.meta.url).href)};
+      void (async () => {
+      const transport = await CodexAppServerTransport.start(${JSON.stringify(defaultTransportOptions(codexBin))});
+      const thread = await transport.openThread({});
+      await assert.rejects(transport.runTurn(thread, "close stdout", {}), error => {
+        assert.ok(error instanceof AppServerExitedError);
+        assert.equal(workerExitStatusOf(error), null, "the child has not exited");
+        return true;
+      });
+      process.once("beforeExit", () => {
+        void transport.close().then(() => console.log("idle transport cleanup complete"));
+      });
+      await new Promise(() => {});
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `], { timeout: 10_000 });
+    assert.match(stdout, /idle transport cleanup complete/);
+  } finally {
     await rm(path.dirname(codexBin), { recursive: true, force: true });
   }
 });
@@ -1935,6 +1963,7 @@ async function fakeCodexFailingTurnServer(
     | "system-error-then-delayed-schema-error"
     | "system-error-then-late-error"
     | "exit-mid-turn"
+    | "close-stdout-mid-turn"
     | "held-loss-before-ack"
     | "held-loss-after-ack"
     | "held-loss-after-notification"
@@ -2098,6 +2127,11 @@ reader.on("line", (line) => {
         send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "the delayed whole answer" } } });
         send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
       }, 450);
+      return;
+    }
+    if (mode === "close-stdout-mid-turn") {
+      // The stdin reader keeps the child alive after its output pipe closes.
+      process.stdout.end();
       return;
     }
     if (mode === "exit-mid-turn") {

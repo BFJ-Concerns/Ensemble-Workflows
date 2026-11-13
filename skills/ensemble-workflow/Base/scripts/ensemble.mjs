@@ -19569,11 +19569,12 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   }
   /** Idle server state cannot settle a script; only a request or turn can. */
   #updateLiveness() {
-    if (this.#hasExited) return;
+    if (this.#exitStatus !== null) return;
     const referenced = this.#pending.size > 0 || this.#turns.size > 0;
     if (referenced) this.#process.ref();
     else this.#process.unref();
     for (const pipe of [this.#process.stdin, this.#process.stdout, this.#process.stderr]) {
+      if (pipe.destroyed) continue;
       if (referenced) pipe.ref();
       else pipe.unref();
     }

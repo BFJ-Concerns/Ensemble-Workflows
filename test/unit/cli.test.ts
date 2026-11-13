@@ -23,6 +23,8 @@ import { TokenBudget } from "../../src/budget.js";
 import { isStatusFileName } from "../../src/status-file.js";
 import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
+import type { ProgressSnapshot } from "../../src/progress.js";
+
 import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
 import type { Budget, EngineName, RuntimeEvent, RuntimeOptions, TurnResult } from "../../src/types.js";
 
@@ -4966,6 +4968,63 @@ test("misplaced --lean and run-level --model give complete launcher-specific ref
   }
 });
 
+
+for (const [ending, withHold] of [
+  ["interrupt", false], ["interrupt", true], ["timeout", false], ["timeout", true]
+] as const) {
+  test(`${ending} publishes finished status after ${withHold ? "holds and " : ""}admitted workers settle`, async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-status-settlement-"));
+    const script = path.join(directory, "workflow.js");
+    const snapshots: ProgressSnapshot[] = [];
+    let interrupted = false;
+    let unsubscribe = () => {};
+    const stderr = new CaptureStream();
+    try {
+      await writeFile(script, `export const meta = { name: "status-settlement" };
+        agent("hang", { engine: "codex", model: "requested" });
+        agent("hang", { engine: "codex", model: "requested" });
+        ${withHold ? 'await hold({ content: "Continue?", verdicts: ["yes"] });' : 'await new Promise(() => {});'}`);
+      const code = await runEnsembleCli(["--agent-ceiling=1", ...(ending === "timeout" ? ["--timeout=150"] : []), script], {
+        cwd: directory, stdout: new CaptureStream(), stderr, runRecordDir: null,
+        statusDir: path.join(directory, "status"),
+        env: { XDG_CONFIG_HOME: path.join(directory, "config"), XDG_DATA_HOME: path.join(directory, "data") },
+        createRuntime: async (options) => {
+          const runtime = new EnsembleRuntime({
+            ...options,
+            engines: new EngineRegistry([new HangOnPromptEngine("codex", 2, () => {
+              if (!withHold && ending === "interrupt") process.emit("SIGINT");
+            })]),
+            defaultMaxAttempts: 1,
+            holdsDir: path.join(directory, "holds"), holdPollIntervalMs: 5
+          });
+          unsubscribe = runtime.progress.onChange(() => {
+            const snapshot = runtime.progress.snapshot();
+            snapshots.push(snapshot);
+            if (withHold && ending === "interrupt" && !interrupted && snapshot.holds.length > 0 && snapshot.totals.active > 0) {
+              interrupted = true;
+              process.emit("SIGINT");
+            }
+          });
+          return runtime;
+        }
+      });
+      assert.equal(code, ending === "interrupt" ? 130 : 1, stderr.text());
+      assert.deepEqual((await enumerateHolds(path.join(directory, "holds"))).holds, []);
+      assert.ok(snapshots.some((s) => (!withHold || s.holds.length > 0) && s.totals.active > 0));
+      const finished = snapshots.filter((s) => s.state === "finished");
+      assert.ok(finished.length > 0);
+      for (const snapshot of finished) {
+        assert.deepEqual(snapshot.holds, []);
+        assert.equal(snapshot.totals.active, 0);
+        assert.equal(snapshot.totals.queued, 0);
+        assert.equal(snapshot.agentCeiling.active, 0);
+      }
+    } finally {
+      unsubscribe();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
 
 test("CLI explains an explicit relative status path against its calling cwd", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-relative-status-"));

@@ -54,9 +54,9 @@ parent.once('exit', () => {
 const fs = await import('node:fs/promises');
 const pending = agent('fixture', { engine: 'opencode', model: 'fixture', maxAttempts: 1 });
 // An uncaught engine setup failure must reach the driver, rather than hang readiness.
-let early; pending.catch(error => { early = error; });
-for (;;) {
-  if (early) throw early;
+let early, finished = false;
+pending.then(() => { finished = true; }, error => { early = error; finished = true; });
+while (!finished) {
   try {
     await fs.access(${JSON.stringify(ready)});
     const pid = Number((await fs.readFile(${JSON.stringify(marker)}, 'utf8')).trim());
@@ -66,6 +66,7 @@ for (;;) {
   } catch {}
   await new Promise(resolve => setTimeout(resolve, 10));
 }
+if (early) throw early;
 ${ending === "throw" ? "throw new Error('FIXTURE_THROW');" : ending === "timeout" ? "await new Promise(() => {});" : ending === "exit" ? "await pending; return 'finished';" : "return 'body returned';"}
 `);
     const result = await runNode([

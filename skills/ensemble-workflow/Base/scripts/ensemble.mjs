@@ -21203,13 +21203,17 @@ var ClaudeCliControlPlane = class {
         }
         if (dispatch.result !== null) {
           if (!dispatch.result.ok) {
-            const account = launchAccount(dispatch.result);
-            const configDir = claudeConfigDirectory(this.#env, process.cwd());
-            const consentAdvice = /bypassPermissions requires accepting the disclaimer/i.test(
+            const missingConsent = /bypassPermissions requires accepting the disclaimer/i.test(
               dispatch.result.stderr + "\n" + dispatch.result.stdout
-            ) ? `; CLAUDE_CONFIG_DIR=${shellQuote(configDir)} lacks bypass-permissions consent. Run interactively: CLAUDE_CONFIG_DIR=${shellQuote(configDir)} ${shellQuote(this.#claudeBin)} --dangerously-skip-permissions; then retry.` : "";
+            );
+            const account = missingConsent ? `dispatch exit ${dispatch.result.exitCode ?? "unknown"}, signal ${dispatch.result.signal ?? "none"}` : launchAccount(dispatch.result);
+            const configDir = claudeConfigDirectory(this.#env, process.cwd());
+            const consentAdvice = missingConsent ? `; CLAUDE_CONFIG_DIR=${shellQuote(configDir)} lacks bypass-permissions consent. Run interactively: CLAUDE_CONFIG_DIR=${shellQuote(configDir)} ${shellQuote(this.#claudeBin)} --dangerously-skip-permissions; then retry.` : "";
+            const executableAdvice = /Failed to execute|bad interpreter|spawn .*\b(?:ENOENT|EACCES)\b/i.test(
+              dispatch.result.stderr + "\n" + dispatch.result.stdout
+            ) ? `Cannot execute ${shellQuote(await this.#dispatchExecutable(options.cwd))}; check the Claude installation or PATH. ` : "";
             throw new ClaudeDispatchError(
-              `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + account + consentAdvice
+              executableAdvice + `Claude dispatch command failed for worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + account + consentAdvice
             );
           }
           deadline ??= Date.now() + this.#dispatchTimeoutMs;
@@ -21868,6 +21872,19 @@ var ClaudeCliControlPlane = class {
   }
   #run(file, args, signal) {
     return this.#launch(file, args, { input: null, ...signal !== void 0 ? { signal } : {} });
+  }
+  async #dispatchExecutable(cwd) {
+    if (this.#claudeBin.includes(path16.sep)) return path16.resolve(cwd, this.#claudeBin);
+    for (const directory of (this.#env.PATH ?? "/usr/bin:/bin").split(path16.delimiter)) {
+      const candidate = path16.resolve(cwd, directory, this.#claudeBin);
+      try {
+        await access2(candidate);
+        return candidate;
+      } catch (error) {
+        if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT" && error.code !== "ENOTDIR") return candidate;
+      }
+    }
+    return this.#claudeBin;
   }
   /**
    * The one route every control-plane child takes: launched by the scope
@@ -25850,7 +25867,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let phase = options.phase ?? this.progress.snapshot().currentPhase;
     state.inFlight = true;
     try {
-      this.budget.assertCanStart(engine.name, `session turn ${state.turnCount + 1}`);
+      const dispatchContext = [
+        ...options.label !== void 0 ? [`label ${JSON.stringify(options.label)}`] : [],
+        ...phase !== null ? [`phase ${JSON.stringify(phase)}`] : []
+      ];
+      this.budget.assertCanStart(engine.name, `session turn ${state.turnCount + 1}` + (dispatchContext.length > 0 ? ` (${dispatchContext.join(", ")})` : ""));
       const queuedAt = Date.now();
       const agentId = this.progress.queueAgent({
         engine: engine.name,
@@ -34741,7 +34762,7 @@ async function runEnsembleCli(argv, options = {}) {
       }
     });
   } catch (error) {
-    stderr.write(`${presentOperationalError(error) ?? formatError2(error)}
+    stderr.write(`No run was started and nothing was recorded. ${presentOperationalError(error) ?? formatError2(error)}
 `);
     return 2;
   }
@@ -34758,7 +34779,7 @@ async function runEnsembleCli(argv, options = {}) {
     prepared = await prepareRun(invocation, cwd, program);
     await judgeResources(launcherResourceRequirements(configuredRecordDir, options.runRecordDir !== void 0, ambientSettings, env), env);
   } catch (error) {
-    stderr.write(`${presentOperationalError(error) ?? formatError2(error)}
+    stderr.write(`No run was started and nothing was recorded. ${presentOperationalError(error) ?? formatError2(error)}
 `);
     return 2;
   }
@@ -35561,7 +35582,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
       );
     }
   }
-  rejectMisplacedAgentTuningFlags(argv);
+  rejectMisplacedAgentTuningFlags(argv, program);
   rejectDuplicateScalarFlags(argv);
   let parsed;
   try {
@@ -35683,7 +35704,7 @@ function workflowOptionMessage(option, program) {
   const suggestion = known ? name : suggestedOption(option, [.../* @__PURE__ */ new Set([...Object.keys(AGENT_INVOCATION_OPTIONS), ...Object.keys(WORKFLOW_TUNING_OPTIONS)])]);
   const hint = !known && suggestion !== void 0 ? ` Did you mean ${JSON.stringify(suggestion)}?` : "";
   const placement = suggestion !== void 0 && !Object.hasOwn(WORKFLOW_TUNING_OPTIONS, suggestion.slice(2)) ? ` ${suggestion} belongs to ${program} agent; set script models and other worker options in agent() calls.` : "";
-  return `${known ? "Option" : "Unknown option before script path:"} ${option}${hint || placement ? "." : ""}${hint}${placement}`;
+  return `${known ? "Agent option before script path:" : "Unknown option before script path:"} ${option}${hint || placement ? "." : ""}${hint}${placement}`;
 }
 function optionDistance(left, right) {
   let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
@@ -35775,7 +35796,7 @@ function splitTuningFlags(argv, program) {
   }
   return { tuningArgs, scriptArg: void 0, scriptArgs: [] };
 }
-function rejectMisplacedAgentTuningFlags(argv) {
+function rejectMisplacedAgentTuningFlags(argv, program) {
   let promptSeen = false;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -35786,11 +35807,11 @@ function rejectMisplacedAgentTuningFlags(argv) {
       return;
     }
     if (promptSeen && (isKnownOption(value) || isKnownInlineOption(value))) {
-      throw new CliUsageError(`Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
+      throw new CliUsageError(`${program}: Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
     }
     if (promptSeen && (isKnownAgentOption(value) || isKnownInlineAgentOption(value))) {
       throw new CliUsageError(
-        `Flag ${value} appears after the agent prompt; put flags before the prompt, or put \`--\` before a dash-leading prompt`
+        `${program}: Flag ${value} appears after the agent prompt; put flags before the prompt, or put \`--\` before a dash-leading prompt`
       );
     }
     if (isKnownInlineOption(value) || isBooleanAgentFlag(value)) {

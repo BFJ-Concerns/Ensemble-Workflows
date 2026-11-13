@@ -41,17 +41,17 @@ async function fixture() {
   }));
   const env = { ...workerEnv, XDG_CONFIG_HOME: xdg, TMPDIR: root,
     ENSEMBLE_STATUS: "0", ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records") };
-  return { root, workerEnv, env, provider, async close() {
-    let testFailed = false;
+  return { root, workerEnv, env, provider, async close(testFailed = false) {
+    let cleanupFailed = false;
     try {
       // This config directory belongs solely to this test. No operator daemon is stopped.
       await exec("claude", ["daemon", "stop", "--any"], { env: { ...process.env, ...env }, timeout: 15_000 });
     } catch (error) {
-      testFailed = true;
+      cleanupFailed = true;
       throw error;
     } finally {
       await provider.close();
-      await removeTestDirectory(root, testFailed);
+      await removeTestDirectory(root, testFailed || cleanupFailed);
     }
   } };
 }
@@ -60,6 +60,7 @@ test("a stripped Claude worker is offered no agent or skill tool, while unstripp
   { skip, timeout: 600_000 }, async (t) => {
     const f = await fixture();
     const nonces = [randomUUID(), randomUUID(), randomUUID()];
+    let testFailed = false;
     try {
       const workflow = path.join(f.root, "surface.mjs");
       await writeFile(workflow, `export const meta = { name: "claude-strip-boundary" };
@@ -109,7 +110,10 @@ test("a stripped Claude worker is offered no agent or skill tool, while unstripp
           assert.ok(nonces.some(nonce => JSON.stringify(request.body).includes(nonce)), "an unstripped worker triggered a preparation probe");
         }
       }
-    } finally { await f.close(); }
+    } catch (error) {
+      testFailed = true;
+      throw error;
+    } finally { await f.close(testFailed); }
   });
 
 test("a built-in agent tool nobody has classified is denied while unrelated tools stay available",
@@ -124,6 +128,7 @@ test("a built-in agent tool nobody has classified is denied while unrelated tool
       surfaces.push(surface);
       return surface;
     } });
+    let testFailed = false;
     try {
       const prepared = await preparer.prepare({ strip: ["agents"], cwd: f.root, model: "haiku" });
       t.diagnostic(JSON.stringify({ prepared, surfaces }));
@@ -139,5 +144,8 @@ test("a built-in agent tool nobody has classified is denied while unrelated tool
       assert.deepEqual(skills.settingsEnv, {});
       assert.ok(surfaces[3]?.tools.some(tool => tool.name === "advisor"), "skills-only strip removed advisor");
       assert.ok(!surfaces[3]?.tools.some(tool => tool.name === "Skill"));
-    } finally { t.diagnostic(JSON.stringify({ surfaces })); preparer.close(); await plane.close(); await f.close(); }
+    } catch (error) {
+      testFailed = true;
+      throw error;
+    } finally { t.diagnostic(JSON.stringify({ surfaces })); preparer.close(); await plane.close(); await f.close(testFailed); }
   });

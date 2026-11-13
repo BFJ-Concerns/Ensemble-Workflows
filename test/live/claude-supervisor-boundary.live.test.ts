@@ -160,7 +160,7 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     observations.operatorDaemonAfter = operatorAfter;
     observations.operatorTransition = classifySupervisorTransition(operatorDaemon.identity, operatorAfter.identity, operatorDaemon.lifecycle, operatorAfter.lifecycle);
     t.diagnostic(JSON.stringify(observations));
-    await removeTestDirectory(root, testFailed);
+    await removeTestDirectory(root, testFailed || observations.operatorTransition === "unexplained");
     assert.notEqual(observations.operatorTransition, "unexplained", "the operator's daemon changed without a recorded upgrade");
   }
 });
@@ -260,7 +260,7 @@ test("the built launcher re-places an idle held session after respawn without an
     observations.operatorDaemonAfter = operatorAfter;
     observations.operatorTransition = classifySupervisorTransition(operatorDaemon.identity, operatorAfter.identity, operatorDaemon.lifecycle, operatorAfter.lifecycle);
     t.diagnostic(JSON.stringify(observations));
-    await removeTestDirectory(root, testFailed);
+    await removeTestDirectory(root, testFailed || observations.operatorTransition === "unexplained");
     assert.notEqual(observations.operatorTransition, "unexplained", "the operator's daemon changed without a recorded upgrade");
   }
 });

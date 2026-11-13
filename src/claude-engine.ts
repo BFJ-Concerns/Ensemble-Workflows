@@ -491,32 +491,38 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       // teardown, serving every evidence the failed turn can still carry:
       // partial worker text, the served model, the spend the transcript has
       // already proved, and the transcript itself.
-      // The initial-dispatch interruption branch below has already captured
-      // and attached its one evidence read before it tears the new handle
-      // down. Every other failure keeps this existing catch-path read.
-      if (error instanceof Error && this.#handle?.launchFailure !== undefined) {
+      if (error instanceof Error && !(error instanceof EngineShutdownError) && this.#handle?.launchFailure !== undefined) {
         attachFailedTurnResult(error, {
           text: "", deltaText: "", durationMs: null, firstDeltaMs: null, items: {}, tokenUsageEvents: [],
           diagnostics: this.#handle.launchFailure.diagnostics
         });
       }
-      const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
       // Preflight has no collection window. Draining a pending turn does,
       // even if this turn's prompt is still unsent and the pending state
       // has been cleared before its delivery failure reaches this catch.
-      const evidence = error instanceof Error && !preparedInterruption && fromIndex !== null
+      const evidence = error instanceof Error && fromIndex !== null
         ? await this.#tryFailureEvidence(fromIndex, error) : null;
+      if (error instanceof EngineShutdownError && evidence !== null && fromIndex !== null) {
+        const completed = this.#collectAtShutdown(evidence, fromIndex);
+        if (completed !== null) return completed;
+      }
       if (error instanceof Error && evidence !== null && fromIndex !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
       if (this.#lost !== null && !(error instanceof EngineShutdownError)) {
         return this.#lostResult(evidence, fromIndex ?? 0);
       }
-      if (error instanceof EngineShutdownError && evidence !== null) {
+      if (error instanceof EngineShutdownError) {
         // Interruption remains a rejection — it must neither settle as an
         // operational failure nor enter the retry loop — but its record must
         // retain the same fields an already-built failed result would carry.
-        attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
+        const result = failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
+        attachFailedTurnResult(error, this.#withObservedIdentity({
+          ...result,
+          ...(this.#handle?.launchFailure === undefined ? {} : { diagnostics: {
+            ...this.#handle.launchFailure.diagnostics, ...result.diagnostics
+          } })
+        }));
       }
       if (error instanceof ClaudeWorkerError) {
         // Preserve the operational cause and current-turn text on the failed
@@ -608,22 +614,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // no more than that. From here every failure is this session's own.
     const opening: Submission = { message: prompt, mark: 0, what: "the opening prompt", carriesTurn: true };
     this.#accept(opening);
-    if (this.#closed) {
-      // close() is waiting for this in-flight dispatch to settle. The new
-      // session is ours to stop before releasing that wait, but first take
-      // the one best-effort evidence read while its
-      // transcript is still reachable. The prepared result marks this error
-      // as already read, so #runAttempt's catch will not race a second read
-      // against teardown.
-      const error = new EngineShutdownError("claude");
-      const evidence = await this.#tryFailureEvidence(0);
-      if (evidence !== null) {
-        this.#attachWorkerText(error, evidence, 0);
-      }
-      attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
-      await this.#teardown();
-      throw error;
-    }
+    // close() awaits this attempt before tearing the handle down. Its
+    // catch takes one evidence read, including when dispatch returns late.
+    this.#assertOpen();
 
     const transcript = await this.#runToCompletion(handle, 0, observers, opening);
     return this.#buildResult(handle, transcript, 0);
@@ -1070,13 +1063,32 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     }
   }
 
+  /** Collect only a proven answer to this turn from the pre-teardown read. */
+  #collectAtShutdown(evidence: FailureEvidence, fromIndex: number): TurnResult | null {
+    const handle = this.#handle;
+    const entries = evidence.transcript.entries;
+    if (handle === null || !evidence.completed || this.#lost !== null || this.#deliveryFailure !== null ||
+        endsInSyntheticReply(entries, fromIndex)) return null;
+    const pending = this.#pending;
+    if (pending !== null) {
+      // Dispatch or valve delivery can return after close started. Text is
+      // this turn's only if the native receipt proves the submission arrived
+      // as sent, including a recovery nudge still pending at cancellation.
+      if (!pending.answersTurn || submissionReceipt(entries, pending.mark, pending.message).state !== "verified") return null;
+      if (pending.carriesTurn) this.#turn = "verified";
+    }
+    if (this.#turn !== "verified") return null;
+    this.#pending = null;
+    return this.#buildResult(handle, evidence.transcript, fromIndex);
+  }
+
   #firstLifeFailure(handle: ClaudeSessionHandle, message: string): ClaudeWorkerError {
     return handle.launchFailure === undefined
       ? new ClaudeFirstLifeTimeoutError(message)
       : new ClaudeDeliveryError(`${message}; launch cleanup remains unconfirmed: ${handle.launchFailure.message}`);
   }
 
-  #buildResult(handle: ClaudeSessionHandle, transcript: TranscriptFile, fromIndex: number): TurnResult {
+  #buildResult(handle: ClaudeSessionHandle, transcript: Pick<TranscriptFile, "entries" | "text">, fromIndex: number): TurnResult {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
     if (endsInSyntheticReply(entries, fromIndex)) {

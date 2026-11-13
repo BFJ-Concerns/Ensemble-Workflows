@@ -22546,7 +22546,7 @@ var ClaudeEngineInvocation = class {
       }
       return await this.#dispatchAndCollect(previousFailure, context);
     } catch (error) {
-      if (error instanceof Error && this.#handle?.launchFailure !== void 0) {
+      if (error instanceof Error && !(error instanceof EngineShutdownError) && this.#handle?.launchFailure !== void 0) {
         attachFailedTurnResult(error, {
           text: "",
           deltaText: "",
@@ -22557,16 +22557,26 @@ var ClaudeEngineInvocation = class {
           diagnostics: this.#handle.launchFailure.diagnostics
         });
       }
-      const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
-      const evidence = error instanceof Error && !preparedInterruption && fromIndex !== null ? await this.#tryFailureEvidence(fromIndex, error) : null;
+      const evidence = error instanceof Error && fromIndex !== null ? await this.#tryFailureEvidence(fromIndex, error) : null;
+      if (error instanceof EngineShutdownError && evidence !== null && fromIndex !== null) {
+        const completed = this.#collectAtShutdown(evidence, fromIndex);
+        if (completed !== null) return completed;
+      }
       if (error instanceof Error && evidence !== null && fromIndex !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
       if (this.#lost !== null && !(error instanceof EngineShutdownError)) {
         return this.#lostResult(evidence, fromIndex ?? 0);
       }
-      if (error instanceof EngineShutdownError && evidence !== null) {
-        attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
+      if (error instanceof EngineShutdownError) {
+        const result = failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
+        attachFailedTurnResult(error, this.#withObservedIdentity({
+          ...result,
+          ...this.#handle?.launchFailure === void 0 ? {} : { diagnostics: {
+            ...this.#handle.launchFailure.diagnostics,
+            ...result.diagnostics
+          } }
+        }));
       }
       if (error instanceof ClaudeWorkerError) {
         if (this.#multiTurn && !this.#nativeLifeObserved && error instanceof ClaudeFirstLifeTimeoutError) {
@@ -22637,16 +22647,7 @@ var ClaudeEngineInvocation = class {
     this.#handle = handle;
     const opening = { message: prompt, mark: 0, what: "the opening prompt", carriesTurn: true };
     this.#accept(opening);
-    if (this.#closed) {
-      const error = new EngineShutdownError("claude");
-      const evidence = await this.#tryFailureEvidence(0);
-      if (evidence !== null) {
-        this.#attachWorkerText(error, evidence, 0);
-      }
-      attachFailedTurnResult(error, this.#withObservedIdentity(failedTurnResult(error, evidence, this.#failureUsageEvent(evidence))));
-      await this.#teardown();
-      throw error;
-    }
+    this.#assertOpen();
     const transcript = await this.#runToCompletion(handle, 0, observers, opening);
     return this.#buildResult(handle, transcript, 0);
   }
@@ -23006,6 +23007,20 @@ var ClaudeEngineInvocation = class {
     if (this.#closed) {
       throw new EngineShutdownError("claude");
     }
+  }
+  /** Collect only a proven answer to this turn from the pre-teardown read. */
+  #collectAtShutdown(evidence, fromIndex) {
+    const handle = this.#handle;
+    const entries = evidence.transcript.entries;
+    if (handle === null || !evidence.completed || this.#lost !== null || this.#deliveryFailure !== null || endsInSyntheticReply(entries, fromIndex)) return null;
+    const pending = this.#pending;
+    if (pending !== null) {
+      if (!pending.answersTurn || submissionReceipt(entries, pending.mark, pending.message).state !== "verified") return null;
+      if (pending.carriesTurn) this.#turn = "verified";
+    }
+    if (this.#turn !== "verified") return null;
+    this.#pending = null;
+    return this.#buildResult(handle, evidence.transcript, fromIndex);
   }
   #firstLifeFailure(handle, message) {
     return handle.launchFailure === void 0 ? new ClaudeFirstLifeTimeoutError(message) : new ClaudeDeliveryError(`${message}; launch cleanup remains unconfirmed: ${handle.launchFailure.message}`);

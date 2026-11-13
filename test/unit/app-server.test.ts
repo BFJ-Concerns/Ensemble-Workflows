@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { Socket } from "node:net";
 import path from "node:path";
 import test from "node:test";
 
@@ -130,6 +131,31 @@ test("an observed app-server exit remains the cause of a later thread-open refus
     );
   } finally {
     await transport.close();
+  }
+});
+
+test("a terminal Codex transport stops adjusting its pipe references", async (t) => {
+  const codexBin = await fakeCodexFailingTurnServer("exit-mid-turn");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  let terminated = false;
+  let adjustmentsAfterTermination = 0;
+  transport.onTermination(() => { terminated = true; });
+  for (const method of ["ref", "unref"] as const) {
+    const original = Socket.prototype[method];
+    t.mock.method(Socket.prototype, method, function (this: Socket) {
+      if (terminated) adjustmentsAfterTermination++;
+      return original.call(this);
+    });
+  }
+  try {
+    const thread = await transport.openThread({});
+    await assert.rejects(transport.runTurn(thread, "die", {}), AppServerExitedError);
+    assert.equal(terminated, true);
+    assert.equal(adjustmentsAfterTermination, 0,
+      "settling a dead server's requests and turns must leave its pipes alone");
+  } finally {
+    await transport.close();
+    await rm(path.dirname(codexBin), { recursive: true, force: true });
   }
 });
 

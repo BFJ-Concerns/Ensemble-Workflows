@@ -20295,7 +20295,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
     }
     const transcript = this.#transcripts.get(threadId);
-    if (transcript?.events.some((event) => event.direction === "server")) {
+    if (transcript !== void 0 && transcript.events.length > 0) {
       attachPartialTranscript(error, {
         filename: "transcript.codex.jsonl",
         format: "jsonl",

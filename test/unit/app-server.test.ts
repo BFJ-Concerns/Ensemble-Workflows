@@ -948,6 +948,71 @@ test("a run-ended Codex turn archives its streamed transcript as partial", async
   }
 });
 
+for (const stage of ["before-ack", "after-ack", "after-notification"] as const) {
+  test(`a lost Codex held turn links its captured transcript ${stage}`, async () => {
+    const codexBin = await fakeCodexFailingTurnServer(`held-loss-${stage}`);
+    const store = await mkdtemp(path.join(tmpdir(), "ensemble-held-loss-archive-"));
+    const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+    const runtime = new EnsembleRuntime({ transport, cwd: process.cwd(), defaultMaxAttempts: 1 });
+    const writer = await RunRecordWriter.start({
+      storeDir: store,
+      cwd: process.cwd(),
+      runUuid: `held-loss-${stage}`,
+      workflowPath: path.join(process.cwd(), "held-loss.js"),
+      workflowSource: "return true;\n",
+      args: [],
+      cliFlags: { jsonArgs: false }
+    });
+    runtime.setRunRecorder(writer);
+    const session = runtime.createWorkerSession({ engine: "codex" });
+    try {
+      await session.send("first turn");
+      await session.send("lost follow-up");
+      assert.equal(session.lost, true);
+      // A send after loss must not inherit the previous turn's capture.
+      await session.send("already lost");
+      await runtime.close();
+      await writer.finish({ status: "complete", exitCode: 0, result: null });
+      const archived = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000002/agent.json"), "utf8")) as {
+        status: string;
+        transcripts: Array<{ path: string; partial: boolean; attempt: number; thread_id: string }>;
+        transcripts_unavailable: string | null;
+        attempts: Array<{ failure: { kind: string } }>;
+      };
+      assert.equal(archived.status, "failed");
+      assert.equal(archived.attempts[0]?.failure.kind, "session-lost");
+      const transcriptPath = "agents/000002/attempt-001-1-transcript.codex.jsonl";
+      const content = await readFile(path.join(writer.archiveDir, transcriptPath));
+      const events = content.toString("utf8").trim().split("\n").map(line => JSON.parse(line) as {
+        direction: string; method: string; params: { input?: Array<{ text: string }> };
+      });
+      assert.equal(events[0]?.method, "turn/start");
+      assert.equal(events[0]?.params.input?.[0]?.text, "lost follow-up");
+      assert.equal(events.some(event => event.direction === "server"), stage === "after-notification");
+      assert.deepEqual(archived.transcripts, [{
+        attempt: 1, path: transcriptPath, format: "jsonl", source: "codex-app-server-events",
+        partial: true, thread_id: "thread-1", session_id: null
+      }]);
+      assert.equal(archived.transcripts_unavailable, null);
+      const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+        files: Array<{ path: string; size: number; sha256: string }>;
+      };
+      assert.deepEqual(manifest.files.find(file => file.path === transcriptPath), {
+        path: transcriptPath, size: content.length, sha256: createHash("sha256").update(content).digest("hex")
+      });
+      const later = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000003/agent.json"), "utf8")) as {
+        transcripts: unknown[]; transcripts_unavailable: string | null;
+      };
+      assert.deepEqual(later.transcripts, []);
+      assert.equal(later.transcripts_unavailable, "engine-produced-no-transcript");
+    } finally {
+      await runtime.close();
+      await rm(store, { recursive: true, force: true });
+      await rm(path.dirname(codexBin), { recursive: true, force: true });
+    }
+  });
+}
+
 test("a delayed first delta inside the deadline completes after the deadline would otherwise expire", async () => {
   const codexBin = await fakeCodexFailingTurnServer("delayed-first-delta");
   const transport = await CodexAppServerTransport.start({
@@ -1844,6 +1909,9 @@ async function fakeCodexFailingTurnServer(
     | "system-error-then-delayed-schema-error"
     | "system-error-then-late-error"
     | "exit-mid-turn"
+    | "held-loss-before-ack"
+    | "held-loss-after-ack"
+    | "held-loss-after-notification"
     | "hang-after-delta"
     | "no-turn-start-ack"
     | "garbage-line"
@@ -1900,6 +1968,21 @@ reader.on("line", (line) => {
   if (message.method === "turn/start") {
     const threadId = message.params.threadId;
     turnCounter += 1;
+    if (mode.startsWith("held-loss-")) {
+      if (turnCounter === 1) {
+        send({ id: message.id, result: {} });
+        send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "READY" } } });
+        send({ method: "turn/completed", params: { threadId } });
+      } else if (mode === "held-loss-before-ack") {
+        process.kill(process.pid, "SIGKILL");
+      } else if (mode === "held-loss-after-ack") {
+        send({ id: message.id, result: {} }, () => process.kill(process.pid, "SIGKILL"));
+      } else {
+        send({ id: message.id, result: {} });
+        send({ method: "turn/started", params: { threadId } }, () => process.kill(process.pid, "SIGKILL"));
+      }
+      return;
+    }
     if (mode === "turn-start-error") {
       send({ id: message.id, error: { code: -32001, message: "request cause", data: { detail: "request payload" } } });
       return;

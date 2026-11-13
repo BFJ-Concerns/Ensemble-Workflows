@@ -979,8 +979,10 @@ The fields present throughout a record's lifetime are:
 
 Transcripts are captured per engine. Codex threads are ephemeral, so the
 archive records the prompt-bearing `turn/start` request and every app-server
-notification for the turn through completion. Claude transcripts are copied
-from the background session's JSONL before the session is removed. opencode
+notification for the turn through completion. A turn lost before any server
+notification still links its captured request with `partial: true`. Claude
+transcripts are copied from the background session's JSONL before the session
+is removed. opencode
 transcripts keep the `opencode run --format json` event stream plus the
 session export when available.
 

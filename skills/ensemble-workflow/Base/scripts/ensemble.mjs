@@ -35310,10 +35310,11 @@ async function runEnsembleCli(argv, options = {}) {
     ending.throwIfEnded();
     let raced;
     try {
-      raced = await Promise.race([
-        runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
-        ending.promise
-      ]);
+      raced = await superviseScriptSettlement(
+        Promise.race([runWorkflowScript(runnerOptions), ending.promise]),
+        prepared.workflowPath,
+        timeoutMs
+      );
     } finally {
       ending.settleBody();
     }
@@ -35687,6 +35688,34 @@ function watchRunEndings() {
       }
     }
   };
+}
+var WorkflowUnsettledError = class extends Error {
+  constructor(filename) {
+    super(`Workflow script ${filename} is still awaiting a promise, but the event loop has no work left to settle it`);
+    this.name = new.target.name;
+  }
+};
+async function superviseScriptSettlement(promise, filename, timeoutMs) {
+  let timeout;
+  let idleCheck;
+  let onBeforeExit;
+  const terminal = new Promise((_resolve, reject) => {
+    if (timeoutMs !== void 0) {
+      timeout = setTimeout(() => reject(new WorkflowTimeoutError(timeoutMs)), timeoutMs);
+    } else {
+      onBeforeExit = () => {
+        idleCheck = setImmediate(() => reject(new WorkflowUnsettledError(filename)));
+      };
+      process.once("beforeExit", onBeforeExit);
+    }
+  });
+  try {
+    return await Promise.race([promise, terminal]);
+  } finally {
+    clearTimeout(timeout);
+    clearImmediate(idleCheck);
+    if (onBeforeExit !== void 0) process.off("beforeExit", onBeforeExit);
+  }
 }
 var SingleAgentFailedError = class extends Error {
   constructor(failure) {
@@ -36448,7 +36477,7 @@ function formatError2(error) {
   if (error instanceof CliUsageError) {
     return error.message;
   }
-  if (error instanceof PreSpawnAuthorError || error instanceof WorkflowTimeoutError || error instanceof HoldTimeoutError) {
+  if (error instanceof PreSpawnAuthorError || error instanceof WorkflowTimeoutError || error instanceof WorkflowUnsettledError || error instanceof HoldTimeoutError) {
     return `${error.name}: ${error.message}`;
   }
   if (isError(error)) {

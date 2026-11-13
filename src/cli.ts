@@ -725,10 +725,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     ending.throwIfEnded();
     let raced: { result: unknown };
     try {
-      raced = await Promise.race([
-        runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
-        ending.promise
-      ]);
+      raced = await superviseScriptSettlement(
+        Promise.race([runWorkflowScript(runnerOptions), ending.promise]),
+        prepared.workflowPath,
+        timeoutMs
+      );
     } finally {
       // The runner's callback settles the body on its own promise; this
       // settles it when the race ends any other way — the whole-workflow
@@ -1412,6 +1413,41 @@ function watchRunEndings(): RunEndingWatch {
       }
     }
   };
+}
+
+class WorkflowUnsettledError extends Error {
+  constructor(filename: string) {
+    super(`Workflow script ${filename} is still awaiting a promise, but the event loop has no work left to settle it`);
+    this.name = new.target.name;
+  }
+}
+
+/** Own the body's liveness until it settles or another ending wins the race. */
+async function superviseScriptSettlement<T>(promise: Promise<T>, filename: string, timeoutMs: number | undefined): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  let idleCheck: NodeJS.Immediate | undefined;
+  let onBeforeExit: (() => void) | undefined;
+  const terminal = new Promise<never>((_resolve, reject) => {
+    if (timeoutMs !== undefined) {
+      // A promise alone does not keep Node alive. The launcher's opt-in
+      // deadline must own a referenced handle even when the body owns none.
+      timeout = setTimeout(() => reject(new WorkflowTimeoutError(timeoutMs)), timeoutMs);
+    } else {
+      onBeforeExit = () => {
+        // A signal sent in the last timer callback can still be queued for
+        // delivery. Give it a turn before declaring the body stranded.
+        idleCheck = setImmediate(() => reject(new WorkflowUnsettledError(filename)));
+      };
+      process.once("beforeExit", onBeforeExit);
+    }
+  });
+  try {
+    return await Promise.race([promise, terminal]);
+  } finally {
+    clearTimeout(timeout);
+    clearImmediate(idleCheck);
+    if (onBeforeExit !== undefined) process.off("beforeExit", onBeforeExit);
+  }
 }
 
 class SingleAgentFailedError extends Error {
@@ -2369,7 +2405,7 @@ function formatError(error: unknown): string {
   // (WorkflowScriptError is a member) — is the author's to fix: one clean
   // line, no stack. A breached deadline is not an authoring mistake but
   // gets the same operator-facing surface.
-  if (error instanceof PreSpawnAuthorError || error instanceof WorkflowTimeoutError || error instanceof HoldTimeoutError) {
+  if (error instanceof PreSpawnAuthorError || error instanceof WorkflowTimeoutError || error instanceof WorkflowUnsettledError || error instanceof HoldTimeoutError) {
     return `${error.name}: ${error.message}`;
   }
   if (isError(error)) {

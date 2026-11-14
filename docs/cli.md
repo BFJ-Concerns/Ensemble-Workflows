@@ -297,6 +297,9 @@ settled during teardown on any engine. The envelope is printed after worker
 teardown. `error` is the same `{ kind, message }` the run record and sentinel
 carry for what ended the run.
 
+Teardown also cancels a Codex app-server's pending startup handshake: a
+whole-run deadline does not wait for the server's separate startup timeout.
+
 For Claude, teardown reads the native transcript before stopping the worker.
 A terminal text reply with no outstanding background tasks is collected if
 its prompt receipt is verified, even when cancellation reached the runtime

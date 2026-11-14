@@ -107,6 +107,64 @@ test("lazy Codex transport spawns once even after a startup failure", async () =
   await transport.close();
 });
 
+for (const phase of ["placement", "initialize"] as const) {
+  test(`lazy Codex close cancels startup during ${phase}`, async () => {
+    const codexBin = await fakeCodexAppServer({ initializeDelayMs: 0, respondToInitialize: false });
+    const entered = Promise.withResolvers<number>();
+    const placement = Promise.withResolvers<void>();
+    let pid: number | undefined;
+    let watchdog: NodeJS.Timeout | undefined;
+    const scopes: WorkerScopes = {
+      slice: null,
+      async place(_group, pids) {
+        pid = pids[0]!;
+        if (phase === "placement") {
+          entered.resolve(pid);
+          await placement.promise;
+        }
+        return { kind: "refused", reason: "test placement" };
+      },
+      async launch(file, args, options) { return spawn(file, [...args], options); },
+      async stop() { return { kind: "stopped" }; },
+      async close() {}
+    };
+    const transport = new LazyCodexAppServerTransport({
+      ...defaultTransportOptions(codexBin), scopes,
+      startupHandshakeTimeoutMs: 60_000,
+      onEvent: (event) => {
+        if (event.method === "test/initializeReceived") entered.resolve(Number(event.params.pid));
+      }
+    });
+    let losses = 0;
+    transport.onTermination(() => { losses++; });
+    const first = assert.rejects(transport.openThread({}), AppServerExitedError);
+    const second = assert.rejects(transport.listSkills(), AppServerExitedError);
+    try {
+      pid = await entered.promise;
+      const closing = transport.close();
+      placement.resolve();
+      await Promise.race([
+        Promise.all([closing, first, second]),
+        new Promise<never>((_resolve, reject) => {
+          watchdog = setTimeout(() => reject(new Error("close waited on the startup deadline")), 10_000);
+        })
+      ]);
+      assert.throws(() => process.kill(pid!, 0), { code: "ESRCH" });
+      assert.equal(losses, 0, "intentional startup cancellation reported a lost substrate");
+      await assert.rejects(transport.openThread({}), /transport is closed/);
+      await transport.close();
+    } finally {
+      clearTimeout(watchdog);
+      placement.resolve();
+      if (pid !== undefined) {
+        try { process.kill(pid, "SIGKILL"); } catch { /* Already reaped. */ }
+      }
+      await Promise.all([transport.close(), first, second]);
+      await rm(path.dirname(codexBin), { recursive: true, force: true });
+    }
+  });
+}
+
 test("an observed app-server exit remains the cause of a later thread-open refusal", async () => {
   const codexBin = await fakeCodexFailingTurnServer("exit-at-thread-start");
   const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
@@ -2345,6 +2403,7 @@ reader.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === "initialize") {
     if (!respondToInitialize) {
+      process.stdout.write(JSON.stringify({ method: "test/initializeReceived", params: { pid: process.pid } }) + "\\n");
       return;
     }
     setTimeout(() => {

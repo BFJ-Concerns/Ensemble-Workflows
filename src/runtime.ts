@@ -73,10 +73,12 @@ import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type {
   AgentOptions,
+  AgentRequest,
   Budget,
   EngineBudgetCeilings,
   EngineConcurrencyCaps,
   EngineName,
+  FallbackTarget,
   IdentifiedAgentResult,
   JsonObject,
   JsonSchema,
@@ -847,9 +849,9 @@ export class EnsembleRuntime {
   // every dispatch surface presents these same signatures, and the general
   // final one is public on purpose — dynamically-composed options resolve
   // to the honest union instead of needing a cast at the caller.
-  async agent(prompt: string, options: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
-  async agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  async agent(prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string | null>;
+  async agent(prompt: string, options: AgentRequest & { identity: true }): Promise<IdentifiedAgentResult>;
+  async agent(prompt: string, options: AgentRequest & { schema: JsonSchema }): Promise<unknown | null>;
+  async agent(prompt: string, options: AgentRequest & { schema?: undefined }): Promise<string | null>;
   async agent(prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null>;
   agent(prompt: string, options: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
     // The call's settlement runs as one async body, and the promise that
@@ -1077,6 +1079,17 @@ export class EnsembleRuntime {
    */
   resolveNamedTarget<T extends object>(options: T): T {
     return resolveNamedTarget(this.#namedTargets, options);
+  }
+
+  /**
+   * Judge a declared chain's named entries against this run's bindings
+   * before anything spawns, as a dispatch settling it would: an unbound
+   * name, a target beside a literal engine or model, and a target bound to
+   * opencode throw. The script runner uses it on `defaults` chains so a
+   * static declaration fails before the body runs.
+   */
+  settleFallbackChain(chain: readonly FallbackTarget[]): void {
+    settleChain(this.#namedTargets, chain, chain);
   }
 
   /**

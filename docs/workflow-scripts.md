@@ -125,7 +125,8 @@ target and never advance the chain.
 - An empty or malformed chain, an opencode entry (named or literal), or an
   engine the run does not have throws `FallbackTargetRejectedError` before any
   worker spawns. A named entry the configuration does not bind, or one naming
-  a `target` beside an `engine` or `model`, throws `NamedTargetRejectedError`.
+  a `target` beside an `engine` or `model`, throws `NamedTargetRejectedError`;
+  in a `defaults` chain, either fails the run before the script body runs.
   An opencode call may declare a chain of Codex and Claude targets.
 
 Every step is a dispatch Ensemble makes and records itself. The run record

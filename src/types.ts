@@ -109,6 +109,16 @@ export interface AgentOptions {
 }
 
 /**
+ * A call naming a target in place of its engine and model: every other
+ * `agent()` option, with the binding the machine configuration gives the
+ * name supplying the engine and model.
+ */
+export type TargetedAgentOptions = Omit<AgentOptions, "engine" | "model" | "target"> & { target: string };
+
+/** What an `agent()` call declares: a literal engine with an optional model, or a named target. */
+export type AgentRequest = AgentOptions | TargetedAgentOptions;
+
+/**
  * Options fixed for a multi-turn worker session's whole life. Engine,
  * model, and effort never vary per turn — changing them would invalidate the
  * session's prompt cache, the asset the capability exists to exploit — and
@@ -209,9 +219,9 @@ export interface IdentifiedAgentResult {
  * nothing, resolved by the runtime's own validation.
  */
 export interface AgentCallSignature {
-  (prompt: string, options: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
-  (prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  (prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string | null>;
+  (prompt: string, options: AgentRequest & { identity: true }): Promise<IdentifiedAgentResult>;
+  (prompt: string, options: AgentRequest & { schema: JsonSchema }): Promise<unknown | null>;
+  (prompt: string, options: AgentRequest & { schema?: undefined }): Promise<string | null>;
   (prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null>;
 }
 

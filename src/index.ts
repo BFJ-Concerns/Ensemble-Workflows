@@ -1,6 +1,6 @@
 import { createRuntime as createRuntimeInstance } from "./runtime.js";
 
-import type { AgentOptions, IdentifiedAgentResult as IdentifiedAgentResultType, JsonSchema, RuntimeOptions } from "./types.js";
+import type { AgentOptions, AgentRequest, IdentifiedAgentResult as IdentifiedAgentResultType, JsonSchema, RuntimeOptions } from "./types.js";
 export type { AgentCallSignature, IdentifiedAgentResult } from "./types.js";
 import type { EnsembleRuntime } from "./runtime.js";
 
@@ -10,9 +10,9 @@ let defaultRuntime: Promise<EnsembleRuntime> | null = null;
 // overloads because an arrow cannot implement a multi-signature interface;
 // conformance is compile-checked where the hooks typing tests assign this
 // wrapper to the interface.
-export async function agent(prompt: string, options: AgentOptions & { identity: true }): Promise<IdentifiedAgentResultType>;
-export async function agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-export async function agent(prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string | null>;
+export async function agent(prompt: string, options: AgentRequest & { identity: true }): Promise<IdentifiedAgentResultType>;
+export async function agent(prompt: string, options: AgentRequest & { schema: JsonSchema }): Promise<unknown | null>;
+export async function agent(prompt: string, options: AgentRequest & { schema?: undefined }): Promise<string | null>;
 export async function agent(prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null>;
 export async function agent(prompt: string, options: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
   const runtime = await getDefaultRuntime();
@@ -157,6 +157,8 @@ export type {
   AdmissionGate,
   AdmissionWaitSnapshot,
   AgentOptions,
+  AgentRequest,
+  TargetedAgentOptions,
   AgentWaitSnapshot,
   BackgroundTaskWaitSnapshot,
   Budget,

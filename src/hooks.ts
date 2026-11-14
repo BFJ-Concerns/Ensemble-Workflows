@@ -7,6 +7,7 @@ import { presentOperationalError } from "./operator-diagnosis.js";
 import type {
   AgentCallSignature,
   AgentOptions,
+  AgentRequest,
   Budget,
   EngineName,
   FallbackTarget,
@@ -67,6 +68,14 @@ export interface WorkflowRuntime {
    * it itself, with no script `defaults` for the resolved engine applied.
    */
   resolveNamedTarget?: <T extends object>(options: T) => T;
+  /**
+   * Judge a declared fallback chain's named entries against the run's
+   * bindings, throwing before spawn as a dispatch would; see
+   * EnsembleRuntime.settleFallbackChain. The script runner calls it on a
+   * script's `defaults` chains before the body runs. Optional: without it
+   * those entries are judged at dispatch.
+   */
+  settleFallbackChain?: (chain: readonly FallbackTarget[]) => void;
 }
 
 /**
@@ -154,9 +163,9 @@ export function createWorkflowHooks(options: {
   // call site narrows exactly as a direct runtime call would; the merged
   // options flow through the runtime's general signature, so no cast is
   // needed anywhere in the plumbing.
-  function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
-  function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { schema?: undefined }): Promise<string | null>;
+  function agentWithDefaults(prompt: string, agentOptions: AgentRequest & { identity: true }): Promise<IdentifiedAgentResult>;
+  function agentWithDefaults(prompt: string, agentOptions: AgentRequest & { schema: JsonSchema }): Promise<unknown | null>;
+  function agentWithDefaults(prompt: string, agentOptions: AgentRequest & { schema?: undefined }): Promise<string | null>;
   function agentWithDefaults(prompt: string, agentOptions: Partial<AgentOptions>): Promise<string | unknown | null>;
   function agentWithDefaults(prompt: string, agentOptions?: Partial<AgentOptions>): Promise<string | unknown | null> {
     return options.runtime.agent(prompt, withDeclaredModels(mergeAgentDefaults(defaults, agentOptions, resolveTarget), declaredModel));

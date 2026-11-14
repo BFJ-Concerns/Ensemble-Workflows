@@ -461,8 +461,26 @@ function validateTargets(root: Record<string, unknown>, configFile: string): voi
     // name must be bound here; whether it binds opencode is judged at
     // dispatch, as for an entry a script writes.
     for (const [index, entry] of (binding.fallback ?? []).entries()) {
-      if (entry.target !== undefined && !Object.hasOwn(section, entry.target)) {
+      if (entry.target === undefined) continue;
+      // The type forbids the pair; the file's JSON does not.
+      const written = entry as { target: string; engine?: unknown; model?: unknown };
+      if (written.engine !== undefined || written.model !== undefined) {
+        throw fileValueError(
+          configFile,
+          `${qualified}.fallback`,
+          `entry ${index} names target ${JSON.stringify(entry.target)} beside a literal engine or model; an entry names one or the other`
+        );
+      }
+      const named = Object.hasOwn(section, entry.target) ? (section as Record<string, unknown>)[entry.target] : undefined;
+      if (named === undefined) {
         throw fileValueError(configFile, `${qualified}.fallback`, `entry ${index} names target ${JSON.stringify(entry.target)}, which this file does not bind`);
+      }
+      if (isObject(named) && named.engine === "opencode") {
+        throw fileValueError(
+          configFile,
+          `${qualified}.fallback`,
+          `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
+        );
       }
     }
   }

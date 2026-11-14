@@ -57,17 +57,15 @@ function settled(records: RuntimeAgentRecord[], label: string): RuntimeAgentReco
   return record;
 }
 
-/** A script's options literal naming a target: the TypeScript surface types `engine` as required. */
-function named(options: Omit<AgentOptions, "engine">): AgentOptions {
-  return options as AgentOptions;
-}
-
 test("a named target dispatches on its binding's engine and model, and the record keeps the name beside both", async () => {
   const { runtime, claude, codex, records } = recordingRuntime({ reviewer: { engine: "claude", model: "claude-opus-5-5" } });
   try {
-    const output = await hooksFor(runtime).agent("review", named({ target: "reviewer", label: "review", effort: "low" }));
+    // Typed with no cast: a target-only call selects the identity overload.
+    const identified = await hooksFor(runtime).agent("review", { target: "reviewer", label: "review", effort: "low", identity: true });
+    const output: string | unknown = identified.output;
     assert.equal(output, "claude 1");
-    assert.deepEqual(claude.dispatches.map((dispatch) => dispatch.model), ["claude-opus-5-5"]);
+    assert.equal((await runtime.agent("direct", { target: "reviewer", identity: true })).output, "claude 2");
+    assert.deepEqual(claude.dispatches.map((dispatch) => dispatch.model), ["claude-opus-5-5", "claude-opus-5-5"]);
     assert.equal(codex.dispatches.length, 0);
     const record = settled(records, "review");
     assert.equal(record.engine, "claude");
@@ -82,11 +80,40 @@ test("a named target dispatches on its binding's engine and model, and the recor
   }
 });
 
+test("a script's defaults chain naming targets is judged against the bindings before the body runs", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-defaults-chain-"));
+  const configFile = path.join(directory, "config", "ensemble", "config.json");
+  await mkdir(path.dirname(configFile), { recursive: true });
+  await writeFile(configFile, JSON.stringify({ schema_version: 1, targets: { back: { engine: "codex" } } }));
+  try {
+    for (const chain of ['[{ target: "typo" }]', '[{ target: "back", engine: "claude", model: "x" }]']) {
+      const script = path.join(directory, "workflow.js");
+      await writeFile(script, `export const meta = { name: "defaults-chain" };\nexport const defaults = { codex: { fallback: ${chain} } };\nreturn "BODY EXECUTED";\n`);
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runEnsembleCli([script], {
+        cwd: directory,
+        env: { XDG_CONFIG_HOME: path.join(directory, "config"), ENSEMBLE_STATUS: "off" },
+        stdout,
+        stderr,
+        runRecordDir: null,
+        createRuntime: async (options) => new EnsembleRuntime({ ...options, engines: new EngineRegistry([new ChainEngine("codex", [])]), defaultMaxAttempts: 1 })
+      });
+      assert.notEqual(exitCode, 0, chain);
+      assert.ok(!stdout.text().includes("BODY EXECUTED"), stdout.text());
+      assert.match(stdout.text() + stderr.text(), /defaults\.codex\.fallback: Invalid named target: fallback entry 0/);
+      assert.ok((stdout.text() + stderr.text()).includes(configFile), chain);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a model-less binding takes the resolved engine's defaults model, else leaves the engine to choose", async () => {
   const { runtime, codex, records } = recordingRuntime({ doer: { engine: "codex" } });
   try {
-    await hooksFor(runtime, { codex: { model: "gpt-6.1-sol", effort: "medium" } }).agent("with defaults", named({ target: "doer", label: "defaults" }));
-    await hooksFor(runtime).agent("without defaults", named({ target: "doer", label: "bare" }));
+    await hooksFor(runtime, { codex: { model: "gpt-6.1-sol", effort: "medium" } }).agent("with defaults", { target: "doer", label: "defaults" });
+    await hooksFor(runtime).agent("without defaults", { target: "doer", label: "bare" });
     assert.deepEqual(codex.dispatches.map((dispatch) => [dispatch.model, dispatch.effort]), [["gpt-6.1-sol", "medium"], [undefined, undefined]]);
     const withDefaults = settled(records, "defaults");
     assert.equal(withDefaults.model, "gpt-6.1-sol");
@@ -100,7 +127,7 @@ test("a model-less binding takes the resolved engine's defaults model, else leav
 test("a pinned binding's model wins over the resolved engine's defaults model", async () => {
   const { runtime, codex } = recordingRuntime({ doer: { engine: "codex", model: "gpt-6-astra" } });
   try {
-    await hooksFor(runtime, { codex: { model: "gpt-6.1-sol" } }).agent("work", named({ target: "doer" }));
+    await hooksFor(runtime, { codex: { model: "gpt-6.1-sol" } }).agent("work", { target: "doer" });
     assert.deepEqual(codex.dispatches.map((dispatch) => dispatch.model), ["gpt-6-astra"]);
   } finally {
     await runtime.close();
@@ -113,11 +140,11 @@ test("a binding's chain applies only where neither the call nor the resolved eng
   const callChain = [{ engine: "codex" as const, model: "call-fallback" }];
   const { runtime, records } = recordingRuntime({ reviewer: { engine: "claude", model: "claude-opus-5-5", fallback: bindingChain } });
   try {
-    await hooksFor(runtime).agent("binding", named({ target: "reviewer", label: "binding" }));
-    await hooksFor(runtime, { claude: { fallback: defaultsChain } }).agent("defaults", named({ target: "reviewer", label: "defaults" }));
+    await hooksFor(runtime).agent("binding", { target: "reviewer", label: "binding" });
+    await hooksFor(runtime, { claude: { fallback: defaultsChain } }).agent("defaults", { target: "reviewer", label: "defaults" });
     // The codex block is not the resolved engine's, so the binding's chain applies.
-    await hooksFor(runtime, { codex: { fallback: defaultsChain } }).agent("other block", named({ target: "reviewer", label: "other" }));
-    await hooksFor(runtime, { claude: { fallback: defaultsChain } }).agent("call", named({ target: "reviewer", label: "call", fallback: callChain }));
+    await hooksFor(runtime, { codex: { fallback: defaultsChain } }).agent("other block", { target: "reviewer", label: "other" });
+    await hooksFor(runtime, { claude: { fallback: defaultsChain } }).agent("call", { target: "reviewer", label: "call", fallback: callChain });
 
     assert.deepEqual(settled(records, "binding").fallback, bindingChain);
     assert.deepEqual(settled(records, "binding").fallbackSource, { kind: "target", target: "reviewer" });
@@ -137,7 +164,7 @@ test("an attempt on a binding's chain entry names no target; the refused own tar
     { codex: 1, claude: [claudeRefusal(429, "rate_limit")] }
   );
   try {
-    assert.equal(await hooksFor(runtime).agent("review", named({ target: "reviewer", label: "review" })), "codex 1");
+    assert.equal(await hooksFor(runtime).agent("review", { target: "reviewer", label: "review" }), "codex 1");
     assert.deepEqual(codex.dispatches.map((dispatch) => dispatch.model), ["gpt-6.1-sol"]);
     const record = settled(records, "review");
     assert.deepEqual(record.attempts.map((attempt) => [attempt.namedTarget, attempt.target.engine]), [
@@ -160,7 +187,7 @@ test("a chain entry naming a target takes its binding, the defaults model where 
   try {
     const output = await hooksFor(runtime, { codex: { model: "gpt-6.1-sol" } }).agent(
       "review",
-      named({ target: "reviewer", label: "review", fallback: [{ target: "bare", effort: "low" }] })
+      { target: "reviewer", label: "review", fallback: [{ target: "bare", effort: "low" }] }
     );
     assert.equal(output, "codex 1");
     assert.deepEqual(codex.dispatches.map((dispatch) => [dispatch.model, dispatch.effort]), [["gpt-6.1-sol", "low"]]);
@@ -182,7 +209,7 @@ test("a binding's own chain may name another target", async () => {
     { codex: 1, claude: [claudeRefusal(429, "rate_limit")] }
   );
   try {
-    assert.equal(await hooksFor(runtime).agent("review", named({ target: "reviewer", label: "review" })), "codex 1");
+    assert.equal(await hooksFor(runtime).agent("review", { target: "reviewer", label: "review" }), "codex 1");
     assert.deepEqual(codex.dispatches.map((dispatch) => dispatch.model), ["gpt-6-astra"]);
     assert.deepEqual(settled(records, "review").attempts.map((attempt) => attempt.namedTarget), ["reviewer", "doer"]);
   } finally {
@@ -341,6 +368,14 @@ test("the machine configuration's targets section binds names, refusing unknown 
       {
         targets: { doer: { engine: "codex", fallback: [{ target: "reviewer" }] } },
         pattern: /targets\.doer\.fallback in .*config\.json: entry 0 names target "reviewer", which this file does not bind/
+      },
+      {
+        targets: { doer: { engine: "codex", fallback: [{ target: "back", engine: "claude", model: "x" }] }, back: { engine: "codex" } },
+        pattern: /targets\.doer\.fallback in .*config\.json: entry 0 names target "back" beside a literal engine or model/
+      },
+      {
+        targets: { doer: { engine: "codex", fallback: [{ target: "local" }] }, local: { engine: "opencode", model: "glm" } },
+        pattern: /targets\.doer\.fallback in .*config\.json: entry 0 names target "local", bound to the opencode engine/
       }
     ];
     for (const entry of refusals) {

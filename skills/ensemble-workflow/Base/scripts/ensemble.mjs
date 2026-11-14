@@ -15588,8 +15588,25 @@ function validateTargets(root, configFile) {
       throw error;
     }
     for (const [index, entry] of (binding.fallback ?? []).entries()) {
-      if (entry.target !== void 0 && !Object.hasOwn(section, entry.target)) {
+      if (entry.target === void 0) continue;
+      const written = entry;
+      if (written.engine !== void 0 || written.model !== void 0) {
+        throw fileValueError(
+          configFile,
+          `${qualified}.fallback`,
+          `entry ${index} names target ${JSON.stringify(entry.target)} beside a literal engine or model; an entry names one or the other`
+        );
+      }
+      const named = Object.hasOwn(section, entry.target) ? section[entry.target] : void 0;
+      if (named === void 0) {
         throw fileValueError(configFile, `${qualified}.fallback`, `entry ${index} names target ${JSON.stringify(entry.target)}, which this file does not bind`);
+      }
+      if (isObject(named) && named.engine === "opencode") {
+        throw fileValueError(
+          configFile,
+          `${qualified}.fallback`,
+          `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
+        );
       }
     }
   }
@@ -26207,6 +26224,16 @@ var EnsembleRuntime = class _EnsembleRuntime {
   resolveNamedTarget(options) {
     return resolveNamedTarget(this.#namedTargets, options);
   }
+  /**
+   * Judge a declared chain's named entries against this run's bindings
+   * before anything spawns, as a dispatch settling it would: an unbound
+   * name, a target beside a literal engine or model, and a target bound to
+   * opencode throw. The script runner uses it on `defaults` chains so a
+   * static declaration fails before the body runs.
+   */
+  settleFallbackChain(chain) {
+    settleChain(this.#namedTargets, chain, chain);
+  }
   createWorkerSession(declared) {
     let options = declared;
     if (this.#closed) {
@@ -34146,6 +34173,17 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
+  for (const [engine, block] of Object.entries(defaults ?? {})) {
+    if (block?.fallback === void 0 || options.runtime.settleFallbackChain === void 0) continue;
+    try {
+      options.runtime.settleFallbackChain(block.fallback);
+    } catch (error) {
+      if (error instanceof AgentOptionRejectedError) {
+        throw new WorkflowScriptError(`Workflow defaults.${engine}.fallback: ${error.message}`);
+      }
+      throw error;
+    }
+  }
   const resolvedFilename = path18.resolve(options.filename);
   const cwd = options.cwd ?? path18.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;

@@ -10,8 +10,8 @@ import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } from "./failure-classification.js";
 import { fallbackSourceOf } from "./fallback-source.js";
-import { namedTargetResolutionOf, resolveNamedTarget, withTargetChain } from "./named-targets.js";
-import type { NamedTargetResolution, NamedTargets } from "./named-targets.js";
+import { namedTargetResolutionOf, resolveNamedTarget, settleChain, withTargetChain } from "./named-targets.js";
+import type { NamedTargetResolution, NamedTargets, SettledChainEntry } from "./named-targets.js";
 
 import type { DischargedEnforcement, PreparedStrip } from "./capability-stripping.js";
 import type { FallbackSource } from "./fallback-source.js";
@@ -77,7 +77,6 @@ import type {
   EngineBudgetCeilings,
   EngineConcurrencyCaps,
   EngineName,
-  FallbackTarget,
   IdentifiedAgentResult,
   JsonObject,
   JsonSchema,
@@ -87,6 +86,7 @@ import type {
   SessionTurnOptions,
   TurnResult,
   TokenUsageEvent,
+  LiteralWorkerSessionOptions,
   WorkerSessionOptions
 } from "./types.js";
 import type {
@@ -205,38 +205,27 @@ class ChainAdvance {
 }
 
 /**
- * The call's own target followed by its declared chain, an omitted entry
+ * The call's own target followed by its settled chain, an omitted entry
  * effort taking the call's own. `namedTarget` is the record's resolution of
- * the call's own target, where it named one.
+ * the call's own target, where it named one; each chain entry carries its
+ * own.
  */
 function chainTargets(
   engine: EngineName,
-  options: { model?: string; effort?: string; fallback?: FallbackTarget[] },
+  options: { model?: string; effort?: string },
+  chain: readonly SettledChainEntry[],
   namedTarget: NamedTargetResolution | null
 ): ChainTarget[] {
   return [
     { entry: -1, engine, model: options.model, effort: options.effort, namedTarget: namedTarget?.name ?? null },
-    ...(options.fallback ?? []).map((target, index) => ({
+    ...chain.map((target, index) => ({
       entry: index,
       engine: target.engine,
       model: target.model,
       effort: target.effort ?? options.effort,
-      namedTarget: null
+      namedTarget: target.namedTarget
     }))
   ];
-}
-
-/**
- * The same options with no chain declared: a held session's later turns run
- * their own target only. A view over the author's object, not a copy, for
- * the reason `optionsForTarget` gives.
- */
-function withoutChain<T extends { fallback?: FallbackTarget[] }>(options: T): T {
-  return new Proxy(options, {
-    get(source, property, receiver) {
-      return property === "fallback" ? undefined : Reflect.get(source, property, receiver);
-    }
-  });
 }
 
 /**
@@ -396,7 +385,7 @@ function identifiedFailure(options: { identity?: boolean; label?: string; phase?
 /** A worker session's runtime-internal state, owned by EnsembleRuntime. */
 interface WorkerSessionState {
   id: number;
-  options: WorkerSessionOptions;
+  options: LiteralWorkerSessionOptions;
   engine: EngineAdapter;
   /** The lean route the dispatching engine arranged, re-resolved on a chain advance; null when the session is not lean. */
   leanRoute: DischargedLeanStart | null;
@@ -413,6 +402,8 @@ interface WorkerSessionState {
   fallbackSource: FallbackSource;
   /** The named target the session was created through, resolved once at creation; null for a literal engine. */
   namedTarget: NamedTargetResolution | null;
+  /** The creating turn's chain, settled once at creation. */
+  chain: SettledChainEntry[];
   stalenessThresholdMs: number;
   markStaleness: boolean;
   engineSession: EngineWorkerSession | null;
@@ -901,6 +892,7 @@ export class EnsembleRuntime {
     }
     const fallbackSource = fallbackSourceOf(passedOptions, options);
     const namedTarget = namedTargetResolutionOf(passedOptions);
+    const chain = settleChain(this.#namedTargets, options.fallback, passedOptions);
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.
       assertCompilableSchema(options.schema);
@@ -927,7 +919,7 @@ export class EnsembleRuntime {
     const stripRoutes = strip.length > 0 ? this.#stripRoutesFor(engine, strip) : null;
     const lean = effectiveLean(this.#lean, options.lean);
     const leanRoute = lean ? resolveLeanStart(engine.name, engine.leanStart) : null;
-    for (const target of options.fallback ?? []) {
+    for (const target of chain) {
       const targetEngine = this.#chainEngineFor(target);
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
@@ -936,7 +928,7 @@ export class EnsembleRuntime {
         resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
-    this.#warnSharedSubstrateFallback(engine.name, options);
+    this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
     if (engine instanceof OpenCodeEngineAdapter) {
       if (options.model === undefined) {
         throw new OpenCodeModelRequiredError(engine.modelRegistry);
@@ -994,7 +986,7 @@ export class EnsembleRuntime {
     try {
       await this.#recordAgentSafely(agentRecord);
       unsettled.stage = "admitting";
-      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
+      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, chain, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
         // Identified resolution (opt-in): the envelope wraps every
         // resolution, a schema call's null collapse included, so a fan-in
@@ -1097,7 +1089,10 @@ export class EnsembleRuntime {
   createWorkerSession(options: WorkerSessionOptions & { identity: true }): WorkerSession<true>;
   createWorkerSession(options: WorkerSessionOptions & { identity?: false }): WorkerSession<false>;
   createWorkerSession(options: WorkerSessionOptions): WorkerSession<boolean>;
-  createWorkerSession(options: WorkerSessionOptions): WorkerSession<boolean> {
+  createWorkerSession(declared: WorkerSessionOptions): WorkerSession<boolean> {
+    // Literal from here once a named target resolves; the declared union
+    // only forbids a script naming both.
+    let options = declared as LiteralWorkerSessionOptions;
     if (this.#closed) {
       throw new SessionClosedError();
     }
@@ -1111,6 +1106,7 @@ export class EnsembleRuntime {
     }
     const fallbackSource = fallbackSourceOf(options, options);
     const namedTarget = namedTargetResolutionOf(options);
+    const chain = settleChain(this.#namedTargets, options.fallback, options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === undefined) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -1122,7 +1118,7 @@ export class EnsembleRuntime {
     // The creating turn's chain targets are dispatches of their own:
     // each must hold sessions, enforce the strip and arrange the lean
     // start, judged now.
-    for (const target of options.fallback ?? []) {
+    for (const target of chain) {
       const targetEngine = this.#chainEngineFor(target);
       if (targetEngine.createSession === undefined) {
         throw new MultiTurnUnsupportedError(targetEngine.name);
@@ -1134,7 +1130,7 @@ export class EnsembleRuntime {
         resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
-    this.#warnSharedSubstrateFallback(engine.name, options);
+    this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
     const sessionOptions =
       strip.length === 0 && !lean
         ? options
@@ -1151,6 +1147,7 @@ export class EnsembleRuntime {
       leanRoute,
       fallbackSource,
       namedTarget,
+      chain,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
@@ -1277,7 +1274,7 @@ export class EnsembleRuntime {
           // target answers, the session's engine and model are fixed for
           // its life, so a later turn runs its own target only and an
           // availability failure there fails the turn.
-          const targets = chainTargets(engine.name, state.turnCount === 0 ? options : withoutChain(options), state.namedTarget);
+          const targets = chainTargets(engine.name, options, state.turnCount === 0 ? state.chain : [], state.namedTarget);
           const output = await this.#runChained(
             engine,
             targets,
@@ -1554,13 +1551,14 @@ export class EnsembleRuntime {
     engine: EngineAdapter,
     prompt: string,
     options: Partial<AgentOptions>,
+    chain: readonly SettledChainEntry[],
     agentId: number,
     agentRecord: RuntimeAgentRecord,
     queuedAt: number
   ): Promise<unknown> {
     return this.#runChained(
       engine,
-      chainTargets(engine.name, options, agentRecord.namedTarget),
+      chainTargets(engine.name, options, chain, agentRecord.namedTarget),
       { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,
@@ -3058,14 +3056,14 @@ export class EnsembleRuntime {
 
 
   /** A repeated Codex target shares the app-server, even across an intervening engine. */
-  #warnSharedSubstrateFallback(engine: EngineName, options: Partial<AgentOptions>): void {
+  #warnSharedSubstrateFallback(engine: EngineName, chain: readonly SettledChainEntry[], label: string | undefined): void {
     let seenCodex = engine === "codex";
-    for (const [entry, target] of (options.fallback ?? []).entries()) {
+    for (const [entry, target] of chain.entries()) {
       if (target.engine !== "codex") continue;
       if (seenCodex) {
         this.#emitEvent({
           method: "codex/sharedSubstrateFallback",
-          params: { entry, label: options.label ?? null },
+          params: { entry, label: label ?? null },
           receivedAt: Date.now()
         });
       }
@@ -3147,7 +3145,7 @@ export class EnsembleRuntime {
    * runtime does not carry (a registry built without it) is a declaration
    * the run cannot honour, rejected before anything is paid for.
    */
-  #chainEngineFor(target: FallbackTarget): EngineAdapter {
+  #chainEngineFor(target: SettledChainEntry): EngineAdapter {
     const adapter = this.#engines.get(target.engine);
     if (adapter === undefined) {
       throw new FallbackTargetRejectedError(`the ${target.engine} engine is not available to this run`);

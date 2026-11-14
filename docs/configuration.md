@@ -303,12 +303,13 @@ Each key is a name; the value is its binding:
 |---|---|---|
 | `engine` | Yes | `codex`, `claude` or `opencode` |
 | `model` | No | The model to dispatch. Without it, the call takes the script's `defaults` model for the bound engine, else the engine's own default, as a call that pins no model does |
-| `fallback` | No | A fallback chain, in the same form as an `agent()` call's `fallback` |
+| `fallback` | No | A fallback chain, in the same form as an `agent()` call's `fallback`. An entry may name another target in this section, whose binding it takes but not its chain |
 
 A name may spell an engine's name: names are their own namespace, reached only
 through `target`. A binding to an engine other than `codex`, `claude` or
 `opencode`, a blank model, a malformed chain, or an unknown field stops every
-run before any worker starts, naming the key and the file. An opencode
+run before any worker starts, naming the key and the file, as does a chain
+entry naming a target this section does not bind. An opencode
 binding's model is checked against `opencode_models` when a call dispatches on
 it, as for a call naming opencode directly.
 

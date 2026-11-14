@@ -20,15 +20,27 @@ export type EngineConcurrencyCaps = Partial<Record<EngineName, number>>;
 export type EngineWorkerEnvironment = Partial<Record<EngineName, Record<string, string>>>;
 
 /**
- * One entry of a fallback chain: a full target — engine and model
+ * One entry of a fallback chain: a full literal target — engine and model
  * both named, because a fallback that inherits an ambient default is a
- * substitution nobody chose — with an optional effort that otherwise takes
- * the call's own canonical level, clamped to this engine as any dispatch is.
+ * substitution nobody chose — or a named target the machine configuration
+ * binds, whose binding (never its chain) the entry takes. Either carries an
+ * optional effort that otherwise takes the call's own canonical level,
+ * clamped to the entry's engine as any dispatch is.
  */
-export interface FallbackTarget {
+export type FallbackTarget = LiteralFallbackTarget | NamedFallbackTarget;
+
+export interface LiteralFallbackTarget {
   engine: EngineName;
   model: string;
   effort?: string;
+  target?: undefined;
+}
+
+export interface NamedFallbackTarget {
+  target: string;
+  effort?: string;
+  engine?: undefined;
+  model?: undefined;
 }
 
 export interface AgentOptions {
@@ -103,12 +115,23 @@ export interface AgentOptions {
  * escalation is a fresh dispatch. Everything here is resolved once, at
  * creation; the only per-turn variation is `schema` on `send()`.
  */
-export interface WorkerSessionOptions {
-  /** `claude` or `codex`; an engine held at its one-shot surface throws before spawn. */
-  engine: EngineName;
-  /** A named target in place of `engine` and `model`, resolved as for `agent()`. */
-  target?: string;
-  model?: string;
+export type WorkerSessionOptions = WorkerSessionCallOptions & ({ engine: EngineName; model?: string } | { target: string });
+
+/**
+ * Session options as the runtime holds them: every dispatch target is a
+ * literal engine once a named target resolves. `target` stays in the shape
+ * because a library caller's options are judged before they resolve.
+ */
+export type LiteralWorkerSessionOptions = WorkerSessionCallOptions & { engine: EngineName; model?: string; target?: string };
+
+/**
+ * Every `session()` option but where it dispatches, which is declared one of
+ * two ways: a literal `engine` (`claude` or `codex`; an engine held at its
+ * one-shot surface throws before spawn) with an optional `model`, or a named
+ * `target` resolved as for `agent()`. Never both: naming both is refused
+ * before spawn.
+ */
+export interface WorkerSessionCallOptions {
   /** Canonical effort level, as for `agent()`; converted once, at creation. */
   effort?: string;
   /**

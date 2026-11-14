@@ -457,6 +457,14 @@ function validateTargets(root: Record<string, unknown>, configFile: string): voi
       }
       throw error;
     }
+    // A chain entry naming a target takes that target's binding, so the
+    // name must be bound here; whether it binds opencode is judged at
+    // dispatch, as for an entry a script writes.
+    for (const [index, entry] of (binding.fallback ?? []).entries()) {
+      if (entry.target !== undefined && !Object.hasOwn(section, entry.target)) {
+        throw fileValueError(configFile, `${qualified}.fallback`, `entry ${index} names target ${JSON.stringify(entry.target)}, which this file does not bind`);
+      }
+    }
   }
 }
 

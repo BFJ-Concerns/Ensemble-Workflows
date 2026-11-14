@@ -1,4 +1,4 @@
-import { NamedTargetRejectedError } from "./errors.js";
+import { FallbackTargetRejectedError, NamedTargetRejectedError } from "./errors.js";
 import { handOffFallbackSource } from "./fallback-source.js";
 
 import type { EngineName, FallbackTarget } from "./types.js";
@@ -124,6 +124,72 @@ export function withTargetChain<T extends { fallback?: FallbackTarget[] }>(from:
   return settled;
 }
 
+/**
+ * A fallback-chain entry settled for dispatch: a literal entry as declared,
+ * or a named one as its binding resolves it. `namedTarget` is the name the
+ * entry was declared through, or null for a literal entry.
+ */
+export interface SettledChainEntry {
+  engine: EngineName;
+  /** Undefined only for a named entry whose binding, and the script's `defaults` for its engine, name no model: the engine's own default. */
+  model: string | undefined;
+  effort: string | undefined;
+  namedTarget: string | null;
+}
+
+/** The script's `defaults` model per engine, handed from the hooks to the runtime by identity, for named chain entries. */
+const declaredModels = new WeakMap<object, (engine: EngineName) => string | undefined>();
+
+/**
+ * Attach the script's per-engine `defaults` model lookup to `options`, so a
+ * named chain entry whose binding names no model takes the model the
+ * script declares for that engine, as a call naming that engine would.
+ * Returns `options`.
+ */
+export function withDeclaredModels<T extends object>(options: T, lookup: (engine: EngineName) => string | undefined): T {
+  declaredModels.set(options, lookup);
+  return options;
+}
+
+/**
+ * Settle a call's chain for dispatch. A named entry takes its binding's
+ * engine and model — never the binding's own chain, since chains do not
+ * nest — the model falling back to the script's `defaults` model for that
+ * engine (as handed off on `passed`), else the engine's own default.
+ *
+ * Refused before anything spawns: a named entry beside a literal engine or
+ * model, or naming a name the bindings do not hold (both naming the file),
+ * and a named entry bound to opencode, which takes no chain entries.
+ */
+export function settleChain(targets: NamedTargets | null, chain: readonly FallbackTarget[] | undefined, passed: object): SettledChainEntry[] {
+  const declaredModel = declaredModels.get(passed) ?? (() => undefined);
+  return (chain ?? []).map((entry, index) => {
+    if (entry.target === undefined) {
+      return { engine: entry.engine, model: entry.model, effort: entry.effort, namedTarget: null };
+    }
+    // The union types forbid the pair; a script's object literal does not.
+    const written = entry as { target: string; engine?: unknown; model?: unknown };
+    if (written.engine !== undefined || written.model !== undefined) {
+      const literal = written.engine !== undefined ? `engine ${JSON.stringify(written.engine)}` : `model ${JSON.stringify(written.model)}`;
+      throw new NamedTargetRejectedError(
+        `fallback entry ${index} names target ${JSON.stringify(entry.target)} beside ${literal}; an entry names a target or a literal engine and model, never both — ${bindingClause(targets)}`
+      );
+    }
+    const binding = bindingFor(targets, entry.target, `fallback entry ${index}: `);
+    if (binding.engine === "opencode") {
+      throw new FallbackTargetRejectedError(
+        `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
+      );
+    }
+    return {
+      engine: binding.engine,
+      model: binding.model ?? declaredModel(binding.engine),
+      effort: entry.effort,
+      namedTarget: entry.target
+    };
+  });
+}
+
 /** The named-target resolution `options` carries, or null where the call named its engine literally. */
 export function namedTargetResolutionOf(options: object): NamedTargetResolution | null {
   return resolutions.get(options)?.resolution ?? null;
@@ -136,7 +202,8 @@ function bindingClause(targets: NamedTargets | null): string {
     : `the binding in ${targets.source} supplies the engine and model`;
 }
 
-function bindingFor(targets: NamedTargets | null, name: string): NamedTargetBinding {
+/** The binding for `name`; refused naming the file when unbound. `context` prefixes the refusal (a chain entry's index). */
+function bindingFor(targets: NamedTargets | null, name: string, context = ""): NamedTargetBinding {
   // `hasOwn`, not a lookup: a name spelling a prototype property
   // (`constructor`) is unbound, not Object's.
   const binding = targets !== null && Object.hasOwn(targets.bindings, name) ? targets.bindings[name] : undefined;
@@ -144,11 +211,11 @@ function bindingFor(targets: NamedTargets | null, name: string): NamedTargetBind
     return binding;
   }
   const bound = targets === null ? [] : Object.keys(targets.bindings);
-  const where =
+  const held =
     targets === null
       ? "this run was given no machine configuration targets"
       : bound.length === 0
         ? `${targets.source} binds no targets`
         : `${targets.source} binds ${bound.map((other) => JSON.stringify(other)).join(", ")}`;
-  throw new NamedTargetRejectedError(`target ${JSON.stringify(name)} is not bound: ${where}`);
+  throw new NamedTargetRejectedError(`${context}target ${JSON.stringify(name)} is not bound: ${held}`);
 }

@@ -14576,7 +14576,7 @@ function assertValidFallbackChain(chain) {
     return;
   }
   if (!Array.isArray(chain)) {
-    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
+    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } or { target, effort? } targets");
   }
   if (chain.length === 0) {
     throw new FallbackTargetRejectedError("the chain must not be empty");
@@ -14584,12 +14584,23 @@ function assertValidFallbackChain(chain) {
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
     if (target === null) {
-      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model`);
+      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model, or a target`);
     }
     for (const key of Object.keys(target)) {
-      if (key !== "engine" && key !== "model" && key !== "effort") {
-        throw new FallbackTargetRejectedError(`entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort`);
+      if (key !== "engine" && key !== "model" && key !== "effort" && key !== "target") {
+        throw new FallbackTargetRejectedError(
+          `entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort, or a named target and optionally effort`
+        );
       }
+    }
+    if (target.effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(target.effort)) {
+      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
+    }
+    if (target.target !== void 0) {
+      if (typeof target.target !== "string" || target.target.trim().length === 0) {
+        throw new FallbackTargetRejectedError(`entry ${index} target must be a non-empty string naming a target the machine configuration binds`);
+      }
+      return;
     }
     if (target.engine === "opencode") {
       throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
@@ -14599,9 +14610,6 @@ function assertValidFallbackChain(chain) {
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
-    }
-    if (target.effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(target.effort)) {
-      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
     }
   });
 }
@@ -15578,6 +15586,11 @@ function validateTargets(root, configFile) {
         throw fileValueError(configFile, `${qualified}.fallback`, error.message);
       }
       throw error;
+    }
+    for (const [index, entry] of (binding.fallback ?? []).entries()) {
+      if (entry.target !== void 0 && !Object.hasOwn(section, entry.target)) {
+        throw fileValueError(configFile, `${qualified}.fallback`, `entry ${index} names target ${JSON.stringify(entry.target)}, which this file does not bind`);
+      }
     }
   }
 }
@@ -18936,20 +18949,52 @@ function withTargetChain(from, to) {
   resolutions.set(settled, carried);
   return settled;
 }
+var declaredModels = /* @__PURE__ */ new WeakMap();
+function withDeclaredModels(options, lookup) {
+  declaredModels.set(options, lookup);
+  return options;
+}
+function settleChain(targets, chain, passed) {
+  const declaredModel = declaredModels.get(passed) ?? (() => void 0);
+  return (chain ?? []).map((entry, index) => {
+    if (entry.target === void 0) {
+      return { engine: entry.engine, model: entry.model, effort: entry.effort, namedTarget: null };
+    }
+    const written = entry;
+    if (written.engine !== void 0 || written.model !== void 0) {
+      const literal2 = written.engine !== void 0 ? `engine ${JSON.stringify(written.engine)}` : `model ${JSON.stringify(written.model)}`;
+      throw new NamedTargetRejectedError(
+        `fallback entry ${index} names target ${JSON.stringify(entry.target)} beside ${literal2}; an entry names a target or a literal engine and model, never both \u2014 ${bindingClause(targets)}`
+      );
+    }
+    const binding = bindingFor(targets, entry.target, `fallback entry ${index}: `);
+    if (binding.engine === "opencode") {
+      throw new FallbackTargetRejectedError(
+        `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
+      );
+    }
+    return {
+      engine: binding.engine,
+      model: binding.model ?? declaredModel(binding.engine),
+      effort: entry.effort,
+      namedTarget: entry.target
+    };
+  });
+}
 function namedTargetResolutionOf(options) {
   return resolutions.get(options)?.resolution ?? null;
 }
 function bindingClause(targets) {
   return targets === null ? "and this run has no targets map to bind the name" : `the binding in ${targets.source} supplies the engine and model`;
 }
-function bindingFor(targets, name) {
+function bindingFor(targets, name, context = "") {
   const binding = targets !== null && Object.hasOwn(targets.bindings, name) ? targets.bindings[name] : void 0;
   if (binding !== void 0) {
     return binding;
   }
   const bound = targets === null ? [] : Object.keys(targets.bindings);
-  const where = targets === null ? "this run was given no machine configuration targets" : bound.length === 0 ? `${targets.source} binds no targets` : `${targets.source} binds ${bound.map((other) => JSON.stringify(other)).join(", ")}`;
-  throw new NamedTargetRejectedError(`target ${JSON.stringify(name)} is not bound: ${where}`);
+  const held = targets === null ? "this run was given no machine configuration targets" : bound.length === 0 ? `${targets.source} binds no targets` : `${targets.source} binds ${bound.map((other) => JSON.stringify(other)).join(", ")}`;
+  throw new NamedTargetRejectedError(`${context}target ${JSON.stringify(name)} is not bound: ${held}`);
 }
 
 // src/progress.ts
@@ -25584,24 +25629,17 @@ var ChainAdvance = class {
   }
   engine;
 };
-function chainTargets(engine, options, namedTarget) {
+function chainTargets(engine, options, chain, namedTarget) {
   return [
     { entry: -1, engine, model: options.model, effort: options.effort, namedTarget: namedTarget?.name ?? null },
-    ...(options.fallback ?? []).map((target, index) => ({
+    ...chain.map((target, index) => ({
       entry: index,
       engine: target.engine,
       model: target.model,
       effort: target.effort ?? options.effort,
-      namedTarget: null
+      namedTarget: target.namedTarget
     }))
   ];
-}
-function withoutChain(options) {
-  return new Proxy(options, {
-    get(source, property, receiver) {
-      return property === "fallback" ? void 0 : Reflect.get(source, property, receiver);
-    }
-  });
 }
 function optionsForTarget(options, target) {
   if (target.entry === -1) {
@@ -26018,6 +26056,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const fallbackSource = fallbackSourceOf(passedOptions, options);
     const namedTarget = namedTargetResolutionOf(passedOptions);
+    const chain = settleChain(this.#namedTargets, options.fallback, passedOptions);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
     }
@@ -26029,7 +26068,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const stripRoutes = strip.length > 0 ? this.#stripRoutesFor(engine, strip) : null;
     const lean = effectiveLean(this.#lean, options.lean);
     const leanRoute = lean ? resolveLeanStart(engine.name, engine.leanStart) : null;
-    for (const target of options.fallback ?? []) {
+    for (const target of chain) {
       const targetEngine = this.#chainEngineFor(target);
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
@@ -26038,7 +26077,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
-    this.#warnSharedSubstrateFallback(engine.name, options);
+    this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
     if (engine instanceof OpenCodeEngineAdapter) {
       if (options.model === void 0) {
         throw new OpenCodeModelRequiredError(engine.modelRegistry);
@@ -26086,7 +26125,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     try {
       await this.#recordAgentSafely(agentRecord);
       unsettled.stage = "admitting";
-      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
+      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, chain, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
         return identifiedResult(options, output, agentRecord);
       }
@@ -26168,7 +26207,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
   resolveNamedTarget(options) {
     return resolveNamedTarget(this.#namedTargets, options);
   }
-  createWorkerSession(options) {
+  createWorkerSession(declared) {
+    let options = declared;
     if (this.#closed) {
       throw new SessionClosedError();
     }
@@ -26180,6 +26220,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const fallbackSource = fallbackSourceOf(options, options);
     const namedTarget = namedTargetResolutionOf(options);
+    const chain = settleChain(this.#namedTargets, options.fallback, options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === void 0) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -26188,7 +26229,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const stripRoutes = strip.length > 0 ? this.#stripRoutesFor(engine, strip) : null;
     const lean = effectiveLean(this.#lean, options.lean);
     const leanRoute = lean ? resolveLeanStart(engine.name, engine.leanStart) : null;
-    for (const target of options.fallback ?? []) {
+    for (const target of chain) {
       const targetEngine = this.#chainEngineFor(target);
       if (targetEngine.createSession === void 0) {
         throw new MultiTurnUnsupportedError(targetEngine.name);
@@ -26200,7 +26241,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
-    this.#warnSharedSubstrateFallback(engine.name, options);
+    this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
     const sessionOptions = strip.length === 0 && !lean ? options : withOptionOverrides(options, { ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} });
     this.#sessionCounter += 1;
     const state = {
@@ -26213,6 +26254,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       leanRoute,
       fallbackSource,
       namedTarget,
+      chain,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
@@ -26324,7 +26366,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         await this.#recordAgentSafely(agentRecord);
         unsettled.stage = "admitting";
         try {
-          const targets = chainTargets(engine.name, state.turnCount === 0 ? options : withoutChain(options), state.namedTarget);
+          const targets = chainTargets(engine.name, options, state.turnCount === 0 ? state.chain : [], state.namedTarget);
           const output = await this.#runChained(
             engine,
             targets,
@@ -26540,10 +26582,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
   }
-  async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt) {
+  async #runAdmitted(engine, prompt, options, chain, agentId, agentRecord, queuedAt) {
     return this.#runChained(
       engine,
-      chainTargets(engine.name, options, agentRecord.namedTarget),
+      chainTargets(engine.name, options, chain, agentRecord.namedTarget),
       { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,
@@ -27712,14 +27754,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return classifyAttemptFailure({ engine, failure, appServerDiagnostic, diagnostics });
   }
   /** A repeated Codex target shares the app-server, even across an intervening engine. */
-  #warnSharedSubstrateFallback(engine, options) {
+  #warnSharedSubstrateFallback(engine, chain, label) {
     let seenCodex = engine === "codex";
-    for (const [entry, target] of (options.fallback ?? []).entries()) {
+    for (const [entry, target] of chain.entries()) {
       if (target.engine !== "codex") continue;
       if (seenCodex) {
         this.#emitEvent({
           method: "codex/sharedSubstrateFallback",
-          params: { entry, label: options.label ?? null },
+          params: { entry, label: label ?? null },
           receivedAt: Date.now()
         });
       }
@@ -28014,9 +28056,10 @@ function createWorkflowHooks(options) {
   };
   const defaults = options.defaults ?? {};
   const track = (promise) => options.runtime.trackCallPromise !== void 0 ? options.runtime.trackCallPromise(promise) : promise;
+  const declaredModel = (engine) => defaults[engine]?.model;
   const resolveTarget = (declared) => options.runtime.resolveNamedTarget !== void 0 ? options.runtime.resolveNamedTarget(declared) : declared;
   function agentWithDefaults(prompt, agentOptions) {
-    return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions, resolveTarget));
+    return options.runtime.agent(prompt, withDeclaredModels(mergeAgentDefaults(defaults, agentOptions, resolveTarget), declaredModel));
   }
   return {
     agent: agentWithDefaults,
@@ -28025,7 +28068,7 @@ function createWorkflowHooks(options) {
       if (createWorkerSession === void 0) {
         throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
       }
-      return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions, resolveTarget));
+      return createWorkerSession.call(options.runtime, withDeclaredModels(mergeSessionDefaults(defaults, sessionOptions, resolveTarget), declaredModel));
     }),
     hold: (holdOptions) => {
       const raiseHold = options.runtime.raiseHold;

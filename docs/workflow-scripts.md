@@ -96,7 +96,11 @@ See [Failures](#failures). A Claude call with no `model` is flagged on stderr.
 ### Fallback chains
 
 `fallback` declares an ordered chain of other targets for a call —
-`[{ engine, model, effort? }, …]`, each a Codex or Claude target. Ensemble
+`[{ engine, model, effort? }, …]`, each a Codex or Claude target, or
+`{ target, effort? }` naming a [named target](#named-targets). A named entry
+takes its binding's engine and model — never the binding's own chain — and a
+binding without a model takes the script's `defaults` model for that engine,
+else the engine's own default. Ensemble
 moves the call to the next target when the current one fails for
 **availability**: the allowance is exhausted, the provider is overloaded past
 its own retries, or the engine's process died or never started. Output
@@ -118,9 +122,11 @@ target and never advance the chain.
   use another engine for recovery from its death.
 - A chain whose every target refuses fails with the last target's own
   failure.
-- An empty or malformed chain, an opencode entry, or an engine the run does
-  not have throws `FallbackTargetRejectedError` before any worker spawns. An
-  opencode call may declare a chain of Codex and Claude targets.
+- An empty or malformed chain, an opencode entry (named or literal), or an
+  engine the run does not have throws `FallbackTargetRejectedError` before any
+  worker spawns. A named entry the configuration does not bind, or one naming
+  a `target` beside an `engine` or `model`, throws `NamedTargetRejectedError`.
+  An opencode call may declare a chain of Codex and Claude targets.
 
 Every step is a dispatch Ensemble makes and records itself. The run record
 shows each attempt's target and which entry answered, and stderr says when a
@@ -305,7 +311,7 @@ engine, throws before any worker spawns.
 | `model` | Model to run (see per-engine notes below) |
 | `effort` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh` |
 | `schema` | JSON Schema the answer must satisfy |
-| `fallback` | Ordered chain of `{ engine, model, effort? }` targets (see [Fallback chains](#fallback-chains)) |
+| `fallback` | Ordered chain of `{ engine, model, effort? }` or `{ target, effort? }` targets (see [Fallback chains](#fallback-chains)) |
 | `cwd` | Worker working directory; must exist. Defaults to the run's working directory |
 | `isolation` | `"worktree"` to run in a fresh git worktree (see [Worktree isolation](#worktree-isolation)) |
 | `timeoutMs` | Per-attempt deadline, a positive integer up to 2147483647. Unbounded when omitted |

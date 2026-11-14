@@ -1,6 +1,6 @@
 import { assertValidAgentOptions } from "./engine-option-validation.js";
 import { attributeMergedChain } from "./fallback-source.js";
-import { withTargetChain } from "./named-targets.js";
+import { withDeclaredModels, withTargetChain } from "./named-targets.js";
 import { BudgetExceededError, PreSpawnAuthorError, agentIdentityOf, isRunEnding } from "./errors.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 
@@ -12,6 +12,7 @@ import type {
   FallbackTarget,
   IdentifiedAgentResult,
   JsonSchema,
+  LiteralWorkerSessionOptions,
   WorkerSessionOptions
 } from "./types.js";
 import type { WorkerSession } from "./runtime.js";
@@ -141,6 +142,9 @@ export function createWorkflowHooks(options: {
   const track = <T,>(promise: Promise<T>): Promise<T> =>
     options.runtime.trackCallPromise !== undefined ? options.runtime.trackCallPromise(promise) : promise;
 
+  // A named chain entry whose binding names no model takes the script's
+  // model for the bound engine, as a call naming that engine would.
+  const declaredModel = (engine: EngineName): string | undefined => defaults[engine]?.model;
   // A named target resolves before the merge, so the `defaults` block that
   // applies is the resolved engine's.
   const resolveTarget = <T extends object>(declared: T): T =>
@@ -155,7 +159,7 @@ export function createWorkflowHooks(options: {
   function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { schema?: undefined }): Promise<string | null>;
   function agentWithDefaults(prompt: string, agentOptions: Partial<AgentOptions>): Promise<string | unknown | null>;
   function agentWithDefaults(prompt: string, agentOptions?: Partial<AgentOptions>): Promise<string | unknown | null> {
-    return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions, resolveTarget));
+    return options.runtime.agent(prompt, withDeclaredModels(mergeAgentDefaults(defaults, agentOptions, resolveTarget), declaredModel));
   }
 
   return {
@@ -167,7 +171,7 @@ export function createWorkflowHooks(options: {
         // honour — never a silent no-op session.
         throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
       }
-      return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions, resolveTarget));
+      return createWorkerSession.call(options.runtime, withDeclaredModels(mergeSessionDefaults(defaults, sessionOptions, resolveTarget), declaredModel));
     }) as WorkflowHooks["session"],
     hold: (holdOptions) => {
       const raiseHold = options.runtime.raiseHold;
@@ -339,8 +343,8 @@ function mergeSessionDefaults(
   defaults: WorkflowDefaults,
   sessionOptions: WorkerSessionOptions,
   resolveTarget: <T extends object>(declared: T) => T
-): WorkerSessionOptions {
-  const declared = resolveTarget(sessionOptions);
+): LiteralWorkerSessionOptions {
+  const declared = resolveTarget(sessionOptions as LiteralWorkerSessionOptions);
   const engineDefaults = typeof declared.engine === "string" ? defaults[declared.engine] : undefined;
   if (engineDefaults === undefined) {
     return withTargetChain(declared, declared);
@@ -351,7 +355,7 @@ function mergeSessionDefaults(
       merged[key] = value;
     }
   }
-  return withTargetChain(declared, attributeMergedChain(merged as unknown as WorkerSessionOptions, declared.fallback, declared.engine));
+  return withTargetChain(declared, attributeMergedChain(merged as unknown as LiteralWorkerSessionOptions, declared.fallback, declared.engine));
 }
 
 /**

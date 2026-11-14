@@ -149,6 +149,72 @@ test("an attempt on a binding's chain entry names no target; the refused own tar
   }
 });
 
+test("a chain entry naming a target takes its binding, the defaults model where the binding names none, never its chain", async () => {
+  const { runtime, codex, records } = recordingRuntime(
+    {
+      reviewer: { engine: "claude", model: "claude-opus-5-5" },
+      bare: { engine: "codex", fallback: [{ engine: "claude", model: "never-dispatched" }] }
+    },
+    { codex: 1, claude: [claudeRefusal(429, "rate_limit")] }
+  );
+  try {
+    const output = await hooksFor(runtime, { codex: { model: "gpt-6.1-sol" } }).agent(
+      "review",
+      named({ target: "reviewer", label: "review", fallback: [{ target: "bare", effort: "low" }] })
+    );
+    assert.equal(output, "codex 1");
+    assert.deepEqual(codex.dispatches.map((dispatch) => [dispatch.model, dispatch.effort]), [["gpt-6.1-sol", "low"]]);
+    const record = settled(records, "review");
+    // The record keeps the chain as declared; each attempt names its target.
+    assert.deepEqual(record.fallback, [{ target: "bare", effort: "low" }]);
+    assert.deepEqual(record.attempts.map((attempt) => [attempt.namedTarget, attempt.target]), [
+      ["reviewer", { engine: "claude", model: "claude-opus-5-5" }],
+      ["bare", { engine: "codex", model: "gpt-6.1-sol" }]
+    ]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a binding's own chain may name another target", async () => {
+  const { runtime, codex, records } = recordingRuntime(
+    { reviewer: { engine: "claude", model: "claude-opus-5-5", fallback: [{ target: "doer" }] }, doer: { engine: "codex", model: "gpt-6-astra" } },
+    { codex: 1, claude: [claudeRefusal(429, "rate_limit")] }
+  );
+  try {
+    assert.equal(await hooksFor(runtime).agent("review", named({ target: "reviewer", label: "review" })), "codex 1");
+    assert.deepEqual(codex.dispatches.map((dispatch) => dispatch.model), ["gpt-6-astra"]);
+    assert.deepEqual(settled(records, "review").attempts.map((attempt) => attempt.namedTarget), ["reviewer", "doer"]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("named chain-entry mistakes are refused before any worker spawns", async () => {
+  const bindings: Record<string, NamedTargetBinding> = { doer: { engine: "codex" }, local: { engine: "opencode", model: "glm" } };
+  const cases: Array<{ fallback: unknown; pattern: RegExp }> = [
+    { fallback: [{ target: "revewer" }], pattern: /fallback entry 0: target "revewer" is not bound: \/machine\/ensemble\/config\.json binds "doer", "local"/ },
+    { fallback: [{ target: "doer", engine: "codex" }], pattern: /fallback entry 0 names target "doer" beside engine "codex".*\/machine\/ensemble\/config\.json/ },
+    { fallback: [{ target: "doer", model: "x" }], pattern: /fallback entry 0 names target "doer" beside model "x"/ },
+    { fallback: [{ target: "local" }], pattern: /entry 0 names target "local", bound to the opencode engine/ },
+    { fallback: [{ target: "" }], pattern: /entry 0 target must be a non-empty string/ },
+    { fallback: [{ target: "doer", effort: "extreme" }], pattern: /entry 0 effort must be one of/ }
+  ];
+  for (const entry of cases) {
+    const { runtime, codex, claude, records } = recordingRuntime(bindings);
+    try {
+      await assert.rejects(
+        async () => hooksFor(runtime).agent("prompt", { engine: "claude", fallback: entry.fallback } as unknown as AgentOptions),
+        entry.pattern
+      );
+      assert.equal(codex.dispatches.length + claude.dispatches.length, 0);
+      assert.deepEqual(records, []);
+    } finally {
+      await runtime.close();
+    }
+  }
+});
+
 test("a library caller's direct agent() call resolves its target and takes the binding's chain", async () => {
   const chain = [{ engine: "codex" as const, model: "binding-fallback" }];
   const { runtime, claude, records } = recordingRuntime({ reviewer: { engine: "claude", model: "claude-opus-5-5", fallback: chain } });
@@ -180,10 +246,12 @@ test("a session names a target as agent() does, resolving it before creation", a
   try {
     // The chain fakes hold no sessions, so creation refuses on the engine
     // the name resolved to: the resolution is what is asserted.
-    assert.throws(
-      () => hooksFor(runtime).session({ target: "reviewer", label: "held" } as unknown as WorkerSessionOptions),
-      (error: Error) => error.name === "MultiTurnUnsupportedError" && error.message.includes("claude")
-    );
+    // Both calls are typed: a target-only session compiles against the
+    // public signatures of the hook and of the runtime.
+    const declared: WorkerSessionOptions = { target: "reviewer", label: "held" };
+    for (const create of [() => hooksFor(runtime).session(declared), () => runtime.createWorkerSession({ target: "reviewer" })]) {
+      assert.throws(create, (error: Error) => error.name === "MultiTurnUnsupportedError" && error.message.includes("claude"));
+    }
     assert.deepEqual(records, []);
   } finally {
     await runtime.close();
@@ -254,7 +322,7 @@ test("the machine configuration's targets section binds names, refusing unknown 
   try {
     const bindings = {
       doer: { engine: "codex" },
-      reviewer: { engine: "claude", model: "claude-opus-5-5", fallback: [{ engine: "codex", model: "gpt-6.1-sol", effort: "low" }] },
+      reviewer: { engine: "claude", model: "claude-opus-5-5", fallback: [{ engine: "codex", model: "gpt-6.1-sol", effort: "low" }, { target: "doer" }] },
       codex: { engine: "claude" }
     };
     assert.deepEqual((await resolve({ schema_version: 1, targets: bindings })).namedTargets, { bindings, source: configFile });
@@ -269,7 +337,11 @@ test("the machine configuration's targets section binds names, refusing unknown 
       { targets: { doer: { engine: "codex", fallback: [] } }, pattern: /targets\.doer\.fallback in .*config\.json: Invalid fallback chain: the chain must not be empty/ },
       { targets: { " ": { engine: "codex" } }, pattern: /targets in .*config\.json: target names must be non-empty/ },
       { targets: { doer: "codex" }, pattern: /targets\.doer in .*config\.json: must be a JSON object/ },
-      { targets: ["doer"], pattern: /targets in .*config\.json: must be a JSON object/ }
+      { targets: ["doer"], pattern: /targets in .*config\.json: must be a JSON object/ },
+      {
+        targets: { doer: { engine: "codex", fallback: [{ target: "reviewer" }] } },
+        pattern: /targets\.doer\.fallback in .*config\.json: entry 0 names target "reviewer", which this file does not bind/
+      }
     ];
     for (const entry of refusals) {
       await assert.rejects(resolve({ schema_version: 1, targets: entry.targets }), entry.pattern);

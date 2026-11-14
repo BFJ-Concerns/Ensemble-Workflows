@@ -780,8 +780,10 @@ The fields present throughout a record's lifetime are:
   `unresolved` in the cost roll-up.
   opencode reports no served identity, so its `resolved_model` is the
   configured `provider_model` the worker was launched with.
-- `fallback`: the fallback chain in force for this record
-  (`[{ engine, model, effort? }]`), or `null` when none applies.
+- `fallback`: the fallback chain in force for this record, as declared
+  (`[{ engine, model, effort? }]`, a named entry as `{ target, effort? }`), or
+  `null` when none applies. An attempt on a named entry names it in its
+  `named_target`, beside the engine and model it resolved to in `target`.
 - `fallback_source`: where `fallback` came from, as an object whose `kind`
   names the source:
   - `{ "kind": "call" }`: the call's own `fallback` option.
@@ -896,9 +898,9 @@ The fields present throughout a record's lifetime are:
     attempt was dispatched to — the call's own until a fallback chain
     advances).
   - `named_target`: the name this attempt's target was asked for through —
-    the call's named target while the attempt runs on the call's own target,
-    and `null` on a fallback entry or for a call that named its engine
-    directly.
+    the call's named target on the call's own target, the entry's on a named
+    fallback entry, and `null` on a literal entry or for a call that named
+    its engine directly.
   - `started_at`, `ended_at`, `duration_ms` (the engine's own measurement
     where it reports one, otherwise the attempt's recorded endpoints, so a
     settled attempt never has a `null` duration), and `first_delta_ms`.

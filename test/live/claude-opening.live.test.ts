@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { inspect } from "node:util";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { ClaudeCliControlPlane } from "../../src/claude-control-plane.js";
 import { ClaudeRegistrationTimeoutError, failedTurnResultOf } from "../../src/errors.js";
 import { parseTranscriptText } from "../../src/claude-transcript.js";
@@ -25,6 +26,7 @@ for (const [size, suffix, expectedAnswer, description] of [
     skip: process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false, timeout: 360_000
   }, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-live-"));
+    let testFailed = false;
     try {
       // The short prompt is the verifier's witness; long prompts reuse the
       // existing authored opening with indexed terminal-delivery test data.
@@ -69,7 +71,10 @@ for (const [size, suffix, expectedAnswer, description] of [
         assert.notEqual(record.attempts[0]?.failure?.kind, "claude-delivery-error");
       }
       console.log(JSON.stringify({ size: prompt.length, bytes: Buffer.byteLength(prompt), sha256: createHash("sha256").update(prompt).digest("hex"), session: reference.session_id, status: record.status, failure: record.attempts.at(-1)?.failure, exact: true, answer: JSON.parse(result.stdout) }));
-    } finally { await rm(dir, { recursive: true, force: true }); }
+    } catch (error) {
+      testFailed = true;
+      throw error;
+    } finally { await removeTestDirectory(dir, testFailed); }
   });
 }
 
@@ -77,6 +82,7 @@ test("a native empty launch that cannot submit is removed before its availabilit
   skip: process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false, timeout: 120_000
 }, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-launch-failure-"));
+  let testFailed = false;
   try {
     const refusedTmux = path.join(dir, "tmux.mjs");
     await writeFile(refusedTmux, "#!/usr/bin/env node\nprocess.stderr.write('fixture attachment refused'); process.exit(1);\n");
@@ -102,5 +108,8 @@ test("a native empty launch that cannot submit is removed before its availabilit
     const remaining = await plane.poll({ ...account.roster, cwd: dir });
     assert.equal(remaining.present, false, "a rejected launch left its native session behind");
     console.log(JSON.stringify({ removedSession: account.roster.sessionId, dispatchExit: account.command.exitCode, submissionRefused: true }));
-  } finally { await rm(dir, { recursive: true, force: true }); }
+  } catch (error) {
+    testFailed = true;
+    throw error;
+  } finally { await removeTestDirectory(dir, testFailed); }
 });

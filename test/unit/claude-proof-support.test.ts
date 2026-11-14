@@ -77,15 +77,14 @@ test("Claude selection uses PATH order in a home without a local launcher", asyn
   });
 });
 
-test("Codex-only scope cases reach their own prerequisites without a Claude installation", async () => {
+test("Codex-only scope cases skip their missing model without a Claude installation", async () => {
   await fixture(async (root) => {
     const result = await exec(process.execPath, [
       "--test", "--test-reporter=tap", "--test-name-pattern=^built launcher scopes: (direct|unreachable manager) codex$",
       path.resolve("dist/test/live/worker-scopes.live.test.js")
-    ], { env: { ...process.env, HOME: root, PATH: root, NODE_TEST_CONTEXT: undefined, ENSEMBLE_LIVE: "1", ENSEMBLE_LIVE_CODEX_MODEL: "" } })
-      .then(() => assert.fail("the Codex model prerequisite must refuse the run"), (error: unknown) => error as { stdout: string });
-    assert.equal((result.stdout.match(/UNPROVEN: ENSEMBLE_LIVE_CODEX_MODEL is required/g) ?? []).length, 2);
-    assert.doesNotMatch(result.stdout, /hookFailed|ENOENT|not found on PATH/);
+    ], { env: { ...process.env, HOME: root, PATH: root, NODE_TEST_CONTEXT: undefined, ENSEMBLE_LIVE: "1", ENSEMBLE_LIVE_CODEX_MODEL: "" } });
+    assert.equal((result.stdout.match(/# SKIP ENSEMBLE_LIVE_CODEX_MODEL is unset/g) ?? []).length, 2);
+    assert.doesNotMatch(result.stdout, /UNPROVEN|not ok|hookFailed|ENOENT|not found on PATH/);
   });
 });
 

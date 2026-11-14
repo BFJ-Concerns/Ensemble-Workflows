@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { liveCodexModel, liveCodexScriptOptions } from "./live-models.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
@@ -55,6 +56,7 @@ test(
     const dataHome = path.join(directory, "data");
     const token = `LIVE_SERIALISABILITY_${randomUUID()}`;
 
+    let testFailed = false;
     try {
       await writeFile(
         script,
@@ -117,8 +119,11 @@ test(
           attemptStatus: "complete"
         }
       });
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await removeTestDirectory(directory, testFailed);
     }
   }
 );

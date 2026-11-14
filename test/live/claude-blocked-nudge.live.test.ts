@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { ClaudeCliControlPlane, type ClaudeSessionHandle } from "../../src/claude-control-plane.js";
 import { parseTranscriptText } from "../../src/claude-transcript.js";
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
@@ -77,6 +78,7 @@ for (const refuse of [false, true]) {
     const address = server.address();
     assert.ok(address && typeof address !== "string");
     let runtime: EnsembleRuntime | undefined;
+    let testFailed = false;
     try {
       await mkdir(configDir);
       await writeFile(path.join(configDir, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true }));
@@ -144,6 +146,9 @@ for (const refuse of [false, true]) {
         session: submissions[0]?.session, attempts: record?.attempts.length, failure: record?.attempts[0]?.failure,
         nativeUserTurns: inputs.length, exactNudge: true, result
       }));
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
       await runtime?.close();
       // This configuration directory owns its daemon; the operator's is separate.
@@ -151,7 +156,7 @@ for (const refuse of [false, true]) {
       catch { /* The daemon can already have stopped after its last session. */ }
       server.closeAllConnections();
       await new Promise<void>(resolve => server.close(() => resolve()));
-      await rm(dir, { recursive: true, force: true });
+      await removeTestDirectory(dir, testFailed);
     }
   });
 }

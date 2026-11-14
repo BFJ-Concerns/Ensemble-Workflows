@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { parseTranscriptText } from "../../src/claude-transcript.js";
 import { findOnlyFile, runNode } from "../integration/estate-process.js";
 
@@ -13,6 +14,7 @@ test("built Claude follow-up preserves leading and trailing whitespace in one ex
   skip: process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false, timeout: 360_000
 }, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-follow-up-whitespace-"));
+  let testFailed = false;
   try {
     const task = "Reply with exactly the word PINEAPPLE and nothing else.";
     const prompt = "\n\t \u00a0" + task + "\r\n \t\u2003\n";
@@ -59,5 +61,8 @@ test("built Claude follow-up preserves leading and trailing whitespace in one ex
     const enclosed = sent.slice(boundary.index + boundary[0].length, -`</${boundary[1]}>`.length);
     assert.deepEqual(Buffer.from(enclosed), Buffer.from(prompt), "the native receipt must preserve every task byte");
     console.log(JSON.stringify({ session: reference.session_id, attempts: records.map(record => record.attempts.length), exact: true, answer: JSON.parse(result.stdout) }));
-  } finally { await rm(dir, { recursive: true, force: true }); }
+  } catch (error) {
+    testFailed = true;
+    throw error;
+  } finally { await removeTestDirectory(dir, testFailed); }
 });

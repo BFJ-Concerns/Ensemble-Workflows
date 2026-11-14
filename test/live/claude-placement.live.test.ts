@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { createRuntime } from "../../src/index.js";
 import { RunRecordWriter } from "../../src/run-record.js";
@@ -42,6 +43,7 @@ test("live Claude edits its placed checkout, subdirectory and Ensemble worktree"
     cwd: repo, workerEnvironment: ambient.workerEnvironment,
     defaultTurnTimeoutMs: 240_000, defaultMaxAttempts: 1
   });
+  let testFailed = false;
   try {
     const writer = await RunRecordWriter.start({
       storeDir: path.join(root, "records"), cwd: repo, runUuid: randomUUID(),
@@ -82,11 +84,14 @@ test("live Claude edits its placed checkout, subdirectory and Ensemble worktree"
     }
     await runtime.close();
     await writer.finish({ status: "complete", exitCode: 0, result: true });
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
     await runtime.close();
     for (const tree of runtime.worktrees) {
       await git(repo, ["worktree", "remove", "--force", tree.path]);
     }
-    await rm(root, { recursive: true, force: true });
+    await removeTestDirectory(root, testFailed);
   }
 });

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { ClaudeCliControlPlane } from "../../src/claude-control-plane.js";
 import { parseTranscriptText } from "../../src/claude-transcript.js";
@@ -62,6 +63,7 @@ test("native held Claude retains its attachment and context through idle, then r
   runtime.setRunRecorder(writer);
   const attachments = async () => (await readFile(actions, "utf8")).trim().split("\n").filter(Boolean)
     .map(line => JSON.parse(line) as string[]).filter(args => args.includes("new-session") && args.some(arg => arg.startsWith("ensemble-held-")));
+  let testFailed = false;
   try {
     // Reuse the existing input-test instructions unchanged: its later plain
     // data message must receive OK from the same native conversation.
@@ -105,5 +107,8 @@ test("native held Claude retains its attachment and context through idle, then r
     assert.equal(failed.attempts[0].failure.kind, "session-lost");
     for (const args of await attachments()) await assert.rejects(exec("tmux", ["-S", args[1]!, "has-session"]));
     console.log(JSON.stringify({ nativeSession: handle.sessionId, idleMs, contextContinued: true, userTurns: 2, lossEvents: 1, lostAttempts: 1, attachmentsRemoved: true }));
-  } finally { await runtime.close(); await plane.close(); await rm(dir, { recursive: true, force: true }); }
+  } catch (error) {
+    testFailed = true;
+    throw error;
+  } finally { await runtime.close(); await plane.close(); await removeTestDirectory(dir, testFailed); }
 });

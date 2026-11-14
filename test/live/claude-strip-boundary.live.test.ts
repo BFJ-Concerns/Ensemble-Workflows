@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { ClaudeCliControlPlane } from "../../src/claude-control-plane.js";
 import { ClaudeStripPreparer } from "../../src/claude-strip-preparation.js";
 import { CLAUDE_TOOL_CLASSIFICATION, claudeToolSurfaceProbePrompt, readClaudeToolSurface } from "../../src/claude-tool-surface.js";
@@ -40,13 +41,17 @@ async function fixture() {
   }));
   const env = { ...workerEnv, XDG_CONFIG_HOME: xdg, TMPDIR: root,
     ENSEMBLE_STATUS: "0", ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records") };
-  return { root, workerEnv, env, provider, async close() {
+  return { root, workerEnv, env, provider, async close(testFailed = false) {
+    let cleanupFailed = false;
     try {
       // This config directory belongs solely to this test. No operator daemon is stopped.
       await exec("claude", ["daemon", "stop", "--any"], { env: { ...process.env, ...env }, timeout: 15_000 });
+    } catch (error) {
+      cleanupFailed = true;
+      throw error;
     } finally {
       await provider.close();
-      await rm(root, { recursive: true, force: true });
+      await removeTestDirectory(root, testFailed || cleanupFailed);
     }
   } };
 }
@@ -55,6 +60,7 @@ test("a stripped Claude worker is offered no agent or skill tool, while unstripp
   { skip, timeout: 600_000 }, async (t) => {
     const f = await fixture();
     const nonces = [randomUUID(), randomUUID(), randomUUID()];
+    let testFailed = false;
     try {
       const workflow = path.join(f.root, "surface.mjs");
       await writeFile(workflow, `export const meta = { name: "claude-strip-boundary" };
@@ -104,7 +110,10 @@ test("a stripped Claude worker is offered no agent or skill tool, while unstripp
           assert.ok(nonces.some(nonce => JSON.stringify(request.body).includes(nonce)), "an unstripped worker triggered a preparation probe");
         }
       }
-    } finally { await f.close(); }
+    } catch (error) {
+      testFailed = true;
+      throw error;
+    } finally { await f.close(testFailed); }
   });
 
 test("a built-in agent tool nobody has classified is denied while unrelated tools stay available",
@@ -119,6 +128,7 @@ test("a built-in agent tool nobody has classified is denied while unrelated tool
       surfaces.push(surface);
       return surface;
     } });
+    let testFailed = false;
     try {
       const prepared = await preparer.prepare({ strip: ["agents"], cwd: f.root, model: "haiku" });
       t.diagnostic(JSON.stringify({ prepared, surfaces }));
@@ -134,5 +144,8 @@ test("a built-in agent tool nobody has classified is denied while unrelated tool
       assert.deepEqual(skills.settingsEnv, {});
       assert.ok(surfaces[3]?.tools.some(tool => tool.name === "advisor"), "skills-only strip removed advisor");
       assert.ok(!surfaces[3]?.tools.some(tool => tool.name === "Skill"));
-    } finally { t.diagnostic(JSON.stringify({ surfaces })); preparer.close(); await plane.close(); await f.close(); }
+    } catch (error) {
+      testFailed = true;
+      throw error;
+    } finally { t.diagnostic(JSON.stringify({ surfaces })); preparer.close(); await plane.close(); await f.close(testFailed); }
   });

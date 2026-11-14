@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { runNode } from "../integration/estate-process.js";
 import type { ProcessResult } from "../integration/estate-process.js";
 import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths, waitForPath } from "./held-worker-probes.js";
@@ -27,6 +28,7 @@ for (const engine of ["claude", "codex"] as const) {
       evidence: { kind: "marker", content: `${name}_${randomUUID()}` },
       token: `RELEASED_${randomUUID()}`
     }));
+    let testFailed = false;
     try {
       const store = path.join(directory, "records");
       const workflow = path.join(directory, "workflow.mjs");
@@ -103,6 +105,9 @@ for (const engine of ["claude", "codex"] as const) {
       } else {
         assert.equal(held[0]!.attempts[0]!.transcript, held[1]!.attempts[0]!.transcript);
       }
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
       try {
         // Release every possible hold even when an observation fails.
@@ -113,7 +118,7 @@ for (const engine of ["claude", "codex"] as const) {
           await appendFile(acknowledgements, "stop\n");
         } finally {
           await Promise.allSettled(processes);
-          await rm(directory, { recursive: true, force: true });
+          await removeTestDirectory(directory, testFailed);
         }
       }
     }

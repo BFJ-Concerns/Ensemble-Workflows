@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { removeTestDirectory } from "../failure-evidence.js";
 import { runNode, runProcess } from "../integration/estate-process.js";
 import type { ProcessResult } from "../integration/estate-process.js";
 import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths } from "./held-worker-probes.js";
@@ -28,6 +29,7 @@ for (const engine of ["claude", "codex"] as const) {
       token: `RELEASED_${randomUUID()}`
     }));
     let reader: Promise<ProcessResult> | undefined;
+    let testFailed = false;
     try {
       await mkdir(repo);
       const init = await runProcess("git", ["-C", repo, "init", "--initial-branch=main"]);
@@ -106,10 +108,13 @@ for (const engine of ["claude", "codex"] as const) {
       assert.equal(held.length, 2);
       if (engine === "claude") assert.equal(held[0][1].latest.transcript, held[1][1].latest.transcript);
       else assert.notEqual(held[0][1].latest.transcript, held[1][1].latest.transcript);
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
       await Promise.all(probes.map((probe) => writeFile(probe.paths.release, "")));
       if (reader) await Promise.allSettled([reader]);
-      await rm(directory, { recursive: true, force: true });
+      await removeTestDirectory(directory, testFailed);
     }
   });
 }
@@ -119,6 +124,7 @@ for (const engine of ["claude", "codex"] as const) {
 for (const engine of ["claude", "codex"] as const) {
   test(`${engine} placement failure is retained with its harness kind and message`, { timeout: 35_000 }, async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-placement-"));
+    let testFailed = false;
     try {
       const repo = path.join(directory, "not-a-repository");
       await mkdir(repo);
@@ -147,7 +153,10 @@ for (const engine of ["claude", "codex"] as const) {
       const report = JSON.parse(result.stdout);
       assert.equal(report.snapshot.totals.failed, 1);
       assert.equal(report.snapshot.totals.done, 0);
-    } finally { await rm(directory, { recursive: true, force: true }); }
+    } catch (error) {
+      testFailed = true;
+      throw error;
+    } finally { await removeTestDirectory(directory, testFailed); }
   });
 }
 

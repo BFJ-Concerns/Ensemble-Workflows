@@ -77,6 +77,14 @@ version 1:
       "family": "glm",
       "billing": "pay-as-you-go"
     }
+  },
+  "targets": {
+    "doer": { "engine": "codex", "model": "gpt-6.1-sol" },
+    "reviewer": {
+      "engine": "claude",
+      "model": "claude-opus-5-5",
+      "fallback": [{ "engine": "codex", "model": "gpt-6-astra" }]
+    }
   }
 }
 ```
@@ -93,6 +101,7 @@ version 1:
 | `status.dir` | string | Directory for live status files; must already exist while status is on |
 | `worker_environment.<engine>` | object of strings | Environment variables injected into that engine's workers |
 | `opencode_models` | object | The models opencode workers may use |
+| `targets` | object | Your own names for an engine, with or without a model and a fallback chain |
 
 Every numeric value must be an integer of at least 1. The file is strict: an
 unsupported `schema_version`, an unknown key, an invalid value, an unreadable
@@ -277,6 +286,35 @@ With no `variants` declared, any `effort` on that model throws before the
 worker spawns. Take variants from the provider's own listing: `opencode run`
 forwards an unknown variant without complaint.
 
+### `targets`
+
+Binds names of your choosing to an engine, with or without a model, and
+optionally a fallback chain. A workflow names one through `target` in place
+of `engine` and `model` (see
+[Named targets](workflow-scripts.md#named-targets)), and `ensemble agent`
+through `--target`. One edit here moves every workflow on the machine that
+uses the name: onto another model, or off a misbehaving model family, with no
+script edited. Ensemble ships no names, and the section exists only in the
+file.
+
+Each key is a name; the value is its binding:
+
+| Field | Required | Description |
+|---|---|---|
+| `engine` | Yes | `codex`, `claude` or `opencode` |
+| `model` | No | The model to dispatch. Without it, the call takes the script's `defaults` model for the bound engine, else the engine's own default, as a call that pins no model does |
+| `fallback` | No | A fallback chain, in the same form as an `agent()` call's `fallback` |
+
+A name may spell an engine's name: names are their own namespace, reached only
+through `target`. A binding to an engine other than `codex`, `claude` or
+`opencode`, a blank model, a malformed chain, or an unknown field stops every
+run before any worker starts, naming the key and the file. An opencode
+binding's model is checked against `opencode_models` when a call dispatches on
+it, as for a call naming opencode directly.
+
+The binding's chain applies only where neither the call nor the script's
+`defaults` block for the bound engine declares one.
+
 ## Environment variables
 
 | Variable | Description |
@@ -387,6 +425,7 @@ environment variable:
 | `lean` | `false` | Start every worker without the operator's interactive context; per-call `lean: false` cannot lift it |
 | `workerEnvironment` | None | Per-engine variables injected above inherited values; pass the resolved `worker_environment` map explicitly |
 | `openCodeModels` | None | The models opencode workers may name, in the registry entry shape; the library reads no machine configuration, so without this option every opencode call is refused |
+| `namedTargets` | None | The names calls may give as `target`: `{ bindings, source }`, where `bindings` is the `targets` map and `source` the file it came from, which every refusal names. Without it, every named target is refused as unbound |
 | `openCodeModelSource` | `{ kind: "caller" }` | Where `openCodeModels` were declared: `{ kind: "machine-config", file }` for models taken from a machine configuration file, `{ kind: "caller" }` otherwise. An opencode refusal draws on it to say where models are declared |
 
 `firstOutputTimeoutMs` is satisfied by any output-bearing turn frame, not only

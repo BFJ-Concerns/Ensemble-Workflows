@@ -50,6 +50,7 @@ interface EngineDefaultOptions {
 
 const AGENT_OPTION_KEYS = Object.keys({
   engine: true,
+  target: true,
   schema: true,
   model: true,
   effort: true,
@@ -142,10 +143,16 @@ export function assertValidAgentOptions(options: object): void {
       }
     });
   }
+  const target = read("target", "a target name");
+  if (target !== unreadable) {
+    collect(() => assertValidTargetName(target));
+  }
   // Harness-owned domain, judged before any worker spawns; opencode's
   // effort is the registry entry's served variants, judged by its adapter.
+  // A call naming a target has no engine until the name resolves, and is
+  // judged again then.
   const engine = read("engine", "an engine name");
-  if (engine !== unreadable && engine !== "opencode") {
+  if (engine !== unreadable && engine !== "opencode" && target === undefined) {
     const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
     if (effort !== unreadable) {
       collect(() => assertCanonicalEffortSupported(effort));
@@ -191,6 +198,7 @@ export function assertValidAgentOptions(options: object): void {
 
 const WORKER_SESSION_OPTION_KEYS = Object.keys({
   engine: true,
+  target: true,
   model: true,
   effort: true,
   fallback: true,
@@ -230,7 +238,9 @@ export function assertValidWorkerSessionOptions(options: object): void {
   // creation, so an out-of-domain level must fail before the held worker
   // spawns. opencode sessions are refused pre-spawn elsewhere; the
   // exemption here keeps the two rejections from racing to name the error.
-  if (values.engine !== "opencode") {
+  // A session naming a target is judged once the name resolves.
+  assertValidTargetName(values.target);
+  if (values.engine !== "opencode" && values.target === undefined) {
     assertCanonicalEffortSupported(values.effort);
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
@@ -248,6 +258,18 @@ export function assertValidWorkerSessionOptions(options: object): void {
     assertValidStripOption(values.strip);
   }
   assertValidFallbackChain(values.fallback);
+}
+
+/**
+ * A `target` names a binding in the machine configuration's `targets` map:
+ * a non-empty string. Whether the name is bound, and whether the call also
+ * names a literal engine or model, is judged where the bindings are known
+ * (`resolveNamedTarget`), so that refusal can name the file.
+ */
+function assertValidTargetName(target: unknown): void {
+  if (target !== undefined && (typeof target !== "string" || target.trim().length === 0)) {
+    throw new InvalidAgentOptionValueError("target", target, "a non-empty string naming a target the machine configuration binds");
+  }
 }
 
 const SESSION_TURN_OPTION_KEYS = ["schema"];

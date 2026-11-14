@@ -589,6 +589,11 @@ families; their versions are listed in [Schema versions](#schema-versions).
 - `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
   ceilings and whole-run timeout, each as `{ value, layer }`. Both are set by
   flag only, so their layers are `flag` or `default`.
+- `named_targets`: the named targets in force when the run started —
+  `source`, the machine configuration file they are read from (`null` for a
+  library run given none), and `bindings`, each name's
+  `{ engine, model, fallback }` with `model` and `fallback` `null` where the
+  binding names none. A file with no `targets` section records `{}`.
 - `workflow_invocations`: the root workflow and every child it invoked through
   `workflow()`, in the order they were recorded — call order, except that
   concurrent `workflow()` calls are recorded as each one resolves. Each entry carries an ordinal (0 for the root),
@@ -711,6 +716,8 @@ While an attempt executes, on any engine, the record also has
 - `started_at`: the ISO start time, written before the engine is invoked.
 - `target`: `{ engine, model }`, the target dispatched to, as on a settled
   attempt.
+- `named_target`: the named target this attempt was asked for through, as on
+  a settled attempt.
 - `transcript`: a path once a readable file exists, otherwise `null`.
   opencode has no live transcript, so its value stays `null`.
 - `resolved_model` and `resolved_effort`: the served identity the engine has
@@ -756,7 +763,14 @@ The fields present throughout a record's lifetime are:
   `header_identity` as `"original_request"`, because those fields describe
   the request in such records too.
 - `engine`, `model`, `effort`: what was asked for (`effort` as the canonical
-  level).
+  level). For a call naming a target, these are what the name resolved to,
+  with the script's `defaults` applied.
+- `named_target`: the named target the call asked for, or `null` for a call
+  that named its engine directly. Otherwise `{ name, source, engine, model }`:
+  the name, the configuration file whose binding answered, and the binding's
+  engine and model, `model` being `null` where the binding names none (the
+  top-level `model` then shows what the `defaults` block chose, or `null` for
+  the engine's own default).
 - `resolved_model` / `resolved_effort`: what was actually served, as the
   engine reported it — Codex's `thread/start` answer, or the `model` and
   `effort` fields Claude Code writes on each assistant transcript entry —
@@ -773,6 +787,9 @@ The fields present throughout a record's lifetime are:
   - `{ "kind": "call" }`: the call's own `fallback` option.
   - `{ "kind": "defaults", "engine": "<engine>" }`: the script's `defaults`
     block for that engine, which the call left to supply the chain.
+  - `{ "kind": "target", "target": "<name>" }`: the binding of the named
+    target the call asked for, which the call and its `defaults` block left
+    to supply the chain.
   - `{ "kind": "none" }`: neither the call nor its `defaults` block declared
     a chain. A direct library call has no `defaults`, so its chain reads
     `call` or `none`.
@@ -866,7 +883,7 @@ The fields present throughout a record's lifetime are:
     included.
   - `status`: `"complete"`, `"failed"`, or `"abandoned"`. An abandoned entry
     is one whose outcome was never observed. It keeps the evidence persisted
-    while it ran: `attempt`, `target`, `started_at`, `resolved_model` and
+    while it ran: `attempt`, `target`, `named_target`, `started_at`, `resolved_model` and
     `resolved_effort`. Every outcome field — `ended_at`, `duration_ms`,
     `first_delta_ms`, `raw_output`, `validated_output`, `failure`,
     `classification`, `chain_decision`, `observed_failure`, `worker_exit`,
@@ -878,6 +895,10 @@ The fields present throughout a record's lifetime are:
   - `target` (`{ engine, model }`: the engine and requested model this
     attempt was dispatched to — the call's own until a fallback chain
     advances).
+  - `named_target`: the name this attempt's target was asked for through —
+    the call's named target while the attempt runs on the call's own target,
+    and `null` on a fallback entry or for a call that named its engine
+    directly.
   - `started_at`, `ended_at`, `duration_ms` (the engine's own measurement
     where it reports one, otherwise the attempt's recorded endpoints, so a
     settled attempt never has a `null` duration), and `first_delta_ms`.

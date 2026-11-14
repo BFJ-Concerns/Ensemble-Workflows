@@ -16,6 +16,7 @@
   "label",
   "lean",
   "model",
+  "named_target",
   "options",
   "parse_route",
   "phase",

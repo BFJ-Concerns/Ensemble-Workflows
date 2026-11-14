@@ -1,5 +1,6 @@
 import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { StrippableCapability } from "./capability-stripping.js";
+import type { NamedTargets } from "./named-targets.js";
 import type { OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode-model-registry.js";
 
 export type JsonObject = Record<string, unknown>;
@@ -31,7 +32,18 @@ export interface FallbackTarget {
 }
 
 export interface AgentOptions {
+  /**
+   * The engine to dispatch on. A call names its engine here, or names a
+   * `target` instead and leaves `engine` and `model` to the binding.
+   */
   engine: EngineName;
+  /**
+   * A named target the machine configuration's `targets` map binds to an
+   * engine, with or without a model and optionally a fallback chain. The
+   * harness resolves it before any worker spawns; a call naming a target
+   * names no `engine` or `model` of its own.
+   */
+  target?: string;
   schema?: JsonSchema;
   model?: string;
   /**
@@ -94,6 +106,8 @@ export interface AgentOptions {
 export interface WorkerSessionOptions {
   /** `claude` or `codex`; an engine held at its one-shot surface throws before spawn. */
   engine: EngineName;
+  /** A named target in place of `engine` and `model`, resolved as for `agent()`. */
+  target?: string;
   model?: string;
   /** Canonical effort level, as for `agent()`; converted once, at creation. */
   effort?: string;
@@ -235,6 +249,14 @@ export interface RuntimeOptions {
    * source is `caller`.
    */
   openCodeModelSource?: OpenCodeModelSource;
+  /**
+   * The named targets calls may name (the config file's `targets` section
+   * and the file it was read from, which every refusal names). A call,
+   * session or `ensemble agent` naming a target resolves against them
+   * before any worker spawns; omitted, every named target is refused as
+   * unbound.
+   */
+  namedTargets?: NamedTargets;
   /**
    * Run-wide capability strip: united with every call's own `strip`
    * list before enforcement, so a run can restrict all its workers without

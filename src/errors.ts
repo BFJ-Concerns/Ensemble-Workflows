@@ -719,6 +719,19 @@ export class FallbackTargetRejectedError extends AgentOptionRejectedError {
 }
 
 /**
+ * Thrown before any worker spawns when a named target cannot be honoured:
+ * the machine configuration binds no such name, or the call names a target
+ * beside a literal engine or model. The script chose a role and the machine
+ * has not said what runs it; dispatching a default in its place would be a
+ * substitution nobody chose.
+ */
+export class NamedTargetRejectedError extends AgentOptionRejectedError {
+  constructor(detail: string) {
+    super(`Invalid named target: ${detail}`);
+  }
+}
+
+/**
  * A lean start asked for on an engine that cannot arrange one. Pre-spawn
  * by construction: the judgement is made before any worker exists, so no
  * worker ever dispatches carrying the operator's context the author

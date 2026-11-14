@@ -81,8 +81,9 @@ constrain what a worker does, not what it can do.
 ### `agent()`
 
 `agent(prompt, options)` runs one worker on `options.engine` — `"codex"`,
-`"claude"`, or `"opencode"`. There is no default engine. The prompt must be a
-non-empty string.
+`"claude"`, or `"opencode"` — or on the engine a named target binds
+(`options.target`, see [Named targets](#named-targets)). There is no default
+engine. The prompt must be a non-empty string.
 
 - With `options.schema`, it returns a value that validates against the
   schema, or `null` once its attempts are exhausted.
@@ -124,6 +125,38 @@ target and never advance the chain.
 Every step is a dispatch Ensemble makes and records itself. The run record
 shows each attempt's target and which entry answered, and stderr says when a
 fallback entry answered for a refused target.
+
+### Named targets
+
+`target` names a binding in the machine configuration's
+[`targets`](configuration.md#targets) section in place of `engine` and
+`model`:
+
+```js
+const review = await agent(prompt, { target: "reviewer", effort: "high" });
+```
+
+Ensemble resolves the name before any worker spawns. The call runs on the
+binding's engine, with the binding's model where it names one; a binding
+without a model takes the script's `defaults` model for that engine, else the
+engine's own default. The `defaults` block for the bound engine supplies
+`effort` and `fallback` where the call leaves them unset, exactly as for a
+call naming that engine. A chain then comes from the first of: the call's own
+`fallback`, the bound engine's `defaults` block, the binding's `fallback`.
+
+These throw `NamedTargetRejectedError` before any worker spawns, naming the
+name and the configuration file:
+
+- a name the file does not bind (the error lists the names it does bind);
+- a `target` beside an `engine` or `model` — a call names one or the other.
+
+A `target` that is not a non-empty string throws
+`InvalidAgentOptionValueError`. `session()` takes `target` on the same terms.
+
+Ensemble ships no names, so a script meant for machines whose bindings you
+cannot assume should name its engines and models directly. The run record
+keeps the name beside what it resolved to (see
+[Run records](run-records.md#agent-records)).
 
 ### Script defaults
 
@@ -261,12 +294,14 @@ the parsed value of `--json-args` (a JSON `null` arrives as an empty array).
 
 ## `agent()` options
 
-`engine` is required: `"codex"`, `"claude"`, or `"opencode"`. An omitted or
-unknown engine throws before any worker spawns.
+`engine` is required — `"codex"`, `"claude"`, or `"opencode"` — unless
+`target` names a binding instead. A call with neither, or with an unknown
+engine, throws before any worker spawns.
 
 | Option | Description |
 |---|---|
 | `engine` | Engine to run on |
+| `target` | A named target the machine configuration binds, in place of `engine` and `model` (see [Named targets](#named-targets)) |
 | `model` | Model to run (see per-engine notes below) |
 | `effort` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh` |
 | `schema` | JSON Schema the answer must satisfy |
@@ -280,7 +315,7 @@ unknown engine throws before any worker spawns.
 | `identity` | `true` to resolve `{ label, phase, output, failure }` (see [`parallel()`](#parallel-and-pipeline)) |
 | `label`, `phase` | Bookkeeping shown in progress output and the run record. An omitted `phase` takes the current `phase()` title when queued, or `null` if unset |
 
-An unrecognised option, or an invalid value for `effort`, `isolation`,
+An unrecognised option, or an invalid value for `target`, `effort`, `isolation`,
 `timeoutMs`, `maxAttempts`, `identity`, `strip`, or `lean`, throws before the
 worker spawns. `model`, `label`, and `phase` pass through unchecked. A `timeoutMs`
 above the maximum is rejected rather than silently shortened.
@@ -844,7 +879,7 @@ const report = await builder.send("Run the tests and report any failures.", {
 await builder.close();
 ```
 
-- **Fixed at creation:** `engine`, `model`, `effort`, `fallback`, `cwd`,
+- **Fixed at creation:** `engine` or `target`, `model`, `effort`, `fallback`, `cwd`,
   `isolation`, `timeoutMs`, `maxAttempts`, `label`, `phase`, `strip`,
   `stalenessMark`, and `identity`. The fallback chain applies to the first turn
   only: the target that answers it fixes the session's engine and model for its life

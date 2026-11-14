@@ -37,6 +37,7 @@ export { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 export { EngineRegistry, CodexEngineAdapter, ClaudeEngineAdapter, OpenCodeEngineAdapter } from "./engines.js";
 export { createOpenCodeModelRegistry, defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 export type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
+export type { NamedTargetBinding, NamedTargetResolution, NamedTargets } from "./named-targets.js";
 export { createWorkflowHooks, parallel, pipeline } from "./hooks.js";
 export {
   runWorkflowScript,
@@ -78,6 +79,7 @@ export type {
 } from "./holds.js";
 export {
   FallbackTargetRejectedError,
+  NamedTargetRejectedError,
   HoldRejectedError,
   HoldTimeoutError,
   MultiTurnUnsupportedError,

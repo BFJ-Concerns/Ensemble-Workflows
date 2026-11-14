@@ -38,6 +38,7 @@ const MAX_JSON_ARGS_DEPTH = 256;
 
 const AGENT_INVOCATION_OPTIONS = {
   engine: { type: "string" },
+  target: { type: "string" },
   model: { type: "string" },
   effort: { type: "string" },
   label: { type: "string" },
@@ -149,7 +150,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage(program));
     stdout.write(
-      "\nDispatches one worker on the named engine (--engine codex|claude|opencode) and\n" +
+      "\nDispatches one worker on the named engine (--engine codex|claude|opencode), or\n" +
+        "on the engine and model a named target binds (--target <name>), and\n" +
         "prints its result as JSON on stdout. The prompt is the single positional\n" +
         "argument, or stdin when omitted; put flags before the prompt. --schema\n" +
         "validates the reply against a JSON Schema; --identity wraps the result as\n" +
@@ -392,6 +394,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // The file as resolved from this invocation's env, not process.env:
       // a refusal names the file this run actually read.
       openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
+      namedTargets: ambientSettings.namedTargets,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     // The CLI `--timeout` flag wins over a programmatically injected one; both
@@ -446,7 +449,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         ...(callerIdentity !== undefined ? { callerIdentity } : {}),
         concurrency: recordConcurrency(ambientSettings, progress),
         workerScope: ambientSettings.workerScope,
-        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
+        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
+        namedTargets: ambientSettings.namedTargets
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
@@ -996,7 +1000,8 @@ interface ParsedWorkflowInvocation extends InvocationTuning {
 interface ParsedAgentInvocation extends InvocationTuning {
   kind: "agent";
   prompt: string;
-  agentOptions: AgentOptions;
+  /** The call's options: `engine` absent where `--target` names a binding instead. */
+  agentOptions: Omit<AgentOptions, "engine"> & { engine?: EngineName };
   task?: string;
 }
 
@@ -1585,10 +1590,13 @@ async function parseAgentInvocation(
   }
 
   const rawEngine = parsed.values.engine;
-  if (rawEngine === undefined) {
-    throw new CliUsageError(`${program} agent requires --engine`);
+  const target = parsed.values.target;
+  if (rawEngine === undefined && target === undefined) {
+    throw new CliUsageError(`${program} agent requires --engine or --target`);
   }
-  const engine = parseEngineName(rawEngine, "--engine");
+  // --target beside --engine or --model is the runtime's to refuse, naming
+  // the configuration file whose binding would have supplied them.
+  const engine = rawEngine === undefined ? undefined : parseEngineName(rawEngine, "--engine");
   const isolation = parseIsolation(parsed.values.isolation);
   const schema =
     parsed.values.schema === undefined
@@ -1614,8 +1622,9 @@ async function parseAgentInvocation(
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
   const workerScope = parsed.values["worker-scope"] === undefined ? undefined : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
-  const agentOptions: AgentOptions = {
-    engine,
+  const agentOptions: ParsedAgentInvocation["agentOptions"] = {
+    ...(engine !== undefined ? { engine } : {}),
+    ...(target !== undefined ? { target } : {}),
     ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {}),
     ...(parsed.values.effort !== undefined ? { effort: parsed.values.effort } : {}),
     ...(parsed.values.label !== undefined ? { label: parsed.values.label } : {}),
@@ -2283,7 +2292,7 @@ const RUN_OPTION_SYNOPSES: readonly string[] = [
   "--lean"
 ];
 
-/** The flags `agent` accepts between the subcommand and the prompt (`--engine` is in the synopsis). */
+/** The flags `agent` accepts between the subcommand and the prompt (`--engine` and `--target` are in the synopsis). */
 const AGENT_OPTION_SYNOPSES: readonly string[] = [
   "--model <model>",
   "--effort <effort>",
@@ -2316,7 +2325,7 @@ const AGENT_OPTION_SYNOPSES: readonly string[] = [
 function usage(program: string): string {
   const forms: readonly (readonly string[])[] = [
     ["[run options]", "<script.js>", "[args...]"],
-    ["agent", "--engine <engine>", "[agent options]", "[prompt]"],
+    ["agent", "--engine <engine>|--target <name>", "[agent options]", "[prompt]"],
     ["workflows"],
     ["holds", "[--json]", "[--scope <scope> | --all]"],
     ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]

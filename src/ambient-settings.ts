@@ -8,9 +8,12 @@ import {
   defaultOpenCodeConcurrency
 } from "./concurrency-defaults.js";
 
+import { assertValidFallbackChain } from "./engine-option-validation.js";
+import { AgentOptionRejectedError } from "./errors.js";
 import { HOLD_SCOPE_ENV } from "./holds.js";
 import { createOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
+import type { NamedTargetBinding, NamedTargets } from "./named-targets.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type { EngineConcurrencyCaps, EngineName, EngineWorkerEnvironment } from "./types.js";
 
@@ -100,6 +103,13 @@ export interface AmbientSettings {
    * here. Config-file only, like `workerEnvironment`.
    */
   openCodeModels: OpenCodeModelRegistryEntry[];
+  /**
+   * The names this machine binds to an engine, with or without a model and
+   * optionally a fallback chain (the config file's `targets` section), and
+   * the file they were read from. Config-file only, like
+   * `workerEnvironment`; with no section, no name is bound.
+   */
+  namedTargets: NamedTargets;
 }
 
 export interface AmbientSettingFlags {
@@ -130,6 +140,7 @@ interface MachineConfig {
   };
   worker_environment?: Partial<Record<EngineName, Record<string, string>>>;
   opencode_models?: Record<string, OpenCodeModelDeclaration>;
+  targets?: Record<string, NamedTargetBinding>;
 }
 
 type OpenCodeBillingMode = NonNullable<OpenCodeModelRegistryEntry["billing"]>["mode"];
@@ -196,7 +207,8 @@ export function resolveAmbientSettings(input: {
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
     statusDir: resolveStatus(config, input.env, input.cwd, configFile),
     workerEnvironment: config?.worker_environment ?? {},
-    openCodeModels: openCodeModelEntries(config?.opencode_models)
+    openCodeModels: openCodeModelEntries(config?.opencode_models),
+    namedTargets: { bindings: config?.targets ?? {}, source: configFile }
   };
 }
 
@@ -243,7 +255,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   if (!newer) {
     assertKnownKeys(
       parsed,
-      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets"],
       configFile
     );
   }
@@ -262,6 +274,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
+  validateTargets(parsed, configFile);
   return parsed as unknown as MachineConfig;
 }
 
@@ -396,6 +409,53 @@ function validateOpenCodeModelDeclaration(key: string, declaration: unknown, con
       new Set(variants).size !== variants.length
     ) {
       throw fileValueError(configFile, `${qualified}.variants`, "must be an array of distinct non-empty strings");
+    }
+  }
+}
+
+/**
+ * `targets` maps the operator's own names to a binding: an engine, and
+ * optionally a model and a fallback chain. Names are an open set, like
+ * `opencode_models`' keys, and their own namespace: a call reaches one
+ * through `target`, never `engine`, so a name may spell an engine's. An
+ * opencode binding's model is judged against the registry at dispatch, as
+ * for a call naming opencode literally; the chain is judged here by the
+ * rule every chain meets.
+ */
+function validateTargets(root: Record<string, unknown>, configFile: string): void {
+  const section = root.targets;
+  if (section === undefined) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "targets", "must be a JSON object of target names to { engine, model?, fallback? } bindings");
+  }
+  for (const [name, binding] of Object.entries(section)) {
+    if (name.trim().length === 0) {
+      throw fileValueError(configFile, "targets", "target names must be non-empty");
+    }
+    const qualified = `targets.${name}`;
+    if (!isObject(binding) || Array.isArray(binding)) {
+      throw fileValueError(configFile, qualified, "must be a JSON object naming engine, and optionally model and fallback");
+    }
+    assertKnownKeys(binding, ["engine", "model", "fallback"], configFile, qualified);
+    if (!(ENGINES as readonly unknown[]).includes(binding.engine)) {
+      throw fileValueError(
+        configFile,
+        `${qualified}.engine`,
+        `target ${JSON.stringify(name)} is bound to unknown engine ${JSON.stringify(binding.engine)}; expected one of ${ENGINES.join(" | ")}`
+      );
+    }
+    if (binding.model !== undefined && (typeof binding.model !== "string" || binding.model.trim().length === 0)) {
+      throw fileValueError(configFile, `${qualified}.model`, "must be a non-empty string");
+    }
+    try {
+      assertValidFallbackChain(binding.fallback);
+    } catch (error) {
+      if (error instanceof AgentOptionRejectedError) {
+        throw fileValueError(configFile, `${qualified}.fallback`, error.message);
+      }
+      throw error;
     }
   }
 }

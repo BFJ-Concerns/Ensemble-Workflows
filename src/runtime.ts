@@ -10,6 +10,8 @@ import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } from "./failure-classification.js";
 import { fallbackSourceOf } from "./fallback-source.js";
+import { namedTargetResolutionOf, resolveNamedTarget, withTargetChain } from "./named-targets.js";
+import type { NamedTargetResolution, NamedTargets } from "./named-targets.js";
 
 import type { DischargedEnforcement, PreparedStrip } from "./capability-stripping.js";
 import type { FallbackSource } from "./fallback-source.js";
@@ -168,6 +170,8 @@ interface ChainTarget {
   engine: EngineName;
   model: string | undefined;
   effort: string | undefined;
+  /** The named target this target was asked for through: the call's own name on entry -1, null on chain entries and literal calls. */
+  namedTarget: string | null;
 }
 
 /**
@@ -200,18 +204,24 @@ class ChainAdvance {
   constructor(readonly engine: EngineName) {}
 }
 
-/** The call's own target followed by its declared chain, an omitted entry effort taking the call's own. */
+/**
+ * The call's own target followed by its declared chain, an omitted entry
+ * effort taking the call's own. `namedTarget` is the record's resolution of
+ * the call's own target, where it named one.
+ */
 function chainTargets(
   engine: EngineName,
-  options: { model?: string; effort?: string; fallback?: FallbackTarget[] }
+  options: { model?: string; effort?: string; fallback?: FallbackTarget[] },
+  namedTarget: NamedTargetResolution | null
 ): ChainTarget[] {
   return [
-    { entry: -1, engine, model: options.model, effort: options.effort },
+    { entry: -1, engine, model: options.model, effort: options.effort, namedTarget: namedTarget?.name ?? null },
     ...(options.fallback ?? []).map((target, index) => ({
       entry: index,
       engine: target.engine,
       model: target.model,
-      effort: target.effort ?? options.effort
+      effort: target.effort ?? options.effort,
+      namedTarget: null
     }))
   ];
 }
@@ -401,6 +411,8 @@ interface WorkerSessionState {
   stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null;
   /** The source of the creating turn's chain, read once at creation. */
   fallbackSource: FallbackSource;
+  /** The named target the session was created through, resolved once at creation; null for a literal engine. */
+  namedTarget: NamedTargetResolution | null;
   stalenessThresholdMs: number;
   markStaleness: boolean;
   engineSession: EngineWorkerSession | null;
@@ -533,6 +545,8 @@ export class EnsembleRuntime {
   #strip: StrippableCapability[];
   /** The run-wide lean start: every worker begins without the operator's interactive context. */
   #lean: boolean;
+  /** The machine's named targets, or null where the run was given none (every name is then unbound). */
+  #namedTargets: NamedTargets | null;
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
@@ -596,6 +610,7 @@ export class EnsembleRuntime {
     defaultMaxAttempts: number;
     strip?: StrippableCapability[];
     lean?: boolean;
+    namedTargets?: NamedTargets;
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     holdsDir?: string;
@@ -615,6 +630,7 @@ export class EnsembleRuntime {
       throw new InvalidAgentOptionValueError("lean", options.lean, "a boolean");
     }
     this.#lean = options.lean === true;
+    this.#namedTargets = options.namedTargets ?? null;
     this.budget = new TokenBudget(options.budgetCeilings);
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
@@ -730,6 +746,7 @@ export class EnsembleRuntime {
       ...(options.holdPollIntervalMs !== undefined ? { holdPollIntervalMs: options.holdPollIntervalMs } : {}),
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
       ...(options.lean !== undefined ? { lean: options.lean } : {}),
+      ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {}),
       ...(options.claudeSessionStaleAfterMs !== undefined
         ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs }
         : {}),
@@ -866,14 +883,24 @@ export class EnsembleRuntime {
     }
     assertValidAgentPrompt(prompt);
     // Kept for its identity alone: the snapshot below is a new object, and
-    // a fallback-source hand-off does not follow a copy.
-    const passedOptions = options;
+    // a fallback-source or named-target hand-off does not follow a copy.
+    let passedOptions: object = options;
     // `cwd` is read here and nowhere else on this path: what follows works
     // from the snapshot this returns, so the value the placement check
     // judges is the value the dispatch record and the opened placement use.
     options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
+    if (options.target !== undefined) {
+      // A direct library call naming a target (the hooks resolve a script's
+      // before merging its `defaults`): resolved here, then judged again
+      // now that its engine is known.
+      const resolved = this.resolveNamedTarget(options);
+      options = withTargetChain(resolved, resolved);
+      passedOptions = options;
+      assertValidAgentOptions(options);
+    }
     const fallbackSource = fallbackSourceOf(passedOptions, options);
+    const namedTarget = namedTargetResolutionOf(passedOptions);
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.
       assertCompilableSchema(options.schema);
@@ -957,7 +984,7 @@ export class EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(
-      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, fallbackSource, stripRoutes, leanRoute
+      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, fallbackSource, namedTarget, stripRoutes, leanRoute
     );
     const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
@@ -1046,6 +1073,21 @@ export class EnsembleRuntime {
   }
 
   /**
+   * Resolve the named target `options` declares against this run's
+   * bindings: a new options object with the binding's engine and its model
+   * where it names one, or `options` unchanged where it names no target.
+   * Refuses, before anything spawns, an unbound name and a target named
+   * beside a literal engine or model. The binding's chain is applied
+   * afterwards by `withTargetChain`, once the call and the script's
+   * `defaults` for the resolved engine have had their say: the workflow
+   * hooks call this before merging `defaults`, and `agent()` and
+   * `createWorkerSession()` for a library caller's options.
+   */
+  resolveNamedTarget<T extends object>(options: T): T {
+    return resolveNamedTarget(this.#namedTargets, options);
+  }
+
+  /**
    * Open a multi-turn worker session: one worker, held across turns,
    * with engine, model, and effort fixed for its life. Creation spawns
    * nothing — validation and strip enforcement run here, pre-spawn, and the
@@ -1060,7 +1102,15 @@ export class EnsembleRuntime {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
+    if (options.target !== undefined) {
+      // As for a direct `agent()` call: resolved, then judged again with
+      // its engine known.
+      const resolved = this.resolveNamedTarget(options);
+      options = withTargetChain(resolved, resolved);
+      assertValidWorkerSessionOptions(options);
+    }
     const fallbackSource = fallbackSourceOf(options, options);
+    const namedTarget = namedTargetResolutionOf(options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === undefined) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -1100,6 +1150,7 @@ export class EnsembleRuntime {
       stripRoutes,
       leanRoute,
       fallbackSource,
+      namedTarget,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
@@ -1203,7 +1254,7 @@ export class EnsembleRuntime {
       // that declared nothing or switched its chain off.
       const fallbackSource: FallbackSource = state.turnCount === 0 ? state.fallbackSource : { kind: "later-turn" };
       const agentRecord = this.#newAgentRecord(
-        agentId, engine.name, prompt, recordOptions, fallbackSource, state.stripRoutes, state.leanRoute
+        agentId, engine.name, prompt, recordOptions, fallbackSource, state.namedTarget, state.stripRoutes, state.leanRoute
       );
       // The engine exposes the served model and effort when its held worker
       // first starts. Every later turn is still on that worker, so carry the
@@ -1226,7 +1277,7 @@ export class EnsembleRuntime {
           // target answers, the session's engine and model are fixed for
           // its life, so a later turn runs its own target only and an
           // availability failure there fails the turn.
-          const targets = chainTargets(engine.name, state.turnCount === 0 ? options : withoutChain(options));
+          const targets = chainTargets(engine.name, state.turnCount === 0 ? options : withoutChain(options), state.namedTarget);
           const output = await this.#runChained(
             engine,
             targets,
@@ -1509,7 +1560,7 @@ export class EnsembleRuntime {
   ): Promise<unknown> {
     return this.#runChained(
       engine,
-      chainTargets(engine.name, options),
+      chainTargets(engine.name, options, agentRecord.namedTarget),
       { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,
@@ -1991,6 +2042,7 @@ export class EnsembleRuntime {
           attempt: context.attempt,
           startedAt: new Date(startedAt).toISOString(),
           target: { engine: target.engine, model: target.model ?? null },
+          namedTarget: target.namedTarget,
           identity: record === undefined || record.session === null
             ? { resolvedModel: null, resolvedEffort: null }
             : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
@@ -3122,6 +3174,7 @@ export class EnsembleRuntime {
     prompt: string,
     options: Partial<AgentOptions>,
     fallbackSource: FallbackSource,
+    namedTarget: NamedTargetResolution | null,
     stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null,
     leanRoute: DischargedLeanStart | null = null
   ): RuntimeAgentRecord {
@@ -3138,6 +3191,7 @@ export class EnsembleRuntime {
       effort: typeof options.effort === "string" ? options.effort : null,
       fallback: options.fallback === undefined ? null : options.fallback.map((target) => ({ ...target })),
       fallbackSource,
+      namedTarget,
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
@@ -3245,6 +3299,7 @@ function attemptRecord(
     attempt,
     status,
     target: { engine: target.engine, model: target.model ?? null },
+    namedTarget: target.namedTarget,
     failure,
     classification,
     chainDecision,

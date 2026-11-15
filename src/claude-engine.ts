@@ -797,8 +797,14 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         return { state: "command-not-skill", command, ran };
       }
       if (command !== null && receipt.state === "missing") {
+        // Read the clock before the roster: once the receipt deadline has
+        // passed, a dialog still open is the command's whether or not it
+        // has yet been seen for the whole grace period.
+        const expired = Date.now() >= deadline;
         const status = await this.#controlPlane.poll(handle);
-        if (dialog.held(status)) return { state: "command-not-skill", command, ran: "interactive" };
+        if (dialog.held(status) || (expired && status.waitingFor === CLAUDE_COMMAND_DIALOG)) {
+          return { state: "command-not-skill", command, ran: "interactive" };
+        }
         const replaced = await this.#commandInReplacingSession(handle, status, command);
         if (replaced !== null) return { state: "command-not-skill", command, ran: replaced };
       }

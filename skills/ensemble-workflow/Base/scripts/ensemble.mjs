@@ -15450,7 +15450,7 @@ function readMachineConfig(configFile) {
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
-  validateTargets(parsed, configFile);
+  validateNamedTargetBindings(parsed.targets, configFile);
   return parsed;
 }
 function validateSection(root, key, knownKeys, configFile, validate) {
@@ -15554,8 +15554,7 @@ function validateOpenCodeModelDeclaration(key, declaration, configFile) {
     }
   }
 }
-function validateTargets(root, configFile) {
-  const section = root.targets;
+function validateNamedTargetBindings(section, configFile) {
   if (section === void 0) {
     return;
   }
@@ -25874,6 +25873,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new InvalidAgentOptionValueError("lean", options.lean, "a boolean");
     }
     this.#lean = options.lean === true;
+    if (options.namedTargets !== void 0) {
+      validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
+    }
     this.#namedTargets = options.namedTargets ?? null;
     this.budget = new TokenBudget(options.budgetCeilings);
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
@@ -25931,6 +25933,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return adapter instanceof OpenCodeEngineAdapter ? adapter.modelRegistry : void 0;
   }
   static async create(options = {}) {
+    if (options.namedTargets !== void 0) {
+      validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
+    }
     let runtime = null;
     const cwd = options.cwd ?? process.cwd();
     rejectBlankHoldScope(options.holdScope);

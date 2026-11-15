@@ -294,8 +294,11 @@ of `engine` and `model` (see
 [Named targets](workflow-scripts.md#named-targets)), and `ensemble agent`
 through `--target`. One edit here moves every workflow on the machine that
 uses the name: onto another model, or off a misbehaving model family, with no
-script edited. Ensemble ships no names, and the section exists only in the
-file.
+script edited. Ensemble ships no names. Machine-level bindings live only in
+the file; a library caller can pass `namedTargets: { bindings, source }` to
+`createRuntime`, where `bindings` has this section's shape and `source` names
+the configuration source for errors and records. These bindings meet the
+same validation rules before the runtime builds its engine registry.
 
 Each key is a name; the value is its binding:
 
@@ -314,7 +317,9 @@ binding's model is checked against `opencode_models` when a call dispatches on
 it, as for a call naming opencode directly.
 
 The binding's chain applies only where neither the call nor the script's
-`defaults` block for the bound engine declares one.
+`defaults` block for the bound engine declares one. For a session, that chain
+applies only to its first turn; later turns stay on the worker that answered
+the first turn.
 
 ## Environment variables
 

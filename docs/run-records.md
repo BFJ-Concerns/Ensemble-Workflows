@@ -555,11 +555,12 @@ carries:
 
 - `schema_version`: the durable run record version in [Schema versions](#schema-versions).
   A reader built for an earlier version should not interpret a current record
-  as one: the current version gives a `cost_rollup` leaf with
-  no figures the absence reason its attempts' entries call for, and books no
-  leaf for an agent that ran no attempt. Version 5 introduced listing an
-  abandoned attempt in `attempts` and marking each `cost_rollup` leaf complete
-  or not.
+  as one: in the current version an agent record's `worktree.branch` names the
+  branch checked out when the worktree was finalised, and is `null` where
+  `HEAD` was detached. Version 6 gave a `cost_rollup` leaf with no figures the
+  absence reason its attempts' entries call for, and booked no leaf for an
+  agent that ran no attempt. Version 5 introduced listing an abandoned attempt
+  in `attempts` and marking each `cost_rollup` leaf complete or not.
 - `kind`: one of `run_manifest`, `run_args`, `workflow_args`, `run_result`, or
   `agent_record`.
 
@@ -850,7 +851,7 @@ The fields present throughout a record's lifetime are:
   interchangeable: one says nothing was declared, the other that the
   session's chain no longer applies. A reader that meets an unknown `kind`
   should treat the chain's source as unrecorded. The field joined the agent
-  record within its schema version, so an agent record from an older
+  record within schema version 4, so a version-4 agent record from an older
   Ensemble checkout can lack it; read a missing `fallback_source` as
   unrecorded, never as `none`.
 - `answered_by`: which target answered — `{ entry, engine, model }`, where

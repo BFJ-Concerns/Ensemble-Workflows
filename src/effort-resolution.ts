@@ -1,3 +1,5 @@
+import { builtInServedLevels } from "./built-in-effort-levels.js";
+import { EffortBoundsUnservedError } from "./errors.js";
 import type { EngineName } from "./types.js";
 
 /**
@@ -8,11 +10,10 @@ import type { EngineName } from "./types.js";
  * pre-spawn. The order is the vocabulary's own: a machine bound and a
  * clamp to the nearest served level both compare levels by their position
  * here. A name an engine advertises joins the set only when it is a
- * reasoning level, and only by a contract change. opencode is exempt,
- * being held at its existing surface: its `effort` names the registry
- * entry's served variants and is judged against them by the adapter.
+ * reasoning level, and only by a contract change. opencode also accepts
+ * raw variants its registry entry declares, judged by the adapter.
  */
-export const CANONICAL_EFFORT_DOMAIN = ["minimal", "low", "medium", "high", "xhigh"] as const;
+export const CANONICAL_EFFORT_DOMAIN = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export type CanonicalEffort = (typeof CANONICAL_EFFORT_DOMAIN)[number];
 
@@ -145,7 +146,7 @@ export function assertEffortSection(
       if (!isCanonicalEffort(level)) {
         fail(`${key}.levels.${level}`, `levels are keyed by canonical level: ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
       }
-      if (typeof native !== "string" || native.trim().length === 0) {
+      if (typeof native !== "string" || native.trim().length === 0 || native === "ultra") {
         fail(`${key}.levels.${level}`, "must be the non-empty native name the engine is dispatched with");
       }
     }
@@ -282,10 +283,62 @@ export interface EffortResolution {
  * thrown: every other input was judged when the option and the section
  * were validated.
  */
-export function resolveEffort(dispatch: EffortDispatch): Promise<EffortResolution> {
-  return Promise.reject(
-    new Error(`effort resolution is not built: ${dispatch.requested} for ${effortPolicyKeys(dispatch.engine, dispatch.model)[0]} was not resolved`)
+export async function resolveEffort(dispatch: EffortDispatch): Promise<EffortResolution> {
+  let model = dispatch.model;
+  let identity = dispatch.identity;
+  let report: EngineEffortReport | null = null;
+  if (model === undefined) {
+    report = await dispatch.engineReport();
+    model = report?.identity ?? undefined;
+    identity = model;
+  }
+  const section = dispatch.policy?.section ?? {};
+  const keys = effortPolicyKeys(dispatch.engine, model);
+  const bound = (field: "ceiling" | "floor"): EffortBound | null => {
+    for (const key of keys) {
+      const level = Object.hasOwn(section, key) ? section[key]?.[field] : undefined;
+      if (level !== undefined) return { level, key };
+    }
+    return null;
+  };
+  const bounds = { ceiling: bound("ceiling"), floor: bound("floor") };
+  const lower = bounds.floor === null ? 0 : effortRank(bounds.floor.level);
+  const upper = bounds.ceiling === null ? CANONICAL_EFFORT_DOMAIN.length - 1 : effortRank(bounds.ceiling.level);
+  const bounded = Math.min(upper, Math.max(lower, effortRank(dispatch.requested)));
+  let levels = model === undefined ? undefined : section[`${dispatch.engine}:${model}`]?.levels;
+  let source: ServedLevelSource = "machine-map";
+  if (levels === undefined) {
+    levels = identity === undefined ? undefined : builtInServedLevels(identity);
+    source = "built-in-table";
+  }
+  if (levels === undefined) {
+    if (dispatch.model !== undefined) report = await dispatch.engineReport();
+    // A report can identify a routed model that the original name did not.
+    levels = report?.identity == null ? undefined : builtInServedLevels(report.identity);
+    if (levels === undefined) {
+      levels = report?.levels ?? undefined;
+      source = "engine-report";
+    }
+  }
+  const candidates = CANONICAL_EFFORT_DOMAIN.filter((level) => {
+    const rank = effortRank(level);
+    return rank >= lower && rank <= upper && (levels === undefined || (levels[level] !== undefined && levels[level] !== "ultra"));
+  });
+  if (candidates.length === 0) {
+    throw new EffortBoundsUnservedError({ engine: dispatch.engine, model: model ?? null,
+      requested: dispatch.requested, bounds, source: dispatch.policy?.source ?? "the model's served levels",
+      served: CANONICAL_EFFORT_DOMAIN.filter((level) => levels?.[level] !== undefined) });
+  }
+  // Ascending candidates break an equal-distance tie towards less effort.
+  const chosen = candidates.reduce((best, level) =>
+    Math.abs(effortRank(level) - bounded) < Math.abs(effortRank(best) - bounded) ? level : best
   );
+  return {
+    requested: dispatch.requested,
+    bounds,
+    served: levels === undefined ? null : { source, level: chosen },
+    dispatched: levels?.[chosen] ?? chosen
+  };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -1,3 +1,5 @@
+import { resolveEffort, isCanonicalEffort, assertEffortSection, effortPolicyKeys } from "./effort-resolution.js";
+import type { EffortPolicy, EffortResolution } from "./effort-resolution.js";
 import { randomUUID } from "node:crypto";
 
 import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
@@ -169,6 +171,7 @@ type AgentExecutionOutcome = AgentExecutionResult | { status: "refused" };
  * the one that answered.
  */
 interface ChainTarget {
+  effortResolution?: EffortResolution | null;
   entry: number;
   engine: EngineName;
   model: string | undefined;
@@ -355,6 +358,8 @@ function identifiedFailure(options: { identity?: boolean; label?: string; phase?
 
 /** A worker session's runtime-internal state, owned by EnsembleRuntime. */
 interface WorkerSessionState {
+  records: RuntimeAgentRecord[];
+  effortResolution: EffortResolution | null;
   id: number;
   options: LiteralWorkerSessionOptions;
   engine: EngineAdapter;
@@ -516,6 +521,7 @@ export class EnsembleRuntime {
   #lean: boolean;
   /** The machine's named targets, or null where the run was given none (every name is then unbound). */
   #namedTargets: NamedTargets | null;
+  #effortPolicy: EffortPolicy | null;
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
@@ -580,6 +586,7 @@ export class EnsembleRuntime {
     strip?: StrippableCapability[];
     lean?: boolean;
     namedTargets?: NamedTargets;
+    effortPolicy?: EffortPolicy;
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     holdsDir?: string;
@@ -600,6 +607,12 @@ export class EnsembleRuntime {
     }
     this.#lean = options.lean === true;
     this.#namedTargets = options.namedTargets ?? null;
+    this.#effortPolicy = options.effortPolicy ?? null;
+    if (this.#effortPolicy !== null) {
+      assertEffortSection(this.#effortPolicy.section, (key, detail) => {
+        throw new InvalidAgentOptionValueError(`effort.${key}`, null, detail);
+      });
+    }
     this.budget = new TokenBudget(options.budgetCeilings);
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
@@ -716,6 +729,7 @@ export class EnsembleRuntime {
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
       ...(options.lean !== undefined ? { lean: options.lean } : {}),
       ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {}),
+      ...(options.effortPolicy !== undefined ? { effortPolicy: options.effortPolicy } : {}),
       ...(options.claudeSessionStaleAfterMs !== undefined
         ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs }
         : {}),
@@ -1149,6 +1163,8 @@ export class EnsembleRuntime {
       turnCount: 0,
       lastTurnEndedAt: null,
       inFlight: false,
+      records: [],
+      effortResolution: null,
       pendingTurn: null,
       closed: false,
       lost: null
@@ -1247,9 +1263,11 @@ export class EnsembleRuntime {
       // first starts. Every later turn is still on that worker, so carry the
       // observed session identity into its dispatch-time record rather than
       // making archive consumers infer it from turn one.
+      agentRecord.effortResolution = state.effortResolution;
       agentRecord.resolvedModel = state.resolvedModel;
       agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
+      state.records.push(agentRecord);
       const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
       this.#unsettledAgentRecords.set(agentId, unsettled);
       try {
@@ -1354,6 +1372,10 @@ export class EnsembleRuntime {
     let preparedStrip: PreparedStrip | undefined;
     const preparationStartedAt = Date.now();
     try {
+      if (state.engineSession === null) {
+        state.effortResolution = await this.#resolveEffortFor(agentRecord, targetEngine, options);
+      }
+      target.effortResolution = state.effortResolution;
       preparedStrip = state.engineSession === null
         ? await this.#prepareStripFor(agentRecord, targetEngine, options, state.placement.cwd)
         : undefined;
@@ -1379,6 +1401,7 @@ export class EnsembleRuntime {
         state.engine,
         {
           ...this.#engineTurnOptions(options, state.placement.cwd),
+          ...(state.effortResolution === null ? {} : { effort: state.effortResolution.dispatched, effortResolution: state.effortResolution }),
           ...(preparedStrip !== undefined ? { preparedStrip } : {})
         },
         {
@@ -1514,7 +1537,7 @@ export class EnsembleRuntime {
       try {
         const worktree = await this.#placement.close(placement);
         if (worktree !== null) {
-          this.worktrees.push(worktree);
+          await this.#publishSessionWorktree(state, worktree);
           this.#emitWorktreeFinished(worktree);
         }
       } catch (error) {
@@ -1522,7 +1545,7 @@ export class EnsembleRuntime {
           // Finalisation did not prove the branch unchanged or removed:
           // retain the recoverable identity conservatively, as agent
           // placement does.
-          this.worktrees.push(unknownWorktreeRecord(placement.worktree));
+          await this.#publishSessionWorktree(state, unknownWorktreeRecord(placement.worktree));
           this.#emitEvent({
             method: "worktree/finalisationFailed",
             params: {
@@ -2032,6 +2055,7 @@ export class EnsembleRuntime {
           startedAt: new Date(startedAt).toISOString(),
           target: { engine: target.engine, model: target.model ?? null },
           namedTarget: target.namedTarget,
+          ...(target.effortResolution == null ? {} : { effortResolution: target.effortResolution }),
           identity: record === undefined || record.session === null
             ? { resolvedModel: null, resolvedEffort: null }
             : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
@@ -2469,10 +2493,13 @@ export class EnsembleRuntime {
     const attempts = { target, ledger, chainRemains };
     const preparationStartedAt = Date.now();
     try {
+      const effortResolution = await this.#resolveEffortFor(agentRecord, engine, options);
+      target.effortResolution = effortResolution;
       const preparedStrip = await this.#prepareStripFor(agentRecord, engine, options, placement.cwd);
       if (this.#closed) throw new EngineShutdownError(engine.name);
       invocation = engine.createInvocation(prompt, {
         ...this.#engineTurnOptions(options, placement.cwd),
+        ...(effortResolution === null ? {} : { effort: effortResolution.dispatched, effortResolution }),
         ...(preparedStrip !== undefined ? { preparedStrip } : {})
       });
       if (options.schema !== undefined) {
@@ -2555,8 +2582,20 @@ export class EnsembleRuntime {
     return completion.execution;
   }
 
+  async #publishSessionWorktree(state: WorkerSessionState, worktree: IsolatedWorktreeRecord): Promise<void> {
+    this.worktrees.push(worktree);
+    for (const record of state.records) {
+      this.#setWorktreeRecord(record, worktree);
+      await this.#recordAgentSafely(record);
+    }
+  }
+
   #publishWorktree(agentRecord: RuntimeAgentRecord, worktree: IsolatedWorktreeRecord): void {
     this.worktrees.push(worktree);
+    this.#setWorktreeRecord(agentRecord, worktree);
+  }
+
+  #setWorktreeRecord(agentRecord: RuntimeAgentRecord, worktree: IsolatedWorktreeRecord): void {
     agentRecord.worktree = {
       branch: worktree.branch,
       baseCommit: worktree.baseCommit,
@@ -2853,12 +2892,16 @@ export class EnsembleRuntime {
       appServerDiagnostic: null,
       diagnostics: result.diagnostics
     });
+    if (failure.kind === "effort-rejected") {
+      delete result.resolvedEffort;
+      record.resolvedEffort = null;
+    }
     const classification = this.#classify(attempts.target.engine, failure, null, result.diagnostics);
     const refused = classification.class === "availability" && attempts.chainRemains;
     if (!refused) {
       attempts.ledger.answered += 1;
     }
-    const settles = !refused && settlesWithoutRetry(result.attemptFailure);
+    const settles = !refused && settlesWithoutRetry(failure);
     this.#pushFailedAttempt(
       record,
       attemptRecord(
@@ -2902,6 +2945,10 @@ export class EnsembleRuntime {
       diagnostics: failedTurnResultOf(error)?.diagnostics
     });
     const failedResult = failedTurnResultOf(error);
+    if (observed.kind === "effort-rejected") {
+      if (failedResult !== null) delete failedResult.resolvedEffort;
+      record.resolvedEffort = null;
+    }
     if (failedResult !== null) {
       recordTurnMetadata(record, failedResult);
     }
@@ -2939,7 +2986,7 @@ export class EnsembleRuntime {
     // The loop's own next step, read from the same facts it acts on: a
     // boundary throw leaves, a failure no retry can change settles, anything
     // else retries while the bound lasts. A run ending decides nothing.
-    const settles = settlesWithoutRetry(failureFromError(error));
+    const settles = settlesWithoutRetry(failure);
     const retries =
       !refused &&
       !this.#crossesSpawnBoundary(error) &&
@@ -2977,6 +3024,28 @@ export class EnsembleRuntime {
     const attempt = ++attempts.ledger.dispatched;
     this.progress.noteAttempt(agentId, attempt);
     return this.#recordThrownFailure(record, attempt, error, startedAt, attempts).refused;
+  }
+
+  async #resolveEffortFor(record: RuntimeAgentRecord, engine: EngineAdapter, options: Partial<AgentOptions>): Promise<EffortResolution | null> {
+    record.effortResolution = null;
+    if (!isCanonicalEffort(options.effort)) {
+      const section = this.#effortPolicy?.section;
+      if (section !== undefined) {
+        let model = options.model;
+        if (model === undefined && Object.values(section).some((entry) => entry.floor !== undefined || entry.ceiling !== undefined)) {
+          model = (await engine.effortReport?.(undefined))?.identity ?? undefined;
+        }
+        const key = effortPolicyKeys(engine.name, model).find((key) => section[key]?.ceiling !== undefined || section[key]?.floor !== undefined);
+        if (key !== undefined) throw new InvalidAgentOptionValueError("effort", options.effort,
+          `an explicit canonical level for ${engine.name}:${model ?? "default"} under effort key ${JSON.stringify(key)} in ${this.#effortPolicy?.source}; an unspecified or raw effort cannot be compared with machine bounds`);
+      }
+      return null;
+    }
+    const resolution = await resolveEffort({ requested: options.effort, engine: engine.name, model: options.model,
+      identity: options.model === undefined ? undefined : engine.modelIdentity?.(options.model) ?? options.model,
+      policy: this.#effortPolicy, engineReport: () => engine.effortReport?.(options.model) ?? Promise.resolve(null) });
+    record.effortResolution = resolution;
+    return resolution;
   }
 
   async #prepareStripFor(
@@ -3187,6 +3256,7 @@ export class EnsembleRuntime {
       resolvedCwd: resolveAgentCwd(this.#placement.baseCwd, options.cwd),
       isolation: options.isolation ?? null,
       worktree: null,
+      effortResolution: null,
       label: options.label ?? null,
       phase: options.phase ?? null,
       status: "in-progress",
@@ -3289,6 +3359,7 @@ function attemptRecord(
     status,
     target: { engine: target.engine, model: target.model ?? null },
     namedTarget: target.namedTarget,
+    effortResolution: target.effortResolution ?? null,
     failure,
     classification,
     chainDecision,

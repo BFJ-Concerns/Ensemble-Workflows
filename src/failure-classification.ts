@@ -56,6 +56,7 @@ const SESSION_LOST_KIND = "session-lost";
 const SETTLING_FAILURE_KINDS: ReadonlySet<string> = new Set([
   // Codex refused the authored schema before generation, and a retry sends the same schema.
   "CodexSchemaSubsetUnsupportedError",
+  "effort-rejected",
   // The held worker no longer exists, and a retry would address the same absent session.
   SESSION_LOST_KIND
 ]);
@@ -74,6 +75,10 @@ export function settlesWithoutRetry(failure: { kind: string }): boolean {
 /** Preserve the provider's cause and add the engine's recovery step. */
 export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): AttemptFailureEvidence["failure"] {
   const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
+  if (isEffortRejection(`${failure.message} ${appServerDiagnostic?.payload ?? ""}`)) {
+    return { kind: "effort-rejected", message: failure.message };
+  }
+
   // The engine's own observation of its held worker, with no provider
   // diagnostic behind it to re-read: it keeps its kind whatever its message
   // or the session's last transcript row says.
@@ -229,6 +234,7 @@ const OPENCODE_FAILURE_KINDS = new Map<string, FailureClassification>([
  * the table does not recognise yields `rule: null`.
  */
 export function classifyAttemptFailure(evidence: AttemptFailureEvidence): FailureClassification {
+  if (evidence.failure.kind === "effort-rejected") return { class: "unclassified", rule: "effort.rejected" };
   const { kind } = evidence.failure;
   if (kind === "authentication-failure" || kind === "model-not-found") {
     return { class: "unclassified", rule: `${evidence.engine}.${kind}` };
@@ -357,4 +363,10 @@ function claudeApiErrorOf(diagnostics: JsonObject | undefined): { status: number
     status: typeof record.status === "number" ? record.status : null,
     code: typeof record.code === "string" ? record.code : null
   };
+}
+
+/** A provider's explicit refusal of the selected reasoning level is permanent for this dispatch. */
+export function isEffortRejection(message: string): boolean {
+  return /(?:reasoning[._ -]?effort|model_reasoning_effort|reasoning level|effort level)/i.test(message) &&
+    /(?:unsupported|not supported|does not support|not (?:a )?valid|invalid|not allowed|must be one of|supported values|supported (?:efforts|levels))/i.test(message);
 }

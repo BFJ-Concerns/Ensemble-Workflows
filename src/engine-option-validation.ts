@@ -139,11 +139,9 @@ export function assertValidAgentOptions(options: object): void {
   // A call naming a target has no engine until the name resolves, and is
   // judged again then.
   const engine = read("engine", "an engine name");
-  if (engine !== unreadable && engine !== "opencode" && target === undefined) {
-    const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
-    if (effort !== unreadable) {
-      collect(() => assertCanonicalEffortSupported(effort));
-    }
+  const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+  if (effort !== unreadable && (effort === "ultra" || (engine !== unreadable && engine !== "opencode" && target === undefined))) {
+    collect(() => assertCanonicalEffortSupported(effort));
   }
   for (const key of ["timeoutMs", "maxAttempts"] as const) {
     const value = read(key, "a positive integer");
@@ -218,6 +216,7 @@ export function assertValidWorkerSessionOptions(options: object): void {
   }
 
   const values = options as Record<string, unknown>;
+  if (values.effort === "ultra") assertCanonicalEffortSupported(values.effort);
   if (values.isolation !== undefined && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
   }
@@ -346,6 +345,7 @@ export function validateEngineDefaults(
   openCodeModelRegistry: OpenCodeModelRegistry = defaultOpenCodeModelRegistry
 ): void {
   assertValidFallbackChain(defaults.fallback);
+  if (defaults.effort === "ultra") assertCanonicalEffortSupported(defaults.effort);
   if (engine !== "opencode") {
     // A bad static declaration fails before the body runs, not at the
     // first paid dispatch — the same canonical domain agent() enforces.
@@ -356,7 +356,7 @@ export function validateEngineDefaults(
     // The registry owns the variant domain; a declared effort is judged
     // here only when the declared model names the entry to judge against —
     // an effort defaulted without a model waits for the call that names one.
-    if (defaults.effort !== undefined && !model.variants.includes(defaults.effort)) {
+    if (defaults.effort !== undefined && !isCanonicalEffort(defaults.effort) && !model.variants.includes(defaults.effort)) {
       throw new InvalidAgentOptionValueError(
         "effort",
         defaults.effort,

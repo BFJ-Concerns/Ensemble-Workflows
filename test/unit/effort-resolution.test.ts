@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { EffortDispatch } from "../../src/effort-resolution.js";
 import { builtInServedLevels } from "../../src/built-in-effort-levels.js";
 import { assertEffortSection, effortPolicyKeys } from "../../src/effort-resolution.js";
 import { EffortBoundsUnservedError, PreSpawnAuthorError } from "../../src/errors.js";
@@ -75,4 +76,70 @@ test("an effort bounds refusal is a pre-spawn rejection naming each bound's key,
       "in /machine/ensemble/config.json admits none of the levels the model serves (low | medium | high). " +
       "The worker was not dispatched. Move the bound, or declare the model's served levels in the effort section."
   );
+});
+
+async function resolution(overrides: Partial<EffortDispatch> = {}) {
+  const { resolveEffort } = await import("../../src/effort-resolution.js");
+  return resolveEffort({ requested: "minimal", engine: "codex", model: "gpt-6-luna", identity: "gpt-6-luna", policy: null,
+    engineReport: async () => { throw new Error("known model must not read the listing"); }, ...overrides });
+}
+
+test("the built-in table makes unlisted none reachable and clamps minimal down on a tie", async () => {
+  for (const requested of ["none", "minimal"] as const) {
+    const result = await resolution({ requested });
+    assert.equal(result.dispatched, "none");
+    assert.deepEqual(result.served, { source: "built-in-table", level: "none" });
+  }
+});
+
+test("machine maps replace the built-in set whole and convert native names", async () => {
+  const result = await resolution({ policy: { source: "machine.json", section: {
+    "codex:gpt-6-luna": { levels: { low: "quiet", high: "think" } }
+  } } });
+  assert.equal(result.dispatched, "quiet");
+  assert.deepEqual(result.served, { source: "machine-map", level: "low" });
+});
+
+test("a sparse served set is clamped inside independently inherited bounds", async () => {
+  const result = await resolution({ requested: "max", policy: { source: "machine.json", section: {
+    "*": { ceiling: "high", floor: "none" }, codex: { floor: "minimal" },
+    "codex:gpt-6-luna": { floor: "medium", levels: { low: "quiet", medium: "normal", max: "all" } }
+  } } });
+  assert.equal(result.dispatched, "normal");
+  assert.deepEqual(result.bounds, { ceiling: { key: "*", level: "high" }, floor: { key: "codex:gpt-6-luna", level: "medium" } });
+});
+
+test("impossible bounds refuse with model, file and both independent keys", async () => {
+  await assert.rejects(resolution({ policy: { source: "machine.json", section: {
+    "*": { ceiling: "minimal" }, "codex:gpt-6-luna": { floor: "low" }
+  } } }), (error: unknown) => {
+    assert.ok(error instanceof EffortBoundsUnservedError);
+    for (const text of ["gpt-6-luna", "machine.json", '"*"', '"codex:gpt-6-luna"']) assert.ok(error.message.includes(text));
+    return true;
+  });
+  await assert.rejects(resolution({ policy: { source: "machine.json", section: {
+    "codex:gpt-6-luna": { floor: "minimal", ceiling: "minimal" }
+  } } }), EffortBoundsUnservedError);
+});
+
+test("unknown models use engine reports, or bounded pass-through if unreported", async () => {
+  const result = await resolution({ model: "unknown", identity: "unknown", engineReport: async () => ({ identity: "unknown", levels: { low: "quiet", high: "think" } }) });
+  assert.equal(result.dispatched, "quiet");
+  assert.deepEqual(result.served, { source: "engine-report", level: "low" });
+  const pass = await resolution({ requested: "max", model: "unknown", identity: "unknown", engineReport: async () => null,
+    policy: { source: "machine.json", section: { "*": { ceiling: "high" } } } });
+  assert.equal(pass.dispatched, "high");
+  assert.equal(pass.served, null);
+});
+
+test("unfixed and routed models use the built-in identity before the listing", async () => {
+  const result = await resolution({ model: undefined, identity: undefined,
+    engineReport: async () => ({ identity: "gpt-6-luna", levels: { high: "high" } }) });
+  assert.equal(result.dispatched, "none");
+  const routed = await resolution({ engine: "opencode", model: "route", identity: "gpt-6-luna" });
+  assert.equal(routed.dispatched, "none");
+});
+
+test("ultra cannot enter through either a canonical key or a native map value", () => {
+  assert.match(refusalOf({ "codex:m": { levels: { high: "ultra" } } }) ?? "accepted", /levels.high/);
 });

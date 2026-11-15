@@ -26,6 +26,7 @@ import type {
   JsonObject,
   RuntimeEvent,
   RuntimeTransport,
+  CodexModelListing,
   ThreadStartOptions,
   TokenUsageEvent,
   TurnResult,
@@ -214,6 +215,11 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
   async openThread(options: ThreadStartOptions): Promise<string> {
     const transport = await this.#transport();
     return transport.openThread(options);
+  }
+
+  async listModels(): Promise<readonly CodexModelListing[]> {
+    const transport = await this.#transport();
+    return transport.listModels();
   }
 
   async listSkills(cwd?: string): Promise<readonly string[]> {
@@ -461,6 +467,54 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
     this.#terminationListeners.add(listener);
     return () => { this.#terminationListeners.delete(listener); };
+  }
+
+  async listModels(): Promise<readonly CodexModelListing[]> {
+    const listed: CodexModelListing[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+    do {
+      const result = asJsonObject(await this.#request("model/list", { includeHidden: true, ...(cursor !== null ? { cursor } : {}) }));
+      const entries = result?.data;
+      if (!Array.isArray(entries)) {
+        throw new AppServerRequestError("model/list", {
+          code: "invalid_response",
+          message: "response omitted the model entries"
+        });
+      }
+      for (const entry of entries) {
+        const model = asJsonObject(entry);
+        const name = model?.model;
+        const efforts = model?.supportedReasoningEfforts;
+        if (typeof name !== "string" || name.length === 0 || !Array.isArray(efforts)) {
+          throw new AppServerRequestError("model/list", {
+            code: "invalid_response",
+            message: "a model entry omitted its name or its supported reasoning efforts"
+          });
+        }
+        listed.push({
+          model: name,
+          isDefault: model?.isDefault === true,
+          supportedReasoningEfforts: efforts
+            .map((effort) => asJsonObject(effort)?.reasoningEffort)
+            .filter((effort): effort is string => typeof effort === "string" && effort.length > 0)
+        });
+      }
+      const next = result?.nextCursor;
+      cursor = typeof next === "string" && next.length > 0 ? next : null;
+      // A server that hands back a cursor it already answered would page
+      // forever; the per-request timeout bounds each page, not the loop.
+      if (cursor !== null && cursors.has(cursor)) {
+        throw new AppServerRequestError("model/list", {
+          code: "invalid_response",
+          message: `pagination repeated the cursor ${JSON.stringify(cursor)}`
+        });
+      }
+      if (cursor !== null) {
+        cursors.add(cursor);
+      }
+    } while (cursor !== null);
+    return listed;
   }
 
   async listSkills(cwd = this.cwd): Promise<readonly string[]> {

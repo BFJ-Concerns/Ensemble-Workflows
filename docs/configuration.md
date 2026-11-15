@@ -282,7 +282,7 @@ the entry by its route. A key or route that would name two entries is invalid.
 | `billing` | No | `pay-as-you-go` or `self-hosted` |
 | `variants` | No | The served variants the model accepts as `effort` |
 
-With no `variants` declared, any `effort` on that model throws before the
+With no `variants` declared, a raw variant request on that model throws before the
 worker spawns. Take variants from the provider's own listing: `opencode run`
 forwards an unknown variant without complaint.
 
@@ -459,3 +459,52 @@ Run this example from a built source checkout. The CLI forwards this map
 itself. A library worker reporting a missing credential variable while the
 CLI succeeds from the same home can indicate that the library caller omitted
 `workerEnvironment`. Resolve and forward the map without logging its contents.
+
+## `effort`
+
+The optional machine-only `effort` section bounds reasoning effort and can
+supply a model's served levels. It has no flag or environment override, and
+Ensemble supplies no default ceiling or floor.
+
+```json
+{
+  "schema_version": 1,
+  "effort": {
+    "*": { "ceiling": "xhigh" },
+    "codex": { "floor": "low" },
+    "opencode:local-coder": {
+      "levels": { "low": "quiet", "high": "think" }
+    }
+  }
+}
+```
+
+Keys are `*`, an engine, or `engine:model` (opencode uses its registry key).
+Each may set `floor` and `ceiling` to `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh` or `max`. Each bound independently takes the most specific
+key that sets it: model, then engine, then `*`. A model floor therefore does
+not remove a wider ceiling. `levels` belongs only to a model key, and maps
+canonical levels to native names. Both its keys and native values exclude
+`ultra`. The map replaces every other source for that model, whole.
+
+Served levels come from that machine map, then Ensemble's built-in table by
+model identity (including a routed model's identity), then the engine's
+per-model report. The table outranks a listing that omits a served level:
+`gpt-6-luna` accepts `none` with no configuration. Codex reads `model/list`,
+including hidden models and subsequent pages; Claude reports its CLI's
+native levels. If no source knows the model, the bounded canonical level
+passes through for the engine to judge. With no model pin, discovery uses
+the engine's default model where it can identify it.
+
+The requested level is held within the bounds, then the nearest served
+level inside them is selected; ties choose the lower level. Bounds that
+admit no served level refuse before the worker starts, naming the model,
+file and each bound's key. Where bounds apply, a call must explicitly name
+a canonical effort: an omitted effort or opencode raw variant cannot be
+compared with those bounds and is refused. Without bounds, an omitted
+effort leaves the engine's default in force.
+
+Library callers may pass `effortPolicy: { section, source }` to
+`createRuntime`; it meets the same section validation. The manifest records
+this policy, and each agent and attempt records its resolution separately
+from the effort the engine reports serving.

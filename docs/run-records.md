@@ -593,6 +593,9 @@ families; their versions are listed in [Schema versions](#schema-versions).
 - `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
   ceilings and whole-run timeout, each as `{ value, layer }`. Both are set by
   flag only, so their layers are `flag` or `default`.
+- `effort`: the machine effort policy `{ section, source }`, or `null` when
+  the runtime received none; `section` contains the bounds and native-level
+  maps in force, and `source` names the machine configuration file.
 - `named_targets`: the named targets in force when the run started —
   `source`, the machine configuration file they are read from (`null` for a
   library run given none), and `bindings`, each name's
@@ -722,6 +725,8 @@ While an attempt executes, on any engine, the record also has
   attempt.
 - `named_target`: the named target this attempt was asked for through, as on
   a settled attempt.
+- `effort_resolution`: dispatch provenance, present when the runtime resolved
+  a canonical effort; the shape matches a settled attempt below.
 - `transcript`: a path once a readable file exists, otherwise `null`.
   opencode has no live transcript, so its value stays `null`.
 - `resolved_model` and `resolved_effort`: the served identity the engine has
@@ -775,10 +780,23 @@ The fields present throughout a record's lifetime are:
   engine and model, `model` being `null` where the binding names none (the
   top-level `model` then shows what the `defaults` block chose, or `null` for
   the engine's own default).
+- `effort_resolution`: the last dispatched target's harness resolution, or
+  `null` for an omitted effort or raw opencode variant. It carries `requested`,
+  `bounds` (each of `floor` and `ceiling` is `{ level, key }` or `null`),
+  `served` (`{ source, level }` or `null` for pass-through), and `dispatched`
+  (the native name). Sources are `machine-map`, `built-in-table` and
+  `engine-report`, in that order. This is dispatch provenance, never evidence
+  that the provider served the chosen level. Each settled attempt carries its
+  own `effort_resolution` with the same shape; a running `current_attempt`
+  carries it when effort was resolved, and an abandoned attempt retains it.
+  Earlier attempts retain their own target's resolution after a fallback.
+  Older records may omit these fields.
 - `resolved_model` / `resolved_effort`: what was actually served, as the
   engine reported it — Codex's `thread/start` answer, or the `model` and
   `effort` fields Claude Code writes on each assistant transcript entry —
   and `null` when the engine reported none, never an echo of the request.
+  A provider effort rejection clears `resolved_effort` on the agent and
+  attempt, records `effort-rejected`, and settles without retrying.
   A Codex `modelNotFound` rejection clears the thread's reported model and
   effort: its configured model was not served. That attempt books under
   `unresolved` in the cost roll-up.
@@ -819,11 +837,14 @@ The fields present throughout a record's lifetime are:
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).
-- `worktree`: the isolated worktree's `branch`, `base_commit`, `state`,
-  `tip_commit`, `changed`, and `removed` — or `null`. `state` is
+- `worktree`: the isolated worktree's final `branch` (`null` for detached
+  HEAD), `base_commit`, `state`, `tip_commit`, `changed`, and `removed` — or `null`. `state` is
   `"unchanged"`, `"uncommitted"`, `"committed"`,
   `"committed-and-uncommitted"`, or `"unknown"`, as for a script's
-  [`worktrees`](workflow-scripts.md#budget-worktrees-and-args). `state` joined
+  [`worktrees`](workflow-scripts.md#budget-worktrees-and-args). Held-session
+  turns receive the final block together when the session closes. Recover
+  committed work through `tip_commit`; `branch` reflects the worker's final
+  checkout, except for `unknown`, which retains the original dispatch branch. `state` joined
   the record within its schema version, so an agent record from an older
   Ensemble checkout can lack it; read a missing `state` as unrecorded, and
   rely on `changed` there.

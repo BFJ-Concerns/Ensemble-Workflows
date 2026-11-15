@@ -14,13 +14,11 @@ export interface OpenCodeModelRegistryEntry {
     mode: "pay-as-you-go" | "self-hosted";
   };
   /**
-   * The served variants this entry accepts as `effort` — the registry is
-   * the domain's owner, exactly as it owns the model list, because
-   * `opencode run` forwards an unknown variant to the provider silently
-   * (measured 2026-08-30: `--effort definitely-invalid` reached a healthy
-   * worker at exit 0). Empty means the served model declares no variants,
-   * so any `effort` request fails loud pre-spawn; a curator adds variants
-   * from the provider's own listing, never by guess.
+   * The raw variants callers can request directly, also used as the engine's
+   * effort report when no machine map or built-in model row supplies levels.
+   * An unknown raw variant is refused: opencode silently forwards it to the
+   * provider. A resolved canonical effort instead uses the authoritative
+   * source's native name, even when this listing omits it.
    */
   variants: readonly string[];
 }

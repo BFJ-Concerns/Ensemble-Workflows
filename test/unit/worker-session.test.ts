@@ -1537,3 +1537,41 @@ test("a held turn's fallback target clears the identity its earlier retry retain
     ]);
   } finally { await session.close(); await runtime.close(); }
 });
+
+for (const failed of [false, true]) {
+  test(`held session finalises every turn's worktree record (${failed ? "unknown" : "committed"})`, async () => {
+    const transport = new ScriptedTransport([turnResult("one"), turnResult("two")]);
+    const published = new Map<number, RuntimeAgentRecord>();
+    const tree = { path: process.cwd(), branch: "created", baseCommit: "base" };
+    const runtime = new EnsembleRuntime({
+      defaultMaxAttempts: 3,
+      engines: new EngineRegistry([new CodexEngineAdapter({ transport, concurrency: 1 })]),
+      worktreeManager: {
+        create: async () => tree,
+        finish: async () => {
+          if (failed) throw new Error("cannot inspect");
+          return { ...tree, branch: "worker-result", tipCommit: "tip", state: "committed", changed: true, removed: false };
+        }
+      }
+    });
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => { published.set(record.id, structuredClone(record)); },
+      recordAttemptStart: ignoreAttemptStart,
+      recordAttemptEnd: ignoreAttemptEnd
+    } as unknown as RunRecordWriter);
+    const session = runtime.createWorkerSession({ engine: "codex", isolation: "worktree" });
+    try {
+      await session.send("one");
+      await session.send("two");
+      await session.close();
+      assert.equal(runtime.worktrees.length, 1);
+      assert.equal(published.size, 2);
+      for (const record of published.values()) {
+        assert.equal(record.worktree?.state, failed ? "unknown" : "committed");
+        assert.equal(record.worktree?.tipCommit, failed ? null : "tip");
+        assert.equal(record.worktree?.baseCommit, "base");
+        assert.equal(record.worktree?.branch, failed ? "created" : "worker-result");
+      }
+    } finally { await runtime.close(); }
+  });
+}

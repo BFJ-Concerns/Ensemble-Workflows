@@ -1,3 +1,4 @@
+import type { EffortPolicy } from "./effort-resolution.js";
 import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { NamedTargets } from "./named-targets.js";
@@ -59,11 +60,11 @@ export interface AgentOptions {
   schema?: JsonSchema;
   model?: string;
   /**
-   * Canonical effort level — `minimal | low | medium | high | xhigh` —
+   * Canonical effort level — `none | minimal | low | medium | high | xhigh | max` —
    * validated pre-spawn as a harness-owned domain and converted to the
    * engine's native form, clamping to the nearest level the engine
    * offers; the resolved native value lands in the run record. opencode
-   * is exempt: its effort names the registry entry's served variants.
+   * also accepts a raw variant the registry entry declares.
    */
   effort?: string;
   /**
@@ -226,6 +227,7 @@ export interface AgentCallSignature {
 }
 
 export interface RuntimeOptions {
+  effortPolicy?: EffortPolicy;
   cwd?: string;
   codexBin?: string;
   agentCeiling?: number | null;
@@ -512,7 +514,14 @@ export interface ThreadStartOptions {
   threadConfig?: Record<string, unknown>;
 }
 
+export interface CodexModelListing {
+  model: string;
+  isDefault: boolean;
+  supportedReasoningEfforts: readonly string[];
+}
+
 export interface RuntimeTransport {
+  listModels?(): Promise<readonly CodexModelListing[]>;
   readonly cwd: string;
   /**
    * Observe terminal substrate failure, including between turns. Registration

@@ -18,7 +18,23 @@ import type { ServedEffortLevels } from "./effort-resolution.js";
  * was never seen at all. A row is re-measured, never extrapolated from a
  * neighbouring model's.
  */
-const BUILT_IN_SERVED_LEVELS: Readonly<Record<string, ServedEffortLevels>> = {};
+const BUILT_IN_SERVED_LEVELS: Readonly<Record<string, ServedEffortLevels>> = {
+  // Codex CLI 0.162.1 model/list, 2026-10-26: canonical listed levels.
+  "gpt-6.1-sol": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-6-astra": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-6-sol": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-5.6-sol": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-5.6-terra": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-5.6-luna": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-5.5": levels("low", "medium", "high", "xhigh"),
+  // Provider acceptance of none and refusal of minimal: 2026-11-06
+  // owner ruling, correcting the incomplete Codex 0.162.1 listing.
+  "gpt-6-luna": levels("none", "low", "medium", "high", "xhigh", "max")
+};
+
+function levels(...names: (keyof ServedEffortLevels)[]): ServedEffortLevels {
+  return Object.fromEntries(names.map((name) => [name, name]));
+}
 
 /** The served levels the built-in table holds for a model identity, or undefined where the table does not know the model. */
 export function builtInServedLevels(identity: string): ServedEffortLevels | undefined {

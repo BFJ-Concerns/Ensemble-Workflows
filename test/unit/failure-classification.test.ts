@@ -348,3 +348,14 @@ test("only a failure a retry would meet again settles its call without one", () 
     assert.equal(settlesWithoutRetry({ kind }), false, kind);
   }
 });
+
+
+test("a provider effort rejection in the structured payload settles without a retry or chain advance", () => {
+  const error = appServerErrorFromPayload("turn", { code: "badRequest", message: "Unsupported value minimal for this model",
+    data: { param: "reasoning.effort", supported_values: ["none", "low", "high"] } });
+  const original = evidence({ engine: "codex", failure: { kind: error.name, message: error.message }, appServerDiagnostic: appServerDiagnosticOf(error) });
+  const failure = diagnoseAttemptFailure(original);
+  assert.equal(failure.kind, "effort-rejected");
+  assert.equal(settlesWithoutRetry(failure), true);
+  assert.deepEqual(classifyAttemptFailure({ ...original, failure }), { class: "unclassified", rule: "effort.rejected" });
+});

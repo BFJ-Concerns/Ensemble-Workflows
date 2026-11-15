@@ -204,7 +204,37 @@ export interface IdentifiedAgentResult {
    * without parsing logs.
    */
   failure: { kind: string; message: string } | null;
+  /**
+   * The target that answered: its engine, the model it served (the
+   * requested model where the engine reported none, null where neither is
+   * known), and that target's model family, null where the harness cannot
+   * tell. After a fallback step this is the chain entry that answered, not
+   * the call's own target. Null when no target answered — a failed worker.
+   */
+  answeredBy: DispatchTarget | null;
 }
+
+/**
+ * Where a dispatch runs: an engine, its model (null where the engine's own
+ * default decides and the harness does not know it), and the model family,
+ * null where the harness cannot tell.
+ */
+export interface DispatchTarget {
+  engine: EngineName;
+  model: string | null;
+  family: string | null;
+}
+
+/**
+ * The dispatch lookup's answer for a call's options, with nothing
+ * dispatched: where the call's first dispatch would go, with `target` the
+ * name the call asked for (null for a literal engine). A name the machine
+ * does not bind answers `bound: false` where the call itself would be
+ * refused.
+ */
+export type DispatchLookup =
+  | ({ target: string | null; bound: true } & DispatchTarget)
+  | { target: string; bound: false; engine: null; model: null; family: null };
 
 /**
  * The canonical `agent()` call signature — the one overload set every

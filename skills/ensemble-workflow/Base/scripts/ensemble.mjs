@@ -46,9 +46,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/ajv/dist/compile/codegen/code.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/code.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/codegen/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.regexpCode = exports.getEsmExportName = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = void 0;
@@ -200,9 +200,9 @@ var require_code = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/codegen/scope.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/codegen/scope.js
 var require_scope = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ValueScope = exports.ValueScopeName = exports.Scope = exports.varKinds = exports.UsedValueState = void 0;
@@ -345,9 +345,9 @@ var require_scope = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/codegen/index.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/codegen/index.js
 var require_codegen = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/index.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/codegen/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.or = exports.and = exports.not = exports.CodeGen = exports.operators = exports.varKinds = exports.ValueScopeName = exports.ValueScope = exports.Scope = exports.Name = exports.regexpCode = exports.stringify = exports.getProperty = exports.nil = exports.strConcat = exports.str = exports._ = void 0;
@@ -1065,9 +1065,9 @@ var require_codegen = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/util.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/util.js
 var require_util = __commonJS({
-  "node_modules/ajv/dist/compile/util.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/util.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.checkStrictMode = exports.getErrorPath = exports.Type = exports.useFunc = exports.setEvaluated = exports.evaluatedPropsToName = exports.mergeEvaluated = exports.eachItem = exports.unescapeJsonPointer = exports.escapeJsonPointer = exports.escapeFragment = exports.unescapeFragment = exports.schemaRefOrVal = exports.schemaHasRulesButRef = exports.schemaHasRules = exports.checkUnknownRules = exports.alwaysValidSchema = exports.toHash = void 0;
@@ -1232,9 +1232,9 @@ var require_util = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/names.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/names.js
 var require_names = __commonJS({
-  "node_modules/ajv/dist/compile/names.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/names.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -1271,9 +1271,9 @@ var require_names = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/errors.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/errors.js
 var require_errors = __commonJS({
-  "node_modules/ajv/dist/compile/errors.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/errors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendErrors = exports.resetErrorsCount = exports.reportExtraError = exports.reportError = exports.keyword$DataError = exports.keywordError = void 0;
@@ -1393,9 +1393,9 @@ var require_errors = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/boolSchema.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/boolSchema.js
 var require_boolSchema = __commonJS({
-  "node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.boolOrEmptySchema = exports.topBoolOrEmptySchema = void 0;
@@ -1444,9 +1444,9 @@ var require_boolSchema = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/rules.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/rules.js
 var require_rules = __commonJS({
-  "node_modules/ajv/dist/compile/rules.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/rules.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getRules = exports.isJSONType = void 0;
@@ -1475,9 +1475,9 @@ var require_rules = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/applicability.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/applicability.js
 var require_applicability = __commonJS({
-  "node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.shouldUseRule = exports.shouldUseGroup = exports.schemaHasRulesForType = void 0;
@@ -1498,9 +1498,9 @@ var require_applicability = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/dataType.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/dataType.js
 var require_dataType = __commonJS({
-  "node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.reportTypeError = exports.checkDataTypes = exports.checkDataType = exports.coerceAndCheckDataType = exports.getJSONTypes = exports.getSchemaTypes = exports.DataType = void 0;
@@ -1682,9 +1682,9 @@ var require_dataType = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/defaults.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/defaults.js
 var require_defaults = __commonJS({
-  "node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.assignDefaults = void 0;
@@ -1719,9 +1719,9 @@ var require_defaults = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/code.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/code.js
 var require_code2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/code.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateUnion = exports.validateArray = exports.usePattern = exports.callValidateCode = exports.schemaProperties = exports.allSchemaProperties = exports.noPropertyInData = exports.propertyInData = exports.isOwnProperty = exports.hasPropFunc = exports.reportMissingProp = exports.checkMissingProp = exports.checkReportMissingProp = void 0;
@@ -1852,9 +1852,9 @@ var require_code2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/keyword.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/keyword.js
 var require_keyword = __commonJS({
-  "node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateKeywordUsage = exports.validSchemaType = exports.funcKeywordCode = exports.macroKeywordCode = void 0;
@@ -1970,9 +1970,9 @@ var require_keyword = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/subschema.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/subschema.js
 var require_subschema = __commonJS({
-  "node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendSubschemaMode = exports.extendSubschemaData = exports.getSubschema = void 0;
@@ -2053,9 +2053,9 @@ var require_subschema = __commonJS({
   }
 });
 
-// node_modules/fast-deep-equal/index.js
+// ../../Ensemble-Workflows/node_modules/fast-deep-equal/index.js
 var require_fast_deep_equal = __commonJS({
-  "node_modules/fast-deep-equal/index.js"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/fast-deep-equal/index.js"(exports, module) {
     "use strict";
     module.exports = function equal(a, b) {
       if (a === b) return true;
@@ -2088,9 +2088,9 @@ var require_fast_deep_equal = __commonJS({
   }
 });
 
-// node_modules/json-schema-traverse/index.js
+// ../../Ensemble-Workflows/node_modules/json-schema-traverse/index.js
 var require_json_schema_traverse = __commonJS({
-  "node_modules/json-schema-traverse/index.js"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/json-schema-traverse/index.js"(exports, module) {
     "use strict";
     var traverse = module.exports = function(schema, opts, cb) {
       if (typeof opts == "function") {
@@ -2176,9 +2176,9 @@ var require_json_schema_traverse = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/resolve.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/resolve.js
 var require_resolve = __commonJS({
-  "node_modules/ajv/dist/compile/resolve.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/resolve.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getSchemaRefs = exports.resolveUrl = exports.normalizeId = exports._getFullPath = exports.getFullPath = exports.inlineRef = void 0;
@@ -2332,9 +2332,9 @@ var require_resolve = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/index.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/index.js
 var require_validate = __commonJS({
-  "node_modules/ajv/dist/compile/validate/index.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/validate/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getData = exports.KeywordCxt = exports.validateFunctionCode = void 0;
@@ -2840,9 +2840,9 @@ var require_validate = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/validation_error.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/runtime/validation_error.js
 var require_validation_error = __commonJS({
-  "node_modules/ajv/dist/runtime/validation_error.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/runtime/validation_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var ValidationError = class extends Error {
@@ -2856,9 +2856,9 @@ var require_validation_error = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/ref_error.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/ref_error.js
 var require_ref_error = __commonJS({
-  "node_modules/ajv/dist/compile/ref_error.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/ref_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var resolve_1 = require_resolve();
@@ -2873,9 +2873,9 @@ var require_ref_error = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/index.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/compile/index.js
 var require_compile = __commonJS({
-  "node_modules/ajv/dist/compile/index.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/compile/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.resolveSchema = exports.getCompilingSchema = exports.resolveRef = exports.compileSchema = exports.SchemaEnv = void 0;
@@ -3097,9 +3097,9 @@ var require_compile = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/data.json
+// ../../Ensemble-Workflows/node_modules/ajv/dist/refs/data.json
 var require_data = __commonJS({
-  "node_modules/ajv/dist/refs/data.json"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/refs/data.json"(exports, module) {
     module.exports = {
       $id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
       description: "Meta-schema for $data reference (JSON AnySchema extension proposal)",
@@ -3116,34 +3116,15 @@ var require_data = __commonJS({
   }
 });
 
-// node_modules/fast-uri/lib/utils.js
+// ../../Ensemble-Workflows/node_modules/fast-uri/lib/utils.js
 var require_utils = __commonJS({
-  "node_modules/fast-uri/lib/utils.js"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/fast-uri/lib/utils.js"(exports, module) {
     "use strict";
     var isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
     var isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
-    var isPort = RegExp.prototype.test.bind(/^\d*$/u);
     var isHexPair = RegExp.prototype.test.bind(/^[\da-f]{2}$/iu);
     var isUnreserved = RegExp.prototype.test.bind(/^[\da-z\-._~]$/iu);
-    var isPathCharacter = RegExp.prototype.test.bind(/^[A-Za-z0-9\-._~!$&'()*+,;=:@/]$/u);
-    var isQueryFragmentCharacter = RegExp.prototype.test.bind(/^[A-Za-z0-9\-._~!$&'()*+,;=:@/?]$/u);
-    var isUserinfoCharacter = RegExp.prototype.test.bind(/^[A-Za-z0-9\-._~!$&'()*+,;=:]$/u);
-    var BYTE_HEX = new Array(256);
-    {
-      const HEX_DIGITS = "0123456789ABCDEF";
-      for (let i2 = 0; i2 < 256; i2++) {
-        BYTE_HEX[i2] = "%" + HEX_DIGITS[i2 >> 4] + HEX_DIGITS[i2 & 15];
-      }
-    }
-    function percentEncodeNonAscii(cp) {
-      if (cp < 2048) {
-        return BYTE_HEX[192 | cp >> 6] + BYTE_HEX[128 | cp & 63];
-      }
-      if (cp < 65536) {
-        return BYTE_HEX[224 | cp >> 12] + BYTE_HEX[128 | cp >> 6 & 63] + BYTE_HEX[128 | cp & 63];
-      }
-      return BYTE_HEX[240 | cp >> 18] + BYTE_HEX[128 | cp >> 12 & 63] + BYTE_HEX[128 | cp >> 6 & 63] + BYTE_HEX[128 | cp & 63];
-    }
+    var isPathCharacter = RegExp.prototype.test.bind(/^[\da-z\-._~!$&'()*+,;=:@/]$/iu);
     function stringArrayToHexStripped(input) {
       let acc = "";
       let code = 0;
@@ -3168,105 +3149,91 @@ var require_utils = __commonJS({
       }
       return acc;
     }
-    var isHextet = RegExp.prototype.test.bind(/^[\dA-Fa-f]{1,4}$/);
-    var isIPvFuture = RegExp.prototype.test.bind(/^[vV][\dA-Fa-f]+\.[A-Za-z\d\-._~!$&'()*+,;=:]+$/);
-    var isZoneCharacter = RegExp.prototype.test.bind(/^[A-Za-z\d\-._~]$/);
     var nonSimpleDomain = RegExp.prototype.test.bind(/[^!"$&'()*+,\-.;=_`a-z{}~]/u);
-    function isZoneIdentifier(zone) {
-      if (zone.length === 0) return false;
-      for (let i2 = 0; i2 < zone.length; i2++) {
-        if (isZoneCharacter(zone[i2])) continue;
-        if (zone[i2] === "%" && i2 + 2 < zone.length && isHexPair(zone.slice(i2 + 1, i2 + 3))) {
-          i2 += 2;
-          continue;
+    function consumeIsZone(buffer) {
+      buffer.length = 0;
+      return true;
+    }
+    function consumeHextets(buffer, address, output) {
+      if (buffer.length) {
+        const hex = stringArrayToHexStripped(buffer);
+        if (hex !== "") {
+          address.push(hex);
+        } else {
+          output.error = true;
+          return false;
         }
-        return false;
+        buffer.length = 0;
       }
       return true;
     }
-    function compressIPv6ZeroRun(hextets) {
-      let bestStart = -1;
-      let bestLength = 0;
-      let runStart = -1;
-      let runLength = 0;
-      for (let i2 = 0; i2 < hextets.length; i2++) {
-        if (hextets[i2] === "0") {
-          if (runStart === -1) runStart = i2;
-          runLength++;
-          if (runLength > bestLength) {
-            bestLength = runLength;
-            bestStart = runStart;
-          }
-        } else {
-          runStart = -1;
-          runLength = 0;
-        }
-      }
-      if (bestLength < 2) return hextets.join(":");
-      const head = hextets.slice(0, bestStart).join(":");
-      const tail = hextets.slice(bestStart + bestLength).join(":");
-      return head + "::" + tail;
-    }
-    function normalizeIPv6Address(input) {
-      const compression = input.indexOf("::");
-      if (compression !== -1 && input.indexOf("::", compression + 1) !== -1) return void 0;
-      const left = compression === -1 ? input.split(":") : input.slice(0, compression).split(":");
-      const right = compression === -1 ? [] : input.slice(compression + 2).split(":");
-      if (compression !== -1) {
-        if (left.length === 1 && left[0] === "") left.length = 0;
-        if (right.length === 1 && right[0] === "") right.length = 0;
-      }
-      const parts = left.concat(right);
-      let hextetCount = 0;
-      for (let i2 = 0; i2 < parts.length; i2++) {
-        const part = parts[i2];
-        if (part === "") return void 0;
-        if (part.indexOf(".") !== -1) {
-          if (i2 !== parts.length - 1 || compression !== -1 && right.length === 0 || !isIPv4(part)) return void 0;
-          hextetCount += 2;
+    function getIPV6(input) {
+      let tokenCount = 0;
+      const output = { error: false, address: "", zone: "" };
+      const address = [];
+      const buffer = [];
+      let endipv6Encountered = false;
+      let endIpv6 = false;
+      let consume = consumeHextets;
+      for (let i2 = 0; i2 < input.length; i2++) {
+        const cursor = input[i2];
+        if (cursor === "[" || cursor === "]") {
           continue;
         }
-        if (!isHextet(part)) return void 0;
-        parts[i2] = parseInt(part, 16).toString(16);
-        hextetCount++;
+        if (cursor === ":") {
+          if (endipv6Encountered === true) {
+            endIpv6 = true;
+          }
+          if (!consume(buffer, address, output)) {
+            break;
+          }
+          if (++tokenCount > 7) {
+            output.error = true;
+            break;
+          }
+          if (i2 > 0 && input[i2 - 1] === ":") {
+            endipv6Encountered = true;
+          }
+          address.push(":");
+          continue;
+        } else if (cursor === "%") {
+          if (!consume(buffer, address, output)) {
+            break;
+          }
+          consume = consumeIsZone;
+        } else {
+          buffer.push(cursor);
+          continue;
+        }
       }
-      if (compression === -1) {
-        if (hextetCount !== 8) return void 0;
-        return compressIPv6ZeroRun(parts);
+      if (buffer.length) {
+        if (consume === consumeIsZone) {
+          output.zone = buffer.join("");
+        } else if (endIpv6) {
+          address.push(buffer.join(""));
+        } else {
+          address.push(stringArrayToHexStripped(buffer));
+        }
       }
-      if (hextetCount >= 8) return void 0;
-      const expanded = parts.slice(0, left.length);
-      for (let i2 = hextetCount; i2 < 8; i2++) expanded.push("0");
-      for (let i2 = left.length; i2 < parts.length; i2++) expanded.push(parts[i2]);
-      return compressIPv6ZeroRun(expanded);
+      output.address = address.join("");
+      return output;
     }
     function normalizeIPv6(host) {
-      const bracketed = host[0] === "[" && host[host.length - 1] === "]";
-      const hasBracket = host[0] === "[" || host[host.length - 1] === "]";
-      if (hasBracket && !bracketed) return { host, isIPV6: false, error: true };
-      let input = bracketed ? host.slice(1, -1) : host;
-      if (bracketed && isIPvFuture(input)) {
-        input = input.toLowerCase();
-        return { host: `[${input}]`, escapedHost: input, isIPV6: false, isIPVFuture: true };
+      if (findToken(host, ":") < 2) {
+        return { host, isIPV6: false };
       }
-      if (findToken(input, ":") < 2) {
-        return { host, isIPV6: false, error: bracketed };
+      const ipv6 = getIPV6(host);
+      if (!ipv6.error) {
+        let newHost = ipv6.address;
+        let escapedHost = ipv6.address;
+        if (ipv6.zone) {
+          newHost += "%" + ipv6.zone;
+          escapedHost += "%25" + ipv6.zone;
+        }
+        return { host: newHost, isIPV6: true, escapedHost };
+      } else {
+        return { host, isIPV6: false };
       }
-      let zoneIdentifier = "";
-      const zoneSeparator = input.indexOf("%");
-      if (zoneSeparator !== -1) {
-        const separatorLength = input.slice(zoneSeparator, zoneSeparator + 3).toLowerCase() === "%25" ? 3 : 1;
-        zoneIdentifier = input.slice(zoneSeparator + separatorLength);
-        if (!isZoneIdentifier(zoneIdentifier)) return { host, isIPV6: false, error: true };
-        input = input.slice(0, zoneSeparator);
-      }
-      const address = normalizeIPv6Address(input);
-      if (address === void 0) return { host, isIPV6: false, error: true };
-      return {
-        host: address + (zoneIdentifier ? "%" + zoneIdentifier : ""),
-        escapedHost: address + (zoneIdentifier ? "%25" + zoneIdentifier : ""),
-        isIPV6: true
-      };
     }
     function findToken(str, token) {
       let ind = 0;
@@ -3350,37 +3317,6 @@ var require_utils = __commonJS({
       }
       return output.join("");
     }
-    function removeDotSegmentsRelative(path21) {
-      if (path21 === "" || path21[0] === "/") {
-        return removeDotSegments(path21);
-      }
-      const segments = path21.split("/");
-      const last = segments.length - 1;
-      const output = [];
-      let trailingDirectory = false;
-      for (let i2 = 0; i2 <= last; i2++) {
-        const segment = segments[i2];
-        if (segment === "." || segment === "..") {
-          if (segment === "..") {
-            if (output.length !== 0 && output[output.length - 1] !== "..") {
-              output.pop();
-            } else {
-              output.push("..");
-            }
-          }
-          trailingDirectory = i2 === last;
-        } else {
-          output.push(segment);
-        }
-      }
-      if (trailingDirectory && output[output.length - 1] !== "..") {
-        output.push("");
-      }
-      if (output.length === 0 || output[0] === "" || output[0].includes(":")) {
-        output.unshift(".");
-      }
-      return output.join("/");
-    }
     var HOST_DELIMS = { "@": "%40", "/": "%2F", "?": "%3F", "#": "%23", ":": "%3A" };
     var HOST_DELIM_RE = /[@/?#:]/g;
     var HOST_DELIM_NO_COLON_RE = /[@/?#]/g;
@@ -3416,8 +3352,7 @@ var require_utils = __commonJS({
     function normalizePathEncoding(input) {
       let output = "";
       for (let i2 = 0; i2 < input.length; i2++) {
-        const ch = input[i2];
-        if (ch === "%" && i2 + 2 < input.length) {
+        if (input[i2] === "%" && i2 + 2 < input.length) {
           const hex = input.slice(i2 + 1, i2 + 3);
           if (isHexPair(hex)) {
             const normalizedHex = hex.toUpperCase();
@@ -3431,152 +3366,10 @@ var require_utils = __commonJS({
             continue;
           }
         }
-        if (isPathCharacter(ch)) {
-          output += ch;
+        if (isPathCharacter(input[i2])) {
+          output += input[i2];
         } else {
-          const code = input.charCodeAt(i2);
-          if (code < 128) {
-            output += isEscapeSafe(code) ? ch : BYTE_HEX[code];
-          } else if (code < 55296 || code > 57343) {
-            output += percentEncodeNonAscii(code);
-          } else if (code <= 56319 && i2 + 1 < input.length) {
-            const low = input.charCodeAt(i2 + 1);
-            if (low >= 56320 && low <= 57343) {
-              output += percentEncodeNonAscii(65536 + (code - 55296 << 10) + (low - 56320));
-              i2++;
-            } else {
-              output += percentEncodeNonAscii(65533);
-            }
-          } else {
-            output += percentEncodeNonAscii(65533);
-          }
-        }
-      }
-      return output;
-    }
-    function serializePathEncoding(input, pathNoScheme = false) {
-      let output = "";
-      let firstSegment = pathNoScheme && input[0] !== "/";
-      for (let i2 = 0; i2 < input.length; i2++) {
-        const ch = input[i2];
-        if (ch === "%" && i2 + 2 < input.length) {
-          const hex = input.slice(i2 + 1, i2 + 3);
-          if (isHexPair(hex)) {
-            output += "%" + hex.toUpperCase();
-            i2 += 2;
-            continue;
-          }
-        }
-        if (ch === "/") {
-          firstSegment = false;
-        }
-        if (isPathCharacter(ch) && (ch !== ":" || !firstSegment)) {
-          output += ch;
-        } else {
-          const code = input.charCodeAt(i2);
-          if (code < 128) {
-            output += BYTE_HEX[code];
-          } else if (code < 55296 || code > 57343) {
-            output += percentEncodeNonAscii(code);
-          } else if (code <= 56319 && i2 + 1 < input.length) {
-            const low = input.charCodeAt(i2 + 1);
-            if (low >= 56320 && low <= 57343) {
-              output += percentEncodeNonAscii(65536 + (code - 55296 << 10) + (low - 56320));
-              i2++;
-            } else {
-              output += percentEncodeNonAscii(65533);
-            }
-          } else {
-            output += percentEncodeNonAscii(65533);
-          }
-        }
-      }
-      return output;
-    }
-    function encodeComponent(input, isAllowed) {
-      let output = "";
-      for (let i2 = 0; i2 < input.length; i2++) {
-        const ch = input[i2];
-        if (ch === "%" && i2 + 2 < input.length) {
-          const hex = input.slice(i2 + 1, i2 + 3);
-          if (isHexPair(hex)) {
-            output += "%" + hex.toUpperCase();
-            i2 += 2;
-            continue;
-          }
-        }
-        if (isAllowed(ch)) {
-          output += ch;
-        } else {
-          const code = input.charCodeAt(i2);
-          if (code < 128) {
-            output += BYTE_HEX[code];
-          } else if (code < 55296 || code > 57343) {
-            output += percentEncodeNonAscii(code);
-          } else if (code <= 56319 && i2 + 1 < input.length) {
-            const low = input.charCodeAt(i2 + 1);
-            if (low >= 56320 && low <= 57343) {
-              output += percentEncodeNonAscii(65536 + (code - 55296 << 10) + (low - 56320));
-              i2++;
-            } else {
-              output += percentEncodeNonAscii(65533);
-            }
-          } else {
-            output += percentEncodeNonAscii(65533);
-          }
-        }
-      }
-      return output;
-    }
-    function encodeUserinfo(input) {
-      return encodeComponent(input, isUserinfoCharacter);
-    }
-    function encodeQuery(input) {
-      return encodeComponent(input, isQueryFragmentCharacter);
-    }
-    function encodeFragment(input) {
-      return encodeComponent(input, isQueryFragmentCharacter);
-    }
-    function isEscapeSafe(cp) {
-      return cp >= 48 && cp <= 57 || cp >= 65 && cp <= 90 || cp >= 97 && cp <= 122 || cp === 42 || cp === 43 || cp === 45 || cp === 46 || cp === 47 || cp === 64 || cp === 95;
-    }
-    function normalizeQueryFragmentEncoding(input) {
-      let output = "";
-      for (let i2 = 0; i2 < input.length; i2++) {
-        const ch = input[i2];
-        if (ch === "%" && i2 + 2 < input.length) {
-          const hex = input.slice(i2 + 1, i2 + 3);
-          if (isHexPair(hex)) {
-            const normalizedHex = hex.toUpperCase();
-            const decoded = String.fromCharCode(parseInt(normalizedHex, 16));
-            if (isUnreserved(decoded)) {
-              output += decoded;
-            } else {
-              output += "%" + normalizedHex;
-            }
-            i2 += 2;
-            continue;
-          }
-        }
-        if (isQueryFragmentCharacter(ch)) {
-          output += ch;
-        } else {
-          const code = input.charCodeAt(i2);
-          if (code < 128) {
-            output += isEscapeSafe(code) ? ch : BYTE_HEX[code];
-          } else if (code < 55296 || code > 57343) {
-            output += percentEncodeNonAscii(code);
-          } else if (code <= 56319 && i2 + 1 < input.length) {
-            const low = input.charCodeAt(i2 + 1);
-            if (low >= 56320 && low <= 57343) {
-              output += percentEncodeNonAscii(65536 + (code - 55296 << 10) + (low - 56320));
-              i2++;
-            } else {
-              output += percentEncodeNonAscii(65533);
-            }
-          } else {
-            output += percentEncodeNonAscii(65533);
-          }
+          output += escape(input[i2]);
         }
       }
       return output;
@@ -3599,18 +3392,14 @@ var require_utils = __commonJS({
     function recomposeAuthority(component) {
       const uriTokens = [];
       if (component.userinfo !== void 0) {
-        uriTokens.push(encodeUserinfo(component.userinfo));
+        uriTokens.push(component.userinfo);
         uriTokens.push("@");
       }
       if (component.host !== void 0) {
-        let host = component.host;
+        let host = unescape(component.host);
         if (!isIPv4(host)) {
-          let ipV6res = normalizeIPv6(host);
-          if (ipV6res.isIPV6 !== true && ipV6res.isIPVFuture !== true) {
-            host = normalizePercentEncoding(host, true);
-            ipV6res = normalizeIPv6(host);
-          }
-          if (ipV6res.isIPV6 === true || ipV6res.isIPVFuture === true) {
+          const ipV6res = normalizeIPv6(host);
+          if (ipV6res.isIPV6 === true) {
             host = `[${ipV6res.escapedHost}]`;
           } else {
             host = reescapeHostDelimiters(host, false);
@@ -3619,12 +3408,8 @@ var require_utils = __commonJS({
         uriTokens.push(host);
       }
       if (typeof component.port === "number" || typeof component.port === "string") {
-        const port = String(component.port);
-        if (!isPort(port)) {
-          throw new TypeError("URI port is malformed.");
-        }
         uriTokens.push(":");
-        uriTokens.push(port);
+        uriTokens.push(String(component.port));
       }
       return uriTokens.length ? uriTokens.join("") : void 0;
     }
@@ -3634,14 +3419,8 @@ var require_utils = __commonJS({
       reescapeHostDelimiters,
       normalizePercentEncoding,
       normalizePathEncoding,
-      serializePathEncoding,
-      normalizeQueryFragmentEncoding,
-      encodeUserinfo,
-      encodeQuery,
-      encodeFragment,
       escapePreservingEscapes,
       removeDotSegments,
-      removeDotSegmentsRelative,
       isIPv4,
       isUUID,
       normalizeIPv6,
@@ -3650,12 +3429,12 @@ var require_utils = __commonJS({
   }
 });
 
-// node_modules/fast-uri/lib/schemes.js
+// ../../Ensemble-Workflows/node_modules/fast-uri/lib/schemes.js
 var require_schemes = __commonJS({
-  "node_modules/fast-uri/lib/schemes.js"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/fast-uri/lib/schemes.js"(exports, module) {
     "use strict";
     var { isUUID } = require_utils();
-    var URN_REG = /^([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-./:;=@]|%[\da-f]{2})+)$/iu;
+    var URN_REG = /([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-.:;=@]|%[\da-f]{2})+)/iu;
     var supportedSchemeNames = (
       /** @type {const} */
       [
@@ -3716,10 +3495,9 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path21 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        const [path21, query] = wsComponent.resourceName.split("?");
         wsComponent.path = path21 && path21 !== "/" ? path21 : void 0;
-        wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
+        wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
       wsComponent.fragment = void 0;
@@ -3731,7 +3509,7 @@ var require_schemes = __commonJS({
         return urnComponent;
       }
       const matches = urnComponent.path.match(URN_REG);
-      if (matches && matches[0] === urnComponent.path) {
+      if (matches) {
         const scheme = options.scheme || urnComponent.scheme || "urn";
         urnComponent.nid = matches[1].toLowerCase();
         urnComponent.nss = matches[2];
@@ -3861,23 +3639,12 @@ var require_schemes = __commonJS({
   }
 });
 
-// node_modules/fast-uri/index.js
+// ../../Ensemble-Workflows/node_modules/fast-uri/index.js
 var require_fast_uri = __commonJS({
-  "node_modules/fast-uri/index.js"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/fast-uri/index.js"(exports, module) {
     "use strict";
-    var { normalizeIPv6, removeDotSegments, removeDotSegmentsRelative, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
+    var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
-    var VALID_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*$/u;
-    var MALFORMED_SCHEME_ERROR = "URI scheme is malformed.";
-    var MALFORMED_HOST_ERROR = "URI host is malformed.";
-    var FORBIDDEN_DOMAIN_HOST_CHARACTER = /[\0-\x20"#/:<>?@[\\\]^`{|}\x7F]/u;
-    function validateScheme(scheme) {
-      const stringScheme = String(scheme);
-      if (!VALID_SCHEME.test(stringScheme)) {
-        throw new TypeError(MALFORMED_SCHEME_ERROR);
-      }
-      return stringScheme;
-    }
     function normalize(uri, options) {
       if (typeof uri === "string") {
         uri = /** @type {T} */
@@ -3890,37 +3657,12 @@ var require_fast_uri = __commonJS({
     }
     function resolve(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
-      const {
-        parsed: baseParsed,
-        malformedAuthorityOrPort: baseMalformed,
-        malformedPercentEncoding: baseMalformedPercentEncoding,
-        malformedSchemeSpecific: baseMalformedSchemeSpecific,
-        malformedHost: baseMalformedHost,
-        malformedScheme: baseMalformedScheme
-      } = parseWithStatus(baseURI, schemelessOptions);
-      const {
-        parsed: relativeParsed,
-        malformedAuthorityOrPort: relativeMalformed,
-        malformedPercentEncoding: relativeMalformedPercentEncoding,
-        malformedSchemeSpecific: relativeMalformedSchemeSpecific,
-        malformedHost: relativeMalformedHost,
-        malformedScheme: relativeMalformedScheme
-      } = parseWithStatus(relativeURI, schemelessOptions);
-      if (baseMalformed || relativeMalformed || baseMalformedPercentEncoding || relativeMalformedPercentEncoding || baseMalformedSchemeSpecific || relativeMalformedSchemeSpecific || baseMalformedHost || relativeMalformedHost || baseMalformedScheme || relativeMalformedScheme) {
+      const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
+      const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
+      if (baseMalformed || relativeMalformed) {
         throw new Error(baseParsed.error || relativeParsed.error || "URI is malformed.");
       }
       const resolved = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
-      const resolvedSchemeHandler = getSchemeHandler(options && options.scheme || resolved.scheme);
-      const resolvedHost = resolved.host;
-      const resolvedHostIsIP = resolvedHost !== void 0 && resolvedHost !== "" && (isIPv4(resolvedHost) || normalizeIPv6(resolvedHost).isIPV6);
-      if (hasForbiddenDomainHost(resolved, options || {}, resolvedSchemeHandler, resolvedHostIsIP)) {
-        throw new Error(MALFORMED_HOST_ERROR);
-      }
-      canonicalizeHost(resolved, options || {}, resolvedSchemeHandler, resolvedHostIsIP);
-      const encodedASCIIHost = resolvedHost && resolvedHost.indexOf("%") !== -1 && !new RegExp("\\P{ASCII}", "u").test(resolvedHost);
-      if (resolved.error && !encodedASCIIHost) {
-        throw new Error(resolved.error);
-      }
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
@@ -3957,15 +3699,14 @@ var require_fast_uri = __commonJS({
             if (relative.path[0] === "/") {
               target.path = removeDotSegments(relative.path);
             } else {
-              const baseHasAuthority = base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0;
-              if (baseHasAuthority && !base.path) {
+              if ((base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0) && !base.path) {
                 target.path = "/" + relative.path;
               } else if (!base.path) {
                 target.path = relative.path;
               } else {
                 target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative.path;
               }
-              target.path = base.scheme === void 0 && !baseHasAuthority && target.path[0] !== "/" ? removeDotSegmentsRelative(target.path) : removeDotSegments(target.path);
+              target.path = removeDotSegments(target.path);
             }
             target.query = relative.query;
           }
@@ -3981,7 +3722,7 @@ var require_fast_uri = __commonJS({
     function equal(uriA, uriB, options) {
       const normalizedA = normalizeComparableURI(uriA, options);
       const normalizedB = normalizeComparableURI(uriB, options);
-      return normalizedA !== void 0 && normalizedB !== void 0 && normalizedA === normalizedB;
+      return normalizedA !== void 0 && normalizedB !== void 0 && normalizedA.toLowerCase() === normalizedB.toLowerCase();
     }
     function serialize(cmpts, opts) {
       const component = {
@@ -4002,23 +3743,19 @@ var require_fast_uri = __commonJS({
       };
       const options = Object.assign({}, opts);
       const uriTokens = [];
-      if (component.scheme) {
-        component.scheme = validateScheme(component.scheme);
-      }
       const schemeHandler = getSchemeHandler(options.scheme || component.scheme);
       if (schemeHandler && schemeHandler.serialize) schemeHandler.serialize(component, options);
-      const hasAuthority = component.userinfo !== void 0 || component.host !== void 0 || component.port !== void 0;
-      const schemelessReference = (component.scheme === void 0 || options.reference === "suffix") && !hasAuthority;
-      const pathNoScheme = !options.skipEscape && schemelessReference;
       if (component.path !== void 0) {
         if (!options.skipEscape) {
-          component.path = serializePathEncoding(component.path, pathNoScheme);
+          component.path = escapePreservingEscapes(component.path);
+          if (component.scheme !== void 0) {
+            component.path = component.path.split("%3A").join(":");
+          }
         } else {
           component.path = normalizePercentEncoding(component.path);
         }
       }
       if (options.reference !== "suffix" && component.scheme) {
-        component.scheme = validateScheme(component.scheme);
         uriTokens.push(component.scheme, ":");
       }
       const authority = recomposeAuthority(component);
@@ -4034,10 +3771,7 @@ var require_fast_uri = __commonJS({
       if (component.path !== void 0) {
         let s = component.path;
         if (!options.absolutePath && (!schemeHandler || !schemeHandler.absolutePath)) {
-          s = schemelessReference && s[0] !== "/" ? removeDotSegmentsRelative(s) : removeDotSegments(s);
-        }
-        if (schemelessReference) {
-          s = serializePathEncoding(s, true);
+          s = removeDotSegments(s);
         }
         if (authority === void 0 && s[0] === "/" && s[1] === "/") {
           s = "/%2F" + s.slice(2);
@@ -4045,10 +3779,10 @@ var require_fast_uri = __commonJS({
         uriTokens.push(s);
       }
       if (component.query !== void 0) {
-        uriTokens.push("?", encodeQuery(component.query));
+        uriTokens.push("?", component.query);
       }
       if (component.fragment !== void 0) {
-        uriTokens.push("#", encodeFragment(component.fragment));
+        uriTokens.push("#", component.fragment);
       }
       return uriTokens.join("");
     }
@@ -4064,53 +3798,6 @@ var require_fast_uri = __commonJS({
       }
       return void 0;
     }
-    function hasMalformedPercentEncoding(component) {
-      if (component === void 0) return false;
-      let percent = component.indexOf("%");
-      while (percent !== -1) {
-        if (percent + 2 >= component.length || !/^[\da-f]{2}$/iu.test(component.slice(percent + 1, percent + 3))) {
-          return true;
-        }
-        percent = component.indexOf("%", percent + 3);
-      }
-      return false;
-    }
-    function isIPLiteral(host) {
-      return host[0] === "[" && host[host.length - 1] === "]";
-    }
-    function hasMalformedComponentPercentEncoding(matches) {
-      const host = matches[4];
-      return hasMalformedPercentEncoding(matches[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches[6]) || hasMalformedPercentEncoding(matches[7]) || hasMalformedPercentEncoding(matches[8]);
-    }
-    function canonicalizeHost(parsed, options, schemeHandler, isIP) {
-      if (hasForbiddenDomainHost(parsed, options, schemeHandler, isIP)) {
-        parsed.error = parsed.error || MALFORMED_HOST_ERROR;
-        return true;
-      }
-      if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport) && parsed.host && !isIPLiteral(parsed.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP === false && nonSimpleDomain(parsed.host)) {
-        let url;
-        try {
-          url = new URL("http://" + parsed.host);
-        } catch (e) {
-          parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
-          return true;
-        }
-        if (!isHostOnlyURL(url)) {
-          parsed.error = parsed.error || MALFORMED_HOST_ERROR;
-          return true;
-        }
-        parsed.host = url.hostname;
-      }
-      return false;
-    }
-    function hasForbiddenDomainHost(parsed, options, schemeHandler, isIP) {
-      return Boolean(
-        parsed.host && isIP === false && !isIPLiteral(parsed.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && FORBIDDEN_DOMAIN_HOST_CHARACTER.test(parsed.host)
-      );
-    }
-    function isHostOnlyURL(url) {
-      return url.username === "" && url.password === "" && url.port === "" && url.pathname === "/" && url.search === "" && url.hash === "" && url.hostname !== "";
-    }
     function parseWithStatus(uri, opts) {
       const options = Object.assign({}, opts);
       const parsed = {
@@ -4123,11 +3810,6 @@ var require_fast_uri = __commonJS({
         fragment: void 0
       };
       let malformedAuthorityOrPort = false;
-      let malformedPercentEncoding = false;
-      let malformedSchemeSpecific = false;
-      let malformedHost = false;
-      let malformedIPLiteral = false;
-      let malformedScheme = false;
       let isIP = false;
       if (options.reference === "suffix") {
         if (options.scheme) {
@@ -4164,18 +3846,6 @@ var require_fast_uri = __commonJS({
         parsed.path = matches[6] || "";
         parsed.query = matches[7];
         parsed.fragment = matches[8];
-        if (parsed.scheme !== void 0) {
-          if (VALID_SCHEME.test(parsed.scheme)) {
-            parsed.scheme = parsed.scheme.toLowerCase();
-          } else {
-            parsed.error = parsed.error || MALFORMED_SCHEME_ERROR;
-            malformedScheme = true;
-          }
-        }
-        malformedPercentEncoding = hasMalformedComponentPercentEncoding(matches);
-        if (malformedPercentEncoding) {
-          parsed.error = parsed.error || "URI contains malformed percent-encoding.";
-        }
         if (isNaN(parsed.port)) {
           parsed.port = matches[5];
         }
@@ -4187,16 +3857,9 @@ var require_fast_uri = __commonJS({
         if (parsed.host) {
           const ipv4result = isIPv4(parsed.host);
           if (ipv4result === false) {
-            const bracketedIPLiteral = isIPLiteral(parsed.host);
-            const hasIPLiteralBracket = parsed.host.indexOf("[") !== -1 || parsed.host.indexOf("]") !== -1;
             const ipv6result = normalizeIPv6(parsed.host);
-            isIP = ipv6result.isIPV6 || ipv6result.isIPVFuture === true;
-            malformedIPLiteral = hasIPLiteralBracket && (!bracketedIPLiteral || ipv6result.error === true);
-            parsed.host = isIP ? ipv6result.host : ipv6result.host.toLowerCase();
-            if (malformedIPLiteral) {
-              parsed.error = parsed.error || MALFORMED_HOST_ERROR;
-              malformedAuthorityOrPort = true;
-            }
+            parsed.host = ipv6result.host.toLowerCase();
+            isIP = ipv6result.isIPV6;
           } else {
             isIP = true;
           }
@@ -4214,37 +3877,42 @@ var require_fast_uri = __commonJS({
           parsed.error = parsed.error || "URI is not a " + options.reference + " reference.";
         }
         const schemeHandler = getSchemeHandler(options.scheme || parsed.scheme);
-        if (!malformedIPLiteral) {
-          malformedHost = canonicalizeHost(parsed, options, schemeHandler, isIP);
-        }
-        if (uri.indexOf("%") !== -1 && parsed.host !== void 0 && !malformedIPLiteral) {
-          let host = isIP ? parsed.host : normalizePercentEncoding(parsed.host, true);
-          if (!isIP) {
-            host = normalizePercentEncoding(host.toLowerCase());
+        if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport)) {
+          if (parsed.host && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP === false && nonSimpleDomain(parsed.host)) {
+            try {
+              parsed.host = new URL("http://" + parsed.host).hostname;
+            } catch (e) {
+              parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
+            }
           }
-          parsed.host = isIP || options.scheme !== "null" ? reescapeHostDelimiters(host, isIP) : host;
         }
         if (!schemeHandler || schemeHandler && !schemeHandler.skipNormalize) {
+          if (uri.indexOf("%") !== -1) {
+            if (parsed.scheme !== void 0) {
+              parsed.scheme = unescape(parsed.scheme);
+            }
+            if (parsed.host !== void 0) {
+              parsed.host = reescapeHostDelimiters(unescape(parsed.host), isIP);
+            }
+          }
           if (parsed.path) {
             parsed.path = normalizePathEncoding(parsed.path);
           }
-          if (parsed.query) {
-            parsed.query = normalizeQueryFragmentEncoding(parsed.query);
-          }
           if (parsed.fragment) {
-            parsed.fragment = normalizeQueryFragmentEncoding(parsed.fragment);
+            try {
+              parsed.fragment = encodeURI(decodeURIComponent(parsed.fragment));
+            } catch {
+              parsed.error = parsed.error || "URI malformed";
+            }
           }
         }
         if (schemeHandler && schemeHandler.parse) {
           schemeHandler.parse(parsed, options);
-          if (schemeHandler === SCHEMES.urn && parsed.nid === void 0) {
-            malformedSchemeSpecific = true;
-          }
         }
       } else {
         parsed.error = parsed.error || "URI can not be parsed.";
       }
-      return { parsed, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme };
+      return { parsed, malformedAuthorityOrPort };
     }
     function parse4(uri, opts) {
       return parseWithStatus(uri, opts).parsed;
@@ -4253,28 +3921,20 @@ var require_fast_uri = __commonJS({
       return normalizeStringWithStatus(uri, opts).normalized;
     }
     function normalizeStringWithStatus(uri, opts) {
-      const { parsed, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = parseWithStatus(uri, opts);
+      const { parsed, malformedAuthorityOrPort } = parseWithStatus(uri, opts);
       return {
-        normalized: malformedAuthorityOrPort || malformedPercentEncoding || malformedSchemeSpecific || malformedHost || malformedScheme ? uri : serialize(parsed, opts),
-        malformedAuthorityOrPort,
-        malformedPercentEncoding,
-        malformedSchemeSpecific,
-        malformedHost,
-        malformedScheme
+        normalized: malformedAuthorityOrPort ? uri : serialize(parsed, opts),
+        malformedAuthorityOrPort
       };
     }
     function normalizeComparableURI(uri, opts) {
-      if (typeof uri !== "string" && typeof uri !== "object") {
-        return void 0;
+      if (typeof uri === "string") {
+        const { normalized, malformedAuthorityOrPort } = normalizeStringWithStatus(uri, opts);
+        return malformedAuthorityOrPort ? void 0 : normalized;
       }
-      let value;
-      try {
-        value = typeof uri === "string" ? uri : serialize(uri, opts);
-      } catch {
-        return void 0;
+      if (typeof uri === "object") {
+        return serialize(uri, opts);
       }
-      const { normalized, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = normalizeStringWithStatus(value, opts);
-      return malformedAuthorityOrPort || malformedPercentEncoding || malformedSchemeSpecific || malformedHost || malformedScheme ? void 0 : normalized;
     }
     var fastUri = {
       SCHEMES,
@@ -4291,9 +3951,9 @@ var require_fast_uri = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/uri.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/runtime/uri.js
 var require_uri = __commonJS({
-  "node_modules/ajv/dist/runtime/uri.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/runtime/uri.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var uri = require_fast_uri();
@@ -4302,9 +3962,9 @@ var require_uri = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/core.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/core.js
 var require_core = __commonJS({
-  "node_modules/ajv/dist/core.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/core.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = void 0;
@@ -4913,9 +4573,9 @@ var require_core = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/id.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/core/id.js
 var require_id = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var def = {
@@ -4928,9 +4588,9 @@ var require_id = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/ref.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/core/ref.js
 var require_ref = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.callRef = exports.getValidate = void 0;
@@ -5050,9 +4710,9 @@ var require_ref = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/index.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/core/index.js
 var require_core2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var id_1 = require_id();
@@ -5071,9 +4731,9 @@ var require_core2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitNumber.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/limitNumber.js
 var require_limitNumber = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5103,9 +4763,9 @@ var require_limitNumber = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/multipleOf.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/multipleOf.js
 var require_multipleOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5131,9 +4791,9 @@ var require_multipleOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/ucs2length.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/runtime/ucs2length.js
 var require_ucs2length = __commonJS({
-  "node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     function ucs2length(str) {
@@ -5157,9 +4817,9 @@ var require_ucs2length = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitLength.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/limitLength.js
 var require_limitLength = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5189,9 +4849,9 @@ var require_limitLength = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/pattern.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/pattern.js
 var require_pattern = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5226,9 +4886,9 @@ var require_pattern = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitProperties.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/limitProperties.js
 var require_limitProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5255,9 +4915,9 @@ var require_limitProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/required.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/required.js
 var require_required = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5337,9 +4997,9 @@ var require_required = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitItems.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/limitItems.js
 var require_limitItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5366,9 +5026,9 @@ var require_limitItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/equal.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/runtime/equal.js
 var require_equal = __commonJS({
-  "node_modules/ajv/dist/runtime/equal.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/runtime/equal.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var equal = require_fast_deep_equal();
@@ -5377,9 +5037,9 @@ var require_equal = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
 var require_uniqueItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dataType_1 = require_dataType();
@@ -5444,9 +5104,9 @@ var require_uniqueItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/const.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/const.js
 var require_const = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5473,9 +5133,9 @@ var require_const = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/enum.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/enum.js
 var require_enum = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5522,9 +5182,9 @@ var require_enum = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/index.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/index.js
 var require_validation = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var limitNumber_1 = require_limitNumber();
@@ -5560,9 +5220,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
 var require_additionalItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateAdditionalItems = void 0;
@@ -5613,9 +5273,9 @@ var require_additionalItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/items.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/items.js
 var require_items = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateTuple = void 0;
@@ -5670,9 +5330,9 @@ var require_items = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
 var require_prefixItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var items_1 = require_items();
@@ -5687,9 +5347,9 @@ var require_prefixItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/items2020.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/items2020.js
 var require_items2020 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5722,9 +5382,9 @@ var require_items2020 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/contains.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/contains.js
 var require_contains = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5816,9 +5476,9 @@ var require_contains = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/dependencies.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/dependencies.js
 var require_dependencies = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateSchemaDeps = exports.validatePropertyDeps = exports.error = void 0;
@@ -5910,9 +5570,9 @@ var require_dependencies = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
 var require_propertyNames = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5953,9 +5613,9 @@ var require_propertyNames = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
 var require_additionalProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6059,9 +5719,9 @@ var require_additionalProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/properties.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/properties.js
 var require_properties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var validate_1 = require_validate();
@@ -6117,9 +5777,9 @@ var require_properties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
 var require_patternProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6191,9 +5851,9 @@ var require_patternProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/not.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/not.js
 var require_not = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6222,9 +5882,9 @@ var require_not = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/anyOf.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/anyOf.js
 var require_anyOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6239,9 +5899,9 @@ var require_anyOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/oneOf.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/oneOf.js
 var require_oneOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6297,9 +5957,9 @@ var require_oneOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/allOf.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/allOf.js
 var require_allOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6324,9 +5984,9 @@ var require_allOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/if.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/if.js
 var require_if = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6393,9 +6053,9 @@ var require_if = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/thenElse.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/thenElse.js
 var require_thenElse = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6411,9 +6071,9 @@ var require_thenElse = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/index.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/index.js
 var require_applicator = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var additionalItems_1 = require_additionalItems();
@@ -6459,9 +6119,9 @@ var require_applicator = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/format/format.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/format/format.js
 var require_format = __commonJS({
-  "node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6549,9 +6209,9 @@ var require_format = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/format/index.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/format/index.js
 var require_format2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var format_1 = require_format();
@@ -6560,9 +6220,9 @@ var require_format2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/metadata.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/metadata.js
 var require_metadata = __commonJS({
-  "node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.contentVocabulary = exports.metadataVocabulary = void 0;
@@ -6583,9 +6243,9 @@ var require_metadata = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/draft7.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/draft7.js
 var require_draft7 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var core_1 = require_core2();
@@ -6605,9 +6265,9 @@ var require_draft7 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/discriminator/types.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/discriminator/types.js
 var require_types = __commonJS({
-  "node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.DiscrError = void 0;
@@ -6619,9 +6279,9 @@ var require_types = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/discriminator/index.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/discriminator/index.js
 var require_discriminator = __commonJS({
-  "node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6724,9 +6384,9 @@ var require_discriminator = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-draft-07.json
+// ../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-draft-07.json
 var require_json_schema_draft_07 = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
     module.exports = {
       $schema: "http://json-schema.org/draft-07/schema#",
       $id: "http://json-schema.org/draft-07/schema#",
@@ -6881,9 +6541,9 @@ var require_json_schema_draft_07 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/ajv.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/ajv.js
 var require_ajv = __commonJS({
-  "node_modules/ajv/dist/ajv.js"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/ajv.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv = void 0;
@@ -6951,9 +6611,9 @@ var require_ajv = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/dynamic/dynamicAnchor.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/dynamic/dynamicAnchor.js
 var require_dynamicAnchor = __commonJS({
-  "node_modules/ajv/dist/vocabularies/dynamic/dynamicAnchor.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/dynamic/dynamicAnchor.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.dynamicAnchor = void 0;
@@ -6986,9 +6646,9 @@ var require_dynamicAnchor = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/dynamic/dynamicRef.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/dynamic/dynamicRef.js
 var require_dynamicRef = __commonJS({
-  "node_modules/ajv/dist/vocabularies/dynamic/dynamicRef.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/dynamic/dynamicRef.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.dynamicRef = void 0;
@@ -7032,9 +6692,9 @@ var require_dynamicRef = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/dynamic/recursiveAnchor.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/dynamic/recursiveAnchor.js
 var require_recursiveAnchor = __commonJS({
-  "node_modules/ajv/dist/vocabularies/dynamic/recursiveAnchor.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/dynamic/recursiveAnchor.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dynamicAnchor_1 = require_dynamicAnchor();
@@ -7053,9 +6713,9 @@ var require_recursiveAnchor = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/dynamic/recursiveRef.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/dynamic/recursiveRef.js
 var require_recursiveRef = __commonJS({
-  "node_modules/ajv/dist/vocabularies/dynamic/recursiveRef.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/dynamic/recursiveRef.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dynamicRef_1 = require_dynamicRef();
@@ -7068,9 +6728,9 @@ var require_recursiveRef = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/dynamic/index.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/dynamic/index.js
 var require_dynamic = __commonJS({
-  "node_modules/ajv/dist/vocabularies/dynamic/index.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/dynamic/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dynamicAnchor_1 = require_dynamicAnchor();
@@ -7082,9 +6742,9 @@ var require_dynamic = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/dependentRequired.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/dependentRequired.js
 var require_dependentRequired = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/dependentRequired.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/dependentRequired.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dependencies_1 = require_dependencies();
@@ -7099,9 +6759,9 @@ var require_dependentRequired = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/dependentSchemas.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/dependentSchemas.js
 var require_dependentSchemas = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/dependentSchemas.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/applicator/dependentSchemas.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dependencies_1 = require_dependencies();
@@ -7115,9 +6775,9 @@ var require_dependentSchemas = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitContains.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/limitContains.js
 var require_limitContains = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitContains.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/validation/limitContains.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -7135,9 +6795,9 @@ var require_limitContains = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/next.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/next.js
 var require_next = __commonJS({
-  "node_modules/ajv/dist/vocabularies/next.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/next.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dependentRequired_1 = require_dependentRequired();
@@ -7148,9 +6808,9 @@ var require_next = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedProperties.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedProperties.js
 var require_unevaluatedProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedProperties.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -7214,9 +6874,9 @@ var require_unevaluatedProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedItems.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedItems.js
 var require_unevaluatedItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedItems.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -7258,9 +6918,9 @@ var require_unevaluatedItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/unevaluated/index.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/unevaluated/index.js
 var require_unevaluated = __commonJS({
-  "node_modules/ajv/dist/vocabularies/unevaluated/index.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/unevaluated/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var unevaluatedProperties_1 = require_unevaluatedProperties();
@@ -7270,9 +6930,9 @@ var require_unevaluated = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/draft2020.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/draft2020.js
 var require_draft2020 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/draft2020.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/vocabularies/draft2020.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var core_1 = require_core2();
@@ -7298,9 +6958,9 @@ var require_draft2020 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-2020-12/schema.json
+// ../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/schema.json
 var require_schema = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-2020-12/schema.json"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/schema.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/schema",
@@ -7358,9 +7018,9 @@ var require_schema = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-2020-12/meta/applicator.json
+// ../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/applicator.json
 var require_applicator2 = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-2020-12/meta/applicator.json"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/applicator.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/applicator",
@@ -7411,9 +7071,9 @@ var require_applicator2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-2020-12/meta/unevaluated.json
+// ../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/unevaluated.json
 var require_unevaluated2 = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-2020-12/meta/unevaluated.json"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/unevaluated.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/unevaluated",
@@ -7431,9 +7091,9 @@ var require_unevaluated2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-2020-12/meta/content.json
+// ../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/content.json
 var require_content = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-2020-12/meta/content.json"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/content.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/content",
@@ -7452,9 +7112,9 @@ var require_content = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-2020-12/meta/core.json
+// ../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/core.json
 var require_core3 = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-2020-12/meta/core.json"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/core.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/core",
@@ -7508,9 +7168,9 @@ var require_core3 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-2020-12/meta/format-annotation.json
+// ../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/format-annotation.json
 var require_format_annotation = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-2020-12/meta/format-annotation.json"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/format-annotation.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/format-annotation",
@@ -7527,9 +7187,9 @@ var require_format_annotation = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-2020-12/meta/meta-data.json
+// ../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/meta-data.json
 var require_meta_data = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-2020-12/meta/meta-data.json"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/meta-data.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/meta-data",
@@ -7568,9 +7228,9 @@ var require_meta_data = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-2020-12/meta/validation.json
+// ../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/validation.json
 var require_validation2 = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-2020-12/meta/validation.json"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/meta/validation.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/validation",
@@ -7663,9 +7323,9 @@ var require_validation2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-2020-12/index.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/index.js
 var require_json_schema_2020_12 = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-2020-12/index.js"(exports) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/refs/json-schema-2020-12/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var metaSchema = require_schema();
@@ -7698,9 +7358,9 @@ var require_json_schema_2020_12 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/2020.js
+// ../../Ensemble-Workflows/node_modules/ajv/dist/2020.js
 var require__ = __commonJS({
-  "node_modules/ajv/dist/2020.js"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/ajv/dist/2020.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv2020 = void 0;
@@ -7775,9 +7435,9 @@ var require__ = __commonJS({
   }
 });
 
-// node_modules/acorn/dist/acorn.js
+// ../../Ensemble-Workflows/node_modules/acorn/dist/acorn.js
 var require_acorn = __commonJS({
-  "node_modules/acorn/dist/acorn.js"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/acorn/dist/acorn.js"(exports, module) {
     (function(global, factory) {
       typeof exports === "object" && typeof module !== "undefined" ? factory(exports) : typeof define === "function" && define.amd ? define(["exports"], factory) : (global = typeof globalThis !== "undefined" ? globalThis : global || self, factory(global.acorn = {}));
     })(exports, (function(exports2) {
@@ -13476,9 +13136,9 @@ var require_acorn = __commonJS({
   }
 });
 
-// node_modules/acorn-walk/dist/walk.js
+// ../../Ensemble-Workflows/node_modules/acorn-walk/dist/walk.js
 var require_walk = __commonJS({
-  "node_modules/acorn-walk/dist/walk.js"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/acorn-walk/dist/walk.js"(exports, module) {
     (function(global, factory) {
       typeof exports === "object" && typeof module !== "undefined" ? factory(exports) : typeof define === "function" && define.amd ? define(["exports"], factory) : (global = typeof globalThis !== "undefined" ? globalThis : global || self, factory((global.acorn = global.acorn || {}, global.acorn.walk = {})));
     })(exports, (function(exports2) {
@@ -13991,9 +13651,9 @@ var require_walk = __commonJS({
   }
 });
 
-// node_modules/acorn-globals/index.js
+// ../../Ensemble-Workflows/node_modules/acorn-globals/index.js
 var require_acorn_globals = __commonJS({
-  "node_modules/acorn-globals/index.js"(exports, module) {
+  "../../Ensemble-Workflows/node_modules/acorn-globals/index.js"(exports, module) {
     "use strict";
     var acorn = require_acorn();
     var walk = require_walk();
@@ -19662,14 +19322,28 @@ function namedTargetResolutionOf(options) {
 function bindingClause(targets) {
   return targets === null ? "and this run has no targets map to bind the name" : `the binding in ${targets.source} supplies the engine and model`;
 }
+function isNamedTargetBound(targets, name) {
+  return targets !== null && Object.hasOwn(targets.bindings, name);
+}
 function bindingFor(targets, name, context = "") {
-  const binding = targets !== null && Object.hasOwn(targets.bindings, name) ? targets.bindings[name] : void 0;
+  const binding = isNamedTargetBound(targets, name) ? targets.bindings[name] : void 0;
   if (binding !== void 0) {
     return binding;
   }
   const bound = targets === null ? [] : Object.keys(targets.bindings);
   const held = targets === null ? "this run was given no machine configuration targets" : bound.length === 0 ? `${targets.source} binds no targets` : `${targets.source} binds ${bound.map((other) => JSON.stringify(other)).join(", ")}`;
   throw new NamedTargetRejectedError(`${context}target ${JSON.stringify(name)} is not bound: ${held}`);
+}
+
+// src/model-family.ts
+function modelFamilyOf(engine, model, openCodeModels) {
+  if (engine !== "opencode") {
+    return engine;
+  }
+  if (model === null || model === void 0) {
+    return null;
+  }
+  return openCodeModels?.get(model)?.family ?? null;
 }
 
 // src/progress.ts
@@ -26545,13 +26219,23 @@ var BODY_RETURNED_LEG = {
   dispatching: "its dispatch record was still landing, so no outcome was observed"
 };
 var BODY_RETURNED = "the script returned without awaiting this worker";
-function identifiedResult(options, output, record) {
+function identifiedResult(options, output, record, openCodeModels) {
   return {
     label: options.label ?? null,
     phase: record.phase,
     output,
-    failure: record.status === "complete" ? null : settledFailureAccount(record)
+    failure: record.status === "complete" ? null : settledFailureAccount(record),
+    answeredBy: answeringTarget(record, openCodeModels)
   };
+}
+function answeringTarget(record, openCodeModels) {
+  if (record.answeredBy === null) {
+    return null;
+  }
+  const { engine } = record.answeredBy;
+  const requested = record.attempts.findLast((attempt) => attempt.status === "complete")?.target.model ?? null;
+  const model = record.answeredBy.model ?? requested;
+  return { engine, model, family: modelFamilyOf(engine, requested ?? model, openCodeModels) };
 }
 function identifiedFailure(options, error, phase = options.phase ?? null) {
   if (options.identity !== true) return error;
@@ -27003,7 +26687,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       unsettled.stage = "admitting";
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, chain, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        return identifiedResult(options, output, agentRecord);
+        return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
       }
       return output;
     } catch (error) {
@@ -27082,6 +26766,39 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   resolveNamedTarget(options) {
     return resolveNamedTarget(this.#namedTargets, options);
+  }
+  /**
+   * The dispatch lookup: where a call with `options` would first dispatch,
+   * with nothing dispatched — its engine, its model (null where the engine's
+   * own default decides) and that model's family, for a call naming a
+   * target as for one naming a literal engine. `applyDefaults` fills what
+   * the resolved options leave unsaid, as a call's dispatch would: the
+   * workflow hooks pass the script's `defaults` merge for the resolved
+   * engine; a library caller's options stand as given.
+   *
+   * A target the run does not bind answers `bound: false`. Every other
+   * option the call itself would refuse before spawning — a target beside a
+   * literal engine or model, a missing or unknown engine, an opencode call
+   * with no registered model — is refused here with the same error.
+   */
+  lookupDispatch(options, applyDefaults = (resolved) => resolved) {
+    assertValidAgentOptions(options);
+    const declared = options;
+    const name = declared.target ?? null;
+    if (name !== null && declared.engine === void 0 && declared.model === void 0 && !isNamedTargetBound(this.#namedTargets, name)) {
+      return { target: name, bound: false, engine: null, model: null, family: null };
+    }
+    const resolved = applyDefaults(this.resolveNamedTarget(options));
+    assertValidAgentOptions(resolved);
+    const engine = this.#engineFor(resolved.engine);
+    if (engine instanceof OpenCodeEngineAdapter) {
+      if (resolved.model === void 0) {
+        throw new OpenCodeModelRequiredError(engine.modelRegistry);
+      }
+      validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
+    }
+    const model = resolved.model ?? null;
+    return { target: name, bound: true, engine: engine.name, model, family: modelFamilyOf(engine.name, model, this.openCodeModelRegistry) };
   }
   /**
    * Judge a declared chain's named entries against this run's bindings
@@ -27271,7 +26988,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
           if (options.identity === true) {
-            return identifiedResult(options, output, agentRecord);
+            return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
           }
           return output;
         } catch (error) {
@@ -29040,6 +28757,13 @@ function createWorkflowHooks(options) {
     log: (message) => {
       writeLog(message);
     },
+    lookupDispatch: (lookupOptions) => {
+      const lookupDispatch = options.runtime.lookupDispatch;
+      if (lookupDispatch === void 0) {
+        throw new PreSpawnAuthorError("this runtime does not support the dispatch lookup");
+      }
+      return lookupDispatch.call(options.runtime, lookupOptions, (resolved) => applyAgentDefaults(defaults, resolved));
+    },
     tally: (name, value) => {
       const recordTally = options.runtime.recordTally;
       if (recordTally === void 0) {
@@ -29068,16 +28792,7 @@ async function parallel(thunks, log, presentError) {
         }
         presentError?.(error);
         log(`parallel thunk ${index} failed: ${describeWorkerFailure(error)}`);
-        const identity = agentIdentityOf(error);
-        if (identity !== null) {
-          return {
-            label: identity.label,
-            phase: identity.phase,
-            output: null,
-            failure: describeError(error)
-          };
-        }
-        return null;
+        return collapsedEnvelope(error) ?? null;
       }
     })
   );
@@ -29099,25 +28814,25 @@ async function pipeline(items, stages, log, presentError) {
           }
           presentError?.(error);
           log(`pipeline item ${index} stage ${stageIndex} failed: ${describeWorkerFailure(error)}`);
-          const identity = agentIdentityOf(error);
-          if (identity !== null) {
-            return {
-              label: identity.label,
-              phase: identity.phase,
-              output: null,
-              failure: describeError(error)
-            };
-          }
-          return null;
+          return collapsedEnvelope(error);
         }
       }
       return previous;
     })
   );
 }
+function collapsedEnvelope(error) {
+  const identity = agentIdentityOf(error);
+  if (identity === null) {
+    return null;
+  }
+  return { label: identity.label, phase: identity.phase, output: null, failure: describeError(error), answeredBy: null };
+}
 function mergeAgentDefaults(defaults, agentOptions, resolveTarget) {
   assertValidAgentOptions(agentOptions ?? {});
-  const declared = resolveTarget(agentOptions ?? {});
+  return applyAgentDefaults(defaults, resolveTarget(agentOptions ?? {}));
+}
+function applyAgentDefaults(defaults, declared) {
   const engine = declared.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
   if (engine === void 0 || engineDefaults === void 0) {
@@ -29165,7 +28880,7 @@ import { createRequire, registerHooks } from "node:module";
 import path18 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
-// node_modules/acorn/dist/acorn.mjs
+// ../../Ensemble-Workflows/node_modules/acorn/dist/acorn.mjs
 var astralIdentifierCodes = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
 var astralIdentifierStartCodes = [0, 11, 2, 25, 2, 18, 2, 1, 2, 14, 3, 13, 35, 122, 70, 52, 268, 28, 4, 48, 48, 31, 14, 29, 6, 37, 11, 29, 3, 35, 5, 7, 2, 4, 43, 157, 19, 35, 5, 35, 5, 39, 9, 51, 13, 10, 2, 14, 2, 6, 2, 1, 2, 10, 2, 14, 2, 6, 2, 1, 4, 51, 13, 310, 10, 21, 11, 7, 25, 5, 2, 41, 2, 8, 70, 5, 3, 0, 2, 43, 2, 1, 4, 0, 3, 22, 11, 22, 10, 30, 66, 18, 2, 1, 11, 21, 11, 25, 7, 25, 39, 55, 7, 1, 65, 0, 16, 3, 2, 2, 2, 28, 43, 28, 4, 28, 36, 7, 2, 27, 28, 53, 11, 21, 11, 18, 14, 17, 111, 72, 56, 50, 14, 50, 14, 35, 39, 27, 10, 22, 251, 41, 7, 1, 17, 5, 57, 28, 11, 0, 9, 21, 43, 17, 47, 20, 28, 22, 13, 52, 58, 1, 3, 0, 14, 44, 33, 24, 27, 35, 30, 0, 3, 0, 9, 34, 4, 0, 13, 47, 15, 3, 22, 0, 2, 0, 36, 17, 2, 24, 20, 1, 64, 6, 2, 0, 2, 3, 2, 14, 2, 9, 8, 46, 39, 7, 3, 1, 3, 21, 2, 6, 2, 1, 2, 4, 4, 0, 19, 0, 13, 4, 31, 9, 2, 0, 3, 0, 2, 37, 2, 0, 26, 0, 2, 0, 45, 52, 19, 3, 21, 2, 31, 47, 21, 1, 2, 0, 185, 46, 42, 3, 37, 47, 21, 0, 60, 42, 14, 0, 72, 26, 38, 6, 186, 43, 117, 63, 32, 7, 3, 0, 3, 7, 2, 1, 2, 23, 16, 0, 2, 0, 95, 7, 3, 38, 17, 0, 2, 0, 29, 0, 11, 39, 8, 0, 22, 0, 12, 45, 20, 0, 19, 72, 200, 32, 32, 8, 2, 36, 18, 0, 50, 29, 113, 6, 2, 1, 2, 37, 22, 0, 26, 5, 2, 1, 2, 31, 15, 0, 24, 43, 261, 18, 16, 0, 2, 12, 2, 33, 125, 0, 80, 921, 103, 110, 18, 195, 2637, 96, 16, 1071, 18, 5, 26, 3994, 6, 582, 6842, 29, 1763, 568, 8, 30, 18, 78, 18, 29, 19, 47, 17, 3, 32, 20, 6, 18, 433, 44, 212, 63, 33, 24, 3, 24, 45, 74, 6, 0, 67, 12, 65, 1, 2, 0, 15, 4, 10, 7381, 42, 31, 98, 114, 8702, 3, 2, 6, 2, 1, 2, 290, 16, 0, 30, 2, 3, 0, 15, 3, 9, 395, 2309, 106, 6, 12, 4, 8, 8, 9, 5991, 84, 2, 70, 2, 1, 3, 0, 3, 1, 3, 3, 2, 11, 2, 0, 2, 6, 2, 64, 2, 3, 3, 7, 2, 6, 2, 27, 2, 3, 2, 4, 2, 0, 4, 6, 2, 339, 3, 24, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 7, 1845, 30, 7, 5, 262, 61, 147, 44, 11, 6, 17, 0, 322, 29, 19, 43, 485, 27, 229, 29, 3, 0, 208, 30, 2, 2, 2, 1, 2, 6, 3, 4, 10, 1, 225, 6, 2, 3, 2, 1, 2, 14, 2, 196, 60, 67, 8, 0, 1205, 3, 2, 26, 2, 1, 2, 0, 3, 0, 2, 9, 2, 3, 2, 0, 2, 0, 7, 0, 5, 0, 2, 0, 2, 0, 2, 2, 2, 1, 2, 0, 3, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 0, 3, 3, 2, 6, 2, 3, 2, 3, 2, 0, 2, 9, 2, 16, 6, 2, 2, 4, 2, 16, 4421, 42719, 33, 4381, 3, 5773, 3, 7472, 16, 621, 2467, 541, 1507, 4938, 6, 8489];
 var nonASCIIidentifierChars = "\u200C\u200D\xB7\u0300-\u036F\u0387\u0483-\u0487\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7\u0610-\u061A\u064B-\u0669\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED\u06F0-\u06F9\u0711\u0730-\u074A\u07A6-\u07B0\u07C0-\u07C9\u07EB-\u07F3\u07FD\u0816-\u0819\u081B-\u0823\u0825-\u0827\u0829-\u082D\u0859-\u085B\u0897-\u089F\u08CA-\u08E1\u08E3-\u0903\u093A-\u093C\u093E-\u094F\u0951-\u0957\u0962\u0963\u0966-\u096F\u0981-\u0983\u09BC\u09BE-\u09C4\u09C7\u09C8\u09CB-\u09CD\u09D7\u09E2\u09E3\u09E6-\u09EF\u09FE\u0A01-\u0A03\u0A3C\u0A3E-\u0A42\u0A47\u0A48\u0A4B-\u0A4D\u0A51\u0A66-\u0A71\u0A75\u0A81-\u0A83\u0ABC\u0ABE-\u0AC5\u0AC7-\u0AC9\u0ACB-\u0ACD\u0AE2\u0AE3\u0AE6-\u0AEF\u0AFA-\u0AFF\u0B01-\u0B03\u0B3C\u0B3E-\u0B44\u0B47\u0B48\u0B4B-\u0B4D\u0B55-\u0B57\u0B62\u0B63\u0B66-\u0B6F\u0B82\u0BBE-\u0BC2\u0BC6-\u0BC8\u0BCA-\u0BCD\u0BD7\u0BE6-\u0BEF\u0C00-\u0C04\u0C3C\u0C3E-\u0C44\u0C46-\u0C48\u0C4A-\u0C4D\u0C55\u0C56\u0C62\u0C63\u0C66-\u0C6F\u0C81-\u0C83\u0CBC\u0CBE-\u0CC4\u0CC6-\u0CC8\u0CCA-\u0CCD\u0CD5\u0CD6\u0CE2\u0CE3\u0CE6-\u0CEF\u0CF3\u0D00-\u0D03\u0D3B\u0D3C\u0D3E-\u0D44\u0D46-\u0D48\u0D4A-\u0D4D\u0D57\u0D62\u0D63\u0D66-\u0D6F\u0D81-\u0D83\u0DCA\u0DCF-\u0DD4\u0DD6\u0DD8-\u0DDF\u0DE6-\u0DEF\u0DF2\u0DF3\u0E31\u0E34-\u0E3A\u0E47-\u0E4E\u0E50-\u0E59\u0EB1\u0EB4-\u0EBC\u0EC8-\u0ECE\u0ED0-\u0ED9\u0F18\u0F19\u0F20-\u0F29\u0F35\u0F37\u0F39\u0F3E\u0F3F\u0F71-\u0F84\u0F86\u0F87\u0F8D-\u0F97\u0F99-\u0FBC\u0FC6\u102B-\u103E\u1040-\u1049\u1056-\u1059\u105E-\u1060\u1062-\u1064\u1067-\u106D\u1071-\u1074\u1082-\u108D\u108F-\u109D\u135D-\u135F\u1369-\u1371\u1712-\u1715\u1732-\u1734\u1752\u1753\u1772\u1773\u17B4-\u17D3\u17DD\u17E0-\u17E9\u180B-\u180D\u180F-\u1819\u18A9\u1920-\u192B\u1930-\u193B\u1946-\u194F\u19D0-\u19DA\u1A17-\u1A1B\u1A55-\u1A5E\u1A60-\u1A7C\u1A7F-\u1A89\u1A90-\u1A99\u1AB0-\u1ABD\u1ABF-\u1ADD\u1AE0-\u1AEB\u1B00-\u1B04\u1B34-\u1B44\u1B50-\u1B59\u1B6B-\u1B73\u1B80-\u1B82\u1BA1-\u1BAD\u1BB0-\u1BB9\u1BE6-\u1BF3\u1C24-\u1C37\u1C40-\u1C49\u1C50-\u1C59\u1CD0-\u1CD2\u1CD4-\u1CE8\u1CED\u1CF4\u1CF7-\u1CF9\u1DC0-\u1DFF\u200C\u200D\u203F\u2040\u2054\u20D0-\u20DC\u20E1\u20E5-\u20F0\u2CEF-\u2CF1\u2D7F\u2DE0-\u2DFF\u302A-\u302F\u3099\u309A\u30FB\uA620-\uA629\uA66F\uA674-\uA67D\uA69E\uA69F\uA6F0\uA6F1\uA802\uA806\uA80B\uA823-\uA827\uA82C\uA880\uA881\uA8B4-\uA8C5\uA8D0-\uA8D9\uA8E0-\uA8F1\uA8FF-\uA909\uA926-\uA92D\uA947-\uA953\uA980-\uA983\uA9B3-\uA9C0\uA9D0-\uA9D9\uA9E5\uA9F0-\uA9F9\uAA29-\uAA36\uAA43\uAA4C\uAA4D\uAA50-\uAA59\uAA7B-\uAA7D\uAAB0\uAAB2-\uAAB4\uAAB7\uAAB8\uAABE\uAABF\uAAC1\uAAEB-\uAAEF\uAAF5\uAAF6\uABE3-\uABEA\uABEC\uABED\uABF0-\uABF9\uFB1E\uFE00-\uFE0F\uFE20-\uFE2F\uFE33\uFE34\uFE4D-\uFE4F\uFF10-\uFF19\uFF3F\uFF65";
@@ -35085,6 +34800,7 @@ var HOOK_BINDING_NAMES = [
   "phase",
   "log",
   "tally",
+  "lookupDispatch",
   "budget",
   "worktrees",
   "args",
@@ -35161,6 +34877,7 @@ async function runWorkflowScript(options) {
     phase: hooks.phase,
     log: hooks.log,
     tally: hooks.tally,
+    lookupDispatch: hooks.lookupDispatch,
     budget: hooks.budget,
     worktrees: hooks.worktrees,
     args: hooks.args,
@@ -36158,7 +35875,7 @@ async function runEnsembleCli(argv, options = {}) {
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage(program));
     stdout.write(
-      "\nDispatches one worker on the named engine (--engine codex|claude|opencode), or\non the engine and model a named target binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure }.\n"
+      "\nDispatches one worker on the named engine (--engine codex|claude|opencode), or\non the engine and model a named target binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure, answeredBy }.\n"
     );
     return 0;
   }

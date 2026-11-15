@@ -68,6 +68,7 @@ constrain what a worker does, not what it can do.
 |---|---|
 | `agent(prompt, options)` | Run one worker and return its answer |
 | `session(options)` | Create a multi-turn worker that keeps its context between turns |
+| `lookupDispatch(options)` | Say where `agent()` given these options would run, without dispatching (see [Dispatch lookup](#dispatch-lookup)) |
 | `parallel(thunks)` | Run calls concurrently and collect the results |
 | `pipeline(items, ...stages)` | Run each item through a series of stages independently |
 | `workflow(nameOrRef, args?)` | Run a saved workflow inline and return its result |
@@ -169,6 +170,39 @@ cannot assume should name its engines and models directly. The run record
 keeps the name beside what it resolved to (see
 [Run records](run-records.md#agent-records)).
 
+### Dispatch lookup
+
+`lookupDispatch(options)` answers where `agent()` given the same options would
+send its first dispatch, with nothing dispatched:
+
+```js
+const doer = lookupDispatch({ target: "doer" });
+const reviewer = lookupDispatch({ target: "reviewer" });
+if (!reviewer.bound) {
+  throw new Error("this workflow needs a reviewer target");
+}
+if (doer.family !== null && doer.family === reviewer.family) {
+  log(`doer and reviewer both run on ${doer.family}`);
+}
+```
+
+It answers `{ target, bound, engine, model, family }`:
+
+| Field | Value |
+|---|---|
+| `target` | The name the options asked for, or `null` for a literal `engine` |
+| `bound` | `false` for a `target` the machine does not bind; the other fields are then `null` |
+| `engine` | The engine the call would run on |
+| `model` | The model it would ask for, resolved as the call resolves it (the binding's, else the script's `defaults` model for that engine), or `null` where the engine's own default decides |
+| `family` | The model family: `"codex"` for Codex, `"claude"` for Claude, and for opencode the `family` the model's [`opencode_models`](configuration.md#opencode_models) entry declares; `null` where the entry declares none |
+
+A literal call is answered the same way, so
+`lookupDispatch({ engine: "claude" })` reports the script's `defaults` model
+for Claude. An unbound `target` answers `bound: false` where the call itself
+would throw. Any other option the call would refuse before spawning — a
+`target` beside an `engine` or `model`, a missing or unknown engine, an
+opencode call with no model — throws the same error from the lookup.
+
 ### Script defaults
 
 ```js
@@ -235,7 +269,7 @@ resumes. A `hold()` raised after the run began ending is refused with
 pre-spawn errors do. Only a worker's own failure is a value.
 
 To tell a failed call from one that legitimately answered `null`, pass
-`identity: true`. The call then resolves `{ label, phase, output, failure }`.
+`identity: true`. The call then resolves `{ label, phase, output, failure, answeredBy }`.
 `phase` is the call's explicit phase, or the run's current `phase()` title
 when the call enters the queue; it is `null` when neither was set.
 `failure` is `null` exactly when the worker completed — so
@@ -244,6 +278,12 @@ account when it failed. `kind` is the recorded failure class, such as
 `TurnTimeoutError` or `empty-output`; `message` is its account without a
 class prefix. Inside `parallel()` and `pipeline()`, an identified
 call that collapses resolves this shape too, never a bare `null`.
+
+The envelope also carries `answeredBy`: `{ engine, model, family }` for the
+target that answered — the chain entry, after a fallback step — or `null`
+when the worker failed. `model` is the model the engine reported serving,
+else the one the call asked for, else `null`; `family` is judged as the
+[dispatch lookup](#dispatch-lookup) judges it.
 
 ### `workflow()` and saved workflows
 
@@ -353,7 +393,7 @@ engine, throws before any worker spawns.
 | `maxAttempts` | Attempt bound, a positive integer. Default 3 |
 | `strip` | Capabilities to remove from the worker: `"skills"`, `"agents"` (see [Permissions](#permissions-and-strip)) |
 | `lean` | `true` to start the worker without the operator's interactive context (see [Lean workers](#lean-workers)) |
-| `identity` | `true` to resolve `{ label, phase, output, failure }` (see [`parallel()`](#parallel-and-pipeline)) |
+| `identity` | `true` to resolve `{ label, phase, output, failure, answeredBy }` (see [`parallel()`](#parallel-and-pipeline)) |
 | `label`, `phase` | Bookkeeping shown in progress output and the run record. An omitted `phase` takes the current `phase()` title when queued, or `null` if unset |
 
 An unrecognised option, or an invalid value for `target`, `effort`, `isolation`,
@@ -1024,7 +1064,7 @@ await builder.close();
   worker starts at the first `send()`. opencode sessions throw before any
   worker spawns.
 - **Identified turns:** `identity: true` at creation makes every `send()`
-  resolve `{ label, phase, output, failure }`. `failure` is `null` for a
+  resolve `{ label, phase, output, failure, answeredBy }`. `failure` is `null` for a
   successful answer, including a valid JSON `null`; a failed turn carries
   its recorded failure message. A budget refusal retains the explicit session
   phase, or the current `phase()` title at `send()` when no phase was set,

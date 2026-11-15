@@ -113,7 +113,7 @@ the prompt.
 | `--model <model>` | Model to run. Required for opencode |
 | `--effort <effort>` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; resolved against known served levels and [machine bounds](configuration.md#effort). On opencode, a declared raw variant is also accepted when no machine bound applies |
 | `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed. A schema Ensemble cannot compile is a usage error (exit 2), naming the inline argument or resolved file path, the invalid location and a correction |
-| `--identity` | Print the identified result `{ label, phase, output, failure }` instead of the bare output |
+| `--identity` | Print the identified result `{ label, phase, output, failure, answeredBy }` instead of the bare output |
 | `--fallback '<json>'`, `--fallback @file` | Ordered fallback chain, as in `agent()`: an array of `{ engine, model, effort? }` or `{ target, effort? }` entries. Invalid chains are refused before any worker starts |
 | `--timeout-ms ms` | Per-agent deadline, as `timeoutMs` in a script; a positive integer at most 2147483647, separate from the whole-run `--timeout` |
 | `--max-attempts N` | Attempt bound (default 3), as `maxAttempts` in a script |

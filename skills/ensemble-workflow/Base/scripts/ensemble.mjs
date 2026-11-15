@@ -19449,7 +19449,9 @@ function isProviderEffortRejection(evidence) {
     const message = objectField(objectField(payload, "error"), "message");
     if (typeof message !== "string") return false;
     const providerError = objectField(JSON.parse(message), "error");
-    return objectField(providerError, "type") === "invalid_request_error" && isEffortRejection(JSON.stringify(providerError));
+    const providerMessage = objectField(providerError, "message");
+    const providerParam = objectField(providerError, "param");
+    return objectField(providerError, "type") === "invalid_request_error" && typeof providerMessage === "string" && isEffortRejection(`${providerMessage} ${typeof providerParam === "string" ? providerParam : ""}`);
   } catch {
     return false;
   }

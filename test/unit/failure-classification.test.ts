@@ -394,3 +394,12 @@ test("Codex effort rejection reads the provider's typed error rather than arbitr
       appServerDiagnostic: { code: "other", payload: arbitrary } })), failure);
   }
 });
+
+test("echoed worker text inside a provider error is not an effort refusal", () => {
+  const failure = { kind: "AppServerRequestError", message: "request failed" };
+  const provider = { error: { type: "invalid_request_error", message: "missing input",
+    request: { prompt: "invalid effort level" } } };
+  const payload = JSON.stringify({ error: { message: JSON.stringify(provider) } });
+  assert.deepEqual(diagnoseAttemptFailure(evidence({ engine: "codex", failure,
+    appServerDiagnostic: { code: "other", payload } })), failure);
+});

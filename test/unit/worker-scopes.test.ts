@@ -16,7 +16,8 @@ import {
   createWorkerScopes,
   isLive,
   parentSlice,
-  processTree
+  processTree,
+  unitObjectPath
 } from "../../src/worker-scopes.js";
 
 import { waitForCondition as waitFor } from "../wait-for-condition.js";
@@ -224,6 +225,75 @@ test("place refuses processes that already exited and drops them from a mixed li
   }
 });
 
+test("a process that exits while a new scope's job moves the list never leaves the placement in a failed scope", async () => {
+  // The user manager answers StartTransientUnit before its job moves the
+  // processes; a listed process that exits inside that job fails the scope
+  // ("Failed to add PIDs to scope's control group: No such process") with
+  // the processes that did arrive still in it. The kernel's window for that
+  // exit cannot be hit on demand, so a stand-in manager plays the job: on
+  // the first creation it ends the listed victim, moves the survivor and
+  // reports the unit failed, as the real manager did. Later creations move
+  // the list and report the unit active.
+  const manager = await standInManager({ failEveryStart: false });
+  const victim = sleeper();
+  const survivor = sleeper();
+  try {
+    await writeFile(manager.victimFile, String(victim.pid));
+    const scopes = new SystemdWorkerScopes({ label: "race", busctlBin: manager.busctl, procDir: manager.procDir, systemctlBin: "false" });
+    const outcome = await scopes.place("worker-1", [victim.pid!, survivor.pid!]);
+
+    assert.equal(isLive(victim.pid!), false, "the stand-in ended a listed process during the move");
+    const failed = scopes.unitFor("worker-1");
+    assert.equal(outcome.kind, "placed", JSON.stringify(outcome));
+    assert.ok(outcome.kind === "placed");
+    assert.notEqual(outcome.unit, failed, "the placement named the scope the manager failed");
+    assert.equal(outcome.unit, "ensemble-race-worker-1:1.scope");
+    assert.deepEqual(outcome.pids, [survivor.pid]);
+    assert.equal(await manager.state(outcome.unit), "active");
+    assert.equal(await manager.cgroupUnit(survivor.pid!), outcome.unit);
+    assert.deepEqual(await manager.calls(), [
+      `start ${failed} ${victim.pid} ${survivor.pid}`,
+      `start ${outcome.unit} ${survivor.pid}`
+    ]);
+
+    // The group's later members join the replacement, not the failed scope.
+    const later = sleeper();
+    try {
+      const joined = await scopes.place("worker-1", [later.pid!]);
+      assert.deepEqual(joined, { kind: "placed", unit: outcome.unit, pids: [later.pid] });
+      assert.equal((await manager.calls()).at(-1), `attach ${outcome.unit} ${later.pid}`);
+    } finally {
+      later.kill("SIGKILL");
+    }
+  } finally {
+    victim.kill("SIGKILL");
+    survivor.kill("SIGKILL");
+    await rm(manager.dir, { recursive: true, force: true });
+  }
+});
+
+test("a placement whose every scope the manager fails is refused, never placed", async () => {
+  const manager = await standInManager({ failEveryStart: true });
+  const member = sleeper();
+  try {
+    const scopes = new SystemdWorkerScopes({ label: "doomed", busctlBin: manager.busctl, procDir: manager.procDir, systemctlBin: "false" });
+    const outcome = await scopes.place("worker-1", [member.pid!]);
+    assert.deepEqual(outcome, { kind: "refused", reason: "the manager left ensemble-doomed-worker-1:2.scope failed after moving its processes" });
+    assert.equal(isLive(member.pid!), true, "a refused placement signals nothing");
+    assert.equal((await manager.calls()).length, 3, "each attempt created a scope of its own name");
+    assert.equal(new Set(await manager.calls()).size, 3);
+  } finally {
+    member.kill("SIGKILL");
+    await rm(manager.dir, { recursive: true, force: true });
+  }
+});
+
+test("unitObjectPath escapes a unit name as the manager's bus labels do", () => {
+  assert.equal(unitObjectPath("default.target"), "/org/freedesktop/systemd1/unit/default_2etarget");
+  assert.equal(unitObjectPath("ensemble-7-run:1.scope"), "/org/freedesktop/systemd1/unit/ensemble_2d7_2drun_3a1_2escope");
+  assert.equal(unitObjectPath("1x.scope"), "/org/freedesktop/systemd1/unit/_31x_2escope");
+});
+
 test("concurrent first placements for one group share one scope", async () => {
   const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `race-${process.pid}` });
   const members = [sleeper(), sleeper(), sleeper()];
@@ -379,6 +449,88 @@ test("processTree lists a process with every live descendant", async () => {
     parent.kill("SIGKILL");
   }
 });
+
+/**
+ * A stand-in for the user manager's bus, driven through the `busctl` seam,
+ * with its own proc directory for the cgroup lines it writes. It keeps each
+ * unit's `ActiveState` and logs every creation and attachment as
+ * `start|attach <unit> <pids…>`. A process whose pid is in `victimFile` is
+ * killed inside the first creation that lists it, and that unit is failed
+ * with the rest moved into it; with `failEveryStart`, every creation fails
+ * so. An attachment to a unit that is not active is refused, as the manager
+ * refuses one.
+ */
+async function standInManager(options: { failEveryStart: boolean }) {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-stand-in-manager-"));
+  const procDir = path.join(dir, "proc");
+  const states = path.join(dir, "states");
+  const log = path.join(dir, "calls");
+  const victimFile = path.join(dir, "victim");
+  const busctl = path.join(dir, "busctl");
+  const script = `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const [, , ...args] = process.argv;
+const method = args[2] === "get-property" ? "get-property" : args[6];
+const states = ${JSON.stringify(states)};
+const live = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const move = (unit, pids) => {
+  for (const pid of pids.filter(live)) {
+    fs.mkdirSync(path.join(${JSON.stringify(procDir)}, String(pid)), { recursive: true });
+    fs.writeFileSync(path.join(${JSON.stringify(procDir)}, String(pid), "cgroup"), "0::/stand-in.slice/" + unit + "\\n");
+  }
+};
+const state = (unit) => { try { return fs.readFileSync(path.join(states, unit), "utf8"); } catch { return "inactive"; } };
+if (method === "get-property") {
+  const unit = args[4].slice("/org/freedesktop/systemd1/unit/".length).replace(/_([0-9a-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  process.stdout.write('s "' + state(unit) + '"\\n');
+} else if (method === "StartTransientUnit") {
+  const unit = args[8];
+  const count = Number(args[13]);
+  const pids = args.slice(14, 14 + count).map(Number);
+  fs.appendFileSync(${JSON.stringify(log)}, ["start", unit, ...pids].join(" ") + "\\n");
+  let victim = null;
+  try { victim = Number(fs.readFileSync(${JSON.stringify(victimFile)}, "utf8")); } catch {}
+  let fail = ${options.failEveryStart};
+  if (victim !== null && pids.includes(victim)) {
+    process.kill(victim, "SIGKILL");
+    const until = Date.now() + 10000;
+    while (live(victim) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    fs.rmSync(${JSON.stringify(victimFile)});
+    fail = true;
+  }
+  move(unit, pids);
+  fs.mkdirSync(states, { recursive: true });
+  fs.writeFileSync(path.join(states, unit), fail ? "failed" : "active");
+  process.stdout.write('o "/org/freedesktop/systemd1/job/1"\\n');
+} else if (method === "AttachProcessesToUnit") {
+  const unit = args[8];
+  const pids = args.slice(11, 11 + Number(args[10])).map(Number);
+  fs.appendFileSync(${JSON.stringify(log)}, ["attach", unit, ...pids].join(" ") + "\\n");
+  if (state(unit) !== "active") {
+    process.stderr.write("Call failed: Unit " + unit + " is not active, refusing.\\n");
+    process.exit(1);
+  }
+  move(unit, pids);
+} else {
+  process.stderr.write("stand-in manager: unexpected call " + args.join(" ") + "\\n");
+  process.exit(1);
+}
+`;
+  await writeFile(busctl, script, { mode: 0o755 });
+  return {
+    dir,
+    busctl,
+    procDir,
+    victimFile,
+    calls: async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter((line) => line.length > 0),
+    state: async (unit: string) => readFile(path.join(states, unit), "utf8"),
+    cgroupUnit: async (pid: number) => {
+      const line = (await readFile(path.join(procDir, String(pid), "cgroup"), "utf8")).trim();
+      return line.slice(line.lastIndexOf("/") + 1);
+    }
+  };
+}
 
 async function ownSlice(): Promise<string | null> {
   return containingSlice(await readFile("/proc/self/cgroup", "utf8"));

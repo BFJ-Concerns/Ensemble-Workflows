@@ -227,9 +227,13 @@ Unexpected watch failures produce a bounded stderr notice and are retried.
 Codex
 placement is attempted before the app-server's protocol handshake. Placement
 is best-effort: without a reachable user manager workers run where they
-started; manager refusals do not fail dispatch. Claude placement refusals are
-retried within the registration settle window and on subsequent roster polls,
-even when the PID has not changed. A changed refusal and its recovery are
+started; manager refusals do not fail dispatch. A placement is reported only
+once the user manager reports its scope active. When a process exits while the
+manager is moving a new scope's processes, the manager fails that scope with the
+others already inside; Ensemble then creates a replacement scope, named as the
+first with `:<n>` before `.scope`, around the processes still running. Claude
+placement refusals are retried within the registration settle window and on
+subsequent roster polls, even when the PID has not changed. A changed refusal and its recovery are
 reported on stderr; library event listeners receive
 `claude/workerScopePlacement` with the session ID, name, PID and outcome
 (`refused` with a bounded reason, or `placed` with the scope unit). Repeated

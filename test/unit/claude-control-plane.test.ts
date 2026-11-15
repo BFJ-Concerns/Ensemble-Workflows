@@ -1873,6 +1873,13 @@ test("a tool-surface probe fixes its provider route in settings, carries deny ru
     assert.equal(settings[1]?.env.ANTHROPIC_BASE_URL, "https://worker.invalid");
     assert.equal(settings[1]?.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "0");
     assert.equal(settings[1]?.permissions, undefined);
+    const standing = "Standing line one.\nStanding line two.";
+    const leanHandle = await plane.dispatch({ cwd: dir, name: "lean-standing", prompt: "ordinary", lean: true, appendSystemPrompt: standing });
+    const leanStandingArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+    assert.ok(leanStandingArgv.includes("--safe-mode"));
+    assert.equal(leanStandingArgv[leanStandingArgv.indexOf("--append-system-prompt") + 1], standing);
+    assert.equal(ordinaryArgv.includes("--append-system-prompt"), false);
+    await plane.stop(leanHandle);
   } finally { await plane.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

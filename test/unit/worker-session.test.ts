@@ -1256,11 +1256,10 @@ test("a held session whose opening prompt arrived altered is never launched agai
       // One launch, ever: the session that took the altered opening is the
       // session that answers, so its context is never split across two.
       assert.equal(controlPlane.dispatchCount, 1);
-      // The replacement repeats everything the launch carried — the
-      // preamble a later turn's message leaves out, not the task alone —
-      // and went in only once the altered turn had ended.
+      // The replacement repeats the opening exactly as the launch carried
+      // it, and went in only once the altered turn had ended.
       const opening = controlPlane.dispatched[0]?.prompt ?? "";
-      assert.ok(opening.length > "orient yourself".length);
+      assert.equal(opening, "orient yourself");
       assert.equal(controlPlane.steered.length, 1);
       assert.match(controlPlane.steered[0] ?? "", REPLACEMENT);
       assert.ok(controlPlane.steered[0]?.endsWith(`\n\n${opening}`));

@@ -172,7 +172,9 @@ for (const setting of ["XDG_DATA_HOME", "ENSEMBLE_STATUS_DIR"] as const) {
     try {
       const stdout = new Capture();
       const stderr = new Capture();
-      const relative = path.relative(process.cwd(), path.join(directory, "relative"));
+      // A relative setting resolves against the run's working directory,
+      // which is `directory` below — not this test process's cwd.
+      const relative = "relative";
       await mkdir(path.join(directory, "relative"));
       let observed = false;
       const engine: EngineAdapter = {

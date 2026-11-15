@@ -721,10 +721,11 @@ opening, follow-up or nudge cannot acknowledge a later message. Two failures
 are told apart:
 
 - `claude-valve-error`: the message was never submitted. Nothing reached the
-  worker. While the session and valve remain available, the retry sends in
-  the same session, within the call's `maxAttempts` limit: a follow-up turn's
-  text goes again unchanged, and a correction is written afresh from the
-  latest failure, which is now the valve error. A one-shot call redispatches
+  worker. While the session and valve remain available, the retry sends the
+  refused message again, unchanged, in the same session, within the call's
+  `maxAttempts` limit: a follow-up turn, a correction or a nudge alike. A
+  correction still describes the failure it was written for, not the valve
+  error. A one-shot call redispatches
   its task if the old session is gone or the valve is unavailable; a held
   session is never restarted.
 - `claude-delivery-error`: the message was submitted, but the transcript

@@ -14,9 +14,15 @@ import { setTimeout as delay } from "node:timers/promises";
  * takes, and a test that fails mid-observation releases it in `finally`
  * rather than leaving it to poll until its turn times out.
  *
- * The same text drives Claude and Codex workers. Both run shell commands
+ * A probe comes in two shapes, by what the worker leaves behind before it
+ * holds: a {@link HeldProbe} leaves a file, for a claim about where or
+ * whether a worker ran; a {@link PartialOutputProbe} leaves reply text on
+ * the engine's transport, for a claim about text a worker had produced when
+ * something happened to it mid-turn.
+ *
+ * The same text drives every engine's workers. Each runs shell commands
  * through a tool without approval prompts, and the procedure needs only a
- * POSIX shell, so neither engine gets its own wording. A held session's
+ * POSIX shell, so no engine gets its own wording. A held session's
  * later turns use the follow-up form, which names the procedure as the one
  * the worker already ran and restates only what changes.
  *
@@ -115,6 +121,68 @@ export function heldProbeFollowUpPrompt(probe: HeldProbe): string {
 }
 
 /**
+ * A held probe whose evidence is its own reply text: the worker writes one
+ * line as assistant text, then signals readiness and holds exactly as a
+ * {@link HeldProbe} does. It is for a claim about text a worker had produced
+ * when something happened to it mid-turn — stopped, timed out, lost — where
+ * the text must be on the engine's transport while the worker is certainly
+ * still alive. How long a model goes on writing is the model's to decide, so
+ * a test never asks for a length of output; it asks for one line and a hold
+ * it controls.
+ *
+ * The test observes in this order. Wait on `ready`: the worker's shell
+ * created it after the line was written, so the line's text part is complete
+ * and the worker is alive in its hold. Then read the text off the transport
+ * the test watches (an engine's output stream, a transcript), under a bound,
+ * since the transport may trail the file by a moment. Then do what the test
+ * came to do to a live worker. Create `release` in `finally` whatever
+ * happened, as for any held probe: a worker the test did not stop finishes
+ * with its token instead of polling out its hold limit.
+ *
+ * Judge the product by the text the transport carried, compared with what
+ * the product then recorded. The announcement is what the worker was asked
+ * to write; a worker that worded it differently has still produced partial
+ * output, and only the absence of any text before `ready` leaves the test
+ * with nothing to observe.
+ */
+export interface PartialOutputProbe {
+  /** `ready` and `release` as for a held probe; this probe writes no evidence file. */
+  paths: Pick<ProbePaths, "ready" | "release">;
+  /**
+   * The one line the worker writes as reply text before its first command.
+   * Choose it fresh per turn (`PARTIAL_<uuid>`), so text seen on a transport
+   * is this turn's.
+   */
+  announcement: string;
+  /** The worker's whole final reply once released, as {@link HeldProbe.token}. */
+  token: string;
+  /** As {@link HeldProbe.holdLimitSeconds}. */
+  holdLimitSeconds?: number;
+}
+
+/**
+ * The turn's text for a {@link PartialOutputProbe}. Its steps keep the held
+ * probe's numbering and share its waiting step, so the two procedures differ
+ * only in what the worker leaves behind before it signals readiness.
+ */
+export function partialOutputProbePrompt(probe: PartialOutputProbe): string {
+  const { paths, token } = probe;
+  return [
+    "You are a probe in an automated test. Carry out the four steps below in order and do nothing else. Step 1 is a line you write yourself; steps 2 and 3 are commands for your shell tool, each run exactly as written, one command per tool call.",
+    "",
+    `1. Announce yourself. Before you call any tool, write this line as ordinary reply text, exactly as shown: ${announcementLine(probe.announcement)}`,
+    "   The test reads this line from your output while you are still working, so it comes ahead of your first tool call and is not saved for your final reply. Writing it does not finish your turn: go straight on to step 2 in the same response.",
+    "",
+    `2. Signal that you are ready: run ${shell(`: > ${quote(paths.ready)}`)}`,
+    "   Create this file only after you have written the line in step 1.",
+    "",
+    ...waitingSteps(probe),
+    "",
+    `4. Reply. Once the release file exists, reply with exactly ${token} and nothing else: no explanation, no punctuation, no formatting. If you stopped waiting because the time limit in step 3 passed, reply with exactly ${UNRELEASED_REPLY} instead.`
+  ].join("\n");
+}
+
+/**
  * Resolve once `target` exists, polling every quarter second; reject after
  * `timeoutMs` or when `signal` aborts. Wait on `ready` before reading the
  * evidence, so the read never races the worker's write.
@@ -143,7 +211,7 @@ export async function waitForPath(target: string, timeoutMs: number, signal?: Ab
   }
 }
 
-function waitingSteps(probe: HeldProbe): string[] {
+function waitingSteps(probe: { paths: Pick<ProbePaths, "release">; holdLimitSeconds?: number }): string[] {
   const limitSeconds = probe.holdLimitSeconds ?? DEFAULT_HOLD_LIMIT_SECONDS;
   const limitMinutes = Math.max(1, Math.round(limitSeconds / 60));
   return [
@@ -160,6 +228,18 @@ function evidenceCommand(probe: HeldProbe): string {
     case "marker":
       return shell(`printf '%s\\n' ${quote(probe.evidence.content)} > ${target}`);
   }
+}
+
+/**
+ * The announcement as the worker is shown it. The instruction calls it a
+ * line, so an empty or multi-line value is a test defect, refused here
+ * rather than sent to a worker as an instruction it cannot carry out.
+ */
+function announcementLine(announcement: string): string {
+  if (announcement.trim().length === 0 || /[\r\n]/.test(announcement)) {
+    throw new Error(`a probe announcement must be a single non-empty line: ${JSON.stringify(announcement)}`);
+  }
+  return announcement;
 }
 
 function shell(command: string): string {

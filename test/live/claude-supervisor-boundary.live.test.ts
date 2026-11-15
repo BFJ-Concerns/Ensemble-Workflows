@@ -138,9 +138,8 @@ test("the built launcher preserves an owned supervisor and sibling while moving 
     assert.equal(result2.code, 0, result2.stderr);
     const afterCompletion = await supervisorSnapshot(claude.executable, env);
     observations.afterCompletion = afterCompletion;
-    observations.afterCompletionTransition = assertFixedClaudeVersion(supervisorState, afterCompletion, "afterCompletion");
-    supervisorState = afterCompletion;
-    assert.equal(containingSlice(afterCompletion.identity.cgroup!), slice === null ? null : parentSlice(slice), "the supervisor moved into the launcher's slice");
+    // Both workers have ended and the launcher holds no lease. Claude may
+    // exit its idle daemon; this snapshot is diagnostic, not a liveness claim.
     assert.equal((await supervisorLifecycle(env.CLAUDE_CONFIG_DIR!)).filter(row => row.event === "start").length, 1, "the private home had more than one daemon startup");
   } catch (error) {
     testFailed = true;

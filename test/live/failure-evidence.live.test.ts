@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { removeTestDirectory } from "../failure-evidence.js";
 import { liveOpenCodeModel } from "./live-models.js";
+import { partialOutputProbePrompt, probePaths, waitForPath } from "./held-worker-probes.js";
 
 // These destructive legs are separate from the ordinary live estate: each
 // observes text from the real worker transport before terminating that worker.
@@ -34,11 +35,12 @@ for (const scenario of [
       const script = path.join(directory, "workflow.js");
       const recordStore = path.join(directory, "records");
       const token = `LIVE_${scenario.engine.toUpperCase()}_PARTIAL_${randomUUID()}`;
+      const partialProbe = { paths: probePaths(directory, "partial"), announcement: token, token: `RELEASED_${randomUUID()}` };
       const model = scenario.model === null ? "" : `model: ${JSON.stringify(scenario.model)},`;
       const prompt =
         scenario.engine === "claude"
           ? `Say ${token} on its own line, then in the same turn use the Bash tool to run sleep 120. After the command returns, continue with a detailed numbered analysis.`
-          : `Output ${token} immediately on its own line, then write a detailed numbered analysis. Keep expanding the analysis for at least two minutes without ending the answer.`;
+          : partialOutputProbePrompt(partialProbe);
       let env: NodeJS.ProcessEnv = {
         ...process.env,
         ENSEMBLE_RUN_RECORD: "1",
@@ -59,6 +61,7 @@ for (const scenario of [
           await setupOpenCodeObserver(wrapperDirectory, observer);
           env = { ...env, PATH: `${wrapperDirectory}:${env.PATH ?? ""}` };
           terminateWorker = async (signal) => {
+            await waitForPath(partialProbe.paths.ready, 150_000, signal);
             observedWorkerText = await stopOpenCodeWorkerAfterText(observer, directory, signal);
           };
         }
@@ -103,6 +106,7 @@ for (const scenario of [
         testFailed = true;
         throw error;
       } finally {
+        await writeFile(partialProbe.paths.release, "");
         await removeTestDirectory(directory, testFailed);
       }
     }
@@ -157,22 +161,27 @@ test("a partial-output observer failure waits for launcher cleanup before reject
   }
 });
 
-test("an opencode partial-output observer accepts its kill witness after termination frames", { timeout: 15_000 }, async (t) => {
+test("an opencode partial-output observer terminates the process after reading its text", { timeout: 15_000 }, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "failure-evidence-opencode-stream-"));
   const stream = path.join(directory, "stream.jsonl");
   const text = "observed partial output";
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+  const closed = new Promise<NodeJS.Signals | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (_code, signal) => resolve(signal));
+  });
   let testFailed = false;
   try {
-    await writeFile(stream, [
-      { type: "text", part: { type: "text", text } },
-      { type: "step_finish" }
-    ].map((event) => JSON.stringify(event)).join("\n") + "\n");
-    await writeFile(path.join(directory, "opencode-worker-killed"), "");
+    await writeFile(path.join(directory, "opencode-worker.pid"), String(child.pid));
+    await writeFile(stream, JSON.stringify({ type: "text", part: { type: "text", text } }) + "\n");
     assert.equal(await stopOpenCodeWorkerAfterText(stream, directory, t.signal), text);
+    assert.equal(await closed, "SIGKILL");
   } catch (error) {
     testFailed = true;
     throw error;
   } finally {
+    child.kill("SIGKILL");
+    await closed;
     await removeTestDirectory(directory, testFailed);
   }
 });
@@ -402,11 +411,27 @@ async function setupOpenCodeObserver(wrapperDirectory: string, observer: string)
   assert.ok(realOpenCode.length > 0, "opencode was not found on PATH");
   await mkdir(wrapperDirectory, { recursive: true });
   const wrapper = path.join(wrapperDirectory, "opencode");
-  const fifo = path.join(path.dirname(observer), "opencode-stream.fifo");
-  const killedMarker = path.join(path.dirname(observer), "opencode-worker-killed");
   await writeFile(
     wrapper,
-    `#!/usr/bin/env bash\nset -o pipefail\nworker=\nkilled=\ntrap '[[ -n "$worker" ]] && kill -TERM "$worker" 2>/dev/null || true' TERM INT\nmkfifo ${shellQuote(fifo)}\n${shellQuote(realOpenCode)} "$@" > ${shellQuote(fifo)} &\nworker=$!\nprintf '%s\\n' "$worker" > ${shellQuote(path.join(path.dirname(observer), "opencode-worker.pid"))}\nwhile IFS= read -r line; do\n  printf '%s\\n' "$line" | tee -a ${shellQuote(observer)}\n  if [[ -z "$killed" && "$line" == *'"type":"text"'* ]]; then\n    kill -TERM "$worker" 2>/dev/null || true\n    killed=1\n    : > ${shellQuote(killedMarker)}\n  fi\ndone < ${shellQuote(fifo)}\nwait "$worker"\nstatus=$?\nrm -f ${shellQuote(fifo)}\nexit "$status"\n`
+    `#!${process.execPath}
+import { spawn } from "node:child_process";
+import { appendFileSync, writeFileSync } from "node:fs";
+const child = spawn(${JSON.stringify(realOpenCode)}, process.argv.slice(2), { stdio: ["inherit", "pipe", "inherit"] });
+child.on("error", error => { console.error(error); process.exitCode = 1; });
+if (child.pid !== undefined) writeFileSync(${JSON.stringify(path.join(path.dirname(observer), "opencode-worker.pid"))}, String(child.pid));
+child.stdout.on("data", chunk => {
+  appendFileSync(${JSON.stringify(observer)}, chunk);
+  process.stdout.write(chunk);
+});
+for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => child.kill(signal));
+child.on("close", (code, signal) => {
+  if (signal !== null) {
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+  }
+  else process.exitCode = code ?? 1;
+});
+`
   );
   await chmod(wrapper, 0o755);
 }
@@ -423,9 +448,12 @@ async function stopOpenCodeWorkerAfterText(observer: string, directory: string, 
       return true;
     });
   }, signal);
-  // The wrapper kills synchronously on the text event. Later termination
-  // frames may already be in the stream by the time this observer polls.
-  await waitForFile(path.join(directory, "opencode-worker-killed"), signal);
+  // The caller has witnessed readiness: this text belongs to a worker
+  // held by the test, rather than one asked to write for a fixed duration.
+  signal.throwIfAborted();
+  const pid = Number(await readFile(path.join(directory, "opencode-worker.pid"), "utf8"));
+  assert.ok(Number.isInteger(pid) && pid > 0, "the observer did not record an opencode worker PID");
+  process.kill(pid, "SIGKILL");
   return observedText;
 }
 
@@ -487,10 +515,6 @@ function execFileOutput(file: string, args: string[]): Promise<{ stdout: string;
       resolve({ stdout, stderr });
     });
   });
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 /** Abort wakes the poll for one final read of evidence left by an exiting launcher. */

@@ -37,7 +37,8 @@ usage wraps to that width. For a launcher at `/opt/ensemble.mjs`:
 
 ```text
 Usage: node /opt/ensemble.mjs [run options] <script.js> [args...]
-       node /opt/ensemble.mjs agent --engine <engine> [agent options] [prompt]
+       node /opt/ensemble.mjs agent --engine <engine>|--target <name>
+                        [agent options] [prompt]
        node /opt/ensemble.mjs workflows
        node /opt/ensemble.mjs holds [--json] [--scope <scope> | --all]
        node /opt/ensemble.mjs holds answer <hold-id> --verdict <verdict>
@@ -97,7 +98,7 @@ environment and configuration-file layers described in
 ## Running a single agent
 
 ```sh
-ensemble agent --engine <engine> [agent options] [prompt]
+ensemble agent --engine <engine>|--target <name> [agent options] [prompt]
 ```
 
 Dispatches one worker without a script. Give the prompt as the final argument,
@@ -106,7 +107,8 @@ the prompt.
 
 | Option | Description |
 |---|---|
-| `--engine <engine>` | Required. `codex`, `claude`, or `opencode` |
+| `--engine <engine>` | `codex`, `claude`, or `opencode`. Required unless `--target` is given |
+| `--target <name>` | A named target from the machine configuration's [`targets`](configuration.md#targets) section, in place of `--engine` and `--model`. Given beside either, it fails the run before the worker spawns, naming the configuration file, as does a name the file does not bind |
 | `--model <model>` | Model to run. Required for opencode |
 | `--effort <effort>` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh`; on opencode, one of the model's declared variants |
 | `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed. A schema Ensemble cannot compile is a usage error (exit 2), naming the inline argument or resolved file path, the invalid location and a correction |

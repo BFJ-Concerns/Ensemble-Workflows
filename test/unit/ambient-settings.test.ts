@@ -19,6 +19,7 @@ test("caller identity has a named environment route without widening ambient set
       "agentCeiling",
       "concurrencyCaps",
       "configFile",
+      "namedTargets",
       "openCodeModels",
       "runRecordDir",
       "runRecordStoreDir",

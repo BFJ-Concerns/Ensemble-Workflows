@@ -10,7 +10,7 @@ import * as acorn from "acorn";
 import detectGlobals from "acorn-globals";
 
 import { assertValidFallbackChain, validateEngineDefaults } from "./engine-option-validation.js";
-import { EnsembleError, PreSpawnAuthorError, WorkflowScriptReadError } from "./errors.js";
+import { AgentOptionRejectedError, EnsembleError, PreSpawnAuthorError, WorkflowScriptReadError } from "./errors.js";
 
 import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { createWorkflowHooks } from "./hooks.js";
@@ -226,6 +226,20 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
+  // A named chain entry is judged against the run's bindings now, so a
+  // static declaration naming an unbound target, or a target beside a
+  // literal engine or model, fails before the body runs.
+  for (const [engine, block] of Object.entries(defaults ?? {})) {
+    if (block?.fallback === undefined || options.runtime.settleFallbackChain === undefined) continue;
+    try {
+      options.runtime.settleFallbackChain(block.fallback);
+    } catch (error) {
+      if (error instanceof AgentOptionRejectedError) {
+        throw new WorkflowScriptError(`Workflow defaults.${engine}.fallback: ${error.message}`);
+      }
+      throw error;
+    }
+  }
   const resolvedFilename = path.resolve(options.filename);
   const cwd = options.cwd ?? path.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;

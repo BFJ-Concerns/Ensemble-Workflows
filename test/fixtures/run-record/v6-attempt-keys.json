@@ -9,6 +9,7 @@
   "ended_at",
   "failure",
   "first_delta_ms",
+  "named_target",
   "observed_failure",
   "raw_output",
   "resolved_effort",

@@ -2574,7 +2574,7 @@ test("usage names the program as the caller invoked it and keeps every line with
       await runEnsembleCli(["agent", "prompt"], { stdin: Readable.from([]), stdout: new CaptureStream(), stderr: agentErr, programName }),
       2
     );
-    assert.equal(agentErr.text(), `No run was started and nothing was recorded. ${programName} agent requires --engine\n`);
+    assert.equal(agentErr.text(), `No run was started and nothing was recorded. ${programName} agent requires --engine or --target\n`);
   }
 });
 

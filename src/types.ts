@@ -1,5 +1,6 @@
 import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { StrippableCapability } from "./capability-stripping.js";
+import type { NamedTargets } from "./named-targets.js";
 import type { OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode-model-registry.js";
 
 export type JsonObject = Record<string, unknown>;
@@ -19,19 +20,42 @@ export type EngineConcurrencyCaps = Partial<Record<EngineName, number>>;
 export type EngineWorkerEnvironment = Partial<Record<EngineName, Record<string, string>>>;
 
 /**
- * One entry of a fallback chain: a full target — engine and model
+ * One entry of a fallback chain: a full literal target — engine and model
  * both named, because a fallback that inherits an ambient default is a
- * substitution nobody chose — with an optional effort that otherwise takes
- * the call's own canonical level, clamped to this engine as any dispatch is.
+ * substitution nobody chose — or a named target the machine configuration
+ * binds, whose binding (never its chain) the entry takes. Either carries an
+ * optional effort that otherwise takes the call's own canonical level,
+ * clamped to the entry's engine as any dispatch is.
  */
-export interface FallbackTarget {
+export type FallbackTarget = LiteralFallbackTarget | NamedFallbackTarget;
+
+export interface LiteralFallbackTarget {
   engine: EngineName;
   model: string;
   effort?: string;
+  target?: undefined;
+}
+
+export interface NamedFallbackTarget {
+  target: string;
+  effort?: string;
+  engine?: undefined;
+  model?: undefined;
 }
 
 export interface AgentOptions {
+  /**
+   * The engine to dispatch on. A call names its engine here, or names a
+   * `target` instead and leaves `engine` and `model` to the binding.
+   */
   engine: EngineName;
+  /**
+   * A named target the machine configuration's `targets` map binds to an
+   * engine, with or without a model and optionally a fallback chain. The
+   * harness resolves it before any worker spawns; a call naming a target
+   * names no `engine` or `model` of its own.
+   */
+  target?: string;
   schema?: JsonSchema;
   model?: string;
   /**
@@ -85,16 +109,39 @@ export interface AgentOptions {
 }
 
 /**
+ * A call naming a target in place of its engine and model: every other
+ * `agent()` option, with the binding the machine configuration gives the
+ * name supplying the engine and model.
+ */
+export type TargetedAgentOptions = Omit<AgentOptions, "engine" | "model" | "target"> & { target: string };
+
+/** What an `agent()` call declares: a literal engine with an optional model, or a named target. */
+export type AgentRequest = AgentOptions | TargetedAgentOptions;
+
+/**
  * Options fixed for a multi-turn worker session's whole life. Engine,
  * model, and effort never vary per turn — changing them would invalidate the
  * session's prompt cache, the asset the capability exists to exploit — and
  * escalation is a fresh dispatch. Everything here is resolved once, at
  * creation; the only per-turn variation is `schema` on `send()`.
  */
-export interface WorkerSessionOptions {
-  /** `claude` or `codex`; an engine held at its one-shot surface throws before spawn. */
-  engine: EngineName;
-  model?: string;
+export type WorkerSessionOptions = WorkerSessionCallOptions & ({ engine: EngineName; model?: string } | { target: string });
+
+/**
+ * Session options as the runtime holds them: every dispatch target is a
+ * literal engine once a named target resolves. `target` stays in the shape
+ * because a library caller's options are judged before they resolve.
+ */
+export type LiteralWorkerSessionOptions = WorkerSessionCallOptions & { engine: EngineName; model?: string; target?: string };
+
+/**
+ * Every `session()` option but where it dispatches, which is declared one of
+ * two ways: a literal `engine` (`claude` or `codex`; an engine held at its
+ * one-shot surface throws before spawn) with an optional `model`, or a named
+ * `target` resolved as for `agent()`. Never both: naming both is refused
+ * before spawn.
+ */
+export interface WorkerSessionCallOptions {
   /** Canonical effort level, as for `agent()`; converted once, at creation. */
   effort?: string;
   /**
@@ -172,9 +219,9 @@ export interface IdentifiedAgentResult {
  * nothing, resolved by the runtime's own validation.
  */
 export interface AgentCallSignature {
-  (prompt: string, options: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
-  (prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  (prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string | null>;
+  (prompt: string, options: AgentRequest & { identity: true }): Promise<IdentifiedAgentResult>;
+  (prompt: string, options: AgentRequest & { schema: JsonSchema }): Promise<unknown | null>;
+  (prompt: string, options: AgentRequest & { schema?: undefined }): Promise<string | null>;
   (prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null>;
 }
 
@@ -235,6 +282,14 @@ export interface RuntimeOptions {
    * source is `caller`.
    */
   openCodeModelSource?: OpenCodeModelSource;
+  /**
+   * The named targets calls may name (the config file's `targets` section
+   * and the file it was read from, which every refusal names). A call,
+   * session or `ensemble agent` naming a target resolves against them
+   * before any worker spawns; omitted, every named target is refused as
+   * unbound.
+   */
+  namedTargets?: NamedTargets;
   /**
    * Run-wide capability strip: united with every call's own `strip`
    * list before enforcement, so a run can restrict all its workers without

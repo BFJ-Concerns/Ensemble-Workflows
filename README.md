@@ -8,7 +8,8 @@ family can check another's work within a single run.
 
 - Codex runs over `codex app-server`, Claude runs as Claude Code background
   sessions (`claude --bg`), and opencode runs through `opencode run`. Every
-  call names its engine; there is no default.
+  call names its engine, or a named target the machine configuration binds to
+  one; there is no default.
 - A call given a JSON Schema returns a value that validates against it, or
   `null` on worker failure. Pre-spawn rejections and run endings throw; see
   [Failures](docs/workflow-scripts.md#failures).
@@ -172,6 +173,7 @@ to distinguish a failed worker from a genuine `null` answer; see
 ```text
 ensemble [run options] <script.js> [args...]          run a workflow script
 ensemble agent --engine <engine> [options] [prompt]   run a single agent
+ensemble agent --target <name> [options] [prompt]     run one on a named target
 ensemble workflows                                    list saved workflows
 ensemble holds [--json] [--scope <scope> | --all]     list open decision holds
 ensemble holds answer <hold-id> --verdict <verdict>   answer a decision hold

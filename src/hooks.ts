@@ -1,16 +1,19 @@
 import { assertValidAgentOptions } from "./engine-option-validation.js";
 import { attributeMergedChain } from "./fallback-source.js";
+import { withDeclaredModels, withTargetChain } from "./named-targets.js";
 import { BudgetExceededError, PreSpawnAuthorError, agentIdentityOf, isRunEnding } from "./errors.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 
 import type {
   AgentCallSignature,
   AgentOptions,
+  AgentRequest,
   Budget,
   EngineName,
   FallbackTarget,
   IdentifiedAgentResult,
   JsonSchema,
+  LiteralWorkerSessionOptions,
   WorkerSessionOptions
 } from "./types.js";
 import type { WorkerSession } from "./runtime.js";
@@ -58,6 +61,21 @@ export interface WorkflowRuntime {
    * hook fails loud when absent.
    */
   recordTally?: (name: string, value: number) => Promise<void>;
+  /**
+   * Resolve a call's named target against the run's bindings before its
+   * `defaults` merge; see EnsembleRuntime.resolveNamedTarget. Optional: a
+   * runtime without it receives the call's `target` unresolved and judges
+   * it itself, with no script `defaults` for the resolved engine applied.
+   */
+  resolveNamedTarget?: <T extends object>(options: T) => T;
+  /**
+   * Judge a declared fallback chain's named entries against the run's
+   * bindings, throwing before spawn as a dispatch would; see
+   * EnsembleRuntime.settleFallbackChain. The script runner calls it on a
+   * script's `defaults` chains before the body runs. Optional: without it
+   * those entries are judged at dispatch.
+   */
+  settleFallbackChain?: (chain: readonly FallbackTarget[]) => void;
 }
 
 /**
@@ -133,16 +151,24 @@ export function createWorkflowHooks(options: {
   const track = <T,>(promise: Promise<T>): Promise<T> =>
     options.runtime.trackCallPromise !== undefined ? options.runtime.trackCallPromise(promise) : promise;
 
+  // A named chain entry whose binding names no model takes the script's
+  // model for the bound engine, as a call naming that engine would.
+  const declaredModel = (engine: EngineName): string | undefined => defaults[engine]?.model;
+  // A named target resolves before the merge, so the `defaults` block that
+  // applies is the resolved engine's.
+  const resolveTarget = <T extends object>(declared: T): T =>
+    options.runtime.resolveNamedTarget !== undefined ? options.runtime.resolveNamedTarget(declared) : declared;
+
   // The defaults-merging wrapper restates the canonical signatures so each
   // call site narrows exactly as a direct runtime call would; the merged
   // options flow through the runtime's general signature, so no cast is
   // needed anywhere in the plumbing.
-  function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
-  function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { schema?: undefined }): Promise<string | null>;
+  function agentWithDefaults(prompt: string, agentOptions: AgentRequest & { identity: true }): Promise<IdentifiedAgentResult>;
+  function agentWithDefaults(prompt: string, agentOptions: AgentRequest & { schema: JsonSchema }): Promise<unknown | null>;
+  function agentWithDefaults(prompt: string, agentOptions: AgentRequest & { schema?: undefined }): Promise<string | null>;
   function agentWithDefaults(prompt: string, agentOptions: Partial<AgentOptions>): Promise<string | unknown | null>;
   function agentWithDefaults(prompt: string, agentOptions?: Partial<AgentOptions>): Promise<string | unknown | null> {
-    return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions));
+    return options.runtime.agent(prompt, withDeclaredModels(mergeAgentDefaults(defaults, agentOptions, resolveTarget), declaredModel));
   }
 
   return {
@@ -154,7 +180,7 @@ export function createWorkflowHooks(options: {
         // honour — never a silent no-op session.
         throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
       }
-      return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions));
+      return createWorkerSession.call(options.runtime, withDeclaredModels(mergeSessionDefaults(defaults, sessionOptions, resolveTarget), declaredModel));
     }) as WorkflowHooks["session"],
     hold: (holdOptions) => {
       const raiseHold = options.runtime.raiseHold;
@@ -286,26 +312,34 @@ export async function pipeline<Item>(
  * Call-site options win over the script's per-engine defaults. Only *defined*
  * call-site values override — a conditional spread that leaves `model:
  * undefined` must not erase the default it was meant to fall back to.
+ *
+ * A call naming a target is resolved first, so its engine is the binding's
+ * and so is its model where the binding names one; the block for that
+ * engine then fills what the call and binding left unsaid, as for a call
+ * naming the engine literally. A chain the call and the block both leave
+ * undeclared comes from the binding.
  */
 function mergeAgentDefaults(
   defaults: WorkflowDefaults,
-  agentOptions: Partial<AgentOptions> | undefined
+  agentOptions: Partial<AgentOptions> | undefined,
+  resolveTarget: <T extends object>(declared: T) => T
 ): Partial<AgentOptions> {
   assertValidAgentOptions(agentOptions ?? {});
-  const engine = agentOptions?.engine;
+  const declared = resolveTarget(agentOptions ?? {});
+  const engine = declared.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : undefined;
   if (engine === undefined || engineDefaults === undefined) {
-    // No block to merge: the options are the call's own, and the runtime
-    // attributes their chain to the call or to none without a hand-off.
-    return agentOptions ?? {};
+    // No block to merge: the options are the call's own (resolved), and the
+    // runtime attributes their chain to the call, the target or none.
+    return withTargetChain(declared, declared);
   }
   const merged: Record<string, unknown> = { ...engineDefaults };
-  for (const [key, value] of Object.entries(agentOptions ?? {})) {
+  for (const [key, value] of Object.entries(declared)) {
     if (value !== undefined) {
       merged[key] = value;
     }
   }
-  return attributeMergedChain(merged as Partial<AgentOptions>, agentOptions?.fallback, engine);
+  return withTargetChain(declared, attributeMergedChain(merged as Partial<AgentOptions>, declared.fallback, engine));
 }
 
 /**
@@ -316,19 +350,21 @@ function mergeAgentDefaults(
  */
 function mergeSessionDefaults(
   defaults: WorkflowDefaults,
-  sessionOptions: WorkerSessionOptions
-): WorkerSessionOptions {
-  const engineDefaults = typeof sessionOptions.engine === "string" ? defaults[sessionOptions.engine] : undefined;
+  sessionOptions: WorkerSessionOptions,
+  resolveTarget: <T extends object>(declared: T) => T
+): LiteralWorkerSessionOptions {
+  const declared = resolveTarget(sessionOptions as LiteralWorkerSessionOptions);
+  const engineDefaults = typeof declared.engine === "string" ? defaults[declared.engine] : undefined;
   if (engineDefaults === undefined) {
-    return sessionOptions;
+    return withTargetChain(declared, declared);
   }
   const merged: Record<string, unknown> = { ...engineDefaults };
-  for (const [key, value] of Object.entries(sessionOptions)) {
+  for (const [key, value] of Object.entries(declared)) {
     if (value !== undefined) {
       merged[key] = value;
     }
   }
-  return attributeMergedChain(merged as unknown as WorkerSessionOptions, sessionOptions.fallback, sessionOptions.engine);
+  return withTargetChain(declared, attributeMergedChain(merged as unknown as LiteralWorkerSessionOptions, declared.fallback, declared.engine));
 }
 
 /**

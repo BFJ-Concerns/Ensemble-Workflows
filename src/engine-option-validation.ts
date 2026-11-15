@@ -12,7 +12,7 @@ import { assertValidStripOption } from "./capability-stripping.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
-import type { AgentOptions, EngineName, FallbackTarget, WorkerSessionOptions } from "./types.js";
+import type { AgentOptions, EngineName, FallbackTarget, LiteralWorkerSessionOptions } from "./types.js";
 
 /** Node's 32-bit setTimeout ceiling: above it the platform's timer silently misbehaves. */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -50,6 +50,7 @@ interface EngineDefaultOptions {
 
 const AGENT_OPTION_KEYS = Object.keys({
   engine: true,
+  target: true,
   schema: true,
   model: true,
   effort: true,
@@ -142,10 +143,16 @@ export function assertValidAgentOptions(options: object): void {
       }
     });
   }
+  const target = read("target", "a target name");
+  if (target !== unreadable) {
+    collect(() => assertValidTargetName(target));
+  }
   // Harness-owned domain, judged before any worker spawns; opencode's
   // effort is the registry entry's served variants, judged by its adapter.
+  // A call naming a target has no engine until the name resolves, and is
+  // judged again then.
   const engine = read("engine", "an engine name");
-  if (engine !== unreadable && engine !== "opencode") {
+  if (engine !== unreadable && engine !== "opencode" && target === undefined) {
     const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
     if (effort !== unreadable) {
       collect(() => assertCanonicalEffortSupported(effort));
@@ -191,6 +198,7 @@ export function assertValidAgentOptions(options: object): void {
 
 const WORKER_SESSION_OPTION_KEYS = Object.keys({
   engine: true,
+  target: true,
   model: true,
   effort: true,
   fallback: true,
@@ -204,7 +212,7 @@ const WORKER_SESSION_OPTION_KEYS = Object.keys({
   lean: true,
   stalenessMark: true,
   identity: true
-} satisfies Record<keyof WorkerSessionOptions, true>);
+} satisfies Record<keyof LiteralWorkerSessionOptions, true>);
 const WORKER_SESSION_OPTION_KEY_SET = new Set<string>(WORKER_SESSION_OPTION_KEYS);
 
 /**
@@ -230,7 +238,9 @@ export function assertValidWorkerSessionOptions(options: object): void {
   // creation, so an out-of-domain level must fail before the held worker
   // spawns. opencode sessions are refused pre-spawn elsewhere; the
   // exemption here keeps the two rejections from racing to name the error.
-  if (values.engine !== "opencode") {
+  // A session naming a target is judged once the name resolves.
+  assertValidTargetName(values.target);
+  if (values.engine !== "opencode" && values.target === undefined) {
     assertCanonicalEffortSupported(values.effort);
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
@@ -250,6 +260,18 @@ export function assertValidWorkerSessionOptions(options: object): void {
   assertValidFallbackChain(values.fallback);
 }
 
+/**
+ * A `target` names a binding in the machine configuration's `targets` map:
+ * a non-empty string. Whether the name is bound, and whether the call also
+ * names a literal engine or model, is judged where the bindings are known
+ * (`resolveNamedTarget`), so that refusal can name the file.
+ */
+function assertValidTargetName(target: unknown): void {
+  if (target !== undefined && (typeof target !== "string" || target.trim().length === 0)) {
+    throw new InvalidAgentOptionValueError("target", target, "a non-empty string naming a target the machine configuration binds");
+  }
+}
+
 const SESSION_TURN_OPTION_KEYS = ["schema"];
 const SESSION_TURN_OPTION_KEY_SET = new Set<string>(SESSION_TURN_OPTION_KEYS);
 
@@ -264,11 +286,13 @@ export function assertValidSessionTurnOptions(options: object): void {
 
 /**
  * A fallback chain is judged whole, pre-spawn, wherever it is declared — a
- * call site, a session, or an engine's `defaults` block: an array of full
- * targets, each naming an engine and a model, Codex or Claude only (opencode
- * is held at its existing surface and skips new capability by default, so an
- * opencode entry throws here rather than failing unnoticed on the day the
- * chain first advances), with any effort in the canonical vocabulary. The
+ * call site, a session, an engine's `defaults` block, or a named target's
+ * binding: an array of targets, each either a full literal target naming an
+ * engine and a model, Codex or Claude only (opencode is held at its existing
+ * surface and skips new capability by default, so an opencode entry throws
+ * here rather than failing unnoticed on the day the chain first advances),
+ * or a named target, whose binding is judged where the bindings are known
+ * (`settleChain`); either with any effort in the canonical vocabulary. The
  * chain's own engine is never consulted: a Codex block may name a Claude
  * target — that cross-family step is the motivating case.
  */
@@ -277,7 +301,7 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
     return;
   }
   if (!Array.isArray(chain)) {
-    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
+    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } or { target, effort? } targets");
   }
   if (chain.length === 0) {
     throw new FallbackTargetRejectedError("the chain must not be empty");
@@ -285,12 +309,25 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? (entry as Record<string, unknown>) : null;
     if (target === null) {
-      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model`);
+      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model, or a target`);
     }
     for (const key of Object.keys(target)) {
-      if (key !== "engine" && key !== "model" && key !== "effort") {
-        throw new FallbackTargetRejectedError(`entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort`);
+      if (key !== "engine" && key !== "model" && key !== "effort" && key !== "target") {
+        throw new FallbackTargetRejectedError(
+          `entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort, or a named target and optionally effort`
+        );
       }
+    }
+    if (target.effort !== undefined && !(CANONICAL_EFFORT_DOMAIN as readonly unknown[]).includes(target.effort)) {
+      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
+    }
+    if (target.target !== undefined) {
+      // A target beside a literal engine or model is refused where the
+      // file whose binding would supply them can be named (`settleChain`).
+      if (typeof target.target !== "string" || target.target.trim().length === 0) {
+        throw new FallbackTargetRejectedError(`entry ${index} target must be a non-empty string naming a target the machine configuration binds`);
+      }
+      return;
     }
     if (target.engine === "opencode") {
       throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
@@ -300,9 +337,6 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
-    }
-    if (target.effort !== undefined && !(CANONICAL_EFFORT_DOMAIN as readonly unknown[]).includes(target.effort)) {
-      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
     }
   });
 }

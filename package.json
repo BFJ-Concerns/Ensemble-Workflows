@@ -1,6 +1,6 @@
 {
   "name": "ensemble-workflows",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "description": "Deterministic multi-engine orchestration harness for Codex, Claude, opencode, and cross-engine verification.",
   "license": "AGPL-3.0-or-later",

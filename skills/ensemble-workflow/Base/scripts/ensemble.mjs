@@ -15917,8 +15917,8 @@ function readHarnessPackageMetadata(fromUrl) {
 
 // src/harness-version.ts
 function harnessVersion(fromUrl = import.meta.url) {
-  if ("0.0.1".trim().length > 0) {
-    return "0.0.1".trim();
+  if ("0.1.0".trim().length > 0) {
+    return "0.1.0".trim();
   }
   const version2 = readHarnessPackageMetadata(fromUrl).version;
   return typeof version2 === "string" && version2.trim().length > 0 ? version2.trim() : "0.0.0";

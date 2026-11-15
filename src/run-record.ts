@@ -42,10 +42,11 @@ import type { WorktreeState } from "./worktree-isolation.js";
 
 const execFileAsync = promisify(execFile);
 /**
- * Run-record documents share a versioned vocabulary. A figureless cost
- * leaf names its attempts' absence reason, and agents known to have run
- * no attempt book no leaf. Readers must check this version before
- * interpreting the documents; abandonment reconciles only this version.
+ * Run-record documents share a versioned vocabulary. An agent record's
+ * `worktree.branch` names the branch checked out when the worktree was
+ * finalised, `null` where HEAD was detached. Readers must check this
+ * version before interpreting the documents; abandonment reconciles only
+ * this version.
  */
 const SCHEMA_VERSION = 7;
 const MANIFEST_PATH = "manifest.json";

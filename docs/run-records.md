@@ -10,7 +10,7 @@ A run can leave three kinds of file behind or alongside it:
 
 The live status file defaults to an automatically created status directory
 in the Ensemble data home. The CLI announces the exact file path on stderr
-before workflow execution.
+before reading the workflow script's source.
 
 Where these files live, and how to turn them off, is covered in
 [Configuration](configuration.md).
@@ -37,14 +37,18 @@ and writes there, independently of the working directory and any `.claude`
 entry. Explicit status directories must already exist. Writes
 are atomic, so a reader never sees a half-written file.
 
-After the first successful write and before workflow execution, the CLI prints
+After the first successful write and before reading the workflow script's
+source, the CLI prints
 `[status-file] {"run_id":…, "status_path":…}` on stderr. `status_path` is
 absolute, including when `XDG_DATA_HOME` or `ENSEMBLE_STATUS_DIR` is relative.
 A supervisor can follow that path without knowing the working directory's layout or searching
 the archive. Its `run_id` is the public `cwd:<namespace-hash>:<run-uuid>`
 identity, identical to the archive announcement and manifest when recording is
 on, and namespaced the same way when recording is off. The snapshot's `runId`
-and the filename use only `<run-uuid>`.
+and the filename use only `<run-uuid>`. The `[sentinel]` path announcement
+also precedes the source read. At this point `workflow` is `null`; the name
+from `meta.name` is published before the script body starts. `archiveDir`
+remains `null` until source loading finishes and the archive is created.
 
 Disable publication with `ENSEMBLE_STATUS=off`; directory
 overrides and machine settings are described in [Configuration](configuration.md).

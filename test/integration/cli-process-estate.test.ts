@@ -2873,13 +2873,11 @@ test("a second interrupt during the handled shutdown leaves the run ended once, 
 });
 
 test("an interrupt that lands before the script body starts ends the run with nothing of the body's on stderr", { timeout: 60_000 }, async () => {
-  // The window is real but short: after the sentinel announcement the
-  // launcher opens the archive (several git calls) before the body runs. A
-  // git shim that sleeps before delegating widens that window so the
-  // signal — sent the moment the announcement appears — lands inside it
-  // deterministically. The body announces itself with a file and a
-  // progress line before anything else; neither may appear, and the
-  // hand-off line must be stderr's last.
+  // The sentinel is announced before source loading and archive setup. The
+  // signal can land during either. A delaying git shim keeps archive setup
+  // pending if source loading finishes before the signal is delivered. The
+  // body announces itself with a file and a progress line; neither may
+  // appear, and the hand-off line must be stderr's last.
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-early-interrupt-estate-"));
   const script = path.join(directory, "workflow.js");
   const startedMarker = path.join(directory, "body.started");
@@ -2890,9 +2888,8 @@ test("an interrupt that lands before the script body starts ends the run with no
       `export const meta = { name: "early-interrupt" };\nrequire("node:fs").writeFileSync(${JSON.stringify(startedMarker)}, "started");\nlog("[phase] waiting");\nreturn "unreached";\n`
     );
     const child = spawn(process.execPath, [bundledCliPath, script], {
-      // Recording on, explicitly: the widened window is the archive's own
-      // git calls, so a host whose machine config disables recording must
-      // not silently remove the window this journey lands its signal in.
+      // Keep recording enabled so the git shim holds the archive setup
+      // window open if source loading finishes before the signal arrives.
       env: hermeticEstateEnvironment({
         XDG_DATA_HOME: path.join(directory, "data"),
         ENSEMBLE_RUN_RECORD: "1",
@@ -2926,7 +2923,10 @@ test("an interrupt that lands before the script body starts ends the run with no
     assert.equal(await exists(startedMarker), false, "the script body must not start once the run is declared interrupted");
     assert.doesNotMatch(stderr, /\[phase\] waiting/);
     const lines = stderr.trimEnd().split("\n");
-    assert.match(lines.at(-1) ?? "", /^Interrupted \(SIGINT\) — partial result on stdout; record: /, `the hand-off line is stderr's last line\n${stderr}`);
+    const archiveLine = lines.find((line) => line.startsWith("[run-record-archive] "));
+    const archive = archiveLine === undefined ? null : JSON.parse(archiveLine.slice("[run-record-archive] ".length)) as { archive_path: string };
+    const expectedHandoff = `Interrupted (SIGINT) — partial result on stdout${archive === null ? "" : `; record: ${archive.archive_path}`}`;
+    assert.equal(lines.at(-1), expectedHandoff, `the hand-off line is stderr's last line\n${stderr}`);
     const envelope = assertSalvageEnvelope(stdout, "interrupted");
     assert.equal(envelope.error.kind, "WorkflowInterruptedError");
   } finally {

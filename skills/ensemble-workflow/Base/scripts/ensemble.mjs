@@ -423,11 +423,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names, constants4) {
+      optimizeNames(names, constants5) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants4);
+          this.rhs = optimizeExpr(this.rhs, names, constants5);
         return this;
       }
       get names() {
@@ -444,10 +444,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names, constants4) {
+      optimizeNames(names, constants5) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants4);
+        this.rhs = optimizeExpr(this.rhs, names, constants5);
         return this;
       }
       get names() {
@@ -508,8 +508,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants4) {
-        this.code = optimizeExpr(this.code, names, constants4);
+      optimizeNames(names, constants5) {
+        this.code = optimizeExpr(this.code, names, constants5);
         return this;
       }
       get names() {
@@ -538,12 +538,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants4) {
+      optimizeNames(names, constants5) {
         const { nodes } = this;
         let i2 = nodes.length;
         while (i2--) {
           const n = nodes[i2];
-          if (n.optimizeNames(names, constants4))
+          if (n.optimizeNames(names, constants5))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i2, 1);
@@ -596,12 +596,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants4) {
+      optimizeNames(names, constants5) {
         var _a;
-        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants4);
-        if (!(super.optimizeNames(names, constants4) || this.else))
+        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants5);
+        if (!(super.optimizeNames(names, constants5) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants4);
+        this.condition = optimizeExpr(this.condition, names, constants5);
         return this;
       }
       get names() {
@@ -624,10 +624,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants4) {
-        if (!super.optimizeNames(names, constants4))
+      optimizeNames(names, constants5) {
+        if (!super.optimizeNames(names, constants5))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants4);
+        this.iteration = optimizeExpr(this.iteration, names, constants5);
         return this;
       }
       get names() {
@@ -663,10 +663,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants4) {
-        if (!super.optimizeNames(names, constants4))
+      optimizeNames(names, constants5) {
+        if (!super.optimizeNames(names, constants5))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants4);
+        this.iterable = optimizeExpr(this.iterable, names, constants5);
         return this;
       }
       get names() {
@@ -708,11 +708,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants4) {
+      optimizeNames(names, constants5) {
         var _a, _b;
-        super.optimizeNames(names, constants4);
-        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants4);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants4);
+        super.optimizeNames(names, constants5);
+        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants5);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants5);
         return this;
       }
       get names() {
@@ -1013,7 +1013,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants4) {
+    function optimizeExpr(expr, names, constants5) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1028,14 +1028,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants4[n.str];
+        const c = constants5[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants4[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants5[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -13838,7 +13838,7 @@ import path20 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile11, stat as stat7 } from "node:fs/promises";
+import { readFile as readFile11, stat as stat8 } from "node:fs/promises";
 import { homedir as homedir5, hostname as hostname4 } from "node:os";
 import path19 from "node:path";
 import { parseArgs } from "node:util";
@@ -14773,9 +14773,11 @@ var StatusFileWriter = class {
     this.#heartbeat.unref();
     this.#request();
   }
-  /** Wait for the initial publication before announcing its location. */
+  /** Wait until all pending changes have been published before continuing. */
   async ready() {
-    await this.#writing;
+    while (this.#writing !== null) {
+      await this.#writing;
+    }
     return this.#published;
   }
   /** The path this run publishes to. */
@@ -19481,8 +19483,8 @@ function refusalMessage(denials, sandbox) {
     const where = denial.probedPath === requirement.path ? "" : ` (probed at ${denial.probedPath})`;
     const who = requirement.owner === "launcher" ? "the launcher" : `the ${requirement.owner} engine`;
     const setting = settingToChange(requirement.location);
-    const access4 = requirement.access === "bind-socket" ? "a directory where Unix socket binding is permitted" : "a writable directory";
-    const remedy = setting === null ? `grant the launching process access to ${verb} this directory; no setting moves it` : `set ${setting} to ${access4}, or grant the launching process access to ${verb} this directory`;
+    const access5 = requirement.access === "bind-socket" ? "a directory where Unix socket binding is permitted" : "a writable directory";
+    const remedy = setting === null ? `grant the launching process access to ${verb} this directory; no setting moves it` : `set ${setting} to ${access5}, or grant the launching process access to ${verb} this directory`;
     return `cannot ${verb} ${requirement.path}${where}, ${who}'s ${requirement.role} (${describeLocation(requirement.location)}): ${denial.code}; ${remedy}`;
   });
   const cause = sandbox === null ? "" : ` \u2014 the launching process runs inside the ${sandbox.name} sandbox (${sandbox.evidence}), and access was denied; ${sandbox.lift}`;
@@ -28242,7 +28244,8 @@ function describeWorkerFailure(error) {
 // src/script-runner.ts
 import vm from "node:vm";
 import { createHash as createHash5 } from "node:crypto";
-import { readFile as readFile10 } from "node:fs/promises";
+import { constants as constants4 } from "node:fs";
+import { access as access4, readFile as readFile10, stat as stat7 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path18 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
@@ -34624,10 +34627,23 @@ async function readWorkflowScript(scriptPath) {
   try {
     return await readFile10(scriptPath, "utf8");
   } catch (error) {
-    const code = error.code;
-    const reason = code === "ENOENT" ? "no file exists at this path" : code === "EISDIR" ? "the path is a directory, not a script file" : code === "EACCES" ? "the file is not readable" : error instanceof Error ? error.message : String(error);
-    throw new WorkflowScriptReadError(`Could not read workflow script ${scriptPath}: ${reason}`, { cause: error });
+    throw workflowScriptReadError(scriptPath, error);
   }
+}
+async function checkWorkflowScriptPath(scriptPath) {
+  try {
+    await access4(scriptPath, constants4.R_OK);
+    if ((await stat7(scriptPath)).isDirectory()) {
+      throw Object.assign(new Error("script path is a directory"), { code: "EISDIR" });
+    }
+  } catch (error) {
+    throw workflowScriptReadError(scriptPath, error);
+  }
+}
+function workflowScriptReadError(scriptPath, error) {
+  const code = error.code;
+  const reason = code === "ENOENT" ? "no file exists at this path" : code === "EISDIR" ? "the path is a directory, not a script file" : code === "EACCES" ? "the file is not readable" : error instanceof Error ? error.message : String(error);
+  return new WorkflowScriptReadError(`Could not read workflow script ${scriptPath}: ${reason}`, { cause: error });
 }
 var runtimeModuleRootHref = new URL(".", import.meta.url).href;
 var runtimeModuleRootPath = runtimeModuleRootHref.startsWith("file:") ? fileURLToPath3(runtimeModuleRootHref) : null;
@@ -35059,6 +35075,96 @@ async function createRuntime2(options = {}) {
   return createRuntime(options);
 }
 
+// src/workflow-source-reader.ts
+import { spawn as spawn4 } from "node:child_process";
+var readerSource = String.raw`
+  const { lstatSync, readlinkSync, readFileSync, realpathSync } = require("node:fs");
+  const { dirname, isAbsolute, join, resolve } = require("node:path");
+
+  // Resolve process-relative symlinks against the launcher. Stop at an fd
+  // magic link: its target may be an unnamed pipe or an unlinked file.
+  function launcherPath(source) {
+    if (process.platform !== "linux") return source;
+    let pending = resolve(source).split("/");
+    let directory = "/";
+    let links = 0;
+    while (pending.length > 0) {
+      const part = pending.shift();
+      if (!part || part === ".") continue;
+      if (part === "..") { directory = dirname(directory); continue; }
+      const candidate = join(directory, part);
+      if (candidate === "/proc/self" || candidate === "/proc/thread-self") {
+        directory = "/proc/" + process.argv[2];
+      } else if (/^\/proc\/\d+\/(?:task\/\d+\/)?fd\/\d+$/.test(candidate)) {
+        if (pending.some(Boolean)) {
+          directory = realpathSync(candidate);
+        } else {
+          return candidate;
+        }
+      } else if (lstatSync(candidate).isSymbolicLink()) {
+        if (++links > 40) throw Object.assign(new Error("too many symbolic links"), { code: "ELOOP" });
+        const target = readlinkSync(candidate);
+        if (isAbsolute(target)) directory = "/";
+        pending = target.split("/").concat(pending);
+      } else {
+        directory = candidate;
+      }
+    }
+    return directory;
+  }
+
+  try {
+    process.stdout.write(readFileSync(launcherPath(process.argv[1])));
+  } catch (error) {
+    process.stderr.write(JSON.stringify({ message: error.message, code: error.code }));
+    process.exitCode = 1;
+  }
+`;
+async function readWorkflowSource(scriptPath, signal) {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const child = spawn4(process.execPath, ["--input-type=commonjs", "-e", readerSource, scriptPath, String(process.pid)], {
+      // Paths such as /dev/stdin must refer to the launcher's input.
+      stdio: ["inherit", "pipe", "pipe"]
+    });
+    let source = "";
+    let diagnostic = "";
+    let processError = null;
+    child.stdout.setEncoding("utf8").on("data", (chunk) => {
+      source += chunk;
+    });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => {
+      diagnostic += chunk;
+    });
+    child.on("error", (error) => {
+      processError = error;
+    });
+    const abort = () => {
+      child.kill("SIGKILL");
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    child.once("close", (code, terminatingSignal) => {
+      signal.removeEventListener("abort", abort);
+      if (signal.aborted) {
+        reject(signal.reason);
+      } else if (code === 0) {
+        resolve(source);
+      } else {
+        let cause = processError ?? new Error(diagnostic || `Source reader ended with ${terminatingSignal ?? code}`);
+        if (diagnostic.length > 0) {
+          try {
+            const details = JSON.parse(diagnostic);
+            cause = Object.assign(new Error(details.message), { code: details.code });
+          } catch {
+          }
+        }
+        reject(workflowScriptReadError(scriptPath, cause));
+      }
+    });
+  });
+}
+
 // src/cli.ts
 var MAX_JSON_ARGS_DEPTH = 256;
 var AGENT_INVOCATION_OPTIONS = {
@@ -35350,24 +35456,6 @@ async function runEnsembleCli(argv, options = {}) {
 `);
       }
     }
-    if (runRecordDir !== null && runRecordDir.length > 0) {
-      runRecordWriter = await RunRecordWriter.start({
-        storeDir: runRecordDir,
-        cwd,
-        runUuid: runtimeRunId,
-        workflowPath: prepared.workflowPath,
-        workflowSource: prepared.source,
-        args: prepared.recordArgs,
-        cliFlags: cliFlags(invocation),
-        ...callerIdentity !== void 0 ? { callerIdentity } : {},
-        concurrency: recordConcurrency(ambientSettings, progress),
-        workerScope: ambientSettings.workerScope,
-        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
-        namedTargets: ambientSettings.namedTargets
-      });
-      runtime.setRunRecorder?.(runRecordWriter);
-      announceRunRecord(runRecordWriter, stderr);
-    }
     const statusDir = options.statusDir !== void 0 ? options.statusDir : ambientSettings.statusDir.value;
     if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
@@ -35381,11 +35469,32 @@ async function runEnsembleCli(argv, options = {}) {
       });
       if (await statusWriter.ready()) {
         try {
-          stderr.write(`[status-file] ${JSON.stringify({ run_id: runRecordWriter?.manifest.run_id ?? await resolveRunId(cwd, runtimeRunId), status_path: statusWriter.path })}
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: await resolveRunId(cwd, runtimeRunId), status_path: statusWriter.path })}
 `);
         } catch {
         }
       }
+    }
+    const sourceAbort = new AbortController();
+    void ending.promise.catch((error) => sourceAbort.abort(error));
+    const source = prepared.source ?? await readWorkflowSource(prepared.workflowPath, sourceAbort.signal);
+    if (runRecordDir !== null && runRecordDir.length > 0) {
+      runRecordWriter = await RunRecordWriter.start({
+        storeDir: runRecordDir,
+        cwd,
+        runUuid: runtimeRunId,
+        workflowPath: prepared.workflowPath,
+        workflowSource: source,
+        args: prepared.recordArgs,
+        cliFlags: cliFlags(invocation),
+        ...callerIdentity !== void 0 ? { callerIdentity } : {},
+        concurrency: recordConcurrency(ambientSettings, progress),
+        workerScope: ambientSettings.workerScope,
+        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
+        namedTargets: ambientSettings.namedTargets
+      });
+      runtime.setRunRecorder?.(runRecordWriter);
+      announceRunRecord(runRecordWriter, stderr);
     }
     runtime.onEvent((event) => {
       if (event.method === "hold/raised") {
@@ -35590,7 +35699,7 @@ async function runEnsembleCli(argv, options = {}) {
 `);
     });
     const runnerOptions = {
-      source: prepared.source,
+      source,
       filename: prepared.workflowPath,
       cwd,
       runtime,
@@ -35602,6 +35711,7 @@ async function runEnsembleCli(argv, options = {}) {
       },
       onMeta: async (meta) => {
         progress?.setWorkflow(workflowName(meta));
+        await statusWriter?.ready();
         await runRecordWriter?.noteMeta(meta);
         ending.throwIfEnded();
       },
@@ -35760,7 +35870,7 @@ async function prepareRun(invocation, cwd, program) {
       const requestedCwd = path19.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
-        isDirectory2 = (await stat7(requestedCwd)).isDirectory();
+        isDirectory2 = (await stat8(requestedCwd)).isDirectory();
       } catch {
         isDirectory2 = false;
       }
@@ -35782,9 +35892,9 @@ async function prepareRun(invocation, cwd, program) {
     throw new Error("workflow invocation has no script path");
   }
   const workflowPath = path19.resolve(cwd, invocation.scriptArg);
+  await checkWorkflowScriptPath(workflowPath);
   return {
     workflowPath,
-    source: await readWorkflowScript(workflowPath),
     runnerArgs: invocation.args,
     recordArgs: invocation.args
   };
@@ -36060,7 +36170,7 @@ var WORKFLOW_TUNING_OPTIONS = {
 async function parseWorkflowInvocation(argv, cwd, program) {
   if (argv[0] === "run") {
     try {
-      await stat7(path19.resolve(cwd, "run"));
+      await stat8(path19.resolve(cwd, "run"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       throw new CliUsageError(`${program}: "run" was taken as the script path; there is no run subcommand. Use: ${program} [run options] <script.js> [args...]`);

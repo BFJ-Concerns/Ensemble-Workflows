@@ -12,8 +12,9 @@ import { describeError, HoldTimeoutError, InvalidAgentSchemaError, PreSpawnAutho
 import { answerHold, defaultHoldsDirectory, enumerateHolds, holdListingState, resolveHoldScope } from "./holds.js";
 import { boundedEvidence, presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
 import { createRuntime } from "./index.js";
-import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
+import { checkWorkflowScriptPath, readWorkflowMeta, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
+import { readWorkflowSource } from "./workflow-source-reader.js";
 import { resolveRunId, RunRecordWriter } from "./run-record.js";
 import { assertCompilableSchema } from "./schema.js";
 import { declaredDirectory, defaultDirectory, readSetting } from "./resource-location.js";
@@ -328,7 +329,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   const sentinelStoreDir = configuredSentinelDir ? path.resolve(configuredSentinelDir) : configuredSentinelDir;
 
   // The acceptance boundary: a run begins when the invocation is accepted —
-  // flags parsed above, and here the script read (or the direct agent's
+  // flags parsed above, and here the script path checked (or the direct agent's
   // placement usable). Everything the launcher does for a run — the
   // sentinel's announcement, the archive, the status file, the envelope on
   // stdout — is downstream of this point, so a rejection here is a
@@ -437,25 +438,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         stderr.write(`[sentinel] will write ${sentinelPath} when the run ends\n`);
       }
     }
-    if (runRecordDir !== null && runRecordDir.length > 0) {
-      runRecordWriter = await RunRecordWriter.start({
-        storeDir: runRecordDir,
-        cwd,
-        runUuid: runtimeRunId,
-        workflowPath: prepared.workflowPath,
-        workflowSource: prepared.source,
-        args: prepared.recordArgs,
-        cliFlags: cliFlags(invocation),
-        ...(callerIdentity !== undefined ? { callerIdentity } : {}),
-        concurrency: recordConcurrency(ambientSettings, progress),
-        workerScope: ambientSettings.workerScope,
-        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
-        namedTargets: ambientSettings.namedTargets
-      });
-      (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
-      announceRunRecord(runRecordWriter, stderr);
-    }
-
     const statusDir = options.statusDir !== undefined ? options.statusDir : ambientSettings.statusDir.value;
     if (progress !== undefined && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
@@ -468,11 +450,34 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       });
       if (await statusWriter.ready()) {
         try {
-          stderr.write(`[status-file] ${JSON.stringify({ run_id: runRecordWriter?.manifest.run_id ?? await resolveRunId(cwd, runtimeRunId), status_path: statusWriter.path })}\n`);
+          stderr.write(`[status-file] ${JSON.stringify({ run_id: await resolveRunId(cwd, runtimeRunId), status_path: statusWriter.path })}\n`);
         } catch {
           // A broken supervision stream cannot fail a run that published status.
         }
       }
+    }
+
+    // Supervision is visible even while the source read is stalled.
+    const sourceAbort = new AbortController();
+    void ending.promise.catch((error: unknown) => sourceAbort.abort(error));
+    const source = prepared.source ?? await readWorkflowSource(prepared.workflowPath, sourceAbort.signal);
+    if (runRecordDir !== null && runRecordDir.length > 0) {
+      runRecordWriter = await RunRecordWriter.start({
+        storeDir: runRecordDir,
+        cwd,
+        runUuid: runtimeRunId,
+        workflowPath: prepared.workflowPath,
+        workflowSource: source,
+        args: prepared.recordArgs,
+        cliFlags: cliFlags(invocation),
+        ...(callerIdentity !== undefined ? { callerIdentity } : {}),
+        concurrency: recordConcurrency(ambientSettings, progress),
+        workerScope: ambientSettings.workerScope,
+        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
+        namedTargets: ambientSettings.namedTargets
+      });
+      (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
+      announceRunRecord(runRecordWriter, stderr);
     }
 
     runtime.onEvent((event) => {
@@ -687,7 +692,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${branch})\n`);
     });
     const runnerOptions = {
-      source: prepared.source,
+      source,
       filename: prepared.workflowPath,
       cwd,
       runtime,
@@ -698,6 +703,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       },
       onMeta: async (meta: unknown) => {
         progress?.setWorkflow(workflowName(meta));
+        await statusWriter?.ready();
         await runRecordWriter?.noteMeta(meta);
         ending.throwIfEnded();
       },
@@ -1009,7 +1015,7 @@ type ParsedInvocation = ParsedWorkflowInvocation | ParsedAgentInvocation;
 
 interface PreparedRun {
   workflowPath: string;
-  source: string;
+  source?: string;
   runnerArgs: unknown;
   recordArgs: unknown;
 }
@@ -1047,9 +1053,9 @@ async function prepareRun(invocation: ParsedInvocation, cwd: string, program: st
     throw new Error("workflow invocation has no script path");
   }
   const workflowPath = path.resolve(cwd, invocation.scriptArg);
+  await checkWorkflowScriptPath(workflowPath);
   return {
     workflowPath,
-    source: await readWorkflowScript(workflowPath),
     runnerArgs: invocation.args,
     recordArgs: invocation.args
   };

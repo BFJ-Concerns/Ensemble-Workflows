@@ -159,6 +159,50 @@ test("ready waits for publication and the snapshot stays readable during replace
   }
 });
 
+test("ready drains a name change queued behind an older snapshot", { timeout: 30_000 }, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-name-barrier-"));
+  const progress = newProgress();
+  const olderRename = Promise.withResolvers<void>();
+  const releaseOlder = Promise.withResolvers<void>();
+  const namedRename = Promise.withResolvers<void>();
+  const releaseNamed = Promise.withResolvers<void>();
+  let renames = 0;
+  const writer = new StatusFileWriter({ progress, dir, heartbeatMs: 60_000, fileOperations: {
+    rename: async (source, destination) => {
+      renames += 1;
+      if (renames === 2) {
+        olderRename.resolve();
+        await releaseOlder.promise;
+      } else if (renames === 3) {
+        namedRename.resolve();
+        await releaseNamed.promise;
+      }
+      await rename(source, destination);
+    }
+  } });
+  try {
+    await writer.ready();
+    progress.setPhase("loading");
+    await olderRename.promise;
+    progress.setWorkflow("named-workflow");
+    let settled = false;
+    const ready = writer.ready().then(() => { settled = true; });
+    releaseOlder.resolve();
+    await namedRename.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "the older snapshot cannot release the name barrier");
+    assert.equal(JSON.parse(await readFile(writer.path, "utf8")).workflow, null);
+    releaseNamed.resolve();
+    await ready;
+    assert.equal(JSON.parse(await readFile(writer.path, "utf8")).workflow, "named-workflow");
+  } finally {
+    releaseOlder.resolve();
+    releaseNamed.resolve();
+    await writer.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("every published snapshot carries the writer's own liveness evidence and the schema version", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-owner-"));
   const writer = new StatusFileWriter({ progress: newProgress(), dir });

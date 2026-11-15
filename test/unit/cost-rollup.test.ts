@@ -331,7 +331,7 @@ test("an agent whose start evidence may be missing books an unnumbered unobserve
 });
 
 function archivedRecord(status: string, attempts: unknown[], extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return { schema_version: 6, kind: "agent_record", id: 2, engine: "codex", status, resolved_model: null, attempts, ...extra };
+  return { schema_version: 7, kind: "agent_record", id: 2, engine: "codex", status, resolved_model: null, attempts, ...extra };
 }
 
 function archivedAttempt(status: string): Record<string, unknown> {

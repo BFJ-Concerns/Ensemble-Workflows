@@ -236,13 +236,13 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as Record<string, unknown>;
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as Record<string, unknown>;
-  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v6-manifest-keys.json", "utf8")) as {
+  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v7-manifest-keys.json", "utf8")) as {
     manifest: string[];
     args: string[];
   };
-  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v6-agent-keys.json", "utf8"));
-  const attemptKeys = JSON.parse(await readFile("test/fixtures/run-record/v6-attempt-keys.json", "utf8"));
-  const leafKeys = JSON.parse(await readFile("test/fixtures/run-record/v6-cost-rollup-leaf-keys.json", "utf8"));
+  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v7-agent-keys.json", "utf8"));
+  const attemptKeys = JSON.parse(await readFile("test/fixtures/run-record/v7-attempt-keys.json", "utf8"));
+  const leafKeys = JSON.parse(await readFile("test/fixtures/run-record/v7-cost-rollup-leaf-keys.json", "utf8"));
 
   assert.deepEqual(Object.keys(manifest).sort(), manifestKeys.manifest);
   assert.deepEqual(Object.keys(manifest.args as Record<string, unknown>).sort(), manifestKeys.args);
@@ -258,10 +258,10 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
   for (const leaf of Object.values(rollup).flatMap((models) => Object.values(models))) {
     assert.deepEqual(Object.keys(leaf).sort(), leafKeys);
   }
-  assert.equal(manifest.schema_version, 6);
+  assert.equal(manifest.schema_version, 7);
   assert.equal(manifest.kind, "run_manifest");
   assert.equal(manifest.caller_identity, "session:run-record-test");
-  assert.equal(agent.schema_version, 6);
+  assert.equal(agent.schema_version, 7);
   assert.equal(agent.kind, "agent_record");
   assert.equal(agent.header_identity, "original_request");
   assert.deepEqual(manifest.concurrency, {
@@ -1031,51 +1031,64 @@ test("failed-run finalisation drains queued records and seals the archive agains
   await writer.recordAgent(agentRecord(2, "codex", null, 4));
 });
 
-test("agent record includes resolved placement and the complete worktree outcome", async () => {
-  const cwd = await gitRepo("ensemble-record-worktree-");
-  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
-  const writer = await RunRecordWriter.start({
-    storeDir: store,
-    cwd,
-    runUuid: "run-worktree",
-    workflowPath: path.join(cwd, "workflow.js"),
-    workflowSource: "export const meta = { name: 'worktree' };\nreturn true;\n",
-    args: [],
-    cliFlags: { jsonArgs: false }
-  });
-  await writer.recordAgent({
-    ...agentRecord(1, "codex", null, 3),
-    parseRoute: "object-fallback",
-    resolvedCwd: "/tmp/example-worktree",
-    isolation: "worktree" as const,
-    worktree: {
-      branch: "ensemble-workflows/example",
-      baseCommit: "0123456789abcdef",
+for (const branch of ["ensemble-workflows/example", null]) {
+  test(`agent record includes resolved placement and ${branch === null ? "detached" : "branched"} worktree outcome`, async () => {
+    const cwd = await gitRepo("ensemble-record-worktree-");
+    const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+    const writer = await RunRecordWriter.start({
+      storeDir: store,
+      cwd,
+      runUuid: "run-worktree",
+      workflowPath: path.join(cwd, "workflow.js"),
+      workflowSource: "export const meta = { name: 'worktree' };\nreturn true;\n",
+      args: [],
+      cliFlags: { jsonArgs: false }
+    });
+    await writer.recordAgent({
+      ...agentRecord(1, "codex", null, 3),
+      parseRoute: "object-fallback",
+      resolvedCwd: "/tmp/example-worktree",
+      isolation: "worktree" as const,
+      worktree: {
+        branch,
+        baseCommit: "0123456789abcdef",
+        state: "committed",
+        tipCommit: "fedcba9876543210",
+        changed: true,
+        removed: false
+      }
+    });
+
+    const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+      schema_version: number;
+      resolved_cwd: string;
+      isolation: string | null;
+      worktree: unknown;
+      parse_route: string | null;
+    };
+    assert.equal(agent.schema_version, 7);
+    if (branch === null) {
+      await assert.rejects(execFileAsync(process.execPath, [
+        path.resolve("test/consumers/read-worktree-v6.mjs"), path.join(writer.archiveDir, "agents/000001/agent.json")
+      ]), (error: Error & { stderr?: string }) => {
+        assert.match(error.stderr ?? "", /unsupported run record schema/);
+        assert.doesNotMatch(error.stderr ?? "", /Cannot read properties of null/);
+        return true;
+      });
+    }
+    assert.equal(agent.resolved_cwd, "/tmp/example-worktree");
+    assert.equal(agent.isolation, "worktree");
+    assert.equal(agent.parse_route, "object-fallback");
+    assert.deepEqual(agent.worktree, {
+      branch,
+      base_commit: "0123456789abcdef",
       state: "committed",
-      tipCommit: "fedcba9876543210",
+      tip_commit: "fedcba9876543210",
       changed: true,
       removed: false
-    }
+    });
   });
-
-  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
-    resolved_cwd: string;
-    isolation: string | null;
-    worktree: unknown;
-    parse_route: string | null;
-  };
-  assert.equal(agent.resolved_cwd, "/tmp/example-worktree");
-  assert.equal(agent.isolation, "worktree");
-  assert.equal(agent.parse_route, "object-fallback");
-  assert.deepEqual(agent.worktree, {
-    branch: "ensemble-workflows/example",
-    base_commit: "0123456789abcdef",
-    state: "committed",
-    tip_commit: "fedcba9876543210",
-    changed: true,
-    removed: false
-  });
-});
+}
 
 test("recordAgent snapshots new recoverability fields at its API boundary", async () => {
   const cwd = await gitRepo("ensemble-record-snapshot-");
@@ -2114,7 +2127,7 @@ test("an interrupted worker's archive names its termination cause and why no tra
   // This is a cold read of the real writer's v3 record. No transcript
   // survives an interruption, but the array's type remains stable and its
   // sibling carries the reason a consumer needs to interpret the empty list.
-  assert.equal(interruptedAgent.schema_version, 6);
+  assert.equal(interruptedAgent.schema_version, 7);
   assert.ok(Array.isArray(interruptedAgent.transcripts));
   assert.deepEqual(interruptedAgent.transcripts, []);
   assert.equal(interruptedAgent.transcripts_unavailable, "worker-interrupted");

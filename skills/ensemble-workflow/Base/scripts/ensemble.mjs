@@ -16660,7 +16660,7 @@ function addProviderCost(target, event) {
 
 // src/run-record.ts
 var execFileAsync = promisify(execFile);
-var SCHEMA_VERSION = 6;
+var SCHEMA_VERSION = 7;
 var MANIFEST_PATH = "manifest.json";
 function namedTargetsRecord(targets) {
   if (targets === void 0) {

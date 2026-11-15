@@ -250,7 +250,7 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
   // One attempt shape for every status: a reader branches on `status`, never on which keys exist.
   const abandoned = abandonedAttemptEntry({
     attempt: 1, started_at: "2026-11-10T09:49:47.721Z", transcript: null,
-    target: { engine: "codex", model: null }, resolved_model: "gpt-6-luna", resolved_effort: null
+    target: { engine: "codex", model: null }, named_target: null, resolved_model: "gpt-6-luna", resolved_effort: null
   });
   assert.deepEqual(Object.keys(abandoned).sort(), attemptKeys);
   const rollup = manifest.cost_rollup as Record<string, Record<string, Record<string, unknown>>>;
@@ -1331,6 +1331,7 @@ function agentRecord(
     effort: null,
     fallback: null,
     fallbackSource: { kind: "none" },
+    namedTarget: null,
     lean: null,
     answeredBy: null,
     resolvedModel: null,
@@ -1358,6 +1359,7 @@ function agentRecord(
         attempt: 1,
         status: "complete" as const,
         target: { engine, model: null },
+        namedTarget: null,
         failure: null,
         classification: null,
         chainDecision: null,
@@ -1987,6 +1989,7 @@ function liveStart(attempt: number, startedAt: string): LiveAttemptStart {
     attempt,
     startedAt,
     target: { engine: "codex", model: null },
+    namedTarget: null,
     identity: { resolvedModel: null, resolvedEffort: null }
   };
 }
@@ -2664,7 +2667,7 @@ test("live attempts publish readable references, append in order and settle with
     await writer.recordAttemptStart(1, liveStart(1, "2026-11-05T12:00:00Z"));
     assert.deepEqual((await readAgent()).current_attempt, {
       attempt: 1, started_at: "2026-11-05T12:00:00Z", transcript: null,
-      target: { engine: "codex", model: null }, resolved_model: null, resolved_effort: null
+      target: { engine: "codex", model: null }, named_target: null, resolved_model: null, resolved_effort: null
     }, "execution start must be readable before transcript discovery");
     const external = path.join(store, "claude.jsonl");
     await writeFile(external, "{}\n");
@@ -2803,7 +2806,7 @@ test("ending an attempt clears live metadata and rejects stale transcript update
     await writer.recordAttemptEnd(1, 1);
     assert.deepEqual((await readAgent()).current_attempt, {
       attempt: 2, started_at: "2026-11-05T12:00:01Z", transcript: null,
-      target: { engine: "codex", model: null }, resolved_model: null, resolved_effort: null
+      target: { engine: "codex", model: null }, named_target: null, resolved_model: null, resolved_effort: null
     });
     await writer.recordAttemptEnd(1, 2);
     assert.equal((await readAgent()).current_attempt, undefined);
@@ -3047,7 +3050,7 @@ test("a replacement live attempt clears identity and rejects an earlier attempt'
     const read = async () => JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
     assert.deepEqual((await read()).current_attempt, {
       attempt: 2, started_at: "2026-11-10T12:01:00Z", transcript: null,
-      target: { engine: "claude", model: "requested" }, resolved_model: null, resolved_effort: null
+      target: { engine: "claude", model: "requested" }, named_target: null, resolved_model: null, resolved_effort: null
     });
     await writer.recordAttemptIdentity(1, 2, { resolvedModel: "second-model", resolvedEffort: "medium" });
     assert.equal((await read()).current_attempt.resolved_model, "second-model");

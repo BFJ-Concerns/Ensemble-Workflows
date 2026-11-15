@@ -35,6 +35,7 @@ import type { DischargedEnforcement, StrippableCapability } from "./capability-s
 import type { AppServerDiagnostic } from "./errors.js";
 import type { FailureClassification } from "./failure-classification.js";
 import type { FallbackSource } from "./fallback-source.js";
+import type { NamedTargetResolution, NamedTargets } from "./named-targets.js";
 import type { UsageSummary } from "./usage-summary.js";
 import type { WorktreeState } from "./worktree-isolation.js";
 
@@ -91,6 +92,8 @@ export interface RunRecordStartOptions {
   concurrency?: EffectiveConcurrencyRecord;
   workerScope?: Resolved<WorkerScopeGrouping>;
   effectiveSettings?: EffectiveRunSettingsRecord;
+  /** The named targets in force, for the manifest's `named_targets`; omitted, the run had none. */
+  namedTargets?: NamedTargets;
   /** Opaque identity supplied by the process that invoked this run, if any. */
   callerIdentity?: string;
   startedAt?: string;
@@ -117,6 +120,31 @@ export interface EffectiveRunSettingsRecord {
   runTimeoutMs: Resolved<number | null>;
 }
 
+/** The manifest's view of the named targets in force. */
+export interface NamedTargetsRecord {
+  source: string | null;
+  bindings: Record<string, { engine: EngineName; model: string | null; fallback: FallbackTarget[] | null }>;
+}
+
+function namedTargetsRecord(targets: NamedTargets | undefined): NamedTargetsRecord {
+  if (targets === undefined) {
+    return { source: null, bindings: {} };
+  }
+  return {
+    source: targets.source,
+    bindings: Object.fromEntries(
+      Object.entries(targets.bindings).map(([name, binding]) => [
+        name,
+        {
+          engine: binding.engine,
+          model: binding.model ?? null,
+          fallback: binding.fallback === undefined ? null : binding.fallback.map((entry) => ({ ...entry }))
+        }
+      ])
+    )
+  };
+}
+
 /**
  * The harness's decision after a failed attempt under a declared chain:
  *
@@ -140,6 +168,8 @@ export interface RuntimeAgentAttemptRecord {
    * `resolvedModel` beside it is what the engine served.
    */
   target: { engine: EngineName; model: string | null };
+  /** The named target this attempt's target was asked for through, or null where it was named literally (a chain entry, or a call naming its engine). */
+  namedTarget: string | null;
   failure: { kind: string; message: string } | null;
   /**
    * How the harness classified this failed attempt: the class and the
@@ -219,6 +249,8 @@ export interface LiveAttemptStart {
   startedAt: string;
   /** The target dispatched to: the requested pin, null when unpinned — as the settled attempt's `target`. */
   target: { engine: EngineName; model: string | null };
+  /** As the settled attempt's `namedTarget`. */
+  namedTarget: string | null;
   /**
    * The served identity the attempt starts with: null on both halves for a
    * fresh thread or session (a first attempt, a retry, a fallback step),
@@ -242,6 +274,7 @@ export interface LiveAttemptRecord {
   /** Codex: the archive-relative live file; Claude: the session's own absolute JSONL path; null until readable. */
   transcript: string | null;
   target: { engine: EngineName; model: string | null };
+  named_target: string | null;
   resolved_model: string | null;
   resolved_effort: string | null;
 }
@@ -259,6 +292,7 @@ export interface AbandonedAttemptEntry {
   attempt: number;
   status: "abandoned";
   target: { engine: EngineName; model: string | null };
+  named_target: string | null;
   failure: null;
   classification: null;
   chain_decision: null;
@@ -283,6 +317,8 @@ export function abandonedAttemptEntry(live: LiveAttemptRecord): AbandonedAttempt
     attempt: live.attempt,
     status: "abandoned",
     target: { engine: live.target.engine, model: live.target.model },
+    // A live entry written before attempts named their target has none.
+    named_target: live.named_target ?? null,
     failure: null,
     classification: null,
     chain_decision: null,
@@ -330,6 +366,14 @@ export interface RuntimeAgentRecord {
    * why none did; see {@link FallbackSource}. Written on every record.
    */
   fallbackSource: FallbackSource;
+  /**
+   * The named target the call asked for, beside what it resolved to: the
+   * name, the file whose binding answered, and the binding's engine and
+   * model (null where the binding left the model to the engine's policy;
+   * `model` above is then what that policy chose). Null where the call
+   * named its engine literally.
+   */
+  namedTarget: NamedTargetResolution | null;
   /**
    * Which target answered: `entry` is -1 for the call's own target and
    * the chain index thereafter, beside that target's engine and model. Null
@@ -568,6 +612,12 @@ interface Manifest {
   /** See {@link EffectiveRunSettingsRecord}: values with their winning layers. */
   budget_ceilings: Partial<Record<EngineName, Resolved<number | null>>>;
   run_timeout_ms: Resolved<number | null>;
+  /**
+   * The named targets in force when the run started: the file they were read
+   * from (null where the run had none) and each name's binding, its model
+   * and chain null where the binding names none.
+   */
+  named_targets: NamedTargetsRecord;
   git: {
     start: GitState;
     end: GitState | null;
@@ -831,6 +881,7 @@ export class RunRecordWriter {
       },
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
+      named_targets: namedTargetsRecord(options.namedTargets),
       git: {
         start: gitStart,
         end: null
@@ -1074,6 +1125,7 @@ export class RunRecordWriter {
         started_at: start.startedAt,
         transcript: null,
         target: { engine: start.target.engine, model: start.target.model },
+        named_target: start.namedTarget,
         resolved_model: start.identity.resolvedModel,
         resolved_effort: start.identity.resolvedEffort
       });
@@ -1293,6 +1345,7 @@ export class RunRecordWriter {
       effort: record.effort,
       fallback: record.fallback,
       fallback_source: { ...record.fallbackSource },
+      named_target: record.namedTarget === null ? null : { ...record.namedTarget },
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
@@ -1342,6 +1395,7 @@ export class RunRecordWriter {
         attempt: attempt.attempt,
         status: attempt.status,
         target: attempt.target,
+        named_target: attempt.namedTarget,
         failure: attempt.failure,
         classification: attempt.classification,
         chain_decision: attempt.chainDecision,

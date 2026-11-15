@@ -23,10 +23,8 @@ import type { EngineName, FallbackTarget } from "./types.js";
  * stay distinct, so a reader never mistakes an author's explicit opt-out for
  * an absent declaration or for a chain that no longer applies.
  *
- * Today's dispatch surfaces declare chains at the call and in `defaults`
- * only, so `target`, `map` and `switched-off` are not written yet. They are
- * the kinds the resolution of named targets, the machine map and
- * `fallback: false` records when it decides the chain.
+ * `map` and `switched-off` are not written yet: they are the kinds the
+ * machine map and `fallback: false` record when they decide the chain.
  */
 export type FallbackSource =
   | { kind: "call" }
@@ -51,7 +49,7 @@ const handedOff = new WeakMap<object, FallbackSource>();
  * Attach the source of `options.fallback` to this options object, for the
  * runtime to read when it builds the record. For a layer that resolves the
  * chain from somewhere other than the call itself — the hooks' `defaults`
- * merge today. Returns `options` for chaining.
+ * merge, and a named target's binding. Returns `options` for chaining.
  */
 export function handOffFallbackSource<T extends object>(options: T, source: FallbackSource): T {
   handedOff.set(options, source);

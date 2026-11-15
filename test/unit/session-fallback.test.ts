@@ -79,3 +79,42 @@ for (const engine of ["codex", "claude"] as const) {
     }
   });
 }
+
+test("a session whose creating turn fell back names the answering entry on every later turn", async () => {
+  for (const scenario of [
+    { fallback: [{ target: "back" }] as FallbackTarget[], name: "back" },
+    { fallback: [{ engine: "codex", model: "literal" }] as FallbackTarget[], name: null }
+  ]) {
+    const claude = new SessionChainEngine("claude", [claudeRefusal(429, "rate_limit_error")]);
+    const codex = new SessionChainEngine("codex", [answer("first"), answer("second")]);
+    const records: RuntimeAgentRecord[] = [];
+    const runtime = new EnsembleRuntime({
+      engines: new EngineRegistry([claude, codex]),
+      cwd: "/fake/repo",
+      defaultMaxAttempts: 1,
+      namedTargets: {
+        bindings: { primary: { engine: "claude", model: "a" }, back: { engine: "codex", model: "b" } },
+        source: "/machine/ensemble/config.json"
+      }
+    });
+    runtime.setRunRecorder({
+      recordAttemptStart: async () => {},
+      recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    const session = runtime.createWorkerSession({ target: "primary", fallback: scenario.fallback });
+    try {
+      assert.equal(await session.send("first turn"), "first");
+      assert.equal(await session.send("second turn"), "second");
+      const first = records.find((record) => record.session?.turn === 1 && record.status === "complete")!;
+      const second = records.findLast((record) => record.session?.turn === 2 && record.status === "complete")!;
+      assert.deepEqual(first.attempts.map((attempt) => attempt.namedTarget), ["primary", scenario.name]);
+      assert.deepEqual(second.attempts.map((attempt) => [attempt.namedTarget, attempt.target.engine]), [[scenario.name, "codex"]]);
+      // The record keeps what the session asked for.
+      assert.equal(second.namedTarget?.name, "primary");
+    } finally {
+      await session.close();
+      await runtime.close();
+    }
+  }
+});

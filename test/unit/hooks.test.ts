@@ -5,7 +5,7 @@ import { BudgetExceededError, RemovedAgentOptionError, attachAgentIdentity, mark
 import { parallel, pipeline } from "../../src/hooks.js";
 import { NestedWorkflowError, WorkflowResolutionError } from "../../src/workflow-registry.js";
 
-import type { AgentCallSignature, AgentOptions, IdentifiedAgentResult, JsonSchema } from "../../src/types.js";
+import type { AgentCallSignature, AgentOptions, AgentRequest, IdentifiedAgentResult, JsonSchema } from "../../src/types.js";
 
 test("parallel returns null for throwing thunks and logs the failure", async () => {
   const logs: string[] = [];
@@ -260,9 +260,9 @@ test("the hooks agent surface presents the canonical overload set", async () => 
   const calls: Array<Partial<AgentOptions>> = [];
   // A conforming fake: the same overload restatement the hook wrapper
   // uses, so the test exercises the surface a script consumer sees.
-  function fakeAgent(prompt: string, agentOptions: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
-  function fakeAgent(prompt: string, agentOptions: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  function fakeAgent(prompt: string, agentOptions: AgentOptions & { schema?: undefined }): Promise<string>;
+  function fakeAgent(prompt: string, agentOptions: AgentRequest & { identity: true }): Promise<IdentifiedAgentResult>;
+  function fakeAgent(prompt: string, agentOptions: AgentRequest & { schema: JsonSchema }): Promise<unknown | null>;
+  function fakeAgent(prompt: string, agentOptions: AgentRequest & { schema?: undefined }): Promise<string>;
   function fakeAgent(prompt: string, agentOptions: Partial<AgentOptions>): Promise<string | unknown | null>;
   async function fakeAgent(prompt: string, agentOptions: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
     calls.push(agentOptions);

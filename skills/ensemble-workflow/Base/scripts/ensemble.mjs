@@ -13859,12 +13859,6 @@ function defaultOpenCodeConcurrency() {
   return 2;
 }
 
-// src/holds.ts
-import { randomUUID } from "node:crypto";
-import { mkdir as mkdir2, readFile as readFile3, readdir as readdir2, rename as rename2, rm, stat, writeFile as writeFile2 } from "node:fs/promises";
-import { homedir, hostname as hostname2 } from "node:os";
-import path3 from "node:path";
-
 // src/errors.ts
 var EnsembleError = class extends Error {
   constructor(message, options) {
@@ -14199,6 +14193,11 @@ var FallbackTargetRejectedError = class extends AgentOptionRejectedError {
     super(`Invalid fallback chain: ${detail}`);
   }
 };
+var NamedTargetRejectedError = class extends AgentOptionRejectedError {
+  constructor(detail) {
+    super(`Invalid named target: ${detail}`);
+  }
+};
 var LeanStartUnsupportedError = class extends AgentOptionRejectedError {
   constructor(engine, detail) {
     super(
@@ -14384,6 +14383,7 @@ function assertCanonicalEffortSupported(effort) {
 }
 var AGENT_OPTION_KEYS = Object.keys({
   engine: true,
+  target: true,
   schema: true,
   model: true,
   effort: true,
@@ -14458,8 +14458,12 @@ function assertValidAgentOptions(options) {
       }
     });
   }
+  const target = read("target", "a target name");
+  if (target !== unreadable) {
+    collect(() => assertValidTargetName(target));
+  }
   const engine = read("engine", "an engine name");
-  if (engine !== unreadable && engine !== "opencode") {
+  if (engine !== unreadable && engine !== "opencode" && target === void 0) {
     const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
     if (effort !== unreadable) {
       collect(() => assertCanonicalEffortSupported(effort));
@@ -14504,6 +14508,7 @@ function assertValidAgentOptions(options) {
 }
 var WORKER_SESSION_OPTION_KEYS = Object.keys({
   engine: true,
+  target: true,
   model: true,
   effort: true,
   fallback: true,
@@ -14532,7 +14537,8 @@ function assertValidWorkerSessionOptions(options) {
   if (values.isolation !== void 0 && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
   }
-  if (values.engine !== "opencode") {
+  assertValidTargetName(values.target);
+  if (values.engine !== "opencode" && values.target === void 0) {
     assertCanonicalEffortSupported(values.effort);
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
@@ -14551,6 +14557,11 @@ function assertValidWorkerSessionOptions(options) {
   }
   assertValidFallbackChain(values.fallback);
 }
+function assertValidTargetName(target) {
+  if (target !== void 0 && (typeof target !== "string" || target.trim().length === 0)) {
+    throw new InvalidAgentOptionValueError("target", target, "a non-empty string naming a target the machine configuration binds");
+  }
+}
 var SESSION_TURN_OPTION_KEYS = ["schema"];
 var SESSION_TURN_OPTION_KEY_SET = new Set(SESSION_TURN_OPTION_KEYS);
 function assertValidSessionTurnOptions(options) {
@@ -14565,7 +14576,7 @@ function assertValidFallbackChain(chain) {
     return;
   }
   if (!Array.isArray(chain)) {
-    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
+    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } or { target, effort? } targets");
   }
   if (chain.length === 0) {
     throw new FallbackTargetRejectedError("the chain must not be empty");
@@ -14573,12 +14584,23 @@ function assertValidFallbackChain(chain) {
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
     if (target === null) {
-      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model`);
+      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model, or a target`);
     }
     for (const key of Object.keys(target)) {
-      if (key !== "engine" && key !== "model" && key !== "effort") {
-        throw new FallbackTargetRejectedError(`entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort`);
+      if (key !== "engine" && key !== "model" && key !== "effort" && key !== "target") {
+        throw new FallbackTargetRejectedError(
+          `entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort, or a named target and optionally effort`
+        );
       }
+    }
+    if (target.effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(target.effort)) {
+      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
+    }
+    if (target.target !== void 0) {
+      if (typeof target.target !== "string" || target.target.trim().length === 0) {
+        throw new FallbackTargetRejectedError(`entry ${index} target must be a non-empty string naming a target the machine configuration binds`);
+      }
+      return;
     }
     if (target.engine === "opencode") {
       throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
@@ -14588,9 +14610,6 @@ function assertValidFallbackChain(chain) {
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
-    }
-    if (target.effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(target.effort)) {
-      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
     }
   });
 }
@@ -14624,6 +14643,12 @@ function assertPositiveIntegerOption(options, option, maximum) {
     throw new InvalidAgentOptionValueError(option, value, expected);
   }
 }
+
+// src/holds.ts
+import { randomUUID } from "node:crypto";
+import { mkdir as mkdir2, readFile as readFile3, readdir as readdir2, rename as rename2, rm, stat, writeFile as writeFile2 } from "node:fs/promises";
+import { homedir, hostname as hostname2 } from "node:os";
+import path3 from "node:path";
 
 // src/process-owner-evidence.ts
 import { readFile } from "node:fs/promises";
@@ -15374,7 +15399,8 @@ function resolveAmbientSettings(input) {
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
     statusDir: resolveStatus(config, input.env, input.cwd, configFile),
     workerEnvironment: config?.worker_environment ?? {},
-    openCodeModels: openCodeModelEntries(config?.opencode_models)
+    openCodeModels: openCodeModelEntries(config?.opencode_models),
+    namedTargets: { bindings: config?.targets ?? {}, source: configFile }
   };
 }
 function machineConfigPath(env) {
@@ -15404,7 +15430,7 @@ function readMachineConfig(configFile) {
   if (!newer) {
     assertKnownKeys(
       parsed,
-      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets"],
       configFile
     );
   }
@@ -15422,6 +15448,7 @@ function readMachineConfig(configFile) {
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
+  validateTargets(parsed, configFile);
   return parsed;
 }
 function validateSection(root, key, knownKeys, configFile, validate) {
@@ -15522,6 +15549,65 @@ function validateOpenCodeModelDeclaration(key, declaration, configFile) {
   if (variants !== void 0) {
     if (!Array.isArray(variants) || variants.some((variant) => typeof variant !== "string" || variant.trim().length === 0) || new Set(variants).size !== variants.length) {
       throw fileValueError(configFile, `${qualified}.variants`, "must be an array of distinct non-empty strings");
+    }
+  }
+}
+function validateTargets(root, configFile) {
+  const section = root.targets;
+  if (section === void 0) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "targets", "must be a JSON object of target names to { engine, model?, fallback? } bindings");
+  }
+  for (const [name, binding] of Object.entries(section)) {
+    if (name.trim().length === 0) {
+      throw fileValueError(configFile, "targets", "target names must be non-empty");
+    }
+    const qualified = `targets.${name}`;
+    if (!isObject(binding) || Array.isArray(binding)) {
+      throw fileValueError(configFile, qualified, "must be a JSON object naming engine, and optionally model and fallback");
+    }
+    assertKnownKeys(binding, ["engine", "model", "fallback"], configFile, qualified);
+    if (!ENGINES.includes(binding.engine)) {
+      throw fileValueError(
+        configFile,
+        `${qualified}.engine`,
+        `target ${JSON.stringify(name)} is bound to unknown engine ${JSON.stringify(binding.engine)}; expected one of ${ENGINES.join(" | ")}`
+      );
+    }
+    if (binding.model !== void 0 && (typeof binding.model !== "string" || binding.model.trim().length === 0)) {
+      throw fileValueError(configFile, `${qualified}.model`, "must be a non-empty string");
+    }
+    try {
+      assertValidFallbackChain(binding.fallback);
+    } catch (error) {
+      if (error instanceof AgentOptionRejectedError) {
+        throw fileValueError(configFile, `${qualified}.fallback`, error.message);
+      }
+      throw error;
+    }
+    for (const [index, entry] of (binding.fallback ?? []).entries()) {
+      if (entry.target === void 0) continue;
+      const written = entry;
+      if (written.engine !== void 0 || written.model !== void 0) {
+        throw fileValueError(
+          configFile,
+          `${qualified}.fallback`,
+          `entry ${index} names target ${JSON.stringify(entry.target)} beside a literal engine or model; an entry names one or the other`
+        );
+      }
+      const named = Object.hasOwn(section, entry.target) ? section[entry.target] : void 0;
+      if (named === void 0) {
+        throw fileValueError(configFile, `${qualified}.fallback`, `entry ${index} names target ${JSON.stringify(entry.target)}, which this file does not bind`);
+      }
+      if (isObject(named) && named.engine === "opencode") {
+        throw fileValueError(
+          configFile,
+          `${qualified}.fallback`,
+          `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
+        );
+      }
     }
   }
 }
@@ -16066,11 +16152,31 @@ function addProviderCost(target, event) {
 var execFileAsync = promisify(execFile);
 var SCHEMA_VERSION = 6;
 var MANIFEST_PATH = "manifest.json";
+function namedTargetsRecord(targets) {
+  if (targets === void 0) {
+    return { source: null, bindings: {} };
+  }
+  return {
+    source: targets.source,
+    bindings: Object.fromEntries(
+      Object.entries(targets.bindings).map(([name, binding]) => [
+        name,
+        {
+          engine: binding.engine,
+          model: binding.model ?? null,
+          fallback: binding.fallback === void 0 ? null : binding.fallback.map((entry) => ({ ...entry }))
+        }
+      ])
+    )
+  };
+}
 function abandonedAttemptEntry(live) {
   return {
     attempt: live.attempt,
     status: "abandoned",
     target: { engine: live.target.engine, model: live.target.model },
+    // A live entry written before attempts named their target has none.
+    named_target: live.named_target ?? null,
     failure: null,
     classification: null,
     chain_decision: null,
@@ -16171,6 +16277,7 @@ var RunRecordWriter = class _RunRecordWriter {
       },
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
+      named_targets: namedTargetsRecord(options.namedTargets),
       git: {
         start: gitStart,
         end: null
@@ -16387,6 +16494,7 @@ var RunRecordWriter = class _RunRecordWriter {
         started_at: start.startedAt,
         transcript: null,
         target: { engine: start.target.engine, model: start.target.model },
+        named_target: start.namedTarget,
         resolved_model: start.identity.resolvedModel,
         resolved_effort: start.identity.resolvedEffort
       });
@@ -16583,6 +16691,7 @@ var RunRecordWriter = class _RunRecordWriter {
       effort: record.effort,
       fallback: record.fallback,
       fallback_source: { ...record.fallbackSource },
+      named_target: record.namedTarget === null ? null : { ...record.namedTarget },
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
@@ -16624,6 +16733,7 @@ var RunRecordWriter = class _RunRecordWriter {
         attempt: attempt.attempt,
         status: attempt.status,
         target: attempt.target,
+        named_target: attempt.namedTarget,
         failure: attempt.failure,
         classification: attempt.classification,
         chain_decision: attempt.chainDecision,
@@ -18808,6 +18918,117 @@ function attributeMergedChain(merged, callFallback, engine) {
     return handOffFallbackSource(merged, { kind: "defaults", engine });
   }
   return handOffFallbackSource(merged, { kind: "none" });
+}
+
+// src/option-overrides.ts
+function withOptionOverrides(options, overrides) {
+  return new Proxy({}, {
+    get(_target, property, receiver) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) ? overrides[property] : Reflect.get(options, property, receiver);
+    },
+    has(_target, property) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) || Reflect.has(options, property);
+    },
+    ownKeys() {
+      return [.../* @__PURE__ */ new Set([...Reflect.ownKeys(options), ...Object.keys(overrides)])];
+    },
+    getOwnPropertyDescriptor(_target, property) {
+      if (typeof property === "string" && Object.hasOwn(overrides, property)) {
+        return { value: overrides[property], writable: true, enumerable: true, configurable: true };
+      }
+      const descriptor = Reflect.getOwnPropertyDescriptor(options, property);
+      return descriptor === void 0 ? void 0 : { ...descriptor, configurable: true };
+    }
+  });
+}
+
+// src/named-targets.ts
+var resolutions = /* @__PURE__ */ new WeakMap();
+function resolveNamedTarget(targets, options) {
+  const declared = options;
+  if (typeof declared.target !== "string" || declared.target.trim().length === 0) {
+    return options;
+  }
+  const name = declared.target;
+  if (declared.engine !== void 0 || declared.model !== void 0) {
+    const literal2 = declared.engine !== void 0 ? `engine ${JSON.stringify(declared.engine)}` : `model ${JSON.stringify(declared.model)}`;
+    throw new NamedTargetRejectedError(
+      `target ${JSON.stringify(name)} is named beside ${literal2}; a call names a target or a literal engine and model, never both \u2014 ${bindingClause(targets)}`
+    );
+  }
+  const binding = bindingFor(targets, name);
+  const resolved = withOptionOverrides(options, {
+    target: void 0,
+    engine: binding.engine,
+    ...binding.model !== void 0 ? { model: binding.model } : {}
+  });
+  resolutions.set(resolved, {
+    resolution: { name, source: targets.source, engine: binding.engine, model: binding.model ?? null },
+    fallback: binding.fallback
+  });
+  return resolved;
+}
+function withTargetChain(from, to) {
+  const carried = resolutions.get(from);
+  if (carried === void 0) {
+    return to;
+  }
+  let settled = to;
+  if (to.fallback === void 0 && carried.fallback !== void 0) {
+    settled = handOffFallbackSource(
+      withOptionOverrides(to, { fallback: carried.fallback.map((entry) => ({ ...entry })) }),
+      { kind: "target", target: carried.resolution.name }
+    );
+  }
+  resolutions.set(settled, carried);
+  return settled;
+}
+var declaredModels = /* @__PURE__ */ new WeakMap();
+function withDeclaredModels(options, lookup) {
+  declaredModels.set(options, lookup);
+  return options;
+}
+function settleChain(targets, chain, passed) {
+  const declaredModel = declaredModels.get(passed) ?? (() => void 0);
+  return (chain ?? []).map((entry, index) => {
+    if (entry.target === void 0) {
+      return { engine: entry.engine, model: entry.model, effort: entry.effort, namedTarget: null };
+    }
+    const written = entry;
+    if (written.engine !== void 0 || written.model !== void 0) {
+      const literal2 = written.engine !== void 0 ? `engine ${JSON.stringify(written.engine)}` : `model ${JSON.stringify(written.model)}`;
+      throw new NamedTargetRejectedError(
+        `fallback entry ${index} names target ${JSON.stringify(entry.target)} beside ${literal2}; an entry names a target or a literal engine and model, never both \u2014 ${bindingClause(targets)}`
+      );
+    }
+    const binding = bindingFor(targets, entry.target, `fallback entry ${index}: `);
+    if (binding.engine === "opencode") {
+      throw new FallbackTargetRejectedError(
+        `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
+      );
+    }
+    return {
+      engine: binding.engine,
+      model: binding.model ?? declaredModel(binding.engine),
+      effort: entry.effort,
+      namedTarget: entry.target
+    };
+  });
+}
+function namedTargetResolutionOf(options) {
+  return resolutions.get(options)?.resolution ?? null;
+}
+function bindingClause(targets) {
+  return targets === null ? "and this run has no targets map to bind the name" : `the binding in ${targets.source} supplies the engine and model`;
+}
+function bindingFor(targets, name, context = "") {
+  const binding = targets !== null && Object.hasOwn(targets.bindings, name) ? targets.bindings[name] : void 0;
+  if (binding !== void 0) {
+    return binding;
+  }
+  const bound = targets === null ? [] : Object.keys(targets.bindings);
+  const held = targets === null ? "this run was given no machine configuration targets" : bound.length === 0 ? `${targets.source} binds no targets` : `${targets.source} binds ${bound.map((other) => JSON.stringify(other)).join(", ")}`;
+  throw new NamedTargetRejectedError(`${context}target ${JSON.stringify(name)} is not bound: ${held}`);
 }
 
 // src/progress.ts
@@ -25452,23 +25673,17 @@ var ChainAdvance = class {
   }
   engine;
 };
-function chainTargets(engine, options) {
+function chainTargets(engine, options, chain, namedTarget) {
   return [
-    { entry: -1, engine, model: options.model, effort: options.effort },
-    ...(options.fallback ?? []).map((target, index) => ({
+    { entry: -1, engine, model: options.model, effort: options.effort, namedTarget },
+    ...chain.map((target, index) => ({
       entry: index,
       engine: target.engine,
       model: target.model,
-      effort: target.effort ?? options.effort
+      effort: target.effort ?? options.effort,
+      namedTarget: target.namedTarget
     }))
   ];
-}
-function withoutChain(options) {
-  return new Proxy(options, {
-    get(source, property, receiver) {
-      return property === "fallback" ? void 0 : Reflect.get(source, property, receiver);
-    }
-  });
 }
 function optionsForTarget(options, target) {
   if (target.entry === -1) {
@@ -25478,26 +25693,6 @@ function optionsForTarget(options, target) {
   return new Proxy(options, {
     get(source, property, receiver) {
       return typeof property === "string" && property in overrides ? overrides[property] : Reflect.get(source, property, receiver);
-    }
-  });
-}
-function withOptionOverrides(options, overrides) {
-  return new Proxy({}, {
-    get(_target, property, receiver) {
-      return typeof property === "string" && Object.hasOwn(overrides, property) ? overrides[property] : Reflect.get(options, property, receiver);
-    },
-    has(_target, property) {
-      return typeof property === "string" && Object.hasOwn(overrides, property) || Reflect.has(options, property);
-    },
-    ownKeys() {
-      return [.../* @__PURE__ */ new Set([...Reflect.ownKeys(options), ...Object.keys(overrides)])];
-    },
-    getOwnPropertyDescriptor(_target, property) {
-      if (typeof property === "string" && Object.hasOwn(overrides, property)) {
-        return { value: overrides[property], writable: true, enumerable: true, configurable: true };
-      }
-      const descriptor = Reflect.getOwnPropertyDescriptor(options, property);
-      return descriptor === void 0 ? void 0 : { ...descriptor, configurable: true };
     }
   });
 }
@@ -25615,6 +25810,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #strip;
   /** The run-wide lean start: every worker begins without the operator's interactive context. */
   #lean;
+  /** The machine's named targets, or null where the run was given none (every name is then unbound). */
+  #namedTargets;
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
   #runRecorder = null;
@@ -25675,6 +25872,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new InvalidAgentOptionValueError("lean", options.lean, "a boolean");
     }
     this.#lean = options.lean === true;
+    this.#namedTargets = options.namedTargets ?? null;
     this.budget = new TokenBudget(options.budgetCeilings);
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
@@ -25772,6 +25970,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.holdPollIntervalMs !== void 0 ? { holdPollIntervalMs: options.holdPollIntervalMs } : {},
       ...options.strip !== void 0 ? { strip: options.strip } : {},
       ...options.lean !== void 0 ? { lean: options.lean } : {},
+      ...options.namedTargets !== void 0 ? { namedTargets: options.namedTargets } : {},
       ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : {},
       ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {}
     });
@@ -25870,10 +26069,18 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
-    const passedOptions = options;
+    let passedOptions = options;
     options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
+    if (options.target !== void 0) {
+      const resolved = this.resolveNamedTarget(options);
+      options = withTargetChain(resolved, resolved);
+      passedOptions = options;
+      assertValidAgentOptions(options);
+    }
     const fallbackSource = fallbackSourceOf(passedOptions, options);
+    const namedTarget = namedTargetResolutionOf(passedOptions);
+    const chain = settleChain(this.#namedTargets, options.fallback, passedOptions);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
     }
@@ -25885,7 +26092,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const stripRoutes = strip.length > 0 ? this.#stripRoutesFor(engine, strip) : null;
     const lean = effectiveLean(this.#lean, options.lean);
     const leanRoute = lean ? resolveLeanStart(engine.name, engine.leanStart) : null;
-    for (const target of options.fallback ?? []) {
+    for (const target of chain) {
       const targetEngine = this.#chainEngineFor(target);
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
@@ -25894,7 +26101,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
-    this.#warnSharedSubstrateFallback(engine.name, options);
+    this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
     if (engine instanceof OpenCodeEngineAdapter) {
       if (options.model === void 0) {
         throw new OpenCodeModelRequiredError(engine.modelRegistry);
@@ -25933,6 +26140,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       prompt,
       { ...dispatchOptions, ...phase !== null ? { phase } : {} },
       fallbackSource,
+      namedTarget,
       stripRoutes,
       leanRoute
     );
@@ -25941,7 +26149,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     try {
       await this.#recordAgentSafely(agentRecord);
       unsettled.stage = "admitting";
-      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
+      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, chain, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
         return identifiedResult(options, output, agentRecord);
       }
@@ -26009,12 +26217,44 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
   }
-  createWorkerSession(options) {
+  /**
+   * Resolve the named target `options` declares against this run's
+   * bindings: a new options object with the binding's engine and its model
+   * where it names one, or `options` unchanged where it names no target.
+   * Refuses, before anything spawns, an unbound name and a target named
+   * beside a literal engine or model. The binding's chain is applied
+   * afterwards by `withTargetChain`, once the call and the script's
+   * `defaults` for the resolved engine have had their say: the workflow
+   * hooks call this before merging `defaults`, and `agent()` and
+   * `createWorkerSession()` for a library caller's options.
+   */
+  resolveNamedTarget(options) {
+    return resolveNamedTarget(this.#namedTargets, options);
+  }
+  /**
+   * Judge a declared chain's named entries against this run's bindings
+   * before anything spawns, as a dispatch settling it would: an unbound
+   * name, a target beside a literal engine or model, and a target bound to
+   * opencode throw. The script runner uses it on `defaults` chains so a
+   * static declaration fails before the body runs.
+   */
+  settleFallbackChain(chain) {
+    settleChain(this.#namedTargets, chain, chain);
+  }
+  createWorkerSession(declared) {
+    let options = declared;
     if (this.#closed) {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
+    if (options.target !== void 0) {
+      const resolved = this.resolveNamedTarget(options);
+      options = withTargetChain(resolved, resolved);
+      assertValidWorkerSessionOptions(options);
+    }
     const fallbackSource = fallbackSourceOf(options, options);
+    const namedTarget = namedTargetResolutionOf(options);
+    const chain = settleChain(this.#namedTargets, options.fallback, options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === void 0) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -26023,7 +26263,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const stripRoutes = strip.length > 0 ? this.#stripRoutesFor(engine, strip) : null;
     const lean = effectiveLean(this.#lean, options.lean);
     const leanRoute = lean ? resolveLeanStart(engine.name, engine.leanStart) : null;
-    for (const target of options.fallback ?? []) {
+    for (const target of chain) {
       const targetEngine = this.#chainEngineFor(target);
       if (targetEngine.createSession === void 0) {
         throw new MultiTurnUnsupportedError(targetEngine.name);
@@ -26035,7 +26275,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
-    this.#warnSharedSubstrateFallback(engine.name, options);
+    this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
     const sessionOptions = strip.length === 0 && !lean ? options : withOptionOverrides(options, { ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} });
     this.#sessionCounter += 1;
     const state = {
@@ -26047,6 +26287,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       stripRoutes,
       leanRoute,
       fallbackSource,
+      namedTarget,
+      chain,
+      servingTarget: namedTarget?.name ?? null,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
@@ -26145,6 +26388,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         prompt,
         recordOptions,
         fallbackSource,
+        state.namedTarget,
         state.stripRoutes,
         state.leanRoute
       );
@@ -26157,7 +26401,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         await this.#recordAgentSafely(agentRecord);
         unsettled.stage = "admitting";
         try {
-          const targets = chainTargets(engine.name, state.turnCount === 0 ? options : withoutChain(options));
+          const targets = chainTargets(engine.name, options, state.turnCount === 0 ? state.chain : [], state.servingTarget);
           const output = await this.#runChained(
             engine,
             targets,
@@ -26193,6 +26437,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   async #runSessionBody(state, prompt, turn, agentId, agentRecord, target, targetEngine, ledger, chainRemains) {
     state.engine = targetEngine;
     state.options = optionsForTarget(state.options, target);
+    state.servingTarget = target.namedTarget;
     state.stalenessThresholdMs = targetEngine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs;
     const options = state.options;
     if (state.engineSession === null) {
@@ -26373,10 +26618,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
   }
-  async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt) {
+  async #runAdmitted(engine, prompt, options, chain, agentId, agentRecord, queuedAt) {
     return this.#runChained(
       engine,
-      chainTargets(engine.name, options),
+      chainTargets(engine.name, options, chain, agentRecord.namedTarget?.name ?? null),
       { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,
@@ -26749,6 +26994,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         attempt: context.attempt,
         startedAt: new Date(startedAt).toISOString(),
         target: { engine: target.engine, model: target.model ?? null },
+        namedTarget: target.namedTarget,
         identity: record === void 0 || record.session === null ? { resolvedModel: null, resolvedEffort: null } : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
       }));
     }
@@ -27544,14 +27790,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return classifyAttemptFailure({ engine, failure, appServerDiagnostic, diagnostics });
   }
   /** A repeated Codex target shares the app-server, even across an intervening engine. */
-  #warnSharedSubstrateFallback(engine, options) {
+  #warnSharedSubstrateFallback(engine, chain, label) {
     let seenCodex = engine === "codex";
-    for (const [entry, target] of (options.fallback ?? []).entries()) {
+    for (const [entry, target] of chain.entries()) {
       if (target.engine !== "codex") continue;
       if (seenCodex) {
         this.#emitEvent({
           method: "codex/sharedSubstrateFallback",
-          params: { entry, label: options.label ?? null },
+          params: { entry, label: label ?? null },
           receivedAt: Date.now()
         });
       }
@@ -27640,7 +27886,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd
     };
   }
-  #newAgentRecord(id, engine, prompt, options, fallbackSource, stripRoutes = null, leanRoute = null) {
+  #newAgentRecord(id, engine, prompt, options, fallbackSource, namedTarget, stripRoutes = null, leanRoute = null) {
     return {
       id,
       engine,
@@ -27654,6 +27900,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       effort: typeof options.effort === "string" ? options.effort : null,
       fallback: options.fallback === void 0 ? null : options.fallback.map((target) => ({ ...target })),
       fallbackSource,
+      namedTarget,
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
@@ -27711,6 +27958,7 @@ function attemptRecord(attempt, target, status, failure, rawOutput, validatedOut
     attempt,
     status,
     target: { engine: target.engine, model: target.model ?? null },
+    namedTarget: target.namedTarget,
     failure,
     classification,
     chainDecision,
@@ -27844,8 +28092,10 @@ function createWorkflowHooks(options) {
   };
   const defaults = options.defaults ?? {};
   const track = (promise) => options.runtime.trackCallPromise !== void 0 ? options.runtime.trackCallPromise(promise) : promise;
+  const declaredModel = (engine) => defaults[engine]?.model;
+  const resolveTarget = (declared) => options.runtime.resolveNamedTarget !== void 0 ? options.runtime.resolveNamedTarget(declared) : declared;
   function agentWithDefaults(prompt, agentOptions) {
-    return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions));
+    return options.runtime.agent(prompt, withDeclaredModels(mergeAgentDefaults(defaults, agentOptions, resolveTarget), declaredModel));
   }
   return {
     agent: agentWithDefaults,
@@ -27854,7 +28104,7 @@ function createWorkflowHooks(options) {
       if (createWorkerSession === void 0) {
         throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
       }
-      return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions));
+      return createWorkerSession.call(options.runtime, withDeclaredModels(mergeSessionDefaults(defaults, sessionOptions, resolveTarget), declaredModel));
     }),
     hold: (holdOptions) => {
       const raiseHold = options.runtime.raiseHold;
@@ -27948,33 +28198,35 @@ async function pipeline(items, stages, log, presentError) {
     })
   );
 }
-function mergeAgentDefaults(defaults, agentOptions) {
+function mergeAgentDefaults(defaults, agentOptions, resolveTarget) {
   assertValidAgentOptions(agentOptions ?? {});
-  const engine = agentOptions?.engine;
+  const declared = resolveTarget(agentOptions ?? {});
+  const engine = declared.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
   if (engine === void 0 || engineDefaults === void 0) {
-    return agentOptions ?? {};
+    return withTargetChain(declared, declared);
   }
   const merged = { ...engineDefaults };
-  for (const [key, value] of Object.entries(agentOptions ?? {})) {
+  for (const [key, value] of Object.entries(declared)) {
     if (value !== void 0) {
       merged[key] = value;
     }
   }
-  return attributeMergedChain(merged, agentOptions?.fallback, engine);
+  return withTargetChain(declared, attributeMergedChain(merged, declared.fallback, engine));
 }
-function mergeSessionDefaults(defaults, sessionOptions) {
-  const engineDefaults = typeof sessionOptions.engine === "string" ? defaults[sessionOptions.engine] : void 0;
+function mergeSessionDefaults(defaults, sessionOptions, resolveTarget) {
+  const declared = resolveTarget(sessionOptions);
+  const engineDefaults = typeof declared.engine === "string" ? defaults[declared.engine] : void 0;
   if (engineDefaults === void 0) {
-    return sessionOptions;
+    return withTargetChain(declared, declared);
   }
   const merged = { ...engineDefaults };
-  for (const [key, value] of Object.entries(sessionOptions)) {
+  for (const [key, value] of Object.entries(declared)) {
     if (value !== void 0) {
       merged[key] = value;
     }
   }
-  return attributeMergedChain(merged, sessionOptions.fallback, sessionOptions.engine);
+  return withTargetChain(declared, attributeMergedChain(merged, declared.fallback, declared.engine));
 }
 function describeWorkerFailure(error) {
   const presented = presentOperationalError(error);
@@ -33930,6 +34182,17 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
+  for (const [engine, block] of Object.entries(defaults ?? {})) {
+    if (block?.fallback === void 0 || options.runtime.settleFallbackChain === void 0) continue;
+    try {
+      options.runtime.settleFallbackChain(block.fallback);
+    } catch (error) {
+      if (error instanceof AgentOptionRejectedError) {
+        throw new WorkflowScriptError(`Workflow defaults.${engine}.fallback: ${error.message}`);
+      }
+      throw error;
+    }
+  }
   const resolvedFilename = path18.resolve(options.filename);
   const cwd = options.cwd ?? path18.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
@@ -34800,6 +35063,7 @@ async function createRuntime2(options = {}) {
 var MAX_JSON_ARGS_DEPTH = 256;
 var AGENT_INVOCATION_OPTIONS = {
   engine: { type: "string" },
+  target: { type: "string" },
   model: { type: "string" },
   effort: { type: "string" },
   label: { type: "string" },
@@ -34871,7 +35135,7 @@ async function runEnsembleCli(argv, options = {}) {
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage(program));
     stdout.write(
-      "\nDispatches one worker on the named engine (--engine codex|claude|opencode) and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure }.\n"
+      "\nDispatches one worker on the named engine (--engine codex|claude|opencode), or\non the engine and model a named target binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure }.\n"
     );
     return 0;
   }
@@ -35054,6 +35318,7 @@ async function runEnsembleCli(argv, options = {}) {
       // The file as resolved from this invocation's env, not process.env:
       // a refusal names the file this run actually read.
       openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
+      namedTargets: ambientSettings.namedTargets,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
@@ -35097,7 +35362,8 @@ async function runEnsembleCli(argv, options = {}) {
         ...callerIdentity !== void 0 ? { callerIdentity } : {},
         concurrency: recordConcurrency(ambientSettings, progress),
         workerScope: ambientSettings.workerScope,
-        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
+        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
+        namedTargets: ambientSettings.namedTargets
       });
       runtime.setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
@@ -35876,10 +36142,11 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     throw new CliUsageError(`${program} agent requires a prompt argument or a non-empty prompt on stdin`);
   }
   const rawEngine = parsed.values.engine;
-  if (rawEngine === void 0) {
-    throw new CliUsageError(`${program} agent requires --engine`);
+  const target = parsed.values.target;
+  if (rawEngine === void 0 && target === void 0) {
+    throw new CliUsageError(`${program} agent requires --engine or --target`);
   }
-  const engine = parseEngineName(rawEngine, "--engine");
+  const engine = rawEngine === void 0 ? void 0 : parseEngineName(rawEngine, "--engine");
   const isolation = parseIsolation(parsed.values.isolation);
   const schema = parsed.values.schema === void 0 ? void 0 : await parseJsonValue(parsed.values.schema, cwd, "--schema");
   if (schema !== void 0) {
@@ -35901,7 +36168,8 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
   const workerScope = parsed.values["worker-scope"] === void 0 ? void 0 : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
   const agentOptions = {
-    engine,
+    ...engine !== void 0 ? { engine } : {},
+    ...target !== void 0 ? { target } : {},
     ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
     ...parsed.values.effort !== void 0 ? { effort: parsed.values.effort } : {},
     ...parsed.values.label !== void 0 ? { label: parsed.values.label } : {},
@@ -36456,7 +36724,7 @@ var AGENT_OPTION_SYNOPSES = [
 function usage(program) {
   const forms = [
     ["[run options]", "<script.js>", "[args...]"],
-    ["agent", "--engine <engine>", "[agent options]", "[prompt]"],
+    ["agent", "--engine <engine>|--target <name>", "[agent options]", "[prompt]"],
     ["workflows"],
     ["holds", "[--json]", "[--scope <scope> | --all]"],
     ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]

@@ -22,6 +22,7 @@ import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
 import { isStatusFileName } from "../../src/status-file.js";
 import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
+import { holdWorkflowDeadline } from "../workflow-deadline-hold.js";
 
 import type { ProgressSnapshot } from "../../src/progress.js";
 
@@ -1981,6 +1982,9 @@ test("CLI --timeout emits completed worker outputs as a partial result", async (
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
+  // The deadline fires once the second worker hangs, so the first has
+  // finished however slowly the host loads the script.
+  const deadline = holdWorkflowDeadline();
 
   const exitCode = await runEnsembleCli([`--timeout=120`, script], {
     cwd: directory,
@@ -1988,11 +1992,11 @@ test("CLI --timeout emits completed worker outputs as a partial result", async (
     stderr,
     createRuntime: async () =>
       new EnsembleRuntime({
-        engines: new EngineRegistry([new HangOnPromptEngine("codex", 4), new HangOnPromptEngine("claude", 4)]),
+        engines: new EngineRegistry([new HangOnPromptEngine("codex", 4, () => deadline.release()), new HangOnPromptEngine("claude", 4)]),
         defaultTurnTimeoutMs: 1_000,
         defaultMaxAttempts: 1
       })
-  });
+  }).finally(() => deadline.restore());
 
   assert.equal(exitCode, 1);
   const envelope = JSON.parse(stdout.text()) as {
@@ -2077,8 +2081,11 @@ test("run endings stop the script after an awaited parallel or pipeline", async 
       `);
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
+      // Either ending lands once the combinator's call hangs.
+      const deadline = holdWorkflowDeadline();
       const engine = new HangOnPromptEngine("codex", 1, () => {
         if (ending === "interrupted") process.emit("SIGINT");
+        else deadline.release();
       });
       const exitCode = await runEnsembleCli(
         ending === "timed-out" ? ["--timeout=120", script] : [script],
@@ -2092,7 +2099,7 @@ test("run endings stop the script after an awaited parallel or pipeline", async 
             defaultMaxAttempts: 1
           })
         }
-      );
+      ).finally(() => deadline.restore());
       assert.equal(exitCode, ending === "interrupted" ? 130 : 1);
       assert.equal(engine.cancelCount, 1);
       assert.equal(JSON.parse(stdout.text()).reason, ending);
@@ -4986,6 +4993,9 @@ for (const [ending, withHold] of [
     let interrupted = false;
     let unsubscribe = () => {};
     const stderr = new CaptureStream();
+    // The deadline lands in the state the ending is meant to interrupt, as
+    // the interrupt does: a worker admitted, and the hold open where there is one.
+    const deadline = holdWorkflowDeadline();
     try {
       await writeFile(script, `export const meta = { name: "status-settlement" };
         agent("hang", { engine: "codex", model: "requested" });
@@ -5000,6 +5010,7 @@ for (const [ending, withHold] of [
             ...options,
             engines: new EngineRegistry([new HangOnPromptEngine("codex", 2, () => {
               if (!withHold && ending === "interrupt") process.emit("SIGINT");
+              if (!withHold && ending === "timeout") deadline.release();
             })]),
             defaultMaxAttempts: 1,
             holdsDir: path.join(directory, "holds"), holdPollIntervalMs: 5
@@ -5010,6 +5021,9 @@ for (const [ending, withHold] of [
             if (withHold && ending === "interrupt" && !interrupted && snapshot.holds.length > 0 && snapshot.totals.active > 0) {
               interrupted = true;
               process.emit("SIGINT");
+            }
+            if (withHold && ending === "timeout" && snapshot.holds.length > 0 && snapshot.totals.active > 0) {
+              deadline.release();
             }
           });
           return runtime;
@@ -5027,6 +5041,7 @@ for (const [ending, withHold] of [
         assert.equal(snapshot.agentCeiling.active, 0);
       }
     } finally {
+      deadline.restore();
       unsubscribe();
       await rm(directory, { recursive: true, force: true });
     }

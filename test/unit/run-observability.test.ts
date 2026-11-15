@@ -10,6 +10,7 @@ import { EngineRegistry } from "../../src/engines.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { rollupViewOfArchivedRecord } from "../../src/run-record.js";
 import { buildCostRollup } from "../../src/cost-rollup.js";
+import { holdWorkflowDeadline } from "../workflow-deadline-hold.js";
 
 import type { EngineAdapter, EngineAttemptResult } from "../../src/engines.js";
 import type { EngineName } from "../../src/types.js";
@@ -35,6 +36,8 @@ function answer(text: string): EngineAttemptResult {
 for (const ending of ["failed", "timed-out", "interrupted"] as const) {
   test(`partial results retain answers settling during ${ending} teardown on every engine`, { timeout: 30_000 }, async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-settling-answers-"));
+    // A timed-out run's deadline lands once every worker has started.
+    const deadline = holdWorkflowDeadline();
     try {
       const stdout = new Capture();
       const stderr = new Capture();
@@ -84,6 +87,7 @@ for (const ending of ["failed", "timed-out", "interrupted"] as const) {
       // The workers cannot answer until close begins. The script's body
       // therefore cannot win the race, regardless of engine scheduling.
       if (ending === "interrupted") process.emit("SIGINT");
+      if (ending === "timed-out") deadline.release();
       const code = await run;
       assert.equal(code, ending === "interrupted" ? 130 : 1, stderr.text);
       const envelope = JSON.parse(stdout.text);
@@ -107,6 +111,7 @@ for (const ending of ["failed", "timed-out", "interrupted"] as const) {
         assert.equal(record.validated_output, completed.output);
       }
     } finally {
+      deadline.restore();
       await rm(directory, { recursive: true, force: true });
     }
   });

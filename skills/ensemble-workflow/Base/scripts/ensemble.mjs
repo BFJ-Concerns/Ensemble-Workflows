@@ -23287,7 +23287,8 @@ var ClaudeEngineInvocation = class {
           }
         }
         if (this.#turn !== "verified") {
-          fromIndex = (await this.#readTranscript(held, context)).entries.length;
+          const before = this.#nativeLifeObserved ? await this.#readTranscript(held, context) : await this.#tryReadTranscript(held, context);
+          fromIndex = before?.entries.length ?? 0;
           this.#requireValve(await this.#controlPlane.tmuxAvailable());
           return await this.#sendTurnInSession(held, fromIndex, context);
         }

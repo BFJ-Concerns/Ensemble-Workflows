@@ -481,7 +481,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
           // fix an answer to a question it was never asked. The high-water
           // mark is read first so a failure past this point attaches only
           // *this* turn's text, never the previous turn's.
-          fromIndex = (await this.#readTranscript(held, context)).entries.length;
+          // A session whose opening was a command that opened a panel has
+          // never written a transcript: its mark is the transcript's start.
+          const before = this.#nativeLifeObserved
+            ? await this.#readTranscript(held, context)
+            : await this.#tryReadTranscript(held, context);
+          fromIndex = before?.entries.length ?? 0;
           this.#requireValve(await this.#controlPlane.tmuxAvailable());
           return await this.#sendTurnInSession(held, fromIndex, context);
         }

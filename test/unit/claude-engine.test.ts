@@ -3623,3 +3623,26 @@ test("a held session's follow-up opening with a command that replaces the sessio
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a held session opened by a panel command, which leaves no transcript, takes its next turn", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-panel-opening-session-"));
+  try {
+    const plane = new CommandPanelPlane(dir, [{}, { assistant: { text: "second answer" } }], false);
+    const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 100, firstLifeTimeoutMs: 600_000 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+    try {
+      const session = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await session.send("/help now"), null);
+      assert.deepEqual((records.at(-1)?.attempts ?? []).map((attempt) => attempt.failure?.kind), ["claude-command-not-skill"]);
+      assert.equal(await session.send("second"), "second answer");
+      assert.equal(plane.dispatchCount, 1);
+      assert.deepEqual(plane.steered, ["second"]);
+      await session.close();
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

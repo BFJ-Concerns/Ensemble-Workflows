@@ -1116,6 +1116,7 @@ on the same target.
 | `claude.blocked` | `unclassified` | The worker stayed blocked awaiting input past the recovery bound |
 | `claude.valve` | `unclassified` | The message was never submitted to the session |
 | `claude.delivery` | `unclassified` | The transcript never showed the session holding the text as sent |
+| `claude.command-not-skill` | `unclassified` | The task opened with a `/<name>` Claude Code took as a command, and no skill by that name ran; *settles* |
 | `claude.transcript` | `unclassified` | The session's transcript could not be found or read |
 | `claude.collection` | `unclassified` | The session settled, but its transcript holds no completed turn or final text to collect |
 | `opencode.run-error` | `unclassified` | `opencode run` exited in error |

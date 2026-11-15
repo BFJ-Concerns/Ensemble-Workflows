@@ -613,6 +613,15 @@ export class ClaudeValveError extends ClaudeWorkerError {}
  */
 export class ClaudeDeliveryError extends ClaudeWorkerError {}
 
+/**
+ * The turn's message opened with a `/<name>` Claude Code took as a command,
+ * and no skill by that name ran: Claude Code knows no such command, or the
+ * name is one of its own built-in commands, which it ran instead of a model
+ * turn. The task never reached the model. Every retry would send the same
+ * opening to the same Claude Code, so the call settles on it.
+ */
+export class ClaudeCommandNotSkillError extends ClaudeWorkerError {}
+
 export class ClaudeTranscriptError extends ClaudeWorkerError {}
 
 /**

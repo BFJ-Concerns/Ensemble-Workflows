@@ -24,6 +24,8 @@ export interface TranscriptEntry {
   isCompactSummary?: boolean;
   origin?: { kind?: unknown };
   message?: TranscriptMessage;
+  /** A `system` row's own text, such as Claude Code's notice of an unknown command. Read by `unrunCommand`. */
+  content?: unknown;
   /** Claude Code's persisted EnterWorktree state, or null after exiting it. */
   worktreeSession?: unknown;
   /**
@@ -159,6 +161,49 @@ export function submissionReceipt(entries: TranscriptEntry[], mark: number, mess
       ? { state: "verified" } : { state: "differing", received };
   }
   return { state: "missing" };
+}
+
+/**
+ * The command a message opens with, when Claude Code reads its opening as
+ * one: a `/`, then a name of the shape Claude Code accepts for a command
+ * (letters, digits, `_`, `:` and `-`, opening with a letter, digit or `_`),
+ * then whitespace or the message's end. Anything else — a path such as
+ * `/etc/hostname`, or `/foo.bar` — Claude Code submits as text. Returned
+ * with its leading `/`, as the transcript names it.
+ */
+export function openingCommand(message: string): string | null {
+  const command = /^(\/[a-zA-Z0-9_][a-zA-Z0-9:_-]*)(?:\s|$)/.exec(message);
+  return command === null ? null : command[1] ?? null;
+}
+
+/**
+ * What Claude Code did with an opening command that ran no skill, read from
+ * the rows written at or after `mark`, as measured on Claude Code 2.1.325:
+ *
+ * - `unknown` — Claude Code has no skill or command by that name. It writes
+ *   a `system` row reading `Unknown command: /<name>` (a suggestion may
+ *   follow) and no user row, so the message never reaches the model.
+ * - `built-in` — the name is one of Claude Code's own commands, which it
+ *   ran in place of a model turn. It records the command as a row opening
+ *   `<command-name>/<name></command-name>`, on a `user` or a `system` row
+ *   by command. A skill's expansion opens `<command-message>` instead, and
+ *   is a receipt (`submissionReceipt`).
+ *
+ * `null` while the transcript shows neither.
+ */
+export function unrunCommand(entries: TranscriptEntry[], mark: number, command: string): "unknown" | "built-in" | null {
+  for (let index = Math.max(0, mark); index < entries.length; index += 1) {
+    const entry = entries[index];
+    const content = entry?.content ?? entry?.message?.content;
+    if (typeof content !== "string") continue;
+    if (entry?.type === "system" && (content === `Unknown command: ${command}` || content.startsWith(`Unknown command: ${command}. `))) {
+      return "unknown";
+    }
+    if ((entry?.type === "system" || entry?.type === "user") && content.startsWith(`<command-name>${command}</command-name>`)) {
+      return "built-in";
+    }
+  }
+  return null;
 }
 
 /** Parse a whole transcript file's text into entries, skipping blank/garbled lines. */

@@ -58,7 +58,9 @@ const SETTLING_FAILURE_KINDS: ReadonlySet<string> = new Set([
   "CodexSchemaSubsetUnsupportedError",
   "effort-rejected",
   // The held worker no longer exists, and a retry would address the same absent session.
-  SESSION_LOST_KIND
+  SESSION_LOST_KIND,
+  // Claude Code ran no skill for the command the task opens with, and a retry sends the same opening.
+  "claude-command-not-skill"
 ]);
 
 /**
@@ -216,6 +218,9 @@ const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
   // Submitted, but the transcript never showed the session holding the text
   // as sent: evidence about the delivery, not about the engine's availability.
   ["claude-delivery-error", { class: "unclassified", rule: "claude.delivery" }],
+  // The task opened with a command Claude Code ran no skill for: the
+  // operator's text named something absent, not the engine unavailable.
+  ["claude-command-not-skill", { class: "unclassified", rule: "claude.command-not-skill" }],
   ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);

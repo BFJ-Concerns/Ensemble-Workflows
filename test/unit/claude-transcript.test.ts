@@ -12,7 +12,9 @@ import {
   parseTranscriptText,
   readTranscript,
   resolvedModelSince,
+  openingCommand,
   submissionReceipt,
+  unrunCommand,
   turnComplete,
   usageSince
 } from "../../src/claude-transcript.js";
@@ -721,4 +723,40 @@ test("submittedUserText reads native typed turns and reconstructs expanded slash
   assert.equal(submittedUserText({ type: "user", isMeta: true, message: { content: message } }), null);
   assert.equal(submittedUserText({ type: "user", isCompactSummary: true, message: { content: message } }), null);
   assert.equal(submittedUserText({ type: "user", message: { content: [{ type: "tool_result", content: message }] } }), null);
+});
+
+test("openingCommand names a leading /word of the shape Claude Code takes as a command, and nothing else", () => {
+  for (const [message, command] of [
+    ["/frobnicate-xyz is not a command.", "/frobnicate-xyz"],
+    ["/frobnicate-xyz", "/frobnicate-xyz"],
+    ["/plugin:skill\nargs", "/plugin:skill"],
+    ["/_private_2 x", "/_private_2"],
+    ["/etc/hostname is a file on this machine.", null],
+    ["/foo.bar is a word.", null],
+    ["/-dash x", null],
+    ["/ space", null],
+    [" /leading-space x", null],
+    ["no slash", null]
+  ] as const) {
+    assert.equal(openingCommand(message), command, message);
+  }
+});
+
+test("unrunCommand reads Claude Code's account of an opening command that ran no skill, from the mark on", () => {
+  const unknown = { type: "system", subtype: "informational", content: "Unknown command: /frobnicate-xyz" };
+  const suggested = { type: "system", subtype: "informational", content: "Unknown command: /revie. Did you mean /review?" };
+  const userBuiltIn = { type: "user", message: { role: "user", content: "<command-name>/resume</command-name>\n  <command-message>resume</command-message>" } };
+  const systemBuiltIn = { type: "system", subtype: "local_command", content: "<command-name>/config</command-name>\n  <command-args>x</command-args>" };
+  const skill = { type: "user", message: { role: "user", content: "<command-message>review</command-message>\n<command-name>/review</command-name>" } };
+  assert.equal(unrunCommand([unknown], 0, "/frobnicate-xyz"), "unknown");
+  assert.equal(unrunCommand([suggested], 0, "/revie"), "unknown");
+  assert.equal(unrunCommand([userBuiltIn], 0, "/resume"), "built-in");
+  assert.equal(unrunCommand([systemBuiltIn], 0, "/config"), "built-in");
+  // Another command's notice, an expanded skill, or a notice before the mark says nothing of this one.
+  assert.equal(unrunCommand([unknown], 0, "/frobnicate"), null);
+  assert.equal(unrunCommand([{ ...unknown, content: "Unknown command: /frobnicate-xyzz" }], 0, "/frobnicate-xyz"), null);
+  assert.equal(unrunCommand([skill], 0, "/review"), null);
+  assert.equal(unrunCommand([unknown, skill], 1, "/frobnicate-xyz"), null);
+  // A model's quoted text is not Claude Code's notice.
+  assert.equal(unrunCommand([{ type: "assistant", message: { role: "assistant", content: "Unknown command: /frobnicate-xyz" } }], 0, "/frobnicate-xyz"), null);
 });

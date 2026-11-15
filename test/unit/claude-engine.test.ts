@@ -98,6 +98,7 @@ class FakeControlPlane implements ClaudeControlPlane {
   #refuseDispatch: string | undefined;
   #registrationTimeout: string | undefined;
   #openingArrival: (sent: string) => string | null;
+  #submissionRows: ((sent: string) => string[] | undefined) | undefined;
   #steered = false;
 
   #sessionSeq = 0;
@@ -122,6 +123,7 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#refuseDispatch = options.refuseDispatch;
     this.#registrationTimeout = options.registrationTimeout;
     this.#openingArrival = options.openingArrival ?? ((sent) => sent);
+    this.#submissionRows = options.submissionRows;
   }
 
   /** A probe session offers the fixed surface minus whatever its settings deny. */
@@ -152,8 +154,9 @@ class FakeControlPlane implements ClaudeControlPlane {
     // A new session's transcript opens with its own record of the prompt it
     // was launched with — the opening's receipt — and then takes the first
     // scripted turn.
+    const rows = this.#submissionRows?.(options.prompt);
     const arrived = this.#openingArrival(options.prompt);
-    await writeFile(this.#path, arrived === null ? "" : `${submissionRow(arrived)}\n`);
+    await writeFile(this.#path, rows !== undefined ? rows.map((row) => `${row}\n`).join("") : arrived === null ? "" : `${submissionRow(arrived)}\n`);
     await this.#consume();
     this.#dispatchGate?.arrived();
     await this.#dispatchGate?.release;
@@ -194,7 +197,8 @@ class FakeControlPlane implements ClaudeControlPlane {
       // The session records what it received as its own user row — the
       // receipt the engine reads — then takes the next scripted turn.
       if (this.#path !== null) {
-        await appendFile(this.#path, `${submissionRow(message)}\n`);
+        const rows = this.#submissionRows?.(message) ?? [submissionRow(message)];
+        await appendFile(this.#path, rows.map((row) => `${row}\n`).join(""));
       }
       await this.#consume();
     }
@@ -247,6 +251,12 @@ interface FakeControlPlaneOptions {
    * records no submission at all.
    */
   openingArrival?: (sent: string) => string | null;
+  /**
+   * The raw rows a session writes for a submission, launched or steered, in
+   * place of its user row: how Claude Code records a message it took as a
+   * command. `undefined` for a submission it records as usual.
+   */
+  submissionRows?: (sent: string) => string[] | undefined;
   steerSucceeds?: boolean;
   steerConsumesTurn?: boolean;
   dispatchGate?: DispatchGate;
@@ -3361,3 +3371,297 @@ for (const [altered, lateCorrection] of [[true, false], [true, true], [false, fa
     } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
   });
 }
+
+/**
+ * The rows Claude Code 2.1.325 writes for a message whose opening command
+ * runs no skill, measured live on 2026-11-15: an unknown name, a built-in
+ * command recorded as a user row (`/resume`), and one recorded as a system
+ * row (`/config`). None is a receipt for the message.
+ */
+const COMMAND_ROWS: Record<string, (args: string) => string[]> = {
+  "/frobnicate-xyz": (args) => [
+    JSON.stringify({ type: "system", subtype: "informational", level: "warning", content: "Unknown command: /frobnicate-xyz" }),
+    JSON.stringify({ type: "system", subtype: "informational", level: "warning", content: `Args from unknown skill: ${args}` })
+  ],
+  "/revie": (args) => [
+    JSON.stringify({ type: "system", subtype: "informational", level: "warning", content: "Unknown command: /revie. Did you mean /review?" }),
+    JSON.stringify({ type: "system", subtype: "informational", level: "warning", content: `Args from unknown skill: ${args}` })
+  ],
+  "/resume": (args) => [
+    JSON.stringify({ type: "user", isMeta: true, message: { role: "user", content: "<local-command-caveat>The command below was run directly in Claude Code.</local-command-caveat>" } }),
+    JSON.stringify({ type: "user", message: { role: "user", content: `<command-name>/resume</command-name>\n            <command-message>resume</command-message>\n            <command-args>${args}</command-args>` } }),
+    JSON.stringify({ type: "user", message: { role: "user", content: "<local-command-stdout>Session was not found.</local-command-stdout>" } })
+  ],
+  "/config": (args) => [
+    JSON.stringify({ type: "system", subtype: "local_command", content: `<command-name>/config</command-name>\n            <command-message>config</command-message>\n            <command-args>${args}</command-args>` }),
+    JSON.stringify({ type: "system", subtype: "local_command", content: "<local-command-stdout>Expected key=value.</local-command-stdout>" })
+  ]
+};
+
+/** Claude Code's rows for `sent` when it opens with one of `COMMAND_ROWS`' commands; otherwise its ordinary record. */
+function commandRows(sent: string): string[] | undefined {
+  const command = /^(\/\S+)\s*/.exec(sent);
+  const rows = command === null ? undefined : COMMAND_ROWS[command[1]!];
+  return rows?.(sent.slice(command![0].length));
+}
+
+for (const [command, ran] of [
+  ["/frobnicate-xyz", /Claude Code knows no skill or command named \/frobnicate-xyz where the worker runs/],
+  ["/revie", /Claude Code knows no skill or command named \/revie where the worker runs/],
+  ["/resume", /\/resume is one of Claude Code's built-in commands/],
+  ["/config", /\/config is one of Claude Code's built-in commands/]
+] as const) {
+  test(`a task opening with ${command}, which runs no skill, fails at once naming it and is not retried`, async () => {
+    await withControlPlane([{ assistant: { text: "never written" } }], async (controlPlane) => {
+      // The receipt deadline is far beyond the test's own: the failure
+      // must come from the transcript's account of the command, not from
+      // waiting for a receipt that never comes.
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 3, receiptTimeoutMs: 600_000 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+      try {
+        const started = Date.now();
+        assert.equal(await runtime.agent(`${command} is not a command. Reply with exactly the word OK.`, { engine: "claude" }), null);
+        assert.ok(Date.now() - started < 10_000);
+        assert.equal(controlPlane.dispatchCount, 1);
+        const attempts = records.at(-1)?.attempts ?? [];
+        assert.equal(attempts.length, 1);
+        assert.equal(attempts[0]?.failure?.kind, "claude-command-not-skill");
+        assert.deepEqual(attempts[0]?.classification, { class: "unclassified", rule: "claude.command-not-skill" });
+        const message = attempts[0]?.failure?.message ?? "";
+        assert.ok(message.startsWith(`the opening prompt opens with ${command}, which Claude Code took as a command, and no skill named ${command} ran: `));
+        assert.match(message, ran);
+      } finally {
+        await runtime.close();
+      }
+    }, { submissionRows: commandRows });
+  });
+}
+
+test("a task opening with a path reaches the worker as text, though it begins with a slash", async () => {
+  await withControlPlane([{ assistant: { text: "OK" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    try {
+      const task = "/etc/hostname is a file on this machine. Reply with exactly the word OK.";
+      assert.equal(await runtime.agent(task, { engine: "claude" }), "OK");
+      assert.equal(controlPlane.dispatched[0]?.prompt, task);
+    } finally {
+      await runtime.close();
+    }
+  }, { submissionRows: commandRows });
+});
+
+test("a held session's follow-up opening with an unknown command fails that turn alone, and the session takes the next", async () => {
+  await withControlPlane(
+    // The unknown command takes no model turn: the middle script writes nothing.
+    [{ assistant: { text: "first answer" } }, {}, { assistant: { text: "third answer" } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 3, receiptTimeoutMs: 600_000 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+      try {
+        const session = runtime.createWorkerSession({ engine: "claude" });
+        assert.equal(await session.send("first"), "first answer");
+        assert.equal(await session.send("/frobnicate-xyz now"), null);
+        const failed = records.at(-1)?.attempts ?? [];
+        assert.deepEqual(failed.map((attempt) => attempt.failure?.kind), ["claude-command-not-skill"]);
+        assert.ok(failed[0]?.failure?.message.startsWith("the follow-up turn opens with /frobnicate-xyz"));
+        assert.equal(controlPlane.steerCount, 1);
+        assert.equal(await session.send("third"), "third answer");
+        assert.equal(controlPlane.steered.at(-1), "third");
+        await session.close();
+      } finally {
+        await runtime.close();
+      }
+    },
+    { submissionRows: commandRows }
+  );
+});
+
+/**
+ * A plane whose session takes a command-led message as Claude Code 2.1.325
+ * takes `/help`: it writes nothing, and the roster reports it blocked on
+ * an open dialog. `withTranscript` false leaves the opening with no
+ * transcript at all, as a fresh session's is.
+ */
+class CommandPanelPlane extends FakeControlPlane {
+  panelOpen = false;
+  constructor(dir: string, turns: ScriptedTurn[], readonly withTranscript: boolean, readonly pollDelayMs = 0) {
+    super(dir, turns, { submissionRows: (sent) => (sent.startsWith("/help") ? [] : undefined) });
+  }
+  override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+    this.panelOpen = options.prompt.startsWith("/help");
+    return super.dispatch(options);
+  }
+  override async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
+    this.panelOpen = message.startsWith("/help");
+    return super.steer(handle, message);
+  }
+  override async transcriptPath(): Promise<string | null> {
+    return this.panelOpen && !this.withTranscript ? null : super.transcriptPath();
+  }
+  override async poll(): Promise<ClaudeSessionStatus> {
+    if (!this.panelOpen) return super.poll();
+    // A slow roster: its answer can arrive after the receipt deadline.
+    if (this.pollDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.pollDelayMs));
+    return { status: "waiting", state: "blocked", present: true, waitingFor: "dialog open" };
+  }
+}
+
+for (const [withTranscript, pollDelayMs] of [[false, 0], [true, 0], [false, 150], [true, 150]] as const) {
+  test(`a task opening with a command that opens an interactive panel fails naming it, unretried${withTranscript ? ", its transcript already begun" : ", before any transcript"}${pollDelayMs > 0 ? ", the roster answering after the receipt deadline" : ""}`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-panel-"));
+    try {
+      const plane = new CommandPanelPlane(dir, [{}], withTranscript, pollDelayMs);
+      const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 100, firstLifeTimeoutMs: 600_000, turnTimeoutMs: 600_000 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+      try {
+        assert.equal(await runtime.agent("/help please. Reply OK.", { engine: "claude" }), null);
+        assert.equal(plane.dispatchCount, 1);
+        const attempts = records.at(-1)?.attempts ?? [];
+        assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind), ["claude-command-not-skill"]);
+        assert.match(attempts[0]?.failure?.message ?? "",
+          /^the opening prompt opens with \/help, which Claude Code took as a command, and no skill named \/help ran: \/help is one of Claude Code's built-in commands, which opened an interactive panel/);
+      } finally {
+        await runtime.close();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a held session's follow-up opening with a panel command fails that turn alone, and the session takes the next", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-panel-session-"));
+  try {
+    const plane = new CommandPanelPlane(dir, [{ assistant: { text: "first answer" } }, {}, { assistant: { text: "third answer" } }], true);
+    const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 100 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+    try {
+      const session = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await session.send("first"), "first answer");
+      assert.equal(await session.send("/help now"), null);
+      assert.deepEqual((records.at(-1)?.attempts ?? []).map((attempt) => attempt.failure?.kind), ["claude-command-not-skill"]);
+      assert.equal(await session.send("third"), "third answer");
+      await session.close();
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A plane whose session takes a command-led message as Claude Code 2.1.325
+ * takes `/clear`: the roster moves the row to a new native session, whose
+ * transcript records the command, and the handle's own transcript never
+ * records it (for a fresh session, never appears at all).
+ */
+class ReplacingCommandPlane extends FakeControlPlane {
+  replaced = false;
+  readonly replacingPath: string;
+  constructor(readonly dir: string, turns: ScriptedTurn[]) {
+    super(dir, turns, { submissionRows: (sent) => (sent.startsWith("/clear") ? [] : undefined) });
+    this.replacingPath = path.join(dir, "replacing-session.jsonl");
+  }
+  async #replace(message: string): Promise<void> {
+    if (!message.startsWith("/clear")) return;
+    this.replaced = true;
+    await writeFile(this.replacingPath, [
+      JSON.stringify({ type: "user", isMeta: true, message: { role: "user", content: "<local-command-caveat>The command below was run directly in Claude Code.</local-command-caveat>" } }),
+      JSON.stringify({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>" } }),
+      JSON.stringify({ type: "system", subtype: "local_command", content: "<local-command-stdout></local-command-stdout>" })
+    ].map((row) => `${row}\n`).join(""));
+  }
+  override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+    const handle = await super.dispatch(options);
+    await this.#replace(options.prompt);
+    return handle;
+  }
+  override async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
+    const submitted = await super.steer(handle, message);
+    await this.#replace(message);
+    return submitted;
+  }
+  override async transcriptPath(handle?: ClaudeSessionHandle): Promise<string | null> {
+    if (handle?.sessionId === "replacing-session") return this.replaced ? this.replacingPath : null;
+    // A fresh session replaced by its opening never writes its own transcript.
+    if (this.replaced && this.dispatched.length === 1 && this.steerCount === 0) return null;
+    return super.transcriptPath();
+  }
+  override async poll(): Promise<ClaudeSessionStatus> {
+    const status = await super.poll();
+    return this.replaced && status.present ? { ...status, state: "blocked", sessionId: "replacing-session" } : status;
+  }
+}
+
+test("a task opening with a command that replaces the session fails naming it, unretried", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-replacing-"));
+  try {
+    const plane = new ReplacingCommandPlane(dir, [{}]);
+    const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 600_000, firstLifeTimeoutMs: 600_000, turnTimeoutMs: 600_000 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+    try {
+      assert.equal(await runtime.agent("/clear", { engine: "claude" }), null);
+      assert.equal(plane.dispatchCount, 1);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind), ["claude-command-not-skill"]);
+      assert.match(attempts[0]?.failure?.message ?? "",
+        /^the opening prompt opens with \/clear, which Claude Code took as a command, and no skill named \/clear ran: \/clear is one of Claude Code's built-in commands, which it ran in place of a model turn/);
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a held session's follow-up opening with a command that replaces the session fails at once naming it", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-replacing-session-"));
+  try {
+    const plane = new ReplacingCommandPlane(dir, [{ assistant: { text: "first answer" } }, {}]);
+    const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 600_000 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+    try {
+      const session = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await session.send("first"), "first answer");
+      assert.equal(await session.send("/clear"), null);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind), ["claude-command-not-skill"]);
+      assert.ok(attempts[0]?.failure?.message.startsWith("the follow-up turn opens with /clear"));
+      await session.close();
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a held session opened by a panel command, which leaves no transcript, takes its next turn", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-panel-opening-session-"));
+  try {
+    const plane = new CommandPanelPlane(dir, [{}, { assistant: { text: "second answer" } }], false);
+    const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 100, firstLifeTimeoutMs: 600_000 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+    try {
+      const session = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await session.send("/help now"), null);
+      assert.deepEqual((records.at(-1)?.attempts ?? []).map((attempt) => attempt.failure?.kind), ["claude-command-not-skill"]);
+      assert.equal(await session.send("second"), "second answer");
+      assert.equal(plane.dispatchCount, 1);
+      assert.deepEqual(plane.steered, ["second"]);
+      await session.close();
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

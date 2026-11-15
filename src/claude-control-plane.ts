@@ -237,6 +237,12 @@ export interface ClaudeSessionStatus {
   state: ClaudeSessionState;
   /** Present on a blocked session when the daemon records what it is waiting for. */
   waitingFor?: string;
+  /**
+   * The native session the roster row now names. It differs from the
+   * handle's once the session has replaced its conversation, as `/clear`
+   * does: Claude Code then writes to that session's transcript.
+   */
+  sessionId?: string;
   /** False once the session has left the roster (exited / removed). */
   present: boolean;
 }
@@ -964,7 +970,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       status: typeof record.status === "string" ? record.status : "unknown",
       state: normaliseState(record.state),
       present: true,
-      ...(waitingFor !== undefined ? { waitingFor } : {})
+      ...(waitingFor !== undefined ? { waitingFor } : {}),
+      ...(typeof record.sessionId === "string" ? { sessionId: record.sessionId } : {})
     };
   }
 
@@ -1047,7 +1054,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // Native input dialogs consume Ctrl+G instead of opening the editor.
       // Decline the request for human input, then wait for the daemon to
       // acknowledge that the dialog has closed before addressing the prompt.
-      if (status.state === "blocked" && status.waitingFor !== undefined && (await this.poll(handle)).waitingFor !== undefined) {
+      // A built-in command's panel (`/help`) opened by an earlier message
+      // is such a dialog too, though the roster then reports the session
+      // `done` rather than `blocked`: the input request is the signal.
+      if (status.waitingFor !== undefined && (await this.poll(handle)).waitingFor !== undefined) {
         const cancelled = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Escape"]);
         if (!cancelled.ok) return refused("tmux send-keys (cancel input)", cancelled);
         for (;;) {

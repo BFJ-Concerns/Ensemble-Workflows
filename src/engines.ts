@@ -122,6 +122,7 @@ export interface EngineAttemptFailure {
     | "claude-blocked"
     | "claude-valve-error"
     | "claude-delivery-error"
+    | "claude-command-not-skill"
     | "claude-transcript-error"
     | "claude-collection-error"
     | "claude-worker-diagnostic"

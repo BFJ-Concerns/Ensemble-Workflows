@@ -851,7 +851,7 @@ The fields present throughout a record's lifetime are:
   interchangeable: one says nothing was declared, the other that the
   session's chain no longer applies. A reader that meets an unknown `kind`
   should treat the chain's source as unrecorded. The field joined the agent
-  record within schema version 5, so a version-5 agent record from an older
+  record within schema version 4, so a version-4 agent record from an older
   Ensemble checkout can lack it; read a missing `fallback_source` as
   unrecorded, never as `none`.
 - `answered_by`: which target answered — `{ entry, engine, model }`, where

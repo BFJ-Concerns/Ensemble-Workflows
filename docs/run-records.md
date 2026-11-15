@@ -594,8 +594,8 @@ families; their versions are listed in [Schema versions](#schema-versions).
   ceilings and whole-run timeout, each as `{ value, layer }`. Both are set by
   flag only, so their layers are `flag` or `default`.
 - `named_targets`: the named targets in force when the run started —
-  `source`, the machine configuration file they are read from (`null` for a
-  library run given none), and `bindings`, each name's
+  `source`, the machine configuration file path or the source supplied by a
+  library caller (`null` for a library run given none), and `bindings`, each name's
   `{ engine, model, fallback }` with `model` and `fallback` `null` where the
   binding names none. A file with no `targets` section records `{}`.
 - `workflow_invocations`: the root workflow and every child it invoked through
@@ -771,10 +771,13 @@ The fields present throughout a record's lifetime are:
   with the script's `defaults` applied.
 - `named_target`: the named target the call asked for, or `null` for a call
   that named its engine directly. Otherwise `{ name, source, engine, model }`:
-  the name, the configuration file whose binding answered, and the binding's
-  engine and model, `model` being `null` where the binding names none (the
-  top-level `model` then shows what the `defaults` block chose, or `null` for
-  the engine's own default).
+  the name, the binding's configuration source, and the binding's engine and
+  model, `model` being `null` where the binding names none. The top-level
+  `model` records the call or turn's requested model, with `defaults` applied,
+  or `null` for the engine's own default. Every turn of a session keeps the
+  target the session was created through in `named_target`; later turns'
+  top-level `model` uses the target that answered the first turn, even when
+  that was a fallback.
 - `resolved_model` / `resolved_effort`: what was actually served, as the
   engine reported it — Codex's `thread/start` answer, or the `model` and
   `effort` fields Claude Code writes on each assistant transcript entry —
@@ -904,7 +907,8 @@ The fields present throughout a record's lifetime are:
   - `named_target`: the name this attempt's target was asked for through —
     the call's named target on the call's own target, the entry's on a named
     fallback entry, and `null` on a literal entry or for a call that named
-    its engine directly.
+    its engine directly. Later session turns keep the answering target's name
+    from the first turn, or `null` if that answer came from a literal entry.
   - `started_at`, `ended_at`, `duration_ms` (the engine's own measurement
     where it reports one, otherwise the attempt's recorded endpoints, so a
     settled attempt never has a `null` duration), and `first_delta_ms`.

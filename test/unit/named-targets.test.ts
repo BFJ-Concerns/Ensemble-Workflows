@@ -5,15 +5,16 @@ import path from "node:path";
 import { Writable } from "node:stream";
 import test from "node:test";
 
+import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { runEnsembleCli } from "../../src/cli.js";
 import { EngineRegistry } from "../../src/engines.js";
 import { NamedTargetRejectedError } from "../../src/errors.js";
 import { createWorkflowHooks } from "../../src/hooks.js";
-import { EnsembleRuntime } from "../../src/runtime.js";
+import { createRuntime, EnsembleRuntime } from "../../src/runtime.js";
 import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
-import type { EngineAttemptResult } from "../../src/engines.js";
+import type { EngineAttemptResult, EngineTurnOptions, EngineWorkerSession } from "../../src/engines.js";
 import type { WorkflowDefaults } from "../../src/hooks.js";
 import type { NamedTargetBinding, NamedTargets } from "../../src/named-targets.js";
 import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
@@ -303,22 +304,68 @@ test("a literal call carries no named target on its record or attempts", async (
   }
 });
 
-test("a session names a target as agent() does, resolving it before creation", async () => {
-  const { runtime, records } = recordingRuntime({ reviewer: { engine: "claude", model: "claude-opus-5-5" } });
-  try {
-    // The chain fakes hold no sessions, so creation refuses on the engine
-    // the name resolved to: the resolution is what is asserted.
-    // Both calls are typed: a target-only session compiles against the
-    // public signatures of the hook and of the runtime.
-    const declared: WorkerSessionOptions = { target: "reviewer", label: "held" };
-    for (const create of [() => hooksFor(runtime).session(declared), () => runtime.createWorkerSession({ target: "reviewer" })]) {
-      assert.throws(create, (error: Error) => error.name === "MultiTurnUnsupportedError" && error.message.includes("claude"));
-    }
-    assert.deepEqual(records, []);
-  } finally {
-    await runtime.close();
+/** Held turns consume the same scripted results as one-shot calls. */
+class TargetSessionEngine extends ChainEngine {
+  createSession(options: EngineTurnOptions): EngineWorkerSession {
+    return {
+      beginTurn: (prompt) => this.createInvocation(prompt, options),
+      close: async () => {}
+    };
   }
-});
+}
+
+for (const fallback of [false, true]) {
+  test(`a target session keeps defaults and per-turn target records${fallback ? " after its binding's first-turn fallback" : " without fallback"}`, async () => {
+    const claude = new TargetSessionEngine("claude", fallback
+      ? [claudeRefusal(429, "rate_limit_error")]
+      : [answer("first"), claudeRefusal(429, "rate_limit_error"), answer("third")]);
+    const codex = new TargetSessionEngine("codex", [answer("first"), async () => {
+      throw appServerErrorFromPayload("turn notification", { code: "usageLimitExceeded", message: "usage limit exceeded" });
+    }, answer("third")]);
+    const records: RuntimeAgentRecord[] = [];
+    const chain = [{ target: "backup" }];
+    const runtime = new EnsembleRuntime({
+      engines: new EngineRegistry([claude, codex]),
+      cwd: "/fake/repo",
+      defaultMaxAttempts: 1,
+      namedTargets: { bindings: { reviewer: { engine: "claude", fallback: chain }, backup: { engine: "codex" } }, source: SOURCE }
+    });
+    runtime.setRunRecorder({
+      recordAttemptStart: async () => {},
+      recordAttemptEnd: async () => {},
+      recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+    } as unknown as RunRecordWriter);
+    const declared: WorkerSessionOptions = { target: "reviewer", label: "held" };
+    const session = hooksFor(runtime, {
+      claude: { model: "primary-default", effort: "high" },
+      codex: { model: "backup-default" }
+    }).session(declared);
+    try {
+      assert.equal(await session.send("first turn"), "first");
+      assert.equal(await session.send("second turn"), null);
+      assert.equal(await session.send("third turn"), "third");
+      const turns = [1, 2, 3].map((turn) => records.findLast((record) => record.session?.turn === turn && record.status !== "in-progress")!);
+      assert.deepEqual(turns.map((record) => record.status), ["complete", "failed", "complete"]);
+      assert.equal(turns[1]!.attempts.length, 1);
+      assert.equal(turns[1]!.attempts[0]!.classification?.class, "availability");
+      assert.equal(turns[1]!.attempts[0]!.chainDecision, null);
+      assert.deepEqual(turns.map((record) => record.namedTarget), Array.from({ length: 3 }, () => ({ name: "reviewer", source: SOURCE, engine: "claude", model: null })));
+      assert.deepEqual(turns.map((record) => record.model), fallback
+        ? ["primary-default", "backup-default", "backup-default"]
+        : ["primary-default", "primary-default", "primary-default"]);
+      assert.deepEqual(turns.map((record) => record.fallback), [chain, null, null]);
+      assert.deepEqual(turns[0]!.fallbackSource, { kind: "target", target: "reviewer" });
+      assert.deepEqual(turns.map((record) => record.attempts.map((attempt) => attempt.namedTarget)), fallback
+        ? [["reviewer", "backup"], ["backup"], ["backup"]]
+        : [["reviewer"], ["reviewer"], ["reviewer"]]);
+      assert.deepEqual(claude.dispatches.map(({ model, effort }) => ({ model, effort })), Array.from({ length: fallback ? 1 : 3 }, () => ({ model: "primary-default", effort: "high" })));
+      assert.deepEqual(codex.dispatches.map(({ model }) => model), fallback ? ["backup-default", "backup-default", "backup-default"] : []);
+    } finally {
+      await session.close();
+      await runtime.close();
+    }
+  });
+}
 
 test("named-target mistakes are refused before any worker spawns, naming the name and the file", async () => {
   const cases: Array<{ bindings: Record<string, NamedTargetBinding> | null; options: Record<string, unknown>; pattern: RegExp }> = [
@@ -372,7 +419,7 @@ test("a malformed target option is refused by the option validation", async () =
   }
 });
 
-test("the machine configuration's targets section binds names, refusing unknown engines and malformed bindings", async () => {
+test("machine and library targets share validation before workers start", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-named-targets-"));
   const configHome = path.join(directory, "config");
   const configFile = path.join(configHome, "ensemble", "config.json");
@@ -415,6 +462,16 @@ test("the machine configuration's targets section binds names, refusing unknown 
     ];
     for (const entry of refusals) {
       await assert.rejects(resolve({ schema_version: 1, targets: entry.targets }), entry.pattern);
+      const namedTargets = { bindings: entry.targets, source: configFile } as NamedTargets;
+      const engine = new ChainEngine("codex", [answer("unexpected dispatch")]);
+      assert.throws(() => new EnsembleRuntime({
+        engines: new EngineRegistry([engine]), defaultMaxAttempts: 1, namedTargets
+      }), entry.pattern);
+      await assert.rejects(async () => {
+        const runtime = await createRuntime({ namedTargets });
+        await runtime.close();
+      }, entry.pattern);
+      assert.equal(engine.dispatches.length, 0);
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

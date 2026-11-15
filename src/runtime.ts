@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { validateNamedTargetBindings } from "./ambient-settings.js";
 import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
@@ -599,6 +600,9 @@ export class EnsembleRuntime {
       throw new InvalidAgentOptionValueError("lean", options.lean, "a boolean");
     }
     this.#lean = options.lean === true;
+    if (options.namedTargets !== undefined) {
+      validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
+    }
     this.#namedTargets = options.namedTargets ?? null;
     this.budget = new TokenBudget(options.budgetCeilings);
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
@@ -665,6 +669,9 @@ export class EnsembleRuntime {
   }
 
   static async create(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
+    if (options.namedTargets !== undefined) {
+      validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
+    }
     let runtime: EnsembleRuntime | null = null;
     const cwd = options.cwd ?? process.cwd();
     // Judged before any engine substrate is built, and resolved here for

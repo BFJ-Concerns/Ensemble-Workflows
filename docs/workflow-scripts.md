@@ -202,9 +202,12 @@ for Claude. An unbound `target` answers `bound: false` where the call itself
 would throw. Any other option the call would refuse before spawning — a
 `target` beside an `engine` or `model`, a missing or unknown engine, an
 opencode call with no model, a fallback entry naming an unbound target, a
-`strip` or `lean` a target cannot honour — throws the same error from the
+`strip` or `lean` a target cannot honour, a schema that cannot compile, or
+a `cwd` that is not an existing directory — throws the same error from the
 lookup, judged on the whole fallback chain in force as well as the first
-target.
+target. Omitting the options is the same as passing `{}`: it throws the
+missing-engine error. An explicit `cwd` is checked relative to the run
+working directory; the lookup creates no worktree.
 
 ### Script defaults
 

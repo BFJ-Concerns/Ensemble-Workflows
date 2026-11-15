@@ -83,7 +83,7 @@ export interface WorkflowRuntime {
    * fails loud when absent.
    */
   lookupDispatch?: (
-    options: Partial<AgentRequest>,
+    options: Partial<AgentRequest> | undefined,
     applyDefaults: (resolved: Partial<AgentOptions>) => Partial<AgentOptions>
   ) => DispatchLookup;
 }
@@ -143,7 +143,7 @@ export interface WorkflowHooks {
    * `defaults` applied as the call would apply them. An unbound target
    * answers `bound: false`.
    */
-  lookupDispatch: (options: Partial<AgentRequest>) => DispatchLookup;
+  lookupDispatch: (options?: Partial<AgentRequest>) => DispatchLookup;
   budget: Budget;
   worktrees: readonly IsolatedWorktreeRecord[];
   args: unknown;

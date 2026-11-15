@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
-import { MissingEngineError, NamedTargetRejectedError, OpenCodeModelRequiredError } from "../../src/errors.js";
+import { AgentCwdRejectedError, CapabilityStripUnsupportedError, InvalidAgentSchemaError, LeanStartUnsupportedError, MissingEngineError, NamedTargetRejectedError, OpenCodeModelRequiredError } from "../../src/errors.js";
 import { createWorkflowHooks } from "../../src/hooks.js";
 import { modelFamilyOf } from "../../src/model-family.js";
 import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
@@ -13,6 +15,7 @@ import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 import type { EngineAttemptResult } from "../../src/engines.js";
 import type { WorkflowDefaults } from "../../src/hooks.js";
 import type { NamedTargets } from "../../src/named-targets.js";
+import type { AgentOptions } from "../../src/types.js";
 import type { OpenCodeModelRegistryEntry } from "../../src/opencode-model-registry.js";
 
 const SOURCE = "/machine/ensemble/config.json";
@@ -52,7 +55,7 @@ function openCodeRuntime(): EnsembleRuntime {
   const adapter = new OpenCodeEngineAdapter({
     modelRegistry: createOpenCodeModelRegistry(OPENCODE_MODELS),
     runner: {
-      run: async () => ({ exitCode: 0, signal: null, durationMs: 1, stderr: "", stdout: "" }),
+      run: async () => ({ exitCode: 0, signal: null, durationMs: 1, stderr: "", stdout: JSON.stringify({ type: "text", sessionID: "ses_lookup", part: { type: "text", text: "answer" } }) }),
       exportSession: async () => ({ status: "command-failed", exitCode: 1, signal: null, stderr: "no session" })
     }
   });
@@ -213,6 +216,141 @@ test("a workflow script reaches the dispatch lookup as a bound hook", async () =
       ].join("\n")
     });
     assert.deepEqual(result.result, ["claude", false]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("lookup and call refuse omitted options with the same missing-engine error", async () => {
+  const { runtime } = scriptedRuntime(null);
+  try {
+    const hooks = hooksFor(runtime);
+    let refusal: unknown;
+    assert.throws(() => runtime.lookupDispatch(), (error) => {
+      refusal = error;
+      return error instanceof MissingEngineError;
+    });
+    assert.throws(() => hooks.lookupDispatch(), (error) => {
+      assert.deepEqual(error, refusal);
+      return true;
+    });
+    await assert.rejects(Reflect.apply(runtime.agent, runtime, ["go"]), (error) => {
+      assert.deepEqual(error, refusal);
+      return true;
+    });
+    await assert.rejects(Reflect.apply(hooks.agent, undefined, ["go"]), (error) => {
+      assert.deepEqual(error, refusal);
+      return true;
+    });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("lookup refuses malformed schemas and unusable cwd with the call's error and precedence", async () => {
+  const root = await mkdtemp("/mnt/ai-data/scratch/dispatch-lookup-test.");
+  const codex = new ChainEngine("codex", [answer("unused")]);
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([codex]), cwd: root, defaultMaxAttempts: 1 });
+  try {
+    await mkdir(path.join(root, "directory"));
+    await writeFile(path.join(root, "file"), "a file is not a directory");
+    const hooks = hooksFor(runtime);
+    const invalidSchema = { type: "not-a-json-schema-type" };
+    const cases: Array<[Partial<AgentOptions>, typeof InvalidAgentSchemaError | typeof AgentCwdRejectedError]> = [
+      [{ engine: "codex", schema: invalidSchema }, InvalidAgentSchemaError],
+      [{ engine: "codex", schema: { $ref: "#/missing" } }, InvalidAgentSchemaError],
+      [{ engine: "codex", cwd: "missing" }, AgentCwdRejectedError],
+      [{ engine: "codex", cwd: "file" }, AgentCwdRejectedError],
+      // Schema and cwd rejection precede engine and capability selection.
+      [{ engine: "opencode", cwd: "missing", schema: invalidSchema }, InvalidAgentSchemaError],
+      [{ engine: "opencode", cwd: "missing", lean: true }, AgentCwdRejectedError]
+    ];
+    for (const [options, errorType] of cases) {
+      let refusal: unknown;
+      assert.throws(() => hooks.lookupDispatch(options), (error) => {
+        refusal = error;
+        return error instanceof errorType;
+      });
+      assert.throws(() => runtime.lookupDispatch(options), (error) => {
+        assert.ok(error instanceof errorType);
+        assert.equal(error.message, (refusal as Error).message);
+        return true;
+      });
+      await assert.rejects(hooks.agent("go", options), (error) => {
+        assert.ok(error instanceof errorType);
+        assert.equal(error.message, (refusal as Error).message);
+        return true;
+      });
+    }
+    let cwdReads = 0;
+    assert.equal(hooks.lookupDispatch({ engine: "codex", get cwd() {
+      cwdReads++;
+      return cwdReads === 1 ? "directory" : "missing";
+    } }).engine, "codex");
+    assert.equal(cwdReads, 1);
+    assert.equal(hooks.lookupDispatch({ engine: "codex", schema: { type: "string" }, cwd: "directory" }).bound, true);
+    assert.equal(codex.dispatches.length, 0);
+    assert.equal(runtime.progress.snapshot().agents.length, 0);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("lookup refuses strip and lean on the first target and every effective fallback", async () => {
+  const restrictions: Array<Pick<Partial<AgentOptions>, "strip" | "lean">> = [{ strip: ["skills"] }, { lean: true }];
+  for (const restriction of restrictions) {
+    const { runtime, codex, claude } = scriptedRuntime({
+      first: { engine: "claude" },
+      chained: { engine: "codex", fallback: [{ target: "first" }] }
+    });
+    Object.assign(codex, {
+      capabilities: { skills: { route: "absent", detail: "test engine has no skills" } },
+      leanStart: { route: "config", detail: "test engine starts empty" }
+    });
+    try {
+      const errorType = "strip" in restriction ? CapabilityStripUnsupportedError : LeanStartUnsupportedError;
+      const hooks = hooksFor(runtime);
+      const cases: Array<Partial<AgentOptions>> = [
+        { target: "first", ...restriction },
+        { engine: "codex", fallback: [{ engine: "claude", model: "claude-opus-5-5" }], ...restriction },
+        { target: "chained", ...restriction }
+      ];
+      for (const options of cases) {
+        let refusal: unknown;
+        assert.throws(() => hooks.lookupDispatch(options), (error) => {
+          refusal = error;
+          return error instanceof errorType;
+        });
+        await assert.rejects(hooks.agent("go", options), (error) => {
+          assert.ok(error instanceof errorType);
+          assert.equal(error.message, (refusal as Error).message);
+          return true;
+        });
+      }
+      assert.throws(() => hooksFor(runtime, { codex: { fallback: [{ engine: "claude", model: "claude-opus-5-5" }] } })
+        .lookupDispatch({ engine: "codex", ...restriction }), errorType);
+      assert.equal(codex.dispatches.length, 0);
+      assert.equal(claude.dispatches.length, 0);
+    } finally {
+      await runtime.close();
+    }
+  }
+});
+
+test("an identified opencode answer names its registry family, unknown when undeclared", async () => {
+  const runtime = openCodeRuntime();
+  try {
+    const hooks = hooksFor(runtime);
+    for (const [model, servedModel, family] of [
+      ["glm", "provider/glm-5", "glm"],
+      ["provider/glm-5", "provider/glm-5", "glm"],
+      ["unlabelled", "provider/mystery", null]
+    ] as const) {
+      const result = await hooks.agent("go", { engine: "opencode", model, identity: true });
+      assert.equal(result.output, "answer");
+      assert.deepEqual(result.answeredBy, { engine: "opencode", model: servedModel, family });
+    }
   } finally {
     await runtime.close();
   }

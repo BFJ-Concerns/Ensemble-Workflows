@@ -1117,34 +1117,36 @@ export class EnsembleRuntime {
    * option the call itself would refuse before spawning — a target beside a
    * literal engine or model, a missing or unknown engine, an opencode call
    * with no registered model, a fallback chain entry that cannot resolve, a
-   * strip or lean start a target cannot honour — is refused here with the
-   * same error.
+   * strip or lean start a target cannot honour, a schema that cannot
+   * compile, or an unusable cwd — is refused here with the same error.
    */
   lookupDispatch(
-    options: Partial<AgentRequest>,
+    options: Partial<AgentRequest> = {},
     applyDefaults: (resolved: Partial<AgentOptions>) => Partial<AgentOptions> = (resolved) => withTargetChain(resolved, resolved)
   ): DispatchLookup {
+    options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
     const declared = options as { target?: string; engine?: unknown; model?: unknown };
     const name = declared.target ?? null;
     if (name !== null && declared.engine === undefined && declared.model === undefined && !isNamedTargetBound(this.#namedTargets, name)) {
       return { target: name, bound: false, engine: null, model: null, family: null };
     }
-    const resolved = applyDefaults(this.resolveNamedTarget(options) as Partial<AgentOptions>);
+    const resolved = snapshotAgentCwd(applyDefaults(this.resolveNamedTarget(options) as Partial<AgentOptions>));
     assertValidAgentOptions(resolved);
-    const engine = this.#engineFor(resolved.engine);
-    if (engine instanceof OpenCodeEngineAdapter) {
-      if (resolved.model === undefined) {
-        throw new OpenCodeModelRequiredError(engine.modelRegistry);
-      }
-      validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
+    const chain = settleChain(this.#namedTargets, resolved.fallback, resolved);
+    if (resolved.schema !== undefined) {
+      assertCompilableSchema(resolved.schema);
     }
+    if (resolved.cwd !== undefined) {
+      this.#placement.assertUsableCwdSync(resolved);
+    }
+    const engine = this.#engineFor(resolved.engine);
     // The chain in force — the call's, the script's `defaults`, or the
     // binding's — and the strip and lean start, judged on every target as
     // the call judges them before admission.
     const strip = effectiveStrip(this.#strip, resolved.strip);
     const lean = effectiveLean(this.#lean, resolved.lean);
-    const targets = [engine, ...settleChain(this.#namedTargets, resolved.fallback, resolved).map((entry) => this.#chainEngineFor(entry))];
+    const targets = [engine, ...chain.map((entry) => this.#chainEngineFor(entry))];
     for (const target of targets) {
       if (strip.length > 0) {
         resolveStripEnforcement(target.name, target.capabilities, strip);
@@ -1152,6 +1154,12 @@ export class EnsembleRuntime {
       if (lean) {
         resolveLeanStart(target.name, target.leanStart);
       }
+    }
+    if (engine instanceof OpenCodeEngineAdapter) {
+      if (resolved.model === undefined) {
+        throw new OpenCodeModelRequiredError(engine.modelRegistry);
+      }
+      validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
     }
     const model = resolved.model ?? null;
     return { target: name, bound: true, engine: engine.name, model, family: modelFamilyOf(engine.name, model, this.openCodeModelRegistry) };

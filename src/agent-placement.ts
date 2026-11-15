@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -28,16 +29,12 @@ export class AgentPlacementManager {
 
   async assertUsableCwd(options: Pick<Partial<AgentOptions>, "cwd">): Promise<void> {
     const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
-    try {
-      if (!(await stat(requestedCwd)).isDirectory()) {
-        throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`);
-      }
-    } catch (error) {
-      if (error instanceof AgentCwdRejectedError) {
-        throw error;
-      }
-      throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`, { cause: error });
-    }
+    await assertDirectory(requestedCwd, () => stat(requestedCwd));
+  }
+
+  assertUsableCwdSync(options: Pick<Partial<AgentOptions>, "cwd">): void {
+    const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
+    assertDirectory(requestedCwd, () => statSync(requestedCwd));
   }
 
   async open(options: Pick<Partial<AgentOptions>, "cwd" | "isolation">): Promise<AgentPlacement> {
@@ -60,4 +57,28 @@ export class AgentPlacementManager {
 
 export function resolveAgentCwd(baseCwd: string, requestedCwd: string | undefined): string {
   return path.resolve(baseCwd, requestedCwd ?? ".");
+}
+
+function assertDirectory(requestedCwd: string, read: () => { isDirectory(): boolean }): void;
+function assertDirectory(requestedCwd: string, read: () => Promise<{ isDirectory(): boolean }>): Promise<void>;
+function assertDirectory(
+  requestedCwd: string,
+  read: () => { isDirectory(): boolean } | Promise<{ isDirectory(): boolean }>
+): void | Promise<void> {
+  const reject = (cause?: unknown): never => {
+    throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`, { cause });
+  };
+  const check = (stats: { isDirectory(): boolean }): void => {
+    if (!stats.isDirectory()) reject();
+  };
+  let result;
+  try {
+    result = read();
+  } catch (error) {
+    return reject(error);
+  }
+  if (result instanceof Promise) {
+    return result.then(check, reject);
+  }
+  check(result);
 }

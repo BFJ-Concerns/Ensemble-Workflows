@@ -1285,7 +1285,7 @@ test("the retired --fallback-model flag names its script-side replacement, and a
     assert.equal(stdout.text(), "");
     assert.equal(
       stderr.text(),
-      "No run was started and nothing was recorded. --fallback-model was retired; declare a script-side fallback chain in agent() or defaults instead.\n"
+      "No run was started and nothing was recorded. --fallback-model was retired; use --fallback with a JSON fallback chain instead.\n"
     );
     assert.equal(runtimeCreations, 0);
   }
@@ -5057,4 +5057,62 @@ test("CLI explains an explicit relative status path against its calling cwd", as
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("ensemble agent accepts inline and file fallback chains and forwards its own timeout", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-chain-"));
+  try {
+    const chain = [{ engine: "claude", model: "sonnet" }];
+    await writeFile(path.join(directory, "chain.json"), JSON.stringify(chain));
+    for (const fallback of [JSON.stringify(chain), "@chain.json"]) {
+      const engine = new ChainEngine("claude", [claudeRefusal(429, null), async () => turn("recovered")]);
+      const observedTimeouts: Array<number | undefined> = [];
+      const createInvocation = engine.createInvocation.bind(engine);
+      engine.createInvocation = (prompt, options) => {
+        observedTimeouts.push(options.timeoutMs);
+        return createInvocation(prompt, options);
+      };
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exit = await runEnsembleCli([
+        "agent", "--engine=claude", "--model=haiku", "--fallback", fallback,
+        "--timeout-ms=12345", "--timeout=60000", "recover"
+      ], {
+        cwd: directory, stdout, stderr, runRecordDir: null, statusDir: null,
+        createRuntime: async (options) => new EnsembleRuntime({
+          ...options, engines: new EngineRegistry([engine]), defaultMaxAttempts: 1
+        })
+      });
+      assert.equal(exit, 0, stderr.text());
+      assert.equal(stdout.text(), '"recovered"\n');
+      assert.deepEqual(engine.dispatches.map((entry) => entry.model), ["haiku", "sonnet"]);
+      assert.deepEqual(observedTimeouts, [12345, 12345]);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("agent fallback and per-agent timeout flag errors are refused before runtime creation", async () => {
+  for (const flags of [
+    ["--fallback", "{"], ["--fallback", "{}"], ["--fallback", "[]"],
+    ["--fallback", '[{"engine":"claude"}]'],
+    ["--fallback", '[{"target":""}]'],
+    ["--timeout-ms", "0"], ["--timeout-ms", "2147483648"],
+    ["--timeout-ms", "soon"]
+  ]) {
+    const stderr = new CaptureStream();
+    let created = false;
+    const exit = await runEnsembleCli(["agent", "--engine=claude", ...flags, "work"], {
+      stdout: new CaptureStream(), stderr,
+      createRuntime: async () => { created = true; throw new Error("must not create a runtime"); }
+    });
+    assert.equal(exit, 2, stderr.text());
+    assert.equal(created, false);
+    assert.match(stderr.text(), new RegExp(flags[0]!));
+  }
+  const stdout = new CaptureStream();
+  assert.equal(await runEnsembleCli(["agent", "--help"], { stdout }), 0);
+  assert.match(stdout.text(), /--fallback/);
+  assert.match(stdout.text(), /--timeout-ms/);
 });

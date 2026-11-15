@@ -437,7 +437,7 @@ test("a transport error mid-attempt resolves null with the thrown failure's clas
     label: "rider",
     phase: null,
     output: null,
-    failure: { message: "AppServerExitedError: transport exited unexpectedly" }
+    failure: { kind: "AppServerExitedError", message: "transport exited unexpectedly" }
   });
   assert.equal(records.at(-1)?.status, "failed");
   assert.equal(records.at(-1)?.attempts.at(-1)?.failure?.kind, "AppServerExitedError");
@@ -476,7 +476,7 @@ test("a bare text call inside parallel resolves null in its slot, never a thunk 
 
   assert.deepEqual(results, [
     null,
-    { label: "checked", phase: null, output: null, failure: { message: "Error: worker transport died" } },
+    { label: "checked", phase: null, output: null, failure: { kind: "Error", message: "worker transport died" } },
     "answered"
   ]);
   assert.deepEqual(collapses, [], "no thunk collapsed: the failures were values");
@@ -620,12 +620,13 @@ test("an identified schema collapse still carries the worker's identity", async 
     schema,
     label: "verifier",
     identity: true
-  })) as { label: string | null; phase: string | null; output: unknown; failure: { message: string } | null };
+  })) as { label: string | null; phase: string | null; output: unknown; failure: { kind: string; message: string } | null };
   assert.equal(collapsed.label, "verifier");
   assert.equal(collapsed.phase, null);
   assert.equal(collapsed.output, null);
   assert.ok(collapsed.failure !== null, "an exhausted collapse must carry its failure");
   assert.ok(collapsed.failure.message.length > 0);
+  assert.deepEqual(collapsed.failure, runtime.lastAgentRecord()?.attempts.at(-1)?.failure);
 });
 
 test("a non-boolean identity value is rejected before any worker spawns", async () => {
@@ -3303,7 +3304,7 @@ test("a non-Error rejection cannot shed an identified leg's discrimination", asy
     [() => runtime.agent("fail oddly", { engine: "claude", identity: true, label: "verify" })],
     () => undefined
   );
-  const [identified] = results as [{ label: string | null; output: unknown; failure: { message: string } | null }];
+  const [identified] = results as [{ label: string | null; output: unknown; failure: { kind: string; message: string } | null }];
   assert.equal(identified.label, "verify");
   assert.equal(identified.output, null);
   assert.ok(identified.failure !== null, "the wrapped rejection still carries the discrimination");
@@ -3340,7 +3341,7 @@ test("an identified operational failure inside parallel resolves its envelope, n
   );
 
   const [identified, bare] = results as [
-    { label: string | null; phase: string | null; output: unknown; failure: { message: string } | null },
+    { label: string | null; phase: string | null; output: unknown; failure: { kind: string; message: string } | null },
     unknown
   ];
   assert.equal(bare, null);
@@ -4689,7 +4690,7 @@ test("an invocation close failure after a completed correction names the close e
   const notices = chainNotices(runtime);
   assert.deepEqual(await runtime.agent("correct", { engine: "codex", identity: true }), {
     label: null, phase: null, output: null,
-    failure: { message: "Error: invocation close failed" }
+    failure: { kind: "Error", message: "invocation close failed" }
   });
   const settled = records.at(-1)!;
   assert.deepEqual(settled.attempts.map((attempt) => attempt.status), ["failed", "complete"]);
@@ -5481,7 +5482,7 @@ test("a worker failure settled before shutdown keeps its account through invocat
         const output = await worker;
         assert.deepEqual(output, {
           label: null, phase: null, output: null,
-          failure: { message: `${error.name}: ${error.message}` }
+          failure: { kind: error.name, message: error.message }
         });
         const record = runtime.lastAgentRecord()!;
         assert.equal(record.status, error instanceof TurnTimeoutError ? "timed-out" : "failed");

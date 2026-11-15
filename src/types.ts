@@ -202,7 +202,7 @@ export interface IdentifiedAgentResult {
    * tells a failed worker from one that legitimately answered `null`
    * without parsing logs.
    */
-  failure: { message: string } | null;
+  failure: { kind: string; message: string } | null;
 }
 
 /**

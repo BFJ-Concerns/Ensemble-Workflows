@@ -631,7 +631,8 @@ families; their versions are listed in [Schema versions](#schema-versions).
   the map is empty and `null` once the script records a count, including zero.
 - `git`: start and end HEAD, dirty flag, and the archived diff's path when
   tracked files differ (`null` when only untracked files do); all `null`
-  outside a git repository.
+  outside a git repository. These inspections disable git's optional locks,
+  so recording a run does not refresh or lock the repository's index.
 - `environment`: OS architecture, platform and release, Node version, and the
   versions of `claude`, `codex`, `git`, and `opencode` where available.
   The opencode version query uses temporary XDG and scratch directories in

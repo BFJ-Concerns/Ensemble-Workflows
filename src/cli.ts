@@ -7,7 +7,7 @@ import { CALLER_IDENTITY_ENV, RUN_RECORD_DIR_ENV, parseWorkerScopeGrouping, reso
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
-import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
+import { assertValidFallbackChain, MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { describeError, HoldTimeoutError, InvalidAgentSchemaError, PreSpawnAuthorError } from "./errors.js";
 import { answerHold, defaultHoldsDirectory, enumerateHolds, holdListingState, resolveHoldScope } from "./holds.js";
 import { boundedEvidence, presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
@@ -48,6 +48,8 @@ const AGENT_INVOCATION_OPTIONS = {
   isolation: { type: "string" },
   identity: { type: "boolean" },
   schema: { type: "string" },
+  fallback: { type: "string" },
+  "timeout-ms": { type: "string" },
   "max-attempts": { type: "string" },
   strip: { type: "string", multiple: true },
   task: { type: "string" },
@@ -1558,7 +1560,7 @@ async function parseAgentInvocation(
     }
     if (optionName(argument) === "--fallback-model") {
       throw new CliUsageError(
-        "--fallback-model was retired; declare a script-side fallback chain in agent() or defaults instead."
+        "--fallback-model was retired; use --fallback with a JSON fallback chain instead."
       );
     }
   }
@@ -1619,6 +1621,15 @@ async function parseAgentInvocation(
       throw new CliUsageError(`--schema from ${source}: ${error.message}`);
     }
   }
+  const fallback = parsed.values.fallback === undefined
+    ? undefined
+    : await parseJsonValue(parsed.values.fallback, cwd, "--fallback");
+  try {
+    assertValidFallbackChain(fallback);
+  } catch (error) {
+    throw new CliUsageError(`--fallback: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const agentTimeoutMs = parseTimeoutMs(parsed.values["timeout-ms"], "--timeout-ms");
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
   const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
@@ -1639,6 +1650,8 @@ async function parseAgentInvocation(
     ...(isolation !== undefined ? { isolation } : {}),
     ...(parsed.values.identity === true ? { identity: true } : {}),
     ...(schema !== undefined ? { schema } : {}),
+    ...(fallback !== undefined ? { fallback } : {}),
+    ...(agentTimeoutMs !== undefined ? { timeoutMs: agentTimeoutMs } : {}),
     ...(maxAttempts !== undefined ? { maxAttempts } : {}),
     ...(strip !== undefined ? { strip } : {})
   };
@@ -1953,7 +1966,7 @@ async function parseJsonArgs(value: string, cwd: string): Promise<unknown> {
   return parseJsonValue(value, cwd, "--json-args");
 }
 
-async function parseJsonValue(value: string, cwd: string, flagName: "--json-args" | "--schema"): Promise<unknown> {
+async function parseJsonValue(value: string, cwd: string, flagName: "--json-args" | "--schema" | "--fallback"): Promise<unknown> {
   let source = value;
   let sourceDescription = "the argument";
   if (value.startsWith("@")) {
@@ -2065,21 +2078,20 @@ function parseAgentCeiling(value: string | undefined): number | null | undefined
   return ceiling;
 }
 
-// Whole-workflow timeout in milliseconds (the `runWorkflowScript` ceiling),
-// distinct from the per-turn `agent()` timeoutMs set inside a script.
-function parseTimeoutMs(value: string | undefined): number | undefined {
+// Both whole-run and per-agent deadlines use the platform timer bound.
+function parseTimeoutMs(value: string | undefined, flag = "--timeout"): number | undefined {
   if (value === undefined) {
     return undefined;
   }
   const timeoutMs = Number(value);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
-    throw new CliUsageError(`--timeout value must be a positive integer of milliseconds; got ${value}`);
+    throw new CliUsageError(`${flag} value must be a positive integer of milliseconds; got ${value}`);
   }
   // Same 32-bit timer bound the per-agent timeoutMs enforces: above it the
   // platform coerces the delay (~1ms) or throws from Node internals — a limit
   // the author set but did not get, which is the fail-loud invariant's case.
   if (timeoutMs > MAX_TIMER_DELAY_MS) {
-    throw new CliUsageError(`--timeout value must be at most ${MAX_TIMER_DELAY_MS} milliseconds; got ${value}`);
+    throw new CliUsageError(`${flag} value must be at most ${MAX_TIMER_DELAY_MS} milliseconds; got ${value}`);
   }
   return timeoutMs;
 }
@@ -2308,6 +2320,8 @@ const AGENT_OPTION_SYNOPSES: readonly string[] = [
   "--isolation worktree",
   "--identity",
   "--schema '<json>|@file'",
+  "--fallback '<json>|@file'",
+  "--timeout-ms ms",
   "--max-attempts N",
   "--task <identity>",
   "--strip capability",

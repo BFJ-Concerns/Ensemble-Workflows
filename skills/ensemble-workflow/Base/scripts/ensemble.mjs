@@ -25675,7 +25675,7 @@ var ChainAdvance = class {
 };
 function chainTargets(engine, options, chain, namedTarget) {
   return [
-    { entry: -1, engine, model: options.model, effort: options.effort, namedTarget: namedTarget?.name ?? null },
+    { entry: -1, engine, model: options.model, effort: options.effort, namedTarget },
     ...chain.map((target, index) => ({
       entry: index,
       engine: target.engine,
@@ -26289,6 +26289,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       fallbackSource,
       namedTarget,
       chain,
+      servingTarget: namedTarget?.name ?? null,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
@@ -26400,7 +26401,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         await this.#recordAgentSafely(agentRecord);
         unsettled.stage = "admitting";
         try {
-          const targets = chainTargets(engine.name, options, state.turnCount === 0 ? state.chain : [], state.namedTarget);
+          const targets = chainTargets(engine.name, options, state.turnCount === 0 ? state.chain : [], state.servingTarget);
           const output = await this.#runChained(
             engine,
             targets,
@@ -26436,6 +26437,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   async #runSessionBody(state, prompt, turn, agentId, agentRecord, target, targetEngine, ledger, chainRemains) {
     state.engine = targetEngine;
     state.options = optionsForTarget(state.options, target);
+    state.servingTarget = target.namedTarget;
     state.stalenessThresholdMs = targetEngine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs;
     const options = state.options;
     if (state.engineSession === null) {
@@ -26619,7 +26621,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   async #runAdmitted(engine, prompt, options, chain, agentId, agentRecord, queuedAt) {
     return this.#runChained(
       engine,
-      chainTargets(engine.name, options, chain, agentRecord.namedTarget),
+      chainTargets(engine.name, options, chain, agentRecord.namedTarget?.name ?? null),
       { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,

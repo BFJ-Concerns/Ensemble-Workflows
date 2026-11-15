@@ -209,18 +209,18 @@ class ChainAdvance {
 
 /**
  * The call's own target followed by its settled chain, an omitted entry
- * effort taking the call's own. `namedTarget` is the record's resolution of
- * the call's own target, where it named one; each chain entry carries its
- * own.
+ * effort taking the call's own. `namedTarget` is the name the call's own
+ * target was reached through, or null for a literal one; each chain entry
+ * carries its own.
  */
 function chainTargets(
   engine: EngineName,
   options: { model?: string; effort?: string },
   chain: readonly SettledChainEntry[],
-  namedTarget: NamedTargetResolution | null
+  namedTarget: string | null
 ): ChainTarget[] {
   return [
-    { entry: -1, engine, model: options.model, effort: options.effort, namedTarget: namedTarget?.name ?? null },
+    { entry: -1, engine, model: options.model, effort: options.effort, namedTarget },
     ...chain.map((target, index) => ({
       entry: index,
       engine: target.engine,
@@ -375,6 +375,13 @@ interface WorkerSessionState {
   namedTarget: NamedTargetResolution | null;
   /** The creating turn's chain, settled once at creation. */
   chain: SettledChainEntry[];
+  /**
+   * The name the target now serving the session was reached through: the
+   * session's own target until a chain entry answers its creating turn,
+   * then that entry's (null for a literal one). Later turns' attempts carry
+   * it, as they run on that target.
+   */
+  servingTarget: string | null;
   stalenessThresholdMs: number;
   markStaleness: boolean;
   engineSession: EngineWorkerSession | null;
@@ -1130,6 +1137,7 @@ export class EnsembleRuntime {
       fallbackSource,
       namedTarget,
       chain,
+      servingTarget: namedTarget?.name ?? null,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
@@ -1256,7 +1264,7 @@ export class EnsembleRuntime {
           // target answers, the session's engine and model are fixed for
           // its life, so a later turn runs its own target only and an
           // availability failure there fails the turn.
-          const targets = chainTargets(engine.name, options, state.turnCount === 0 ? state.chain : [], state.namedTarget);
+          const targets = chainTargets(engine.name, options, state.turnCount === 0 ? state.chain : [], state.servingTarget);
           const output = await this.#runChained(
             engine,
             targets,
@@ -1315,6 +1323,7 @@ export class EnsembleRuntime {
     // below and the next target re-points the state afresh.
     state.engine = targetEngine;
     state.options = optionsForTarget(state.options, target);
+    state.servingTarget = target.namedTarget;
     state.stalenessThresholdMs =
       targetEngine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs;
     const options = state.options;
@@ -1540,7 +1549,7 @@ export class EnsembleRuntime {
   ): Promise<unknown> {
     return this.#runChained(
       engine,
-      chainTargets(engine.name, options, chain, agentRecord.namedTarget),
+      chainTargets(engine.name, options, chain, agentRecord.namedTarget?.name ?? null),
       { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,

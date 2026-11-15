@@ -23540,16 +23540,17 @@ var ClaudeEngineInvocation = class {
       if (ran !== null && command !== null) {
         return { state: "command-not-skill", command, ran };
       }
+      let status = null;
       if (command !== null && receipt.state === "missing") {
-        const expired = Date.now() >= deadline;
-        const status = await this.#controlPlane.poll(handle);
-        if (dialog.held(status) || expired && status.waitingFor === CLAUDE_COMMAND_DIALOG) {
-          return { state: "command-not-skill", command, ran: "interactive" };
-        }
+        status = await this.#controlPlane.poll(handle);
         const replaced = await this.#commandInReplacingSession(handle, status, command);
         if (replaced !== null) return { state: "command-not-skill", command, ran: replaced };
       }
-      if (receipt.state !== "missing" || Date.now() >= deadline) {
+      const expired = Date.now() >= deadline;
+      if (command !== null && status !== null && (dialog.held(status) || expired && status.waitingFor === CLAUDE_COMMAND_DIALOG)) {
+        return { state: "command-not-skill", command, ran: "interactive" };
+      }
+      if (receipt.state !== "missing" || expired) {
         return receipt;
       }
       await this.#pollDelay();

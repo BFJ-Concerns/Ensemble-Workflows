@@ -796,19 +796,23 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       if (ran !== null && command !== null) {
         return { state: "command-not-skill", command, ran };
       }
+      let status: ClaudeSessionStatus | null = null;
       if (command !== null && receipt.state === "missing") {
-        // Read the clock before the roster: once the receipt deadline has
-        // passed, a dialog still open is the command's whether or not it
-        // has yet been seen for the whole grace period.
-        const expired = Date.now() >= deadline;
-        const status = await this.#controlPlane.poll(handle);
-        if (dialog.held(status) || (expired && status.waitingFor === CLAUDE_COMMAND_DIALOG)) {
-          return { state: "command-not-skill", command, ran: "interactive" };
-        }
+        status = await this.#controlPlane.poll(handle);
         const replaced = await this.#commandInReplacingSession(handle, status, command);
         if (replaced !== null) return { state: "command-not-skill", command, ran: replaced };
       }
-      if (receipt.state !== "missing" || Date.now() >= deadline) {
+      // One reading of the clock, taken after the roster has answered,
+      // decides this pass: once the receipt deadline has passed, a dialog
+      // the roster has just reported open is the command's, whether or not
+      // it has yet been seen for the whole grace period, and however long
+      // the poll took.
+      const expired = Date.now() >= deadline;
+      if (command !== null && status !== null &&
+        (dialog.held(status) || (expired && status.waitingFor === CLAUDE_COMMAND_DIALOG))) {
+        return { state: "command-not-skill", command, ran: "interactive" };
+      }
+      if (receipt.state !== "missing" || expired) {
         return receipt;
       }
       await this.#pollDelay();

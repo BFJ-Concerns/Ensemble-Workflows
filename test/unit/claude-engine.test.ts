@@ -3467,7 +3467,7 @@ test("a held session's follow-up opening with an unknown command fails that turn
  */
 class CommandPanelPlane extends FakeControlPlane {
   panelOpen = false;
-  constructor(dir: string, turns: ScriptedTurn[], readonly withTranscript: boolean) {
+  constructor(dir: string, turns: ScriptedTurn[], readonly withTranscript: boolean, readonly pollDelayMs = 0) {
     super(dir, turns, { submissionRows: (sent) => (sent.startsWith("/help") ? [] : undefined) });
   }
   override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -3482,15 +3482,18 @@ class CommandPanelPlane extends FakeControlPlane {
     return this.panelOpen && !this.withTranscript ? null : super.transcriptPath();
   }
   override async poll(): Promise<ClaudeSessionStatus> {
-    return this.panelOpen ? { status: "waiting", state: "blocked", present: true, waitingFor: "dialog open" } : super.poll();
+    if (!this.panelOpen) return super.poll();
+    // A slow roster: its answer can arrive after the receipt deadline.
+    if (this.pollDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.pollDelayMs));
+    return { status: "waiting", state: "blocked", present: true, waitingFor: "dialog open" };
   }
 }
 
-for (const withTranscript of [false, true]) {
-  test(`a task opening with a command that opens an interactive panel fails naming it, unretried${withTranscript ? ", its transcript already begun" : ", before any transcript"}`, async () => {
+for (const [withTranscript, pollDelayMs] of [[false, 0], [true, 0], [false, 150], [true, 150]] as const) {
+  test(`a task opening with a command that opens an interactive panel fails naming it, unretried${withTranscript ? ", its transcript already begun" : ", before any transcript"}${pollDelayMs > 0 ? ", the roster answering after the receipt deadline" : ""}`, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-panel-"));
     try {
-      const plane = new CommandPanelPlane(dir, [{}], withTranscript);
+      const plane = new CommandPanelPlane(dir, [{}], withTranscript, pollDelayMs);
       const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 100, firstLifeTimeoutMs: 600_000, turnTimeoutMs: 600_000 });
       const records: RuntimeAgentRecord[] = [];
       runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);

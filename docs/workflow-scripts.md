@@ -103,9 +103,13 @@ binding without a model takes the script's `defaults` model for that engine,
 else the engine's own default. Ensemble
 moves the call to the next target when the current one fails for
 **availability**: the allowance is exhausted, the provider is overloaded past
-its own retries, or the engine's process died or never started. Output
-failures (empty, unparseable, or off-schema answers) are retried on the same
-target and never advance the chain.
+its own retries, the engine's process died or never started, or the launch
+environment denied a resource the engine needs. Output failures (empty,
+unparseable, or off-schema answers) are retried on the same target and never
+advance the chain, and neither does any other failure. The run-record
+reference lists every
+[failure classification rule](run-records.md#failure-classification-rules)
+and its class.
 
 - Each step re-dispatches the same prompt, schema, placement, and strip
   settings on the next target, fresh.
@@ -215,11 +219,20 @@ accounts reach the partial envelope and stderr, so the budget refusal stays
 legible beside the failures that advanced the chain.
 
 The run's own ending — an interrupt, the whole-run timeout, the launcher
-closing the run under a leg still in flight — also propagates through
-`parallel()` and `pipeline()` as it does through a bare `await`, so a body
-never resumes past the combinator to run further code (commit, push, write a
-results file) on a run that has already begun ending. Only a worker's own
-failure is a value.
+closing the run under a leg still in flight — propagates through a leg that
+rejects with it. An `agent()` call or session turn the ending cuts short,
+whether queued or running, rejects with the ending, and so does any `agent()`
+call or session turn made after the run began ending. `parallel()` and
+`pipeline()` rethrow that rejection as a bare `await` would, rather than
+collapsing it to `null`, so a body awaiting the combinator does not resume
+past it to run further code (commit, push, write a results file).
+
+The combinator rejects only through such a leg. One whose legs had all
+resolved before the ending, or whose legs catch the ending themselves or do
+no `agent()`, session or `hold()` work, resolves as usual and the body
+resumes. A `hold()` raised after the run began ending is refused with
+`HoldRejectedError`, which propagates through a combinator as the other
+pre-spawn errors do. Only a worker's own failure is a value.
 
 To tell a failed call from one that legitimately answered `null`, pass
 `identity: true`. The call then resolves `{ label, phase, output, failure }`.
@@ -276,7 +289,22 @@ are quoted so `"3"` cannot be mistaken for the number `3`.
 ### `budget`, `worktrees`, and `args`
 
 `budget.spent(engine)` and `budget.remaining(engine)` report per-engine token
-spend; `remaining` is `Infinity` with no ceiling. opencode spend is read from
+spend; `remaining` is `Infinity` with no ceiling. Spend, and so a `--budget`
+ceiling, counts every token class an engine reports, cached input included:
+
+- **Codex** counts the app-server's own `totalTokens` for each usage update:
+  input, which includes cached input, plus output, which includes reasoning.
+- **Claude** counts uncached input, cache reads, cache writes and output,
+  summed over the turn's API calls. Cache reads usually dominate: every call
+  re-reads Claude Code's system prompt and tool definitions, so even a
+  one-line answer from a fresh worker spends tens of thousands of budget
+  tokens.
+- **opencode** counts input, cache reads and writes, output and reasoning,
+  plus any total a step reports without a breakdown.
+
+Set a Claude ceiling with that in mind. The run record's
+[token usage](run-records.md#token-usage-and-cost) shows each class
+separately. opencode spend is read from
 the session export when one can be read, and otherwise from token-bearing step
 events in the output stream. Across a multi-step turn it counts the final
 input and cache-read figures once, plus every output and reasoning delta. A
@@ -564,8 +592,8 @@ cannot pass silently:
   that cannot finish its own cleanup raises a substrate refusal with the
   cause retained; that failed check is not cached as a resource verdict.
 - The run's own ending — an interrupt or a whole-run timeout — which throws
-  through any call it cut short, and through `parallel()` and `pipeline()`
-  around it.
+  through any call or session turn it cut short or that starts after it, and
+  through `parallel()` and `pipeline()` around a leg that rejects with it.
 
 A schema value of JSON `null` that validates is a successful answer, not a
 failure.
@@ -696,14 +724,22 @@ are told apart:
 
 - `claude-valve-error`: the message was never submitted. Nothing reached the
   worker. While the session and valve remain available, the retry sends the
-  same message again in the same session, within the call's `maxAttempts`
-  limit. A one-shot call redispatches its task if the old session is gone or
-  the valve is unavailable; a held session is never restarted.
+  refused message again, unchanged, in the same session, within the call's
+  `maxAttempts` limit: a follow-up turn, a correction or a nudge alike. A
+  correction still describes the failure it was written for, not the valve
+  error. A one-shot call redispatches
+  its task if the old session is gone or the valve is unavailable; a held
+  session is never restarted.
 - `claude-delivery-error`: the message was submitted, but the transcript
   shows the worker received different text, or shows no trace of it within
-  the receipt deadline. The message names the sizes and SHA-256 digests of
-  what was sent and what arrived. A reply to altered text is never returned
-  as the turn's value.
+  the receipt deadline. For different text, the message names the UTF-8 size
+  and SHA-256 digest of what was sent and of what arrived; for no trace, of
+  what was sent alone. A submission that turns up after its turn has
+  settled fails the attempt with a message saying so, naming neither. Once
+  a turn's text has been submitted without a verified receipt, the retry
+  sends it again behind a preface telling the worker that an earlier copy
+  did not arrive as sent and is void. A reply to altered text is never
+  returned as the turn's value.
 
 Ensemble verifies the opening prompt's receipt before nudging a Claude worker.
 For a worker awaiting native input, it cancels the input dialog and waits for
@@ -889,8 +925,9 @@ await builder.close();
 ```
 
 - **Fixed at creation:** `engine` or `target`, `model`, `effort`, `fallback`, `cwd`,
-  `isolation`, `timeoutMs`, `maxAttempts`, `label`, `phase`, `strip`,
-  `stalenessMark`, and `identity`. The fallback chain applies to the first turn
+  `isolation`, `timeoutMs`, `maxAttempts`, `label`, `phase`, `strip`, `lean`,
+  `stalenessMark`, and `identity`. `session()` refuses any other key, `schema`
+  included, before the worker spawns. The fallback chain applies to the first turn
   only: the target that answers it fixes the session's engine and model for its life
   (`handle.engine` reports it), and a later turn's availability failure fails
   that turn. Changing model or effort would invalidate the session's prompt

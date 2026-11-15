@@ -415,9 +415,24 @@ the CLI creates only its automatic data-home directory.
 
 Ensemble can also be used as a library from a source checkout
 (`createRuntime()` and the rest of the API exported by `src/index.ts`). The
-standalone launcher exports nothing. Apart from `holdScope` and
-`workerScope`, which mirror their CLI flags, these options have no flag or
-environment variable:
+standalone launcher exports nothing.
+
+These options mirror a CLI run flag, and take the value that flag sets. The
+library reads no machine configuration for them, and only one environment
+variable: with `holdScope` unset, it applies `ENSEMBLE_HOLD_SCOPE` from its
+own environment.
+
+| Option | CLI flag | Default | Description |
+|---|---|---|---|
+| `budgetCeilings` | `--budget` | Unbounded | Per-engine token budgets, `{ codex?, claude?, opencode? }` |
+| `concurrencyCaps` | `--concurrency` | As in [Defaults](#defaults) | Per-engine concurrency caps, `{ codex?, claude?, opencode? }` |
+| `agentCeiling` | `--agent-ceiling` | Unbounded | Run-wide agent ceiling; `null` leaves it unbounded |
+| `strip` | `--strip` | None | Capabilities stripped from every worker, added to each call's own `strip` |
+| `lean` | `--lean` | `false` | Start every worker without the operator's interactive context; per-call `lean: false` cannot lift it |
+| `holdScope` | `--hold-scope` | `ENSEMBLE_HOLD_SCOPE`, else the shared scope | Hold scope for the runtime's runs |
+| `workerScope` | `--worker-scope` | `worker` | Systemd scope grouping (`worker` or `run`); the library uses the explicit option or its default |
+
+These options have no flag or environment variable:
 
 | Option | Default | Description |
 |---|---|---|
@@ -426,9 +441,6 @@ environment variable:
 | `requestTimeoutMs` | 30 seconds | Codex app-server transport request timeout |
 | `claudeSessionStaleAfterMs` | 60 minutes | When a held Claude session is marked stale (see [Sessions](workflow-scripts.md#multi-turn-sessions)) |
 | `codexSessionStaleAfterMs` | 60 minutes | When a held Codex session is marked stale |
-| `workerScope` | `worker` | Systemd scope grouping (`worker` or `run`); the library uses the explicit option or its default |
-| `holdScope` | None | Hold scope for the runtime's runs; overrides `ENSEMBLE_HOLD_SCOPE` |
-| `lean` | `false` | Start every worker without the operator's interactive context; per-call `lean: false` cannot lift it |
 | `workerEnvironment` | None | Per-engine variables injected above inherited values; pass the resolved `worker_environment` map explicitly |
 | `openCodeModels` | None | The models opencode workers may name, in the registry entry shape; the library reads no machine configuration, so without this option every opencode call is refused |
 | `namedTargets` | None | The names calls may give as `target`: `{ bindings, source }`, where `bindings` is the `targets` map and `source` the file it came from, which every refusal names. Without it, every named target is refused as unbound |

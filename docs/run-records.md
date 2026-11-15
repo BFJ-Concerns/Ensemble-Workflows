@@ -162,8 +162,16 @@ the first snapshot listing the worker; resolved identity names what was
 served. Transcript paths match the running agent record's current attempt:
 archive-relative for Codex, absolute native paths for Claude. Resolve relative paths against archiveDir. A settled Claude record
 archives a copy of the native transcript; the status entry retains its
-live path. Evidence timestamps advance as the engine streams output;
-opencode reports each decoded step, text or tool event as evidence.
+live path. Evidence timestamps advance when output is observed, which each
+engine allows at a different grain. Codex reports each notification of the
+running turn after it starts — streamed text, tool work, usage — as
+evidence, and opencode each decoded step, text or tool event. Claude is read from its transcript, which Claude Code writes one
+completed message part at a time — a block of text or thinking, or a tool
+call — not as tokens stream. Its evidence advances when a transcript poll
+finds a new or changed assistant row for the current turn, so a Claude
+worker writing one long answer shows no new evidence until that answer is
+complete. An unchanged `lastEvidenceAtMs` on a Claude worker does not by
+itself mean the worker has stopped.
 
 A finished worker's state is its disposition, and each disposition has the
 count of the same name (`cut-short` counts under `cutShort`):
@@ -185,8 +193,16 @@ that account, `done` or `failed`. Each worker's state is published when it
 settles and never changes afterwards. Once teardown has settled every worker,
 the snapshot's counts match the completion sentinel's worker tally
 (`cut_short` there, `cutShort` here).
-The library export `workerDisposition` maps an agent record's status and
-termination cause to its disposition.
+The library export `workerDisposition(record, shutdownStatus)` maps a worker
+to its disposition. It takes the runtime's in-memory record shape,
+`{ status, terminationCause }` with `terminationCause` as `{ kind }` or
+`null`, not the archived agent record, which spells the cause
+`termination_cause`. `shutdownStatus` is the status the run is ending with —
+`"failed"`, `"timed-out"` or `"interrupted"`, as the manifest or completion
+sentinel records it — or `null` while the run is not ending. A failed,
+timed-out or interrupted record reads `cut-short` only when its cause's kind
+is `run-<shutdownStatus>`; with `null`, it reads `failed`. A record still
+`in-progress` returns `null`.
 
 Failure is the `{ kind, message }` account the worker's record carries, or
 null when unavailable or successful. A `cut-short` or `unsettled` worker's
@@ -623,7 +639,10 @@ families; their versions are listed in [Schema versions](#schema-versions).
   session's transcripts carry it in `session_id` on Claude and `thread_id`
   on Codex, or `null`), `turns_settled` (how many of the session's turns had
   settled), `turn_in_flight` (the turn then running, or `null` when the
-  session was idle), `reason` (the engine's account), and `at`.
+  session was idle), `reason` (the engine's account), and `at`. The field
+  joined the manifest within schema version 6: an earlier version-6
+  manifest may omit it, and its absence there says nothing about lost
+  sessions.
 - `tallies`: `name -> number`, the counts the script recorded with `tally()`,
   stored verbatim (last write per name wins) and written as each is recorded,
   so a count recorded before the run ended is in the archive whether or not
@@ -944,10 +963,13 @@ The fields present throughout a record's lifetime are:
     running, and could not establish that everything the command had started
     was gone, supplies `diagnostics.unestablishedStops`: one
     `{ owner, reason }` per command, where `owner` names the systemd scope
-    unit or process group and `reason` says what was observed. Either
-    processes there outlived SIGTERM and SIGKILL, or the command was cut
-    short where no scope held it, so a process it had started outside its
-    process group was never visible. The key is absent when the attempt has
+    unit or process group and `reason` says what was observed: for
+    example, processes there outlived SIGTERM and SIGKILL; the systemd
+    manager did not report the scope's processes; the process group's
+    membership could not be read; or the command was cut short where no
+    scope held it, so a process it had started outside its process group
+    was never visible. `reason` is a description, not a fixed vocabulary.
+    The key is absent when the attempt has
     no such stop. It does not change the attempt's `status` or the run's
     outcome. A command the run's own ending cut short is reported by the
     completion sentinel's `teardown_error` instead.
@@ -986,8 +1008,8 @@ The fields present throughout a record's lifetime are:
   diagnostic and add a recovery step to `failure.message`. An explicit
   provider HTTP 401 remains `authentication-failure` when Codex's
   retry-promise bound wraps that diagnostic. `rule` names
-  the classifier rule that matched (`codex.usage-limit`, `claude.rate-limit`,
-  `codex.substrate-dead`, `engine-shutdown`, `run-settlement`, …) and is `null`
+  the classifier rule that matched (see
+  [Failure classification rules](#failure-classification-rules)) and is `null`
   only when no rule recognised the diagnostic — a sign that an engine's error wording is not
   recognised. The raw diagnostic stays in `failure`, `app_server_diagnostic`,
   and `diagnostics`. `engine-shutdown` describes a local engine or session
@@ -1023,6 +1045,55 @@ transcripts are copied from the background session's JSONL before the session
 is removed. opencode
 transcripts keep the `opencode run --format json` event stream plus the
 session export when available.
+
+#### Failure classification rules
+
+Every rule a failed attempt's `classification.rule` can name, with its class.
+Only the `availability` rules advance a fallback chain, and only while a later
+entry remains. A rule marked *settles* ends its call at once, with no retry
+on the same target.
+
+| Rule | Class | Meaning |
+|---|---|---|
+| `output` | `output` | Empty output, unparseable JSON, or an answer that fails its schema |
+| `<engine>.authentication-failure` | `unclassified` | The engine's credentials were rejected |
+| `<engine>.model-not-found` | `unclassified` | The engine does not know the model |
+| `substrate.refused` | `availability` | The launch environment denied a resource the engine needs, before its substrate started |
+| `preflight.resource-denied` | `availability` | The resource preflight found a location the worker needs inaccessible |
+| `session.lost` | `unclassified` | A held session's worker is gone; *settles* |
+| `engine-shutdown` | `unclassified` | A local engine or session close ended the attempt |
+| `run-settlement` | `unclassified` | The run ended under the worker; such an attempt's `chain_decision` is `null` |
+| `codex.usage-limit` | `availability` | Codex reported `usageLimitExceeded` |
+| `codex.rate-limit` | `availability` | Codex reported `rateLimitExceeded`, or `responseTooManyFailedAttempts` with a last status of 429 |
+| `codex.server-overloaded` | `availability` | Codex reported `serverOverloaded` |
+| `codex.provider-unreachable` | `availability` | Codex reported `httpConnectionFailed` or `responseStreamConnectionFailed` |
+| `codex.provider-internal-error` | `availability` | Codex reported `internalServerError`, or `responseTooManyFailedAttempts` with a last status in the 5xx range |
+| `codex.substrate-dead` | `availability` | The app-server exited |
+| `codex.substrate-unstartable` | `availability` | The app-server did not start within its bound |
+| `codex.substrate-refused` | `availability` | The app-server never started, or was already gone, when a thread was asked for |
+| `codex.backpressure` | `availability` | The app-server refused more load |
+| `codex.retry-promise-broken` | `availability` | The provider promised a retry and then stayed silent past the bound |
+| `codex.schema-rejected` | `unclassified` | Codex refused the authored schema before generation; *settles* |
+| `codex.provider-request-rejected` | `unclassified` | Codex forwarded a provider `invalid_request_error` as `other` |
+| `codex.first-output-deadline` | `unclassified` | A started turn produced no output within its bound |
+| `codex.deadline` | `unclassified` | The call's `timeoutMs` ended the turn |
+| `claude.rate-limit` | `availability` | The API refused the turn with status 429, or code `rate_limit` or `rate_limit_error` |
+| `claude.service-unavailable` | `availability` | The API refused the turn with status 503 |
+| `claude.overloaded` | `availability` | The API refused the turn with status 529, or code `overloaded_error` |
+| `claude.dispatch-refused` | `availability` | The dispatch command failed before a session registered |
+| `claude.no-registration` | `availability` | The daemon took the dispatch, but no session registered within the bound |
+| `claude.no-first-life` | `availability` | The session registered but never wrote a transcript |
+| `claude.api-refusal` | `unclassified` | The API refused the turn with any other status or code |
+| `claude.client-diagnostic` | `unclassified` | Claude Code reported an error with no API status behind it |
+| `claude.deadline` | `unclassified` | The call's `timeoutMs` ended the turn |
+| `claude.blocked` | `unclassified` | The worker stayed blocked awaiting input past the recovery bound |
+| `claude.valve` | `unclassified` | The message was never submitted to the session |
+| `claude.delivery` | `unclassified` | The transcript never showed the session holding the text as sent |
+| `claude.transcript` | `unclassified` | The session's transcript could not be found or read |
+| `claude.collection` | `unclassified` | The session settled, but its transcript holds no completed turn or final text to collect |
+| `opencode.run-error` | `unclassified` | `opencode run` exited in error |
+| `opencode.deadline` | `unclassified` | The call's `timeoutMs` ended the run |
+| `null` | `unclassified` | No rule recognised the failure |
 
 The record holds run and audit data only. It does not score outputs, infer
 which agent verified which, or record evaluation concepts; those belong to the
@@ -1128,15 +1199,18 @@ Each leaf has four fields:
 - `unobserved`: one entry for each attempt whose spend the figures leave out,
   ordered by agent and then attempt. It is empty exactly when `complete` is
   `true`. Each entry is `{ agent, attempt, reason, measured }`. `agent` is the
-  agent record's `id` and `attempt` the attempt's number in its `attempts`,
-  or `null` for an attempt the record does not list (see below). `measured`
+  agent record's `id` and `attempt` the attempt's number: in its `attempts`,
+  or, for the attempt still running in a live manifest, its
+  `current_attempt`. `attempt` is `null` for an attempt that nothing
+  numbered, which an abandoned record may have had without listing it (see
+  below). `measured`
   is `"partial"` when the figures include usage the attempt reported before
   it ended, and `"none"` when they include nothing of it. `reason` uses the
   words of the agent record's `usage.unavailable`:
 
   | `reason` | The attempt |
   |---|---|
-  | `record-unsettled` | had no observed outcome: still running in a live manifest, or running when its writer died (SIGKILL), so the sweep listed it as `abandoned`; or it is an attempt the record does not list |
+  | `record-unsettled` | had no observed outcome: still running in a live manifest, or running when its writer died (SIGKILL), so the sweep listed it as `abandoned`; or it is an attempt nothing numbered |
   | `worker-interrupted` | was cut short by the run ending with it in flight: the run's interrupt (SIGINT or SIGTERM), or a script body that returned or failed |
   | `worker-timed-out` | was cut short by a run or turn deadline the runtime enforced, including a timed-out attempt the runtime then retried, so an agent whose record reads `complete` can still name one here |
   | `engine-reported-no-usage` | settled on its engine's own account, which carried no usage |

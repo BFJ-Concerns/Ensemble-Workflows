@@ -50,8 +50,12 @@ test("parallel built-CLI fixtures generate one shared schema without signal-kill
     const envelope = JSON.parse(stopped.stdout) as { reason: string; error: { kind: string } };
     assert.equal(envelope.reason, "failed");
     assert.equal(envelope.error.kind, "CodexSubstrateRefusedError");
-    assert.match(stopped.stderr, /CodexSubstrateRefusedError: Codex app-server could not serve a thread in .*: Codex app-server terminated by SIGKILL/);
-    assert.match(stopped.stderr, /signal SIGKILL/);
+    // The transport reports the death by whichever it observes first: the
+    // process's exit, which names the signal, or its stdout closing. Both
+    // are true accounts of the kill.
+    const refusal = /CodexSubstrateRefusedError: Codex app-server could not serve a thread in .*: Codex app-server (terminated by SIGKILL|exited unexpectedly)\n/.exec(stopped.stderr);
+    assert.ok(refusal, stopped.stderr);
+    assert.match(stopped.stderr, refusal[1] === "exited unexpectedly" ? /^ {2}codex app-server stdout closed$/m : /signal SIGKILL/);
     for (const peer of completed) {
       assert.equal(peer.code, 0, peer.stderr);
       assert.equal(peer.stdout, '"worker-ok"\n');

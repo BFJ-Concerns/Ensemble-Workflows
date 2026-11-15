@@ -72,19 +72,27 @@ function ship(): string {
   return `brig${randomBytes(3).toString("hex")}`;
 }
 
-test("a one-shot Claude worker runs a project skill named at the head of its task", { skip, timeout: 360_000 }, async () => {
+test("a one-shot Claude worker runs a project skill named at the head of its task, a trailing newline included", { skip, timeout: 360_000 }, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-skill-"));
   let testFailed = false;
   try {
     const project = await projectWithSkill(dir);
-    const name = ship();
+    const names = [ship(), ship()];
+    // The second task ends in a newline, as a template literal's often does.
+    const tasks = [`/harbour-signal ${names[0]}`, `/harbour-signal ${names[1]}\n`];
     const { output, transcripts } = await runWorkflow(dir, `
-      return await agent(${JSON.stringify(`/harbour-signal ${name}`)}, ${JSON.stringify({ ...worker, cwd: project })});
+      const options = ${JSON.stringify({ ...worker, cwd: project })};
+      const answers = [];
+      for (const task of ${JSON.stringify(tasks)}) answers.push(await agent(task, options));
+      return answers;
     `);
-    assert.equal(String(output).trim(), `SIGNAL-${name.toUpperCase()}-KESTREL`);
-    const opening = firstSubmission(transcripts[0]!);
-    assert.match(opening, /<command-name>\/harbour-signal<\/command-name>/, "Claude Code expanded the skill natively");
-    assert.equal(opening.includes("automated worker dispatched"), false);
+    assert.deepEqual((output as unknown[]).map(answer => String(answer).trim()), names.map(name => `SIGNAL-${name.toUpperCase()}-KESTREL`));
+    assert.equal(transcripts.length, 2);
+    for (const transcript of transcripts) {
+      const opening = firstSubmission(transcript);
+      assert.match(opening, /^<command-message>[^]*<command-name>\/harbour-signal<\/command-name>/, "Claude Code expanded the skill natively");
+      assert.equal(opening.includes("automated worker dispatched"), false);
+    }
     console.log(JSON.stringify({ case: "one-shot", answer: output, expanded: true }));
   } catch (error) {
     testFailed = true;

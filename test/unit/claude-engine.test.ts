@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { CLAUDE_WORKER_STANDING_INSTRUCTIONS } from "../../src/claude-engine.js";
+import { CLAUDE_TASK_END_LINE, CLAUDE_WORKER_STANDING_INSTRUCTIONS } from "../../src/claude-engine.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import {
   ClaudeDispatchError,
@@ -369,7 +369,7 @@ for (const [label, task] of [
           assert.equal(opening.trim(), opening, "native boundary trimming must be a no-op");
           assert.equal(controlPlane.dispatched[0]!.appendSystemPrompt, CLAUDE_WORKER_STANDING_INSTRUCTIONS);
           assert.equal(opening.includes("automated worker dispatched"), false, "the standing instructions ride the system prompt");
-          const framed = task === "" || task.trimStart() !== task || (schema === undefined && task.trimEnd() !== task);
+          const framed = task === "" || task.trimStart() !== task;
           let taskEnd: number;
           if (framed) {
             assert.ok(opening.startsWith("Carry out the task enclosed by <ensemble_task_"), "a framed task still opens the message");
@@ -388,7 +388,8 @@ for (const [label, task] of [
           }
           const rest = opening.slice(taskEnd);
           if (schema === undefined) {
-            assert.equal(rest, "");
+            const marked = !framed && task.trimEnd() !== task;
+            assert.equal(rest, marked ? `\n\n${CLAUDE_TASK_END_LINE}` : "");
           } else {
             assert.equal(rest, `\n\nWhen finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:\n${JSON.stringify(schema)}`);
           }
@@ -976,6 +977,18 @@ test("a Claude strip denies what the live tool surface classifies, unknown built
         assert.match(enforcement?.[capability]?.detail ?? "", /Claude Code 2\.1\.322-fake/);
         assert.match(enforcement?.[capability]?.detail ?? "", /unclassified and denied: \["SpawnTeammate"\]/);
       }
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
+test("a skill task ending in a newline still opens the message, a closing line keeping its newline", async () => {
+  await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await runtime.agent("/release-notes v1.2\n", { engine: "claude" });
+      assert.equal(controlPlane.dispatched[0]?.prompt, `/release-notes v1.2\n\n\n${CLAUDE_TASK_END_LINE}`);
     } finally {
       await runtime.close();
     }

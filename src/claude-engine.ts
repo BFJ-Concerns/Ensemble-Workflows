@@ -189,6 +189,13 @@ export const CLAUDE_WORKER_STANDING_INSTRUCTIONS = [
 ].join("\n");
 
 /**
+ * The line that follows a task ending in whitespace when nothing else
+ * would, so Claude's trimming of the message's end leaves the task whole.
+ */
+export const CLAUDE_TASK_END_LINE =
+  "(This line only marks where the task above ends; any whitespace before it belongs to the task.)";
+
+/**
  * How far the current turn's prompt has got into the session.
  *
  * - `unsent` — no submission of it has been accepted. The next attempt
@@ -1329,14 +1336,16 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     if (previousFailure !== undefined) {
       after.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
-    // Native submission trims the message at both ends, so the task goes
-    // framed when it is empty, when its own leading whitespace would be
-    // trimmed, or when its trailing whitespace would end the message. A
-    // worker stripped of skills is framed too, so its opening never expands
-    // a leading `/<skill>` through native command handling.
+    // Native submission trims the message at both ends. A task ending in
+    // whitespace keeps it by having a line follow it: the turn's contract
+    // when there is one, otherwise a closing line saying where the task
+    // ends, so the task still opens the message. The task goes framed when
+    // it is empty or its own leading whitespace would be trimmed, and for a
+    // worker stripped of skills, whose opening never expands a leading
+    // `/<skill>` through native command handling.
     const task = this.#turnPrompt;
-    const framed = task === "" || task.trimStart() !== task || (after.length === 0 && task.trimEnd() !== task) ||
-      this.#options.strip?.includes("skills") === true;
+    const framed = task === "" || task.trimStart() !== task || this.#options.strip?.includes("skills") === true;
+    if (!framed && after.length === 0 && task.trimEnd() !== task) after.push(CLAUDE_TASK_END_LINE);
     const opening = framed ? this.#framedTask() : task;
     return after.length === 0 ? opening : [opening, "", ...after].join("\n");
   }

@@ -22736,6 +22736,7 @@ var CLAUDE_WORKER_STANDING_INSTRUCTIONS = [
   "You are an automated worker dispatched by the Ensemble orchestration harness.",
   "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
 ].join("\n");
+var CLAUDE_TASK_END_LINE = "(This line only marks where the task above ends; any whitespace before it belongs to the task.)";
 var ClaudeEngineInvocation = class {
   #cwd;
   #options;
@@ -23611,7 +23612,8 @@ var ClaudeEngineInvocation = class {
       after.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
     const task = this.#turnPrompt;
-    const framed = task === "" || task.trimStart() !== task || after.length === 0 && task.trimEnd() !== task || this.#options.strip?.includes("skills") === true;
+    const framed = task === "" || task.trimStart() !== task || this.#options.strip?.includes("skills") === true;
+    if (!framed && after.length === 0 && task.trimEnd() !== task) after.push(CLAUDE_TASK_END_LINE);
     const opening = framed ? this.#framedTask() : task;
     return after.length === 0 ? opening : [opening, "", ...after].join("\n");
   }

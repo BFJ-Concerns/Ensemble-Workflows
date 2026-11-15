@@ -626,11 +626,14 @@ A Claude worker receives, in this order:
 3. **After the task, when present:** a blank line, then the schema contract
    (the instruction to end with a JSON value and the schema itself), then a
    note naming the previous attempt's failure on a retry that relaunches.
+   A task that ends in whitespace with neither to follow it is followed by a
+   blank line and one closing line saying where the task ends, so Claude's
+   trimming of the message's end leaves the task's own whitespace in place.
 
 Claude trims a message at both ends, so the task goes inside boundary tags,
 chosen to be absent from its text and introduced by a line saying they mark
-its boundaries, when it is empty, begins with whitespace, ends with
-whitespace and nothing follows it, or the worker is stripped of `skills`.
+its boundaries, when it is empty, begins with whitespace, or the worker is
+stripped of `skills`.
 The caller's text stays literal inside them, and a framed task does not
 expand a leading `/skill` line. The complete opening still requires an exact
 receipt, so any input transformation fails delivery explicitly. Host memory,

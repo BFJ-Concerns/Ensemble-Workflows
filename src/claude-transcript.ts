@@ -80,21 +80,47 @@ interface TranscriptMessage {
   stop_reason?: unknown;
 }
 
+/** A slash command Claude expanded natively: its name and its arguments as recorded. */
+interface ExpandedCommand {
+  name: string;
+  args: string;
+}
+
+function expandedCommand(content: string): ExpandedCommand | null {
+  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
+  return command === null ? null : { name: command[1] ?? "", args: command[2] ?? "" };
+}
+
 /**
  * The operator's submitted text, excluding tool results and synthetic rows.
  * Claude records an expanded slash command as command-name/command-args;
- * reconstruct that submission so its arguments receive the same equality
- * check as plain text. Ordinary submissions remain unwrapped strings.
+ * reconstruct that submission, its name and arguments joined by one space,
+ * so its arguments receive the same equality check as plain text.
+ * Ordinary submissions remain unwrapped strings.
  */
 export function submittedUserText(entry: TranscriptEntry): string | null {
   if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
   const content = entry.message?.content;
   if (typeof content !== "string") return null;
-  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
+  const command = expandedCommand(content);
   if (command === null) return content;
-  const name = command[1] ?? "";
-  const args = command[2] ?? "";
-  return args === "" ? name : `${name} ${args}`;
+  return command.args === "" ? command.name : `${command.name} ${command.args}`;
+}
+
+/**
+ * Whether `message` is what an expanded command row records: its name, then
+ * — when it has arguments — a run of whitespace and the arguments exactly.
+ * Claude takes the whitespace after a command's name as the separator and
+ * does not record it, so that run is the one part of the message the row
+ * cannot attest; every byte of the name and the arguments it does.
+ */
+function commandReceives(content: string, message: string): boolean {
+  const command = expandedCommand(content);
+  if (command === null) return false;
+  if (command.args === "") return message === command.name;
+  const separator = message.length - command.name.length - command.args.length;
+  return separator > 0 && message.startsWith(command.name) && message.endsWith(command.args) &&
+    /^\s+$/.test(message.slice(command.name.length, command.name.length + separator));
 }
 
 /**
@@ -116,7 +142,8 @@ export type SubmissionReceipt =
 /**
  * Read the receipt for `message`, submitted when the transcript held `mark`
  * entries: the first submission recorded at or after the mark, compared
- * with the message for equality and nothing looser. Pure, so the same
+ * with the message for equality and nothing looser, save the unrecorded
+ * separator of an expanded command (`commandReceives`). Pure, so the same
  * submission can be judged again from the same mark for as long as its
  * receipt is missing.
  */
@@ -127,7 +154,8 @@ export function submissionReceipt(entries: TranscriptEntry[], mark: number, mess
     if (received === null) {
       continue;
     }
-    return received === message || entry?.message?.content === message
+    const content = entry?.message?.content;
+    return received === message || content === message || (typeof content === "string" && commandReceives(content, message))
       ? { state: "verified" } : { state: "differing", received };
   }
   return { state: "missing" };

@@ -636,7 +636,10 @@ its boundaries, when it is empty, begins with whitespace, or the worker is
 stripped of `skills`.
 The caller's text stays literal inside them, and a framed task does not
 expand a leading `/skill` line. The complete opening still requires an exact
-receipt, so any input transformation fails delivery explicitly. Host memory,
+receipt, so any input transformation fails delivery explicitly. A message
+Claude expands as a command is held to its command name and arguments byte
+for byte; Claude does not record the whitespace between the two, so any run
+of it there is accepted. Host memory,
 storage and model context still bound prompt size.
 
 ### Retries

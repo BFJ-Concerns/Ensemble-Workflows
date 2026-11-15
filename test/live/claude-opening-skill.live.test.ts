@@ -30,7 +30,8 @@ async function projectWithSkill(dir: string): Promise<string> {
     "---",
     "",
     "The harbour signal for a ship is `SIGNAL-`, then the ship name given as the arguments in upper case, then `-KESTREL`.",
-    "For the ship `oak` it is `SIGNAL-OAK-KESTREL`. Answer with the signal and nothing else.",
+    "For the ship `oak` it is `SIGNAL-OAK-KESTREL`. With no ship name given, it is `SIGNAL-HARBOUR-KESTREL`.",
+    "Answer with the signal and nothing else.",
     "",
     "Arguments: $ARGUMENTS",
     ""
@@ -123,6 +124,26 @@ test("a held Claude session's first turn runs a skill named at its head, its sch
     assert.match(opening, /<command-name>\/harbour-signal<\/command-name>/, "Claude Code expanded the skill natively");
     assert.match(opening, /<command-args>[^]*JSON Schema[^]*<\/command-args>/, "the schema contract follows the task");
     console.log(JSON.stringify({ case: "session-first-turn", answer: output, expanded: true }));
+  } catch (error) {
+    testFailed = true;
+    throw error;
+  } finally { await removeTestDirectory(dir, testFailed); }
+});
+
+test("a one-shot Claude worker runs a skill named with no arguments, its schema contract on the next lines", { skip, timeout: 360_000 }, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-skill-bare-"));
+  let testFailed = false;
+  try {
+    const project = await projectWithSkill(dir);
+    const schema = { type: "object", additionalProperties: false, required: ["signal"], properties: { signal: { type: "string" } } };
+    // Claude records no separator between a bare command and the contract
+    // after it; the attempt's exact receipt is what runWorkflow requires.
+    const { output, transcripts } = await runWorkflow(dir, `
+      return await agent("/harbour-signal", ${JSON.stringify({ ...worker, cwd: project, schema })});
+    `);
+    assert.deepEqual(output, { signal: "SIGNAL-HARBOUR-KESTREL" });
+    assert.match(firstSubmission(transcripts[0]!), /<command-name>\/harbour-signal<\/command-name>\n<command-args>When finished/);
+    console.log(JSON.stringify({ case: "bare-command-schema", answer: output, expanded: true }));
   } catch (error) {
     testFailed = true;
     throw error;

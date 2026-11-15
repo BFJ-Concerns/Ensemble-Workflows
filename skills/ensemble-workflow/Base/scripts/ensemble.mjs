@@ -22324,15 +22324,24 @@ import { createHash as createHash4, randomUUID as randomUUID5 } from "node:crypt
 
 // src/claude-transcript.ts
 import { readFile as readFile8 } from "node:fs/promises";
+function expandedCommand(content) {
+  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
+  return command === null ? null : { name: command[1] ?? "", args: command[2] ?? "" };
+}
 function submittedUserText(entry) {
   if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
   const content = entry.message?.content;
   if (typeof content !== "string") return null;
-  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
+  const command = expandedCommand(content);
   if (command === null) return content;
-  const name = command[1] ?? "";
-  const args = command[2] ?? "";
-  return args === "" ? name : `${name} ${args}`;
+  return command.args === "" ? command.name : `${command.name} ${command.args}`;
+}
+function commandReceives(content, message) {
+  const command = expandedCommand(content);
+  if (command === null) return false;
+  if (command.args === "") return message === command.name;
+  const separator = message.length - command.name.length - command.args.length;
+  return separator > 0 && message.startsWith(command.name) && message.endsWith(command.args) && /^\s+$/.test(message.slice(command.name.length, command.name.length + separator));
 }
 function submissionReceipt(entries, mark, message) {
   for (let index = Math.max(0, mark); index < entries.length; index += 1) {
@@ -22341,7 +22350,8 @@ function submissionReceipt(entries, mark, message) {
     if (received === null) {
       continue;
     }
-    return received === message || entry?.message?.content === message ? { state: "verified" } : { state: "differing", received };
+    const content = entry?.message?.content;
+    return received === message || content === message || typeof content === "string" && commandReceives(content, message) ? { state: "verified" } : { state: "differing", received };
   }
   return { state: "missing" };
 }

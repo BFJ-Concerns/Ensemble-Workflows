@@ -760,11 +760,14 @@ are told apart:
   the receipt deadline. For different text, the message names the UTF-8 size
   and SHA-256 digest of what was sent and of what arrived; for no trace, of
   what was sent alone. A submission that turns up after its turn has
-  settled fails the attempt with a message saying so, naming neither. Once
-  a turn's text has been submitted without a verified receipt, the retry
-  sends it again behind a preface telling the worker that an earlier copy
-  did not arrive as sent and is void. A reply to altered text is never
-  returned as the turn's value.
+  settled fails the attempt with a message saying so: one that arrived as
+  sent names neither text, and one that arrived as different text names the
+  size and digest of both. In a session, once a turn's text has been
+  submitted without a verified receipt, the retry sends it again behind a
+  preface telling the worker that an earlier copy did not arrive as sent
+  and is void. A one-shot call's retry dispatches its task afresh in a new
+  session, with a note naming the failed attempt's kind and message. A
+  reply to altered text is never returned as the turn's value.
 
 Ensemble verifies the opening prompt's receipt before nudging a Claude worker.
 For a worker awaiting native input, it cancels the input dialog and waits for

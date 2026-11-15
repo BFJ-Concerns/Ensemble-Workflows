@@ -16370,8 +16370,13 @@ var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
   "CodexSubstrateRefusedError",
   "ClaudeDispatchError"
 ]);
+var DEADLINE_FAILURE_KINDS = /* @__PURE__ */ new Set([
+  "TurnTimeoutError",
+  "AppServerFirstOutputTimeoutError",
+  "claude-poll-timeout"
+]);
 function isTimeoutFailureKind(kind) {
-  return kind === "TurnTimeoutError" || kind.endsWith("-timeout");
+  return DEADLINE_FAILURE_KINDS.has(kind);
 }
 function runEndingFailureKind(status) {
   return `run-${status}`;

@@ -161,17 +161,28 @@ export const REFUSED_BEFORE_WORKER_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Whether a recorded failure kind is a deadline the runtime enforced on
- * the worker. Two spellings reach a record: a thrown deadline recorded by
- * its class name (`TurnTimeoutError`, raised for Codex and opencode turn
- * and request deadlines), and an engine's own attempt-failure kind ending
- * in `-timeout` (Claude's `claude-poll-timeout`,
- * `claude-first-life-timeout`, `claude-registration-timeout`). The
- * runtime settles an agent `timed-out` by this same test, so an attempt
- * and its agent cannot disagree about whether a deadline ended it.
+ * The recorded failure kinds that mean a deadline the runtime enforced
+ * ended the worker's turn: a thrown turn or request deadline
+ * (`TurnTimeoutError`, raised for Codex and opencode), Codex's
+ * first-output deadline (`AppServerFirstOutputTimeoutError`), and a Claude
+ * turn that outran its poll deadline (`claude-poll-timeout`). A Claude
+ * worker that never registered or never came to life
+ * (`claude-registration-timeout`, `claude-first-life-timeout`) is an
+ * availability failure, not a deadline on a running turn, and is absent.
+ */
+const DEADLINE_FAILURE_KINDS: ReadonlySet<string> = new Set([
+  "TurnTimeoutError",
+  "AppServerFirstOutputTimeoutError",
+  "claude-poll-timeout"
+]);
+
+/**
+ * Whether a recorded failure kind is a deadline that ended the worker's
+ * turn. The runtime settles an agent `timed-out` by this same test, so an
+ * attempt and its agent cannot disagree about whether a deadline ended it.
  */
 export function isTimeoutFailureKind(kind: string): boolean {
-  return kind === "TurnTimeoutError" || kind.endsWith("-timeout");
+  return DEADLINE_FAILURE_KINDS.has(kind);
 }
 
 /**

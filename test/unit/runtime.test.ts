@@ -332,7 +332,10 @@ test("identity: true resolves the identified envelope; default resolution is unc
     phase: "hunt",
     identity: true
   });
-  assert.deepEqual(identified, { label: "finder", phase: "hunt", output: { answer: "yes" }, failure: null });
+  assert.deepEqual(identified, {
+    label: "finder", phase: "hunt", output: { answer: "yes" }, failure: null,
+    answeredBy: { engine: "codex", model: null, family: "codex" }
+  });
 
   const bare = await runtime.agent("go", { engine: "codex", schema });
   assert.deepEqual(bare, { answer: "yes" });
@@ -437,7 +440,8 @@ test("a transport error mid-attempt resolves null with the thrown failure's clas
     label: "rider",
     phase: null,
     output: null,
-    failure: { kind: "AppServerExitedError", message: "transport exited unexpectedly" }
+    failure: { kind: "AppServerExitedError", message: "transport exited unexpectedly" },
+    answeredBy: null
   });
   assert.equal(records.at(-1)?.status, "failed");
   assert.equal(records.at(-1)?.attempts.at(-1)?.failure?.kind, "AppServerExitedError");
@@ -476,7 +480,7 @@ test("a bare text call inside parallel resolves null in its slot, never a thunk 
 
   assert.deepEqual(results, [
     null,
-    { label: "checked", phase: null, output: null, failure: { kind: "Error", message: "worker transport died" } },
+    { label: "checked", phase: null, output: null, failure: { kind: "Error", message: "worker transport died" }, answeredBy: null },
     "answered"
   ]);
   assert.deepEqual(collapses, [], "no thunk collapsed: the failures were values");
@@ -2318,7 +2322,8 @@ test("a worker inherits the current phase unless its call declares another", asy
   await runtime.agent("before", { engine: "codex" });
   runtime.notePhase("First response");
   assert.deepEqual(await runtime.agent("one", { engine: "codex", identity: true }), {
-    label: null, phase: "First response", output: "one", failure: null
+    label: null, phase: "First response", output: "one", failure: null,
+    answeredBy: { engine: "codex", model: null, family: "codex" }
   });
   await runtime.agent("two", { engine: "codex" });
   await runtime.agent("override", { engine: "codex", phase: "Review" });
@@ -4692,7 +4697,8 @@ test("an invocation close failure after a completed correction names the close e
   const notices = chainNotices(runtime);
   assert.deepEqual(await runtime.agent("correct", { engine: "codex", identity: true }), {
     label: null, phase: null, output: null,
-    failure: { kind: "Error", message: "invocation close failed" }
+    failure: { kind: "Error", message: "invocation close failed" },
+    answeredBy: null
   });
   const settled = records.at(-1)!;
   assert.deepEqual(settled.attempts.map((attempt) => attempt.status), ["failed", "complete"]);
@@ -5484,7 +5490,8 @@ test("a worker failure settled before shutdown keeps its account through invocat
         const output = await worker;
         assert.deepEqual(output, {
           label: null, phase: null, output: null,
-          failure: { kind: error.name, message: error.message }
+          failure: { kind: error.name, message: error.message },
+          answeredBy: null
         });
         const record = runtime.lastAgentRecord()!;
         assert.equal(record.status, error instanceof TurnTimeoutError ? "timed-out" : "failed");

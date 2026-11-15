@@ -200,11 +200,16 @@ function bindingClause(targets: NamedTargets | null): string {
     : `the binding in ${targets.source} supplies the engine and model`;
 }
 
-/** The binding for `name`; refused naming the file when unbound. `context` prefixes the refusal (a chain entry's index). */
-function bindingFor(targets: NamedTargets | null, name: string, context = ""): NamedTargetBinding {
+/** Whether `name` is bound, where a call naming it would resolve rather than be refused. */
+export function isNamedTargetBound(targets: NamedTargets | null, name: string): boolean {
   // `hasOwn`, not a lookup: a name spelling a prototype property
   // (`constructor`) is unbound, not Object's.
-  const binding = targets !== null && Object.hasOwn(targets.bindings, name) ? targets.bindings[name] : undefined;
+  return targets !== null && Object.hasOwn(targets.bindings, name);
+}
+
+/** The binding for `name`; refused naming the file when unbound. `context` prefixes the refusal (a chain entry's index). */
+function bindingFor(targets: NamedTargets | null, name: string, context = ""): NamedTargetBinding {
+  const binding = isNamedTargetBound(targets, name) ? (targets as NamedTargets).bindings[name] : undefined;
   if (binding !== undefined) {
     return binding;
   }

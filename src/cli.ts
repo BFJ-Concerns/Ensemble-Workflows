@@ -158,7 +158,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         "prints its result as JSON on stdout. The prompt is the single positional\n" +
         "argument, or stdin when omitted; put flags before the prompt. --schema\n" +
         "validates the reply against a JSON Schema; --identity wraps the result as\n" +
-        "{ label, phase, output, failure }.\n"
+        "{ label, phase, output, failure, answeredBy }.\n"
     );
     return 0;
   }

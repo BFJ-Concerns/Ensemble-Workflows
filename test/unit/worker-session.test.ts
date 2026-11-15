@@ -575,7 +575,9 @@ test("an identified held session distinguishes a failed schema turn from a valid
   assert.equal(first.phase, "Check");
   assert.equal(first.output, null);
   assert.equal(first.failure?.kind, "schema-validation");
-  assert.deepEqual(second, { label: "held", phase: "Answer", output: null, failure: null });
+  assert.deepEqual(second, {
+    label: "held", phase: "Answer", output: null, failure: null, answeredBy: { engine: "codex", model: null, family: "codex" }
+  });
   assert.deepEqual(transport.turns.map((turn) => turn.threadId), ["thread-1", "thread-1"]);
   await runtime.close();
 });
@@ -605,7 +607,7 @@ test("identified session setup failures retain their envelope through both combi
               ? await parallel([send], () => {})
               : await pipeline(["go"], [send], () => {});
             assert.deepEqual(result, [identity ? {
-              label: "held", phase: "build", output: null, failure: { kind: "Error", message: "setup failed" }
+              label: "held", phase: "build", output: null, failure: { kind: "Error", message: "setup failed" }, answeredBy: null
             } : null]);
             assert.equal(runtime.lastAgentRecord()?.attempts.length, 0);
           }

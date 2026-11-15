@@ -232,7 +232,7 @@ test("parallel resolves an identified failure to its envelope, not bare null", a
 
   assert.deepEqual(results, [
     "first",
-    { label: "verify", phase: "check", output: null, failure: { kind: "Error", message: "worker died" } }
+    { label: "verify", phase: "check", output: null, failure: { kind: "Error", message: "worker died" }, answeredBy: null }
   ]);
   assert.match(logs[0] ?? "", /parallel thunk 1 failed/);
 });
@@ -250,7 +250,7 @@ test("pipeline resolves an identified failed item to its envelope", async () => 
     () => {}
   );
 
-  assert.deepEqual(results, [{ label: "leg", phase: null, output: null, failure: { kind: "Error", message: "stage died" } }]);
+  assert.deepEqual(results, [{ label: "leg", phase: null, output: null, failure: { kind: "Error", message: "stage died" }, answeredBy: null }]);
 });
 
 test("the hooks agent surface presents the canonical overload set", async () => {
@@ -258,6 +258,7 @@ test("the hooks agent surface presents the canonical overload set", async () => 
   const { TokenBudget } = await import("../../src/budget.js");
 
   const calls: Array<Partial<AgentOptions>> = [];
+  const CODEX = { engine: "codex" as const, model: null, family: "codex" };
   // A conforming fake: the same overload restatement the hook wrapper
   // uses, so the test exercises the surface a script consumer sees.
   function fakeAgent(prompt: string, agentOptions: AgentRequest & { identity: true }): Promise<IdentifiedAgentResult>;
@@ -267,7 +268,7 @@ test("the hooks agent surface presents the canonical overload set", async () => 
   async function fakeAgent(prompt: string, agentOptions: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
     calls.push(agentOptions);
     if (agentOptions.identity === true) {
-      return { label: agentOptions.label ?? null, phase: agentOptions.phase ?? null, output: "identified", failure: null };
+      return { label: agentOptions.label ?? null, phase: agentOptions.phase ?? null, output: "identified", failure: null, answeredBy: CODEX };
     }
     if (agentOptions.schema !== undefined) {
       return { structured: true };
@@ -298,7 +299,7 @@ test("the hooks agent surface presents the canonical overload set", async () => 
 
   assert.equal(await plain, "plain");
   assert.deepEqual(await structured, { structured: true });
-  assert.deepEqual(await identified, { label: null, phase: null, output: "identified", failure: null });
+  assert.deepEqual(await identified, { label: null, phase: null, output: "identified", failure: null, answeredBy: CODEX });
   // Defaults still merge beneath the typed surface.
   assert.equal(calls[0]?.model, "default-model");
 });

@@ -14,7 +14,8 @@ import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } from "./failure-classification.js";
 import { fallbackSourceOf } from "./fallback-source.js";
 import { withOptionOverrides } from "./option-overrides.js";
-import { namedTargetResolutionOf, resolveNamedTarget, settleChain, withTargetChain } from "./named-targets.js";
+import { isNamedTargetBound, namedTargetResolutionOf, resolveNamedTarget, settleChain, withTargetChain } from "./named-targets.js";
+import { modelFamilyOf } from "./model-family.js";
 import type { NamedTargetResolution, NamedTargets, SettledChainEntry } from "./named-targets.js";
 
 import type { DischargedEnforcement, PreparedStrip } from "./capability-stripping.js";
@@ -79,6 +80,8 @@ import type {
   AgentOptions,
   AgentRequest,
   Budget,
+  DispatchLookup,
+  DispatchTarget,
   EngineBudgetCeilings,
   EngineConcurrencyCaps,
   EngineName,
@@ -339,13 +342,36 @@ type AgentExecutionCompletion =
   | { ok: true; execution: AgentExecutionOutcome }
   | { ok: false; error: unknown };
 
-function identifiedResult(options: { label?: string }, output: unknown, record: RuntimeAgentRecord): IdentifiedAgentResult {
+function identifiedResult(
+  options: { label?: string },
+  output: unknown,
+  record: RuntimeAgentRecord,
+  openCodeModels: OpenCodeModelRegistry | undefined
+): IdentifiedAgentResult {
   return {
     label: options.label ?? null,
     phase: record.phase,
     output,
-    failure: record.status === "complete" ? null : settledFailureAccount(record)
+    failure: record.status === "complete" ? null : settledFailureAccount(record),
+    answeredBy: answeringTarget(record, openCodeModels)
   };
+}
+
+/**
+ * The target that answered `record`, as an identified envelope names it:
+ * the engine, the model it served (else the model the answering attempt
+ * requested), and the family judged on the requested model, which is the
+ * name an opencode registry entry is declared under. Null when no target
+ * answered.
+ */
+function answeringTarget(record: RuntimeAgentRecord, openCodeModels: OpenCodeModelRegistry | undefined): DispatchTarget | null {
+  if (record.answeredBy === null) {
+    return null;
+  }
+  const { engine } = record.answeredBy;
+  const requested = record.attempts.findLast((attempt) => attempt.status === "complete")?.target.model ?? null;
+  const model = record.answeredBy.model ?? requested;
+  return { engine, model, family: modelFamilyOf(engine, requested ?? model, openCodeModels) };
 }
 
 function identifiedFailure(options: { identity?: boolean; label?: string; phase?: string }, error: unknown, phase = options.phase ?? null): unknown {
@@ -994,7 +1020,7 @@ export class EnsembleRuntime {
         // completed, so a worker's genuine null answer and an exhausted
         // collapse never read alike. The durable record is unchanged — it
         // already carries label and phase as first-class fields.
-        return identifiedResult(options, output, agentRecord);
+        return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
       }
       return output;
     } catch (error) {
@@ -1076,6 +1102,59 @@ export class EnsembleRuntime {
    */
   resolveNamedTarget<T extends object>(options: T): T {
     return resolveNamedTarget(this.#namedTargets, options);
+  }
+
+  /**
+   * The dispatch lookup: where a call with `options` would first dispatch,
+   * with nothing dispatched — its engine, its model (null where the engine's
+   * own default decides) and that model's family, for a call naming a
+   * target as for one naming a literal engine. `applyDefaults` fills what
+   * the resolved options leave unsaid, as a call's dispatch would: the
+   * workflow hooks pass the script's `defaults` merge for the resolved
+   * engine; a library caller's options stand as given.
+   *
+   * A target the run does not bind answers `bound: false`. Every other
+   * option the call itself would refuse before spawning — a target beside a
+   * literal engine or model, a missing or unknown engine, an opencode call
+   * with no registered model, a fallback chain entry that cannot resolve, a
+   * strip or lean start a target cannot honour — is refused here with the
+   * same error.
+   */
+  lookupDispatch(
+    options: Partial<AgentRequest>,
+    applyDefaults: (resolved: Partial<AgentOptions>) => Partial<AgentOptions> = (resolved) => withTargetChain(resolved, resolved)
+  ): DispatchLookup {
+    assertValidAgentOptions(options);
+    const declared = options as { target?: string; engine?: unknown; model?: unknown };
+    const name = declared.target ?? null;
+    if (name !== null && declared.engine === undefined && declared.model === undefined && !isNamedTargetBound(this.#namedTargets, name)) {
+      return { target: name, bound: false, engine: null, model: null, family: null };
+    }
+    const resolved = applyDefaults(this.resolveNamedTarget(options) as Partial<AgentOptions>);
+    assertValidAgentOptions(resolved);
+    const engine = this.#engineFor(resolved.engine);
+    if (engine instanceof OpenCodeEngineAdapter) {
+      if (resolved.model === undefined) {
+        throw new OpenCodeModelRequiredError(engine.modelRegistry);
+      }
+      validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
+    }
+    // The chain in force — the call's, the script's `defaults`, or the
+    // binding's — and the strip and lean start, judged on every target as
+    // the call judges them before admission.
+    const strip = effectiveStrip(this.#strip, resolved.strip);
+    const lean = effectiveLean(this.#lean, resolved.lean);
+    const targets = [engine, ...settleChain(this.#namedTargets, resolved.fallback, resolved).map((entry) => this.#chainEngineFor(entry))];
+    for (const target of targets) {
+      if (strip.length > 0) {
+        resolveStripEnforcement(target.name, target.capabilities, strip);
+      }
+      if (lean) {
+        resolveLeanStart(target.name, target.leanStart);
+      }
+    }
+    const model = resolved.model ?? null;
+    return { target: name, bound: true, engine: engine.name, model, family: modelFamilyOf(engine.name, model, this.openCodeModelRegistry) };
   }
 
   /**
@@ -1306,7 +1385,7 @@ export class EnsembleRuntime {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
           if (options.identity === true) {
-            return identifiedResult(options, output, agentRecord);
+            return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
           }
           return output;
         } catch (error) {

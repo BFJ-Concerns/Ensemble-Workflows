@@ -1190,7 +1190,10 @@ test("ensemble agent --identity prints the identified envelope and still fails o
     }
   );
   assert.equal(exitCode, 0, stderr.text());
-  assert.deepEqual(JSON.parse(stdout.text()), { label: "finder", phase: "hunt", output: "done", failure: null });
+  assert.deepEqual(JSON.parse(stdout.text()), {
+    label: "finder", phase: "hunt", output: "done", failure: null,
+    answeredBy: { engine: "codex", model: null, family: "codex" }
+  });
 
   // Exhaustion: the envelope's null output is still the failure signal —
   // exit 1 with the partial envelope, never `{output: null}` at exit 0.

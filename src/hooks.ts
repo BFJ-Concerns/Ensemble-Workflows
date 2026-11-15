@@ -9,6 +9,7 @@ import type {
   AgentOptions,
   AgentRequest,
   Budget,
+  DispatchLookup,
   EngineName,
   FallbackTarget,
   IdentifiedAgentResult,
@@ -76,6 +77,15 @@ export interface WorkflowRuntime {
    * those entries are judged at dispatch.
    */
   settleFallbackChain?: (chain: readonly FallbackTarget[]) => void;
+  /**
+   * The dispatch lookup; see EnsembleRuntime.lookupDispatch. Optional on
+   * the same terms as the other capabilities; the `lookupDispatch` hook
+   * fails loud when absent.
+   */
+  lookupDispatch?: (
+    options: Partial<AgentRequest>,
+    applyDefaults: (resolved: Partial<AgentOptions>) => Partial<AgentOptions>
+  ) => DispatchLookup;
 }
 
 /**
@@ -126,6 +136,14 @@ export interface WorkflowHooks {
    * transcript.
    */
   tally: (name: string, value: number) => Promise<void>;
+  /**
+   * The dispatch lookup: `lookupDispatch({ target: "reviewer" })` answers
+   * where `agent()` given those options would first dispatch — engine,
+   * model and model family — with nothing dispatched, the script's
+   * `defaults` applied as the call would apply them. An unbound target
+   * answers `bound: false`.
+   */
+  lookupDispatch: (options: Partial<AgentRequest>) => DispatchLookup;
   budget: Budget;
   worktrees: readonly IsolatedWorktreeRecord[];
   args: unknown;
@@ -199,6 +217,13 @@ export function createWorkflowHooks(options: {
     log: (message) => {
       writeLog(message);
     },
+    lookupDispatch: (lookupOptions) => {
+      const lookupDispatch = options.runtime.lookupDispatch;
+      if (lookupDispatch === undefined) {
+        throw new PreSpawnAuthorError("this runtime does not support the dispatch lookup");
+      }
+      return lookupDispatch.call(options.runtime, lookupOptions, (resolved) => applyAgentDefaults(defaults, resolved));
+    },
     tally: (name, value) => {
       const recordTally = options.runtime.recordTally;
       if (recordTally === undefined) {
@@ -245,16 +270,7 @@ export async function parallel<T>(
         // discrimination — a failed leg is in-script distinguishable from
         // one that legitimately answered null. The envelope *is* the
         // thunk's declared resolution shape for an identity: true call.
-        const identity = agentIdentityOf(error);
-        if (identity !== null) {
-          return {
-            label: identity.label,
-            phase: identity.phase,
-            output: null,
-            failure: describeError(error)
-          } as Awaited<T>;
-        }
-        return null;
+        return (collapsedEnvelope(error) ?? null) as Awaited<T> | null;
       }
     })
   );
@@ -290,22 +306,27 @@ export async function pipeline<Item>(
           // item resolves its identity envelope — failure carried so a
           // failed leg is distinguishable from a genuine null answer — when
           // the failing call declared one, bare null otherwise.
-          const identity = agentIdentityOf(error);
-          if (identity !== null) {
-            return {
-              label: identity.label,
-              phase: identity.phase,
-              output: null,
-              failure: describeError(error)
-            };
-          }
-          return null;
+          return collapsedEnvelope(error);
         }
       }
 
       return previous;
     })
   );
+}
+
+/**
+ * The envelope a collapsed identified leg resolves to: its label and phase
+ * from the identity the runtime attached to the failure, no output, the
+ * failure's account, and no answering target. Null for a failure that
+ * carries no identity — a call that did not opt in.
+ */
+function collapsedEnvelope(error: unknown): IdentifiedAgentResult | null {
+  const identity = agentIdentityOf(error);
+  if (identity === null) {
+    return null;
+  }
+  return { label: identity.label, phase: identity.phase, output: null, failure: describeError(error), answeredBy: null };
 }
 
 /**
@@ -325,7 +346,15 @@ function mergeAgentDefaults(
   resolveTarget: <T extends object>(declared: T) => T
 ): Partial<AgentOptions> {
   assertValidAgentOptions(agentOptions ?? {});
-  const declared = resolveTarget(agentOptions ?? {});
+  return applyAgentDefaults(defaults, resolveTarget(agentOptions ?? {}));
+}
+
+/**
+ * The second half of {@link mergeAgentDefaults}: the script's block for the
+ * engine `declared` already names (a target resolved) fills what it leaves
+ * unsaid. The dispatch lookup applies it alone, after judging the target.
+ */
+function applyAgentDefaults(defaults: WorkflowDefaults, declared: Partial<AgentOptions>): Partial<AgentOptions> {
   const engine = declared.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : undefined;
   if (engine === undefined || engineDefaults === undefined) {

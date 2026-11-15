@@ -1,7 +1,7 @@
 import { createRuntime as createRuntimeInstance } from "./runtime.js";
 
 import type { AgentOptions, AgentRequest, IdentifiedAgentResult as IdentifiedAgentResultType, JsonSchema, RuntimeOptions } from "./types.js";
-export type { AgentCallSignature, IdentifiedAgentResult } from "./types.js";
+export type { AgentCallSignature, DispatchLookup, DispatchTarget, IdentifiedAgentResult } from "./types.js";
 import type { EnsembleRuntime } from "./runtime.js";
 
 let defaultRuntime: Promise<EnsembleRuntime> | null = null;

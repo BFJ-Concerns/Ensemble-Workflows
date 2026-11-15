@@ -19662,14 +19662,28 @@ function namedTargetResolutionOf(options) {
 function bindingClause(targets) {
   return targets === null ? "and this run has no targets map to bind the name" : `the binding in ${targets.source} supplies the engine and model`;
 }
+function isNamedTargetBound(targets, name) {
+  return targets !== null && Object.hasOwn(targets.bindings, name);
+}
 function bindingFor(targets, name, context = "") {
-  const binding = targets !== null && Object.hasOwn(targets.bindings, name) ? targets.bindings[name] : void 0;
+  const binding = isNamedTargetBound(targets, name) ? targets.bindings[name] : void 0;
   if (binding !== void 0) {
     return binding;
   }
   const bound = targets === null ? [] : Object.keys(targets.bindings);
   const held = targets === null ? "this run was given no machine configuration targets" : bound.length === 0 ? `${targets.source} binds no targets` : `${targets.source} binds ${bound.map((other) => JSON.stringify(other)).join(", ")}`;
   throw new NamedTargetRejectedError(`${context}target ${JSON.stringify(name)} is not bound: ${held}`);
+}
+
+// src/model-family.ts
+function modelFamilyOf(engine, model, openCodeModels) {
+  if (engine !== "opencode") {
+    return engine;
+  }
+  if (model === null || model === void 0) {
+    return null;
+  }
+  return openCodeModels?.get(model)?.family ?? null;
 }
 
 // src/progress.ts
@@ -26545,13 +26559,23 @@ var BODY_RETURNED_LEG = {
   dispatching: "its dispatch record was still landing, so no outcome was observed"
 };
 var BODY_RETURNED = "the script returned without awaiting this worker";
-function identifiedResult(options, output, record) {
+function identifiedResult(options, output, record, openCodeModels) {
   return {
     label: options.label ?? null,
     phase: record.phase,
     output,
-    failure: record.status === "complete" ? null : settledFailureAccount(record)
+    failure: record.status === "complete" ? null : settledFailureAccount(record),
+    answeredBy: answeringTarget(record, openCodeModels)
   };
+}
+function answeringTarget(record, openCodeModels) {
+  if (record.answeredBy === null) {
+    return null;
+  }
+  const { engine } = record.answeredBy;
+  const requested = record.attempts.findLast((attempt) => attempt.status === "complete")?.target.model ?? null;
+  const model = record.answeredBy.model ?? requested;
+  return { engine, model, family: modelFamilyOf(engine, requested ?? model, openCodeModels) };
 }
 function identifiedFailure(options, error, phase = options.phase ?? null) {
   if (options.identity !== true) return error;
@@ -27003,7 +27027,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       unsettled.stage = "admitting";
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, chain, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        return identifiedResult(options, output, agentRecord);
+        return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
       }
       return output;
     } catch (error) {
@@ -27082,6 +27106,52 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   resolveNamedTarget(options) {
     return resolveNamedTarget(this.#namedTargets, options);
+  }
+  /**
+   * The dispatch lookup: where a call with `options` would first dispatch,
+   * with nothing dispatched — its engine, its model (null where the engine's
+   * own default decides) and that model's family, for a call naming a
+   * target as for one naming a literal engine. `applyDefaults` fills what
+   * the resolved options leave unsaid, as a call's dispatch would: the
+   * workflow hooks pass the script's `defaults` merge for the resolved
+   * engine; a library caller's options stand as given.
+   *
+   * A target the run does not bind answers `bound: false`. Every other
+   * option the call itself would refuse before spawning — a target beside a
+   * literal engine or model, a missing or unknown engine, an opencode call
+   * with no registered model, a fallback chain entry that cannot resolve, a
+   * strip or lean start a target cannot honour — is refused here with the
+   * same error.
+   */
+  lookupDispatch(options, applyDefaults = (resolved) => withTargetChain(resolved, resolved)) {
+    assertValidAgentOptions(options);
+    const declared = options;
+    const name = declared.target ?? null;
+    if (name !== null && declared.engine === void 0 && declared.model === void 0 && !isNamedTargetBound(this.#namedTargets, name)) {
+      return { target: name, bound: false, engine: null, model: null, family: null };
+    }
+    const resolved = applyDefaults(this.resolveNamedTarget(options));
+    assertValidAgentOptions(resolved);
+    const engine = this.#engineFor(resolved.engine);
+    if (engine instanceof OpenCodeEngineAdapter) {
+      if (resolved.model === void 0) {
+        throw new OpenCodeModelRequiredError(engine.modelRegistry);
+      }
+      validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
+    }
+    const strip = effectiveStrip(this.#strip, resolved.strip);
+    const lean = effectiveLean(this.#lean, resolved.lean);
+    const targets = [engine, ...settleChain(this.#namedTargets, resolved.fallback, resolved).map((entry) => this.#chainEngineFor(entry))];
+    for (const target of targets) {
+      if (strip.length > 0) {
+        resolveStripEnforcement(target.name, target.capabilities, strip);
+      }
+      if (lean) {
+        resolveLeanStart(target.name, target.leanStart);
+      }
+    }
+    const model = resolved.model ?? null;
+    return { target: name, bound: true, engine: engine.name, model, family: modelFamilyOf(engine.name, model, this.openCodeModelRegistry) };
   }
   /**
    * Judge a declared chain's named entries against this run's bindings
@@ -27271,7 +27341,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
           if (options.identity === true) {
-            return identifiedResult(options, output, agentRecord);
+            return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
           }
           return output;
         } catch (error) {
@@ -29040,6 +29110,13 @@ function createWorkflowHooks(options) {
     log: (message) => {
       writeLog(message);
     },
+    lookupDispatch: (lookupOptions) => {
+      const lookupDispatch = options.runtime.lookupDispatch;
+      if (lookupDispatch === void 0) {
+        throw new PreSpawnAuthorError("this runtime does not support the dispatch lookup");
+      }
+      return lookupDispatch.call(options.runtime, lookupOptions, (resolved) => applyAgentDefaults(defaults, resolved));
+    },
     tally: (name, value) => {
       const recordTally = options.runtime.recordTally;
       if (recordTally === void 0) {
@@ -29068,16 +29145,7 @@ async function parallel(thunks, log, presentError) {
         }
         presentError?.(error);
         log(`parallel thunk ${index} failed: ${describeWorkerFailure(error)}`);
-        const identity = agentIdentityOf(error);
-        if (identity !== null) {
-          return {
-            label: identity.label,
-            phase: identity.phase,
-            output: null,
-            failure: describeError(error)
-          };
-        }
-        return null;
+        return collapsedEnvelope(error) ?? null;
       }
     })
   );
@@ -29099,25 +29167,25 @@ async function pipeline(items, stages, log, presentError) {
           }
           presentError?.(error);
           log(`pipeline item ${index} stage ${stageIndex} failed: ${describeWorkerFailure(error)}`);
-          const identity = agentIdentityOf(error);
-          if (identity !== null) {
-            return {
-              label: identity.label,
-              phase: identity.phase,
-              output: null,
-              failure: describeError(error)
-            };
-          }
-          return null;
+          return collapsedEnvelope(error);
         }
       }
       return previous;
     })
   );
 }
+function collapsedEnvelope(error) {
+  const identity = agentIdentityOf(error);
+  if (identity === null) {
+    return null;
+  }
+  return { label: identity.label, phase: identity.phase, output: null, failure: describeError(error), answeredBy: null };
+}
 function mergeAgentDefaults(defaults, agentOptions, resolveTarget) {
   assertValidAgentOptions(agentOptions ?? {});
-  const declared = resolveTarget(agentOptions ?? {});
+  return applyAgentDefaults(defaults, resolveTarget(agentOptions ?? {}));
+}
+function applyAgentDefaults(defaults, declared) {
   const engine = declared.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
   if (engine === void 0 || engineDefaults === void 0) {
@@ -35085,6 +35153,7 @@ var HOOK_BINDING_NAMES = [
   "phase",
   "log",
   "tally",
+  "lookupDispatch",
   "budget",
   "worktrees",
   "args",
@@ -35161,6 +35230,7 @@ async function runWorkflowScript(options) {
     phase: hooks.phase,
     log: hooks.log,
     tally: hooks.tally,
+    lookupDispatch: hooks.lookupDispatch,
     budget: hooks.budget,
     worktrees: hooks.worktrees,
     args: hooks.args,
@@ -36158,7 +36228,7 @@ async function runEnsembleCli(argv, options = {}) {
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage(program));
     stdout.write(
-      "\nDispatches one worker on the named engine (--engine codex|claude|opencode), or\non the engine and model a named target binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure }.\n"
+      "\nDispatches one worker on the named engine (--engine codex|claude|opencode), or\non the engine and model a named target binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure, answeredBy }.\n"
     );
     return 0;
   }

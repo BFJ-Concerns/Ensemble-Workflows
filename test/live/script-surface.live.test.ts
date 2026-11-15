@@ -748,7 +748,7 @@ async function runNode(
       stderr += chunk.toString();
     });
     child.once("error", reject);
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
       resolve({ code, stdout, stderr });
     });
   });

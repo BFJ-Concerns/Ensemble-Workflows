@@ -28398,12 +28398,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
   async #resolveEffortFor(record, engine, options) {
     record.effortResolution = null;
     const policyModel = engine.name === "opencode" && options.model !== void 0 ? this.openCodeModelRegistry?.get(options.model)?.key ?? options.model : options.model;
+    const reportEffort = async () => {
+      if (engine.effortReport === void 0) return null;
+      await this.#resourceGate.require(engine.name, record.resolvedCwd);
+      return engine.effortReport(options.model);
+    };
     if (!isCanonicalEffort(options.effort)) {
       const section = this.#effortPolicy?.section;
       if (section !== void 0) {
         let model = policyModel;
         if (model === void 0 && Object.values(section).some((entry) => entry.floor !== void 0 || entry.ceiling !== void 0)) {
-          model = (await engine.effortReport?.(void 0))?.identity ?? void 0;
+          model = (await reportEffort())?.identity ?? void 0;
         }
         const key = effortPolicyKeys(engine.name, model).find((key2) => section[key2]?.ceiling !== void 0 || section[key2]?.floor !== void 0);
         if (key !== void 0) throw new InvalidAgentOptionValueError(
@@ -28420,7 +28425,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       model: policyModel,
       identity: options.model === void 0 ? void 0 : engine.modelIdentity?.(options.model) ?? options.model,
       policy: this.#effortPolicy,
-      engineReport: () => engine.effortReport?.(options.model) ?? Promise.resolve(null)
+      engineReport: reportEffort
     });
     record.effortResolution = resolution;
     return resolution;

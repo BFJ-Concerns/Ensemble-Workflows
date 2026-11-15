@@ -383,8 +383,10 @@ lists the accepted type names, and invalid `properties` asks for a JSON object.
 | `session()` | Yes | Yes | No: throws before the worker spawns |
 
 Effort resolves for each dispatch target, including a fallback entry and a
-held session's first turn. The order is `none < minimal < low < medium <
-high < xhigh < max`; `ultra` is refused even when an engine advertises it.
+held session's first turn. Capability discovery passes the engine's resource
+preflight before it may start a substrate; a denial is an availability
+refusal, so a remaining fallback entry can run without starting that engine.
+The order is `none < minimal < low < medium < high < xhigh < max`; `ultra` is refused even when an engine advertises it.
 Machine ceilings and floors apply before selection of the nearest served
 level inside those bounds; equal-distance ties choose the lower level. No
 served level inside the bounds means a pre-spawn refusal naming the model,

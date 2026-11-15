@@ -2073,9 +2073,9 @@ export class EnsembleRuntime {
       this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
     }
     try {
-      // The engine's filesystem requirements are judged here, before its
-      // substrate first starts: a denial is a substrate refusal, recorded
-      // and chained like any other refusal raised from inside the attempt.
+      // Each attempt passes the resource gate too. Capability discovery,
+      // when needed, has already passed it before starting the substrate.
+      // A denial is recorded and chained like any other substrate refusal.
       await this.#resourceGate.require(engine, cwd);
       result = await invocation.runAttempt({
         ...context,
@@ -3040,12 +3040,19 @@ export class EnsembleRuntime {
     const policyModel = engine.name === "opencode" && options.model !== undefined
       ? this.openCodeModelRegistry?.get(options.model)?.key ?? options.model
       : options.model;
+    const reportEffort = async () => {
+      if (engine.effortReport === undefined) return null;
+      // Capability discovery can start a lazy substrate. Check its resources
+      // before entering the adapter, as well as at the attempt boundary.
+      await this.#resourceGate.require(engine.name, record.resolvedCwd);
+      return engine.effortReport(options.model);
+    };
     if (!isCanonicalEffort(options.effort)) {
       const section = this.#effortPolicy?.section;
       if (section !== undefined) {
         let model = policyModel;
         if (model === undefined && Object.values(section).some((entry) => entry.floor !== undefined || entry.ceiling !== undefined)) {
-          model = (await engine.effortReport?.(undefined))?.identity ?? undefined;
+          model = (await reportEffort())?.identity ?? undefined;
         }
         const key = effortPolicyKeys(engine.name, model).find((key) => section[key]?.ceiling !== undefined || section[key]?.floor !== undefined);
         if (key !== undefined) throw new InvalidAgentOptionValueError("effort", options.effort,
@@ -3055,7 +3062,7 @@ export class EnsembleRuntime {
     }
     const resolution = await resolveEffort({ requested: options.effort, engine: engine.name, model: policyModel,
       identity: options.model === undefined ? undefined : engine.modelIdentity?.(options.model) ?? options.model,
-      policy: this.#effortPolicy, engineReport: () => engine.effortReport?.(options.model) ?? Promise.resolve(null) });
+      policy: this.#effortPolicy, engineReport: reportEffort });
     record.effortResolution = resolution;
     return resolution;
   }

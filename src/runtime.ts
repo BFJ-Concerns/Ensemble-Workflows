@@ -1116,11 +1116,13 @@ export class EnsembleRuntime {
    * A target the run does not bind answers `bound: false`. Every other
    * option the call itself would refuse before spawning — a target beside a
    * literal engine or model, a missing or unknown engine, an opencode call
-   * with no registered model — is refused here with the same error.
+   * with no registered model, a fallback chain entry that cannot resolve, a
+   * strip or lean start a target cannot honour — is refused here with the
+   * same error.
    */
   lookupDispatch(
     options: Partial<AgentRequest>,
-    applyDefaults: (resolved: Partial<AgentOptions>) => Partial<AgentOptions> = (resolved) => resolved
+    applyDefaults: (resolved: Partial<AgentOptions>) => Partial<AgentOptions> = (resolved) => withTargetChain(resolved, resolved)
   ): DispatchLookup {
     assertValidAgentOptions(options);
     const declared = options as { target?: string; engine?: unknown; model?: unknown };
@@ -1136,6 +1138,20 @@ export class EnsembleRuntime {
         throw new OpenCodeModelRequiredError(engine.modelRegistry);
       }
       validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
+    }
+    // The chain in force — the call's, the script's `defaults`, or the
+    // binding's — and the strip and lean start, judged on every target as
+    // the call judges them before admission.
+    const strip = effectiveStrip(this.#strip, resolved.strip);
+    const lean = effectiveLean(this.#lean, resolved.lean);
+    const targets = [engine, ...settleChain(this.#namedTargets, resolved.fallback, resolved).map((entry) => this.#chainEngineFor(entry))];
+    for (const target of targets) {
+      if (strip.length > 0) {
+        resolveStripEnforcement(target.name, target.capabilities, strip);
+      }
+      if (lean) {
+        resolveLeanStart(target.name, target.leanStart);
+      }
     }
     const model = resolved.model ?? null;
     return { target: name, bound: true, engine: engine.name, model, family: modelFamilyOf(engine.name, model, this.openCodeModelRegistry) };

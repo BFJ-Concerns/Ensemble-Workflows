@@ -120,6 +120,16 @@ test("the dispatch lookup answers an unbound target as unbound and refuses what 
       (error: unknown) => error instanceof NamedTargetRejectedError && /beside engine "codex"/.test(error.message)
     );
     assert.throws(() => hooksFor(runtime).lookupDispatch({}), MissingEngineError);
+    // A chain entry the call could not settle is refused too, from the call
+    // and from the script's defaults. (A binding's own chain is judged when
+    // the bindings are read.)
+    const unboundEntry = [{ target: "missing" }];
+    assert.throws(() => hooksFor(runtime).lookupDispatch({ engine: "claude", fallback: unboundEntry }), NamedTargetRejectedError);
+    assert.throws(
+      () => hooksFor(runtime, { claude: { fallback: unboundEntry } }).lookupDispatch({ engine: "claude" }),
+      NamedTargetRejectedError
+    );
+    assert.throws(() => runtime.lookupDispatch({ engine: "claude", fallback: unboundEntry }), NamedTargetRejectedError);
   } finally {
     await runtime.close();
     await unboundRun.runtime.close();

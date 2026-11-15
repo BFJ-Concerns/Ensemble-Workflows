@@ -27119,9 +27119,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * A target the run does not bind answers `bound: false`. Every other
    * option the call itself would refuse before spawning — a target beside a
    * literal engine or model, a missing or unknown engine, an opencode call
-   * with no registered model — is refused here with the same error.
+   * with no registered model, a fallback chain entry that cannot resolve, a
+   * strip or lean start a target cannot honour — is refused here with the
+   * same error.
    */
-  lookupDispatch(options, applyDefaults = (resolved) => resolved) {
+  lookupDispatch(options, applyDefaults = (resolved) => withTargetChain(resolved, resolved)) {
     assertValidAgentOptions(options);
     const declared = options;
     const name = declared.target ?? null;
@@ -27136,6 +27138,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
         throw new OpenCodeModelRequiredError(engine.modelRegistry);
       }
       validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
+    }
+    const strip = effectiveStrip(this.#strip, resolved.strip);
+    const lean = effectiveLean(this.#lean, resolved.lean);
+    const targets = [engine, ...settleChain(this.#namedTargets, resolved.fallback, resolved).map((entry) => this.#chainEngineFor(entry))];
+    for (const target of targets) {
+      if (strip.length > 0) {
+        resolveStripEnforcement(target.name, target.capabilities, strip);
+      }
+      if (lean) {
+        resolveLeanStart(target.name, target.leanStart);
+      }
     }
     const model = resolved.model ?? null;
     return { target: name, bound: true, engine: engine.name, model, family: modelFamilyOf(engine.name, model, this.openCodeModelRegistry) };

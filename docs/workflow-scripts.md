@@ -201,7 +201,10 @@ A literal call is answered the same way, so
 for Claude. An unbound `target` answers `bound: false` where the call itself
 would throw. Any other option the call would refuse before spawning — a
 `target` beside an `engine` or `model`, a missing or unknown engine, an
-opencode call with no model — throws the same error from the lookup.
+opencode call with no model, a fallback entry naming an unbound target, a
+`strip` or `lean` a target cannot honour — throws the same error from the
+lookup, judged on the whole fallback chain in force as well as the first
+target.
 
 ### Script defaults
 

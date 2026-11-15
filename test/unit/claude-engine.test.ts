@@ -467,6 +467,28 @@ test("Claude rejects an out-of-domain effort before any worker spawns", async ()
   });
 });
 
+test("the runtime clamps an unserved Claude effort to its nearest served level", async () => {
+  await withControlPlane([{ assistant: { text: "clamped" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => {
+      records.push(structuredClone(record));
+    } } as unknown as RunRecordWriter);
+    try {
+      assert.equal(await runtime.agent("work", { engine: "claude", effort: "minimal" }), "clamped");
+      assert.equal(controlPlane.dispatched[0]?.effort, "low");
+      const record = records.at(-1)!;
+      assert.equal(record.effort, "minimal");
+      assert.equal(record.effortResolution?.dispatched, "low");
+      assert.equal(record.attempts[0]?.effortResolution?.dispatched, "low");
+      assert.equal(record.attempts[0]?.resolvedEffort, "low");
+      assert.equal(record.resolvedEffort, "low");
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
 test("Claude dispatches resolved native effort and reads served effort from the transcript", async () => {
   await withControlPlane(
     [

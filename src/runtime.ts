@@ -3028,10 +3028,15 @@ export class EnsembleRuntime {
 
   async #resolveEffortFor(record: RuntimeAgentRecord, engine: EngineAdapter, options: Partial<AgentOptions>): Promise<EffortResolution | null> {
     record.effortResolution = null;
+    // Model policy uses the registry key even when the call names its route.
+    // Keep the caller's spelling for dispatch, identity discovery and records.
+    const policyModel = engine.name === "opencode" && options.model !== undefined
+      ? this.openCodeModelRegistry?.get(options.model)?.key ?? options.model
+      : options.model;
     if (!isCanonicalEffort(options.effort)) {
       const section = this.#effortPolicy?.section;
       if (section !== undefined) {
-        let model = options.model;
+        let model = policyModel;
         if (model === undefined && Object.values(section).some((entry) => entry.floor !== undefined || entry.ceiling !== undefined)) {
           model = (await engine.effortReport?.(undefined))?.identity ?? undefined;
         }
@@ -3041,7 +3046,7 @@ export class EnsembleRuntime {
       }
       return null;
     }
-    const resolution = await resolveEffort({ requested: options.effort, engine: engine.name, model: options.model,
+    const resolution = await resolveEffort({ requested: options.effort, engine: engine.name, model: policyModel,
       identity: options.model === undefined ? undefined : engine.modelIdentity?.(options.model) ?? options.model,
       policy: this.#effortPolicy, engineReport: () => engine.effortReport?.(options.model) ?? Promise.resolve(null) });
     record.effortResolution = resolution;

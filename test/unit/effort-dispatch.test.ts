@@ -12,6 +12,7 @@ import { RunRecordWriter } from "../../src/run-record.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import type { EngineAdapter, EngineAttemptResult, EngineTurnOptions } from "../../src/engines.js";
+import type { OpenCodeModelRegistryEntry } from "../../src/opencode-model-registry.js";
 import type { EffortPolicy } from "../../src/effort-resolution.js";
 
 const answer = (): EngineAttemptResult => ({ text: "done", deltaText: "done", durationMs: 1, firstDeltaMs: 1, items: {}, tokenUsageEvents: [] });
@@ -160,11 +161,11 @@ test("the archive keeps requested, dispatched and served effort separate", async
 });
 
 
-test("a routed model's built-in levels outrank its opencode variant listing", async () => {
+function routedRuntime(binding: Pick<OpenCodeModelRegistryEntry, "key" | "providerModel" | "variants">, effortPolicy?: EffortPolicy) {
   const variants: Array<string | undefined> = [];
   const adapter = new OpenCodeEngineAdapter({
-    modelRegistry: createOpenCodeModelRegistry([{ key: "routed-luna", providerModel: "provider/gpt-6-luna", provider: "provider",
-      displayName: "Luna", capabilities: { vision: false }, variants: ["high"] }]),
+    modelRegistry: createOpenCodeModelRegistry([{ ...binding, provider: "provider",
+      displayName: "Routed model", capabilities: { vision: false } }]),
     runner: {
       run: async (options) => {
         variants.push(options.variant);
@@ -174,7 +175,13 @@ test("a routed model's built-in levels outrank its opencode variant listing", as
       exportSession: async () => ({ status: "command-failed", exitCode: 1, signal: null, stderr: "no session" })
     }
   });
-  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([adapter]), defaultMaxAttempts: 1 });
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([adapter]), defaultMaxAttempts: 1,
+    ...(effortPolicy === undefined ? {} : { effortPolicy }) });
+  return { runtime, variants };
+}
+
+test("a routed model's built-in levels outrank its opencode variant listing", async () => {
+  const { runtime, variants } = routedRuntime({ key: "routed-luna", providerModel: "provider/gpt-6-luna", variants: ["high"] });
   try {
     assert.equal(await runtime.agent("work", { engine: "opencode", model: "routed-luna", effort: "none" }), "done");
     assert.deepEqual(variants, ["none"]);
@@ -182,3 +189,40 @@ test("a routed model's built-in levels outrank its opencode variant listing", as
     assert.deepEqual(variants, ["none"]);
   } finally { await runtime.close(); }
 });
+
+
+for (const model of ["local-coder", "provider/local-coder"]) {
+  const binding = { key: "local-coder", providerModel: "provider/local-coder", variants: ["low", "high", "thorough"] };
+  test(`opencode model bounds use the registry key through ${model}`, async () => {
+    const { runtime, variants } = routedRuntime(binding, { source: "machine.json", section: {
+      "opencode:local-coder": { ceiling: "low" }
+    } });
+    try {
+      assert.equal(await runtime.agent("work", { engine: "opencode", model, effort: "high" }), "done");
+      assert.deepEqual(variants, ["low"]);
+    } finally { await runtime.close(); }
+  });
+
+  test(`opencode native-level maps use the registry key through ${model}`, async () => {
+    const { runtime, variants } = routedRuntime(binding, { source: "machine.json", section: {
+      "opencode:local-coder": { levels: { low: "quiet", high: "think" } }
+    } });
+    try {
+      assert.equal(await runtime.agent("work", { engine: "opencode", model, effort: "high" }), "done");
+      assert.deepEqual(variants, ["think"]);
+    } finally { await runtime.close(); }
+  });
+
+  test(`opencode omitted and raw effort cannot bypass bounds through ${model}`, async () => {
+    const { runtime, variants } = routedRuntime(binding, { source: "machine.json", section: {
+      "opencode:local-coder": { ceiling: "low" }
+    } });
+    try {
+      for (const effort of [undefined, "thorough"]) {
+        await assert.rejects(runtime.agent("work", { engine: "opencode", model,
+          ...(effort === undefined ? {} : { effort }) }), /explicit canonical level.*opencode:local-coder/);
+      }
+      assert.deepEqual(variants, []);
+    } finally { await runtime.close(); }
+  });
+}

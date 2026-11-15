@@ -28024,10 +28024,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   async #resolveEffortFor(record, engine, options) {
     record.effortResolution = null;
+    const policyModel = engine.name === "opencode" && options.model !== void 0 ? this.openCodeModelRegistry?.get(options.model)?.key ?? options.model : options.model;
     if (!isCanonicalEffort(options.effort)) {
       const section = this.#effortPolicy?.section;
       if (section !== void 0) {
-        let model = options.model;
+        let model = policyModel;
         if (model === void 0 && Object.values(section).some((entry) => entry.floor !== void 0 || entry.ceiling !== void 0)) {
           model = (await engine.effortReport?.(void 0))?.identity ?? void 0;
         }
@@ -28043,7 +28044,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const resolution = await resolveEffort({
       requested: options.effort,
       engine: engine.name,
-      model: options.model,
+      model: policyModel,
       identity: options.model === void 0 ? void 0 : engine.modelIdentity?.(options.model) ?? options.model,
       policy: this.#effortPolicy,
       engineReport: () => engine.effortReport?.(options.model) ?? Promise.resolve(null)

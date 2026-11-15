@@ -226,8 +226,10 @@ To tell a failed call from one that legitimately answered `null`, pass
 `phase` is the call's explicit phase, or the run's current `phase()` title
 when the call enters the queue; it is `null` when neither was set.
 `failure` is `null` exactly when the worker completed — so
-`output: null` with `failure: null` is a genuine answer — and a `{ message }`
-account when it failed. Inside `parallel()` and `pipeline()`, an identified
+`output: null` with `failure: null` is a genuine answer — and a `{ kind, message }`
+account when it failed. `kind` is the recorded failure class, such as
+`TurnTimeoutError` or `empty-output`; `message` is its account without a
+class prefix. Inside `parallel()` and `pipeline()`, an identified
 call that collapses resolves this shape too, never a bare `null`.
 
 ### `workflow()` and saved workflows

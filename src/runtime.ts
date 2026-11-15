@@ -340,7 +340,7 @@ function identifiedResult(options: { label?: string }, output: unknown, record: 
     label: options.label ?? null,
     phase: record.phase,
     output,
-    failure: record.status === "complete" ? null : { message: settledFailureMessage(record) }
+    failure: record.status === "complete" ? null : settledFailureAccount(record)
   };
 }
 
@@ -3459,12 +3459,6 @@ function settledFailureAccount(record: RuntimeAgentRecord): { kind: string; mess
   return attemptedFailureAccount(record) ?? record.terminationCause ?? {
     kind: "unavailable", message: "the agent failed without a recorded cause"
   };
-}
-
-/** The one-line rendering of that account an identified envelope's `failure` carries. */
-function settledFailureMessage(record: RuntimeAgentRecord): string {
-  const account = settledFailureAccount(record);
-  return `${account.kind}: ${account.message}`;
 }
 
 function lastRawOutput(record: RuntimeAgentRecord): string | null {

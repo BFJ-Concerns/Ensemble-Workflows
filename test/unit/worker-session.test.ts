@@ -567,14 +567,14 @@ test("an identified held session distinguishes a failed schema turn from a valid
   assert.ok(session);
   runtime.notePhase("Check");
   const first = await session.send("fail", { schema: { type: "null" } }) as {
-    label: string | null; phase: string | null; output: unknown; failure: { message: string } | null;
+    label: string | null; phase: string | null; output: unknown; failure: { kind: string; message: string } | null;
   };
   runtime.notePhase("Answer");
   const second = await session.send("answer null", { schema: { type: "null" } });
   assert.equal(first.label, "held");
   assert.equal(first.phase, "Check");
   assert.equal(first.output, null);
-  assert.match(first.failure?.message ?? "", /schema-validation/);
+  assert.equal(first.failure?.kind, "schema-validation");
   assert.deepEqual(second, { label: "held", phase: "Answer", output: null, failure: null });
   assert.deepEqual(transport.turns.map((turn) => turn.threadId), ["thread-1", "thread-1"]);
   await runtime.close();
@@ -605,7 +605,7 @@ test("identified session setup failures retain their envelope through both combi
               ? await parallel([send], () => {})
               : await pipeline(["go"], [send], () => {});
             assert.deepEqual(result, [identity ? {
-              label: "held", phase: "build", output: null, failure: { message: "setup failed" }
+              label: "held", phase: "build", output: null, failure: { kind: "Error", message: "setup failed" }
             } : null]);
             assert.equal(runtime.lastAgentRecord()?.attempts.length, 0);
           }

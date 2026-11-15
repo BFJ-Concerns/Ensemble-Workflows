@@ -26054,7 +26054,7 @@ function identifiedResult(options, output, record) {
     label: options.label ?? null,
     phase: record.phase,
     output,
-    failure: record.status === "complete" ? null : { message: settledFailureMessage(record) }
+    failure: record.status === "complete" ? null : settledFailureAccount(record)
   };
 }
 function identifiedFailure(options, error, phase = options.phase ?? null) {
@@ -28410,10 +28410,6 @@ function settledFailureAccount(record) {
     message: "the agent failed without a recorded cause"
   };
 }
-function settledFailureMessage(record) {
-  const account = settledFailureAccount(record);
-  return `${account.kind}: ${account.message}`;
-}
 function lastRawOutput(record) {
   for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
     const rawOutput = record.attempts[index]?.rawOutput;
@@ -28499,7 +28495,7 @@ async function parallel(thunks, log, presentError) {
             label: identity.label,
             phase: identity.phase,
             output: null,
-            failure: { message: error instanceof Error ? error.message : String(error) }
+            failure: describeError(error)
           };
         }
         return null;
@@ -28530,7 +28526,7 @@ async function pipeline(items, stages, log, presentError) {
               label: identity.label,
               phase: identity.phase,
               output: null,
-              failure: { message: error instanceof Error ? error.message : String(error) }
+              failure: describeError(error)
             };
           }
           return null;

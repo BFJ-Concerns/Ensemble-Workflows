@@ -819,7 +819,10 @@ The fields present throughout a record's lifetime are:
   `effort` fields Claude Code writes on each assistant transcript entry —
   and `null` when the engine reported none, never an echo of the request.
   A provider effort rejection clears `resolved_effort` on the agent and
-  attempt, records `effort-rejected`, and settles without retrying.
+  attempt, records `effort-rejected`, and settles without retrying. This
+  diagnosis requires a provider request-refusal envelope; a worker's words
+  about effort, an output-validation failure or a lost session are not
+  evidence of a provider refusal.
   A Codex `modelNotFound` rejection clears the thread's reported model and
   effort: its configured model was not served. That attempt books under
   `unresolved` in the cost roll-up.
@@ -1077,6 +1080,7 @@ on the same target.
 | Rule | Class | Meaning |
 |---|---|---|
 | `output` | `output` | Empty output, unparseable JSON, or an answer that fails its schema |
+| `effort.rejected` | `unclassified` | The provider refused the requested reasoning level; *settles* |
 | `<engine>.authentication-failure` | `unclassified` | The engine's credentials were rejected |
 | `<engine>.model-not-found` | `unclassified` | The engine does not know the model |
 | `substrate.refused` | `availability` | The launch environment denied a resource the engine needs, before its substrate started |

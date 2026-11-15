@@ -75,10 +75,6 @@ export function settlesWithoutRetry(failure: { kind: string }): boolean {
 /** Preserve the provider's cause and add the engine's recovery step. */
 export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): AttemptFailureEvidence["failure"] {
   const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
-  if (isEffortRejection(`${failure.message} ${appServerDiagnostic?.payload ?? ""}`)) {
-    return { kind: "effort-rejected", message: failure.message };
-  }
-
   // The engine's own observation of its held worker, with no provider
   // diagnostic behind it to re-read: it keeps its kind whatever its message
   // or the session's last transcript row says.
@@ -92,6 +88,9 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
   // identifies authentication even when retry-promise bounds wrap the error.
   if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
     return failure;
+  }
+  if (isProviderEffortRejection(evidence)) {
+    return { kind: "effort-rejected", message: failure.message };
   }
   // An explicit status outranks incidental error words in a gateway message.
   const authentication = status != null ? status === 401 :
@@ -366,7 +365,39 @@ function claudeApiErrorOf(diagnostics: JsonObject | undefined): { status: number
 }
 
 /** A provider's explicit refusal of the selected reasoning level is permanent for this dispatch. */
-export function isEffortRejection(message: string): boolean {
+function isEffortRejection(message: string): boolean {
   return /(?:reasoning[._ -]?effort|model_reasoning_effort|reasoning level|effort level)/i.test(message) &&
     /(?:unsupported|not supported|does not support|not (?:a )?valid|invalid|not allowed|must be one of|supported values|supported (?:efforts|levels))/i.test(message);
+}
+
+/** Only request-refusal envelopes are evidence of a provider rejecting effort. */
+function isProviderEffortRejection(evidence: AttemptFailureEvidence): boolean {
+  const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
+  if (engine === "claude" && failure.kind === "claude-worker-diagnostic") {
+    const api = claudeApiErrorOf(diagnostics);
+    return api !== null &&
+      (api.status === 400 || api.status === 422 ||
+        (api.status === null && (api.code === "invalid_request_error" || api.code === "invalid_request"))) &&
+      isEffortRejection(failure.message);
+  }
+  if (engine !== "codex" || appServerDiagnostic?.payload == null) return false;
+  // A transport error's text and arbitrary JSON strings may contain a worker's
+  // words. Read only a typed request error or a named rejected parameter.
+  if (appServerDiagnostic.httpStatusCode != null &&
+      appServerDiagnostic.httpStatusCode !== 400 && appServerDiagnostic.httpStatusCode !== 422) return false;
+  try {
+    const payload: unknown = JSON.parse(appServerDiagnostic.payload);
+    const param = objectField(payload, "param");
+    if ((appServerDiagnostic.code === "badRequest" || appServerDiagnostic.code === -32602 ||
+        appServerDiagnostic.httpStatusCode === 400 || appServerDiagnostic.httpStatusCode === 422) &&
+        typeof param === "string" && /^(?:reasoning[._]effort|model_reasoning_effort)$/.test(param)) {
+      return isEffortRejection(failure.message) || Array.isArray(objectField(payload, "supported_values"));
+    }
+    const message = objectField(objectField(payload, "error"), "message");
+    if (typeof message !== "string") return false;
+    const providerError = objectField(JSON.parse(message), "error");
+    return objectField(providerError, "type") === "invalid_request_error" && isEffortRejection(JSON.stringify(providerError));
+  } catch {
+    return false;
+  }
 }

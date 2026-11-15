@@ -413,9 +413,9 @@ Ensemble can also be used as a library from a source checkout
 standalone launcher exports nothing.
 
 These options mirror a CLI run flag, and take the value that flag sets. The
-library reads the matching environment variables and machine configuration
-keys only for the hold scope: with `holdScope` unset, it applies
-`ENSEMBLE_HOLD_SCOPE` from its own environment.
+library reads no machine configuration for them, and only one environment
+variable: with `holdScope` unset, it applies `ENSEMBLE_HOLD_SCOPE` from its
+own environment.
 
 | Option | CLI flag | Default | Description |
 |---|---|---|---|

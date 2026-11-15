@@ -1,6 +1,7 @@
 import vm from "node:vm";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, readFile, stat } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -892,19 +893,35 @@ export async function readWorkflowScript(scriptPath: string): Promise<string> {
   try {
     return await readFile(scriptPath, "utf8");
   } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    const reason =
-      code === "ENOENT"
-        ? "no file exists at this path"
-        : code === "EISDIR"
-          ? "the path is a directory, not a script file"
-          : code === "EACCES"
-            ? "the file is not readable"
-            : error instanceof Error
-              ? error.message
-              : String(error);
-    throw new WorkflowScriptReadError(`Could not read workflow script ${scriptPath}: ${reason}`, { cause: error });
+    throw workflowScriptReadError(scriptPath, error);
   }
+}
+
+/** Check the path without opening or reading the source (which can block). */
+export async function checkWorkflowScriptPath(scriptPath: string): Promise<void> {
+  try {
+    await access(scriptPath, constants.R_OK);
+    if ((await stat(scriptPath)).isDirectory()) {
+      throw Object.assign(new Error("script path is a directory"), { code: "EISDIR" });
+    }
+  } catch (error) {
+    throw workflowScriptReadError(scriptPath, error);
+  }
+}
+
+function workflowScriptReadError(scriptPath: string, error: unknown): WorkflowScriptReadError {
+  const code = (error as { code?: unknown }).code;
+  const reason =
+    code === "ENOENT"
+      ? "no file exists at this path"
+      : code === "EISDIR"
+        ? "the path is a directory, not a script file"
+        : code === "EACCES"
+          ? "the file is not readable"
+          : error instanceof Error
+            ? error.message
+            : String(error);
+  return new WorkflowScriptReadError(`Could not read workflow script ${scriptPath}: ${reason}`, { cause: error });
 }
 
 /**

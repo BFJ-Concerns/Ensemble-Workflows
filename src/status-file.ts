@@ -184,9 +184,11 @@ export class StatusFileWriter {
     this.#request();
   }
 
-  /** Wait for the initial publication before announcing its location. */
+  /** Wait until all pending changes have been published before continuing. */
   async ready(): Promise<boolean> {
-    await this.#writing;
+    while (this.#writing !== null) {
+      await this.#writing;
+    }
     return this.#published;
   }
 

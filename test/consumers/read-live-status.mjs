@@ -72,8 +72,12 @@ try {
     const listedIds = new Set(current.agents.map((agent) => agent.id));
     assert.equal(listedIds.size, current.agents.length, "worker IDs must be unique");
     for (const id of workers.keys()) assert.ok(listedIds.has(id), `worker ${id} disappeared during the run`);
-    if (spec.recording !== false) assert.ok(path.isAbsolute(current.archiveDir));
-    else assert.equal(current.archiveDir, null);
+    if (spec.recording !== false && current.archiveDir !== null) assert.ok(path.isAbsolute(current.archiveDir));
+    else {
+      assert.equal(current.archiveDir, null);
+      // Source loading has supervision before the archive can capture the source.
+      if (spec.recording !== false) assert.equal(current.agents.length, 0);
+    }
     if (spec.readyFile && !hasAcknowledged("ready")) {
       await writeFile(spec.readyFile, JSON.stringify(announcement));
       await acknowledge("ready");

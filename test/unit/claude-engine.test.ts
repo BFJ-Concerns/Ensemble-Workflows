@@ -449,7 +449,7 @@ test("Claude rejects an out-of-domain effort before any worker spawns", async ()
       () => adapter.createInvocation("work", { effort: "definitely-invalid" }),
       (error: unknown) => {
         assert.ok(error instanceof InvalidAgentOptionValueError);
-        assert.match(error.message, /minimal \| low \| medium \| high \| xhigh/);
+        assert.match(error.message, /low \| medium \| high \| xhigh \| max/);
         return true;
       }
     );
@@ -467,7 +467,7 @@ test("Claude rejects an out-of-domain effort before any worker spawns", async ()
   });
 });
 
-test("a canonical level outside Claude's native domain clamps to the nearest native level, and the served level is read from the transcript", async () => {
+test("Claude dispatches resolved native effort and reads served effort from the transcript", async () => {
   await withControlPlane(
     [
       { assistant: { text: "ran clamped low" } },
@@ -478,11 +478,8 @@ test("a canonical level outside Claude's native domain clamps to the nearest nat
     async (controlPlane) => {
       const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
 
-      // minimal → low: the one canonical level the CLI lacks. The worker is
-      // dispatched with the native value, and the result reports the level
-      // the CLI's transcript says it served — here the same value, so a
-      // clamped dispatch is observable in the record as what ran.
-      const floor = adapter.createInvocation("work", { effort: "minimal" });
+      // The runtime has already resolved the requested effort to low.
+      const floor = adapter.createInvocation("work", { effort: "low" });
       const floorResult = await floor.runAttempt({ attempt: 1 });
       assert.equal(controlPlane.dispatched[0]?.effort, "low");
       assert.equal(floorResult.resolvedEffort, "low");

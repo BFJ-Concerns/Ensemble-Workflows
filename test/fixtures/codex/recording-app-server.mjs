@@ -225,6 +225,14 @@ const handleLine = (line) => {
     }
     return;
   }
+  if (message.method === "model/list") {
+    // This fixture accepts arbitrary model pins without claiming their
+    // capabilities. An empty discovery result exercises effort pass-through
+    // for an unknown model while still answering the protocol request.
+    const result = { data: [], nextCursor: null };
+    send({ id: message.id, result }, "v2/ModelListResponse.json", result);
+    return;
+  }
   if (message.method === "thread/start") {
     if (requiredThreadModel !== undefined && message.params.model !== requiredThreadModel) {
       throw new Error(`thread/start model was ${JSON.stringify(message.params.model)}, expected ${JSON.stringify(requiredThreadModel)}`);

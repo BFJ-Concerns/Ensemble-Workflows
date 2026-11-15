@@ -23,9 +23,9 @@ export interface IsolatedWorktree {
  * - `uncommitted`: the work is only in the worktree's files — staged,
  *   unstaged or untracked — and the branch still points at the base commit.
  * - `committed`: the tip moved off the base commit and the files are clean,
- *   so the branch holds all of the work.
+ *   so tipCommit identifies all of the work.
  * - `committed-and-uncommitted`: the tip moved and files are left
- *   uncommitted, so the branch holds only part of the work.
+ *   uncommitted, so tipCommit identifies only part of the work.
  * - `unknown`: finalisation failed, so none of the above was established.
  */
 export type WorktreeState =
@@ -42,7 +42,7 @@ export type WorktreeState =
  * `unchanged` keeps the worktree and its branch, `unknown` included, since a
  * failed finalisation did not prove there was nothing to keep.
  */
-export type IsolatedWorktreeRecord = IsolatedWorktree & (
+export type IsolatedWorktreeRecord = Omit<IsolatedWorktree, "branch"> & { branch: string | null } & (
   | { state: "unchanged"; tipCommit: string; changed: false; removed: true }
   | {
       state: "uncommitted" | "committed" | "committed-and-uncommitted";
@@ -97,6 +97,8 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     // tip; either observation keeps the worktree, or `branch -D` below would
     // orphan the commits.
     const tip = (await git(worktree.path, ["rev-parse", "HEAD"])).trim();
+    const branch = (await git(worktree.path, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    const finalBranch = branch === "HEAD" ? null : branch;
     const state = inspectedState({
       committed: tip !== worktree.baseCommit,
       uncommitted: status.trim().length > 0
@@ -106,6 +108,7 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
       this.#worktreeRoots.delete(worktree.path);
       return {
         ...worktree,
+        branch: finalBranch,
         state,
         tipCommit: tip,
         changed: true,

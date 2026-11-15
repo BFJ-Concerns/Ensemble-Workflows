@@ -1,3 +1,5 @@
+import { isCanonicalEffort } from "./effort-resolution.js";
+import { CLAUDE_NATIVE_EFFORT_LEVELS } from "./claude-engine.js";
 import { randomUUID } from "node:crypto";
 import { parseWorkerScopeGrouping } from "./ambient-settings.js";
 import type { TurnProgressObserver } from "./app-server.js";
@@ -40,6 +42,7 @@ import type { EngineCapabilityTable, PreparedStrip, StrippableCapability } from 
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { WorkerExitStatus } from "./errors.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
+import type { EngineEffortReport, EffortResolution } from "./effort-resolution.js";
 import type { OpenCodeRunner } from "./opencode-engine.js";
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode-model-registry.js";
 import type { ResourceRequirement } from "./resource-preflight.js";
@@ -58,6 +61,8 @@ export interface EngineTurnOptions {
   schema?: JsonSchema;
   model?: string;
   effort?: string;
+  /** A model-backed native resolution overrides a listing; pass-through still needs adapter validation. */
+  effortResolution?: EffortResolution;
   cwd?: string;
   // Omitted → unbounded per turn. No default; see the runtime's resolution below.
   timeoutMs?: number;
@@ -263,6 +268,29 @@ export interface EngineAdapter {
    * failure and advances a remaining chain entry without requesting a worker.
    */
   prepareStrip?(strip: readonly StrippableCapability[], context: StripPreparationContext): Promise<PreparedStrip>;
+  /**
+   * The identity of a model this engine is asked to run, as the built-in
+   * effort table knows models (`EffortDispatch.identity`): for an engine
+   * that reaches models by names of its own, such as a registry key
+   * standing for a routed model, so a well-known model is recognised
+   * whatever route reaches it. Undefined where the engine cannot name the
+   * model behind the name. Optional: absent, the dispatched name is the
+   * model's identity.
+   */
+  modelIdentity?(model: string): string | undefined;
+  /**
+   * The engine's own account of the model a dispatch runs on, for effort
+   * resolution (`EffortDispatch.engineReport`): which model that is — the
+   * engine's default where `model` is undefined — and the levels the
+   * engine says it serves. Resolves null where the engine can give none:
+   * it does not list the model, or its listing could not be read. A
+   * missing report is never a failed dispatch — the level falls to the
+   * next source — and a substrate that is down refuses the worker it is
+   * then asked for, as it does without a report. Optional: an engine with
+   * no such account leaves a model's served levels to the machine's map
+   * and the built-in table.
+   */
+  effortReport?(model: string | undefined): Promise<EngineEffortReport | null>;
   schedule<T>(task: () => Promise<T>): Promise<T>;
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation;
   /**
@@ -518,6 +546,20 @@ export class CodexEngineAdapter implements EngineAdapter {
 
   schedule<T>(task: () => Promise<T>): Promise<T> {
     return this.#scheduler.schedule(task);
+  }
+
+  async effortReport(model: string | undefined): Promise<EngineEffortReport | null> {
+    if (this.#transport.listModels === undefined) return null;
+    try {
+      const models = await this.#transport.listModels();
+      const entry = models.find((entry) => model === undefined ? entry.isDefault : entry.model === model);
+      if (entry === undefined) return null;
+      const levels = Object.fromEntries(entry.supportedReasoningEfforts.filter(isCanonicalEffort).map((level) => [level, level]));
+      return { identity: entry.model, levels: Object.keys(levels).length === 0 ? null : levels };
+    } catch {
+      // Optional discovery is not evidence that the worker itself cannot run.
+      return null;
+    }
   }
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
@@ -801,15 +843,18 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     return this.#strips.prepare({ strip, ...context });
   }
 
+  async effortReport(model: string | undefined): Promise<EngineEffortReport> {
+    return { identity: model ?? null, levels: Object.fromEntries(CLAUDE_NATIVE_EFFORT_LEVELS.map((level) => [level, level])) };
+  }
+
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
     if (this.#closed) {
       // A worker already past the scheduler when close() ran must not
       // register into a set nothing will ever cancel again.
       throw new EngineShutdownError(this.name);
     }
-    // The canonical level clamps to the CLI's nearest native level here,
-    // pre-spawn: the CLI silently runs an unknown value at its default, so
-    // only the converted native value may reach it. The run record's
+    // The runtime resolves the canonical level before adapter creation.
+    // Only a supported native value may reach the CLI. The run record's
     // `resolved_effort` is not this value: it is the level the CLI's own
     // transcript reports serving (claude-transcript's `effortSince`).
     const effort = claudeNativeEffort(options.effort);
@@ -831,8 +876,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
     }
-    // Same canonical clamp as createInvocation: a session fixes effort at
-    // creation, so the conversion happens once, here.
+    // Validate the resolved native level once when creating the session.
     const effort = claudeNativeEffort(options.effort);
     // A session is the invocation generalised across turns: same dispatch,
     // valve, and collection machinery, registered for cancellation like any
@@ -933,6 +977,19 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
     return this.#scheduler.schedule(task);
   }
 
+  modelIdentity(model: string): string | undefined {
+    const routed = this.#modelRegistry.get(model)?.providerModel;
+    return routed?.split("/").at(-1);
+  }
+
+  async effortReport(model: string | undefined): Promise<EngineEffortReport | null> {
+    if (model === undefined) return null;
+    const entry = this.#modelRegistry.get(model);
+    if (entry === undefined) return null;
+    const levels = Object.fromEntries(entry.variants.filter(isCanonicalEffort).map((level) => [level, level]));
+    return { identity: this.modelIdentity(model) ?? null, levels: Object.keys(levels).length === 0 ? null : levels };
+  }
+
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
     if (this.#closed) {
       // A worker already past the scheduler when close() ran must not
@@ -943,10 +1000,14 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
       throw new OpenCodeModelRequiredError(this.#modelRegistry);
     }
     const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
-    // The registry owns the variant domain as it owns the model list:
-    // `opencode run` forwards an unknown variant silently, so an
-    // out-of-domain effort must fail here, pre-spawn, or not at all.
-    if (options.effort !== undefined && !model.variants.includes(options.effort)) {
+    // Only a model-backed resolution can override the registry's variants.
+    // Pass-through has no served-level source, so the registry must judge
+    // it too: opencode silently forwards unknown variants to the provider.
+    const resolution = options.effortResolution;
+    const modelBackedEffort = resolution !== undefined && resolution.served !== null &&
+      resolution.dispatched === options.effort;
+    if (options.effort !== undefined && (options.effort === "ultra" ||
+      (!modelBackedEffort && !model.variants.includes(options.effort)))) {
       throw new InvalidAgentOptionValueError(
         "effort",
         options.effort,

@@ -35,10 +35,9 @@ import {
 } from "./claude-transcript.js";
 import { isPreparedClaudeStrip } from "./claude-tool-surface.js";
 import { subtractUsage } from "./usage-summary.js";
-import { CANONICAL_EFFORT_DOMAIN } from "./engine-option-validation.js";
+
 import { CLAUDE_ROSTER_ABSENCE_BOUND, CLAUDE_ROSTER_LOSS_REASON } from "./claude-control-plane.js";
 
-import type { CanonicalEffort } from "./engine-option-validation.js";
 import type { ClaudeControlPlane, ClaudeDispatchOptions, ClaudeSessionHandle } from "./claude-control-plane.js";
 import type { SubmissionReceipt, TranscriptApiError, TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
 import type {
@@ -118,52 +117,15 @@ export interface ClaudeEngineInvocationOptions {
   onClose?: (invocation: ClaudeEngineInvocation) => void;
 }
 
-/**
- * The clamp from the canonical effort vocabulary to the Claude CLI's
- * native levels (effort is one canonical vocabulary, converted per engine,
- * clamping to the nearest level the engine offers). The native domain —
- * `low | medium | high | xhigh | max` — is a dated measured judgement
- * against Claude Code 2.1.283 (its `--effort` help and the `effort` values
- * its transcripts report serving, 2026-09-27); `max` is native but outside
- * the canonical set, so nothing maps to it, and `minimal` is the one
- * canonical level the CLI lacks. The CLI silently
- * accepts an unknown `--effort` value and runs at its default (witnessed
- * 2026-08-30: `--effort definitely-invalid` reached a healthy worker at
- * exit 0), so conversion is the only loud boundary: nothing non-native may
- * reach the CLI. What the run record reports as `resolved_effort` is not
- * this table's output but the level the CLI's transcript says it served
- * (`effortSince`), so a clamp — or a stale row here, served at a coarser
- * level — is visible in the record as what ran, never a silent drop. If a
- * CLI release grows a native level, re-point that canonical level at
- * itself here.
- */
-export const CLAUDE_NATIVE_EFFORT: Readonly<Record<CanonicalEffort, string>> = {
-  minimal: "low",
-  low: "low",
-  medium: "medium",
-  high: "high",
-  xhigh: "xhigh"
-};
+/** Native Claude Code 2.1.283 levels measured on 2026-09-27. */
+export const CLAUDE_NATIVE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 
-/**
- * Converts a canonical effort level to the value the Claude CLI is
- * dispatched with. Rejects anything outside the canonical vocabulary with
- * the same pre-spawn error the harness-side validation throws, so the
- * adapter stays a loud boundary even for a caller that bypassed it.
- */
+/** The runtime resolves canonical effort; the adapter admits native names only. */
 export function claudeNativeEffort(effort: string | undefined): string | undefined {
-  if (effort === undefined) {
-    return undefined;
+  if (effort !== undefined && !(CLAUDE_NATIVE_EFFORT_LEVELS as readonly string[]).includes(effort)) {
+    throw new InvalidAgentOptionValueError("effort", effort, `a resolved Claude native level (${CLAUDE_NATIVE_EFFORT_LEVELS.join(" | ")})`);
   }
-  const native = (CLAUDE_NATIVE_EFFORT as Record<string, string | undefined>)[effort];
-  if (native === undefined) {
-    throw new InvalidAgentOptionValueError(
-      "effort",
-      effort,
-      `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")} (the canonical effort vocabulary)`
-    );
-  }
-  return native;
+  return effort;
 }
 
 let dispatchCounter = 0;

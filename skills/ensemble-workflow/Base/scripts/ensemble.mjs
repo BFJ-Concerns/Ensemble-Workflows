@@ -35090,7 +35090,8 @@ async function readWorkflowSource(scriptPath, signal) {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const child = spawn4(process.execPath, ["--input-type=commonjs", "-e", readerSource, scriptPath], {
-      stdio: ["ignore", "pipe", "pipe"]
+      // Paths such as /dev/stdin must refer to the launcher's input.
+      stdio: ["inherit", "pipe", "pipe"]
     });
     let source = "";
     let diagnostic = "";

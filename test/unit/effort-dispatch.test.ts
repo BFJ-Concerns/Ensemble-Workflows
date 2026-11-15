@@ -7,7 +7,7 @@ import test from "node:test";
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
-import { attachFailedTurnResult, EffortBoundsUnservedError } from "../../src/errors.js";
+import { attachFailedTurnResult, EffortBoundsUnservedError, InvalidAgentOptionValueError } from "../../src/errors.js";
 import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -224,6 +224,21 @@ for (const model of ["local-coder", "provider/local-coder"]) {
           ...(effort === undefined ? {} : { effort }) }), /explicit canonical level.*opencode:local-coder/);
       }
       assert.deepEqual(variants, []);
+    } finally { await runtime.close(); }
+  });
+}
+
+
+for (const declared of [[], ["think"]]) {
+  test(`opencode rejects unresolved canonical effort with variants ${JSON.stringify(declared)}`, async () => {
+    const { runtime, variants } = routedRuntime({ key: "variant-only", providerModel: "provider/variant-only", variants: declared });
+    try {
+      await assert.rejects(runtime.agent("work", { engine: "opencode", model: "variant-only", effort: "high" }), InvalidAgentOptionValueError);
+      assert.deepEqual(variants, [], "the provider must not receive an undeclared variant");
+      if (declared.includes("think")) {
+        assert.equal(await runtime.agent("work", { engine: "opencode", model: "variant-only", effort: "think" }), "done");
+        assert.deepEqual(variants, ["think"]);
+      }
     } finally { await runtime.close(); }
   });
 }

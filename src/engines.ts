@@ -61,7 +61,7 @@ export interface EngineTurnOptions {
   schema?: JsonSchema;
   model?: string;
   effort?: string;
-  /** The runtime's resolved native effort, authoritative over a registry listing. */
+  /** A model-backed native resolution overrides a listing; pass-through still needs adapter validation. */
   effortResolution?: EffortResolution;
   cwd?: string;
   // Omitted → unbounded per turn. No default; see the runtime's resolution below.
@@ -1000,11 +1000,14 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
       throw new OpenCodeModelRequiredError(this.#modelRegistry);
     }
     const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
-    // The registry owns the variant domain as it owns the model list:
-    // `opencode run` forwards an unknown variant silently, so an
-    // out-of-domain effort must fail here, pre-spawn, or not at all.
+    // Only a model-backed resolution can override the registry's variants.
+    // Pass-through has no served-level source, so the registry must judge
+    // it too: opencode silently forwards unknown variants to the provider.
+    const resolution = options.effortResolution;
+    const modelBackedEffort = resolution !== undefined && resolution.served !== null &&
+      resolution.dispatched === options.effort;
     if (options.effort !== undefined && (options.effort === "ultra" ||
-      (options.effortResolution?.dispatched !== options.effort && !model.variants.includes(options.effort)))) {
+      (!modelBackedEffort && !model.variants.includes(options.effort)))) {
       throw new InvalidAgentOptionValueError(
         "effort",
         options.effort,

@@ -26151,7 +26151,9 @@ var OpenCodeEngineAdapter = class {
       throw new OpenCodeModelRequiredError(this.#modelRegistry);
     }
     const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
-    if (options.effort !== void 0 && (options.effort === "ultra" || options.effortResolution?.dispatched !== options.effort && !model.variants.includes(options.effort))) {
+    const resolution = options.effortResolution;
+    const modelBackedEffort = resolution !== void 0 && resolution.served !== null && resolution.dispatched === options.effort;
+    if (options.effort !== void 0 && (options.effort === "ultra" || !modelBackedEffort && !model.variants.includes(options.effort))) {
       throw new InvalidAgentOptionValueError(
         "effort",
         options.effort,

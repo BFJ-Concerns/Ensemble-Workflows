@@ -265,11 +265,11 @@ and optimises the executable shim; see
 No script approval is needed for this build route; `npm ci --ignore-scripts`
 also works with development and optional dependencies installed.
 
-The current lockfile also has unresolved audit advisories: URI-handling
-findings in `fast-uri` (through Ajv, included in the launcher), and denial of
+The current lockfile also has unresolved audit advisories: denial of
 service findings in the lint toolchain's `minimatch`, `brace-expansion` and
-`js-yaml`. `npm audit` gives the affected versions and advisory links;
-`npm audit --omit=dev` shows the runtime dependency findings separately.
+`js-yaml`, all development dependencies that the launcher does not include.
+`npm audit` gives the affected versions and advisory links;
+`npm audit --omit=dev` shows that the runtime dependencies carry none.
 A successful build does not resolve these advisories. Review dependency
 changes separately rather than applying `npm audit fix --force`, which can
 change the declared tooling versions.

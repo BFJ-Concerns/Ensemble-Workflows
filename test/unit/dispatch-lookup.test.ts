@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import { AgentCwdRejectedError, CapabilityStripUnsupportedError, InvalidAgentSchemaError, LeanStartUnsupportedError, MissingEngineError, NamedTargetRejectedError, OpenCodeModelRequiredError } from "../../src/errors.js";
@@ -248,7 +249,7 @@ test("lookup and call refuse omitted options with the same missing-engine error"
 });
 
 test("lookup refuses malformed schemas and unusable cwd with the call's error and precedence", async () => {
-  const root = await mkdtemp("/mnt/ai-data/scratch/dispatch-lookup-test.");
+  const root = await mkdtemp(path.join(tmpdir(), "dispatch-lookup-test-"));
   const codex = new ChainEngine("codex", [answer("unused")]);
   const runtime = new EnsembleRuntime({ engines: new EngineRegistry([codex]), cwd: root, defaultMaxAttempts: 1 });
   try {

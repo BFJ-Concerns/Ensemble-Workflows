@@ -422,7 +422,7 @@ async function git(cwd: string, args: string[]): Promise<string> {
 
 for (const detached of [false, true]) {
   test(`finalisation names the worker's ${detached ? "detached commit" : "own branch"}`, async () => {
-    const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-branch-record-");
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-branch-record-"));
     const repo = path.join(directory, "repo");
     try {
       await initialiseRepo(repo);

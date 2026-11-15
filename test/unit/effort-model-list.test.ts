@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -7,7 +8,7 @@ import { CodexAppServerTransport } from "../../src/app-server.js";
 
 for (const repeated of [false, true]) {
   test(`Codex model discovery ${repeated ? "refuses a repeated cursor" : "reads hidden models and every page"}`, async () => {
-    const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-effort-list-");
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-effort-list-"));
     let transport: CodexAppServerTransport | undefined;
     try {
       const bin = path.join(directory, "codex.mjs");

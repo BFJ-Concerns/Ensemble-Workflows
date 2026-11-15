@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -120,7 +121,7 @@ test("Codex model reports filter ultra and select the default model", async () =
 });
 
 test("the machine effort section reaches the ambient policy and manifest", async () => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-effort-record-");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-effort-record-"));
   try {
     await mkdir(path.join(directory, "ensemble"));
     const config = path.join(directory, "ensemble", "config.json");
@@ -137,7 +138,7 @@ test("the machine effort section reaches the ambient policy and manifest", async
 
 
 test("the archive keeps requested, dispatched and served effort separate", async () => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-effort-agent-record-");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-effort-agent-record-"));
   const policy: EffortPolicy = { source: "machine.json", section: { "codex:unknown": { levels: { low: "quiet", high: "think" } } } };
   const f = fixture(policy);
   try {

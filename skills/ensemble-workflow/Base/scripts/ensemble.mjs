@@ -18505,8 +18505,14 @@ var SystemdWorkerScopes = class {
   #moveTimeoutMs;
   #cgroupRoot;
   #stopBounds;
-  /** Units this manager created, by group: the set `close()` stops. */
+  /** The unit each group's processes are placed in now, by group. */
   #units = /* @__PURE__ */ new Map();
+  /**
+   * Units of each group the manager failed. They stay owned — stopped by
+   * `stop()` and `close()` with the group's current unit — because a
+   * process that never moved on to a replacement is still in one.
+   */
+  #failedUnits = /* @__PURE__ */ new Map();
   /** How many scopes each group has had created, so a replacement for a failed one takes a fresh name. */
   #generations = /* @__PURE__ */ new Map();
   /** One placement at a time per group, so concurrent first placements create one scope rather than race for the name. */
@@ -18563,6 +18569,7 @@ var SystemdWorkerScopes = class {
           return { kind: "placed", unit, pids };
         }
         this.#units.delete(group);
+        this.#failedUnits.set(group, (this.#failedUnits.get(group) ?? /* @__PURE__ */ new Set()).add(unit));
         unplaced = `the manager left ${unit} ${state.state} after moving its processes`;
         continue;
       }
@@ -18691,22 +18698,39 @@ var SystemdWorkerScopes = class {
     const turn = (this.#groupTurns.get(group) ?? Promise.resolve()).then(() => this.#stopInTurn(group, bounds));
     this.#groupTurns.set(group, turn);
     void turn.then(() => {
-      if (this.#groupTurns.get(group) === turn && !this.#units.has(group)) {
+      if (this.#groupTurns.get(group) === turn && this.#ownedUnits(group).length === 0) {
         this.#groupTurns.delete(group);
       }
     });
     return turn;
   }
   async #stopInTurn(group, bounds) {
-    const unit = this.#units.get(group);
-    if (unit === void 0) {
-      return { kind: "stopped" };
+    const stops = await Promise.all(this.#ownedUnits(group).map(async (unit) => ({ unit, outcome: await this.#stopUnit(unit, bounds) })));
+    const reasons = [];
+    for (const { unit, outcome } of stops) {
+      if (outcome.kind === "stopped") {
+        this.#release(group, unit);
+      } else {
+        reasons.push(outcome.reason);
+      }
     }
-    const outcome = await this.#stopUnit(unit, bounds);
-    if (outcome.kind === "stopped") {
+    return reasons.length === 0 ? { kind: "stopped" } : { kind: "unconfirmed", reason: reasons.join("; ") };
+  }
+  /** Every unit the manager owns for a group: the current one and any the manager failed. */
+  #ownedUnits(group) {
+    const current2 = this.#units.get(group);
+    return [...current2 !== void 0 ? [current2] : [], ...this.#failedUnits.get(group) ?? []];
+  }
+  /** Give up ownership of a unit confirmed empty. */
+  #release(group, unit) {
+    if (this.#units.get(group) === unit) {
       this.#units.delete(group);
     }
-    return outcome;
+    const failed = this.#failedUnits.get(group);
+    failed?.delete(unit);
+    if (failed?.size === 0) {
+      this.#failedUnits.delete(group);
+    }
   }
   /**
    * Signal every process in a unit and wait, within the bounds, until its
@@ -18770,13 +18794,14 @@ var SystemdWorkerScopes = class {
     this.#closed = true;
     await Promise.all([...this.#groupTurns.values()]);
     this.#groupTurns.clear();
-    const stops = await Promise.all(
-      [...this.#units.entries()].map(async ([group, unit]) => ({ group, unit, outcome: await this.#stopUnit(unit, this.#stopBounds) }))
+    const owned = [.../* @__PURE__ */ new Set([...this.#units.keys(), ...this.#failedUnits.keys()])].flatMap(
+      (group) => this.#ownedUnits(group).map((unit) => ({ group, unit }))
     );
+    const stops = await Promise.all(owned.map(async ({ group, unit }) => ({ group, unit, outcome: await this.#stopUnit(unit, this.#stopBounds) })));
     const unconfirmed = [];
     for (const { group, unit, outcome } of stops) {
       if (outcome.kind === "stopped") {
-        this.#units.delete(group);
+        this.#release(group, unit);
       } else {
         unconfirmed.push({ owner: unit, reason: outcome.reason });
       }

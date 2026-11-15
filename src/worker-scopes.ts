@@ -159,8 +159,14 @@ export class SystemdWorkerScopes implements WorkerScopes {
   #moveTimeoutMs: number;
   #cgroupRoot: string;
   #stopBounds: StopBounds;
-  /** Units this manager created, by group: the set `close()` stops. */
+  /** The unit each group's processes are placed in now, by group. */
   #units = new Map<string, string>();
+  /**
+   * Units of each group the manager failed. They stay owned — stopped by
+   * `stop()` and `close()` with the group's current unit — because a
+   * process that never moved on to a replacement is still in one.
+   */
+  #failedUnits = new Map<string, Set<string>>();
   /** How many scopes each group has had created, so a replacement for a failed one takes a fresh name. */
   #generations = new Map<string, number>();
   /** One placement at a time per group, so concurrent first placements create one scope rather than race for the name. */
@@ -228,7 +234,8 @@ export class SystemdWorkerScopes implements WorkerScopes {
         // nothing to it after. A placement stands only on a unit the
         // manager reports active; a failed one is given up, and the next
         // attempt starts a scope of a new name around whatever still lives,
-        // which moves those processes out of the failed one. A state that
+        // which moves those processes out of the failed one. The failed
+        // unit stays owned until a stop confirms it empty. A state that
         // cannot be read leaves the placement unproven and the unit owned:
         // its processes did arrive, so close() still ends them.
         const state = await this.#activeState(unit);
@@ -239,6 +246,7 @@ export class SystemdWorkerScopes implements WorkerScopes {
           return { kind: "placed", unit, pids };
         }
         this.#units.delete(group);
+        this.#failedUnits.set(group, (this.#failedUnits.get(group) ?? new Set<string>()).add(unit));
         unplaced = `the manager left ${unit} ${state.state} after moving its processes`;
         continue;
       }
@@ -394,7 +402,7 @@ export class SystemdWorkerScopes implements WorkerScopes {
     void turn.then(() => {
       // A group stopped for good leaves nothing behind: per-command groups
       // come and go through a run, and only a live group needs a turn kept.
-      if (this.#groupTurns.get(group) === turn && !this.#units.has(group)) {
+      if (this.#groupTurns.get(group) === turn && this.#ownedUnits(group).length === 0) {
         this.#groupTurns.delete(group);
       }
     });
@@ -402,15 +410,34 @@ export class SystemdWorkerScopes implements WorkerScopes {
   }
 
   async #stopInTurn(group: string, bounds: StopBounds): Promise<StopOutcome> {
-    const unit = this.#units.get(group);
-    if (unit === undefined) {
-      return { kind: "stopped" };
+    const stops = await Promise.all(this.#ownedUnits(group).map(async (unit) => ({ unit, outcome: await this.#stopUnit(unit, bounds) })));
+    const reasons: string[] = [];
+    for (const { unit, outcome } of stops) {
+      if (outcome.kind === "stopped") {
+        this.#release(group, unit);
+      } else {
+        reasons.push(outcome.reason);
+      }
     }
-    const outcome = await this.#stopUnit(unit, bounds);
-    if (outcome.kind === "stopped") {
+    return reasons.length === 0 ? { kind: "stopped" } : { kind: "unconfirmed", reason: reasons.join("; ") };
+  }
+
+  /** Every unit the manager owns for a group: the current one and any the manager failed. */
+  #ownedUnits(group: string): string[] {
+    const current = this.#units.get(group);
+    return [...(current !== undefined ? [current] : []), ...(this.#failedUnits.get(group) ?? [])];
+  }
+
+  /** Give up ownership of a unit confirmed empty. */
+  #release(group: string, unit: string): void {
+    if (this.#units.get(group) === unit) {
       this.#units.delete(group);
     }
-    return outcome;
+    const failed = this.#failedUnits.get(group);
+    failed?.delete(unit);
+    if (failed?.size === 0) {
+      this.#failedUnits.delete(group);
+    }
   }
 
   /**
@@ -489,13 +516,14 @@ export class SystemdWorkerScopes implements WorkerScopes {
     // refused above.
     await Promise.all([...this.#groupTurns.values()]);
     this.#groupTurns.clear();
-    const stops = await Promise.all(
-      [...this.#units.entries()].map(async ([group, unit]) => ({ group, unit, outcome: await this.#stopUnit(unit, this.#stopBounds) }))
+    const owned = [...new Set([...this.#units.keys(), ...this.#failedUnits.keys()])].flatMap((group) =>
+      this.#ownedUnits(group).map((unit) => ({ group, unit }))
     );
+    const stops = await Promise.all(owned.map(async ({ group, unit }) => ({ group, unit, outcome: await this.#stopUnit(unit, this.#stopBounds) })));
     const unconfirmed: { owner: string; reason: string }[] = [];
     for (const { group, unit, outcome } of stops) {
       if (outcome.kind === "stopped") {
-        this.#units.delete(group);
+        this.#release(group, unit);
       } else {
         unconfirmed.push({ owner: unit, reason: outcome.reason });
       }

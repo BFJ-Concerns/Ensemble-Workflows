@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import fsPromises, { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import fsPromises, { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
@@ -906,6 +906,38 @@ test("a running worker's cold record leaves unmeasured time and outcome unknown 
   } finally {
     await rm(store, { recursive: true, force: true });
     await rm(proc, { recursive: true, force: true });
+  }
+});
+
+test("recording git state never refreshes the repository index", async () => {
+  const cwd = await gitRepo("ensemble-record-no-index-refresh-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-no-index-refresh-store-"));
+  try {
+    const tracked = path.join(cwd, "package.json");
+    const index = path.join(cwd, ".git/index");
+    const originalIndex = await readFile(index);
+    // The contents stay clean but git's cached stat is stale. A normal
+    // status would refresh the index, acquiring its optional write lock.
+    await utimes(tracked, new Date("2000-01-01"), new Date("2000-01-01"));
+    const writer = await RunRecordWriter.start({
+      storeDir: store, cwd, runUuid: "no-index-refresh",
+      workflowPath: path.join(cwd, "workflow.js"), workflowSource: "return true;",
+      args: [], cliFlags: { jsonArgs: false }
+    });
+    assert.deepEqual(await readFile(index), originalIndex, "start inspection rewrote the index");
+    await utimes(tracked, new Date("2001-01-01"), new Date("2001-01-01"));
+    await writer.finish({ status: "complete", exitCode: 0, result: true });
+    assert.deepEqual(await readFile(index), originalIndex, "end inspection rewrote the index");
+    assert.equal(writer.manifest.git.start.dirty, false);
+    assert.equal(writer.manifest.git.end?.dirty, false);
+    assert.equal(writer.manifest.git.end?.head, writer.manifest.git.start.head);
+    // Prove the fixture offered an index refresh, rather than merely
+    // exercising a repository where status had nothing to update.
+    await execFileAsync("git", ["status", "--porcelain"], { cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "1" } });
+    assert.notDeepEqual(await readFile(index), originalIndex);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(store, { recursive: true, force: true });
   }
 });
 

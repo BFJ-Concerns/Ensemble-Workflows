@@ -2144,7 +2144,7 @@ async function commandVersion(command: string, args: string[], env?: NodeJS.Proc
 
 async function git(args: string[], cwd: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 10_000, maxBuffer: 20 * 1024 * 1024 });
+    const { stdout } = await execFileAsync("git", ["--no-optional-locks", ...args], { cwd, timeout: 10_000, maxBuffer: 20 * 1024 * 1024 });
     return stdout.trim();
   } catch {
     return null;

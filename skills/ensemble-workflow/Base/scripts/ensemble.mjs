@@ -17559,7 +17559,7 @@ async function commandVersion(command, args, env) {
 }
 async function git(args, cwd) {
   try {
-    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 1e4, maxBuffer: 20 * 1024 * 1024 });
+    const { stdout } = await execFileAsync("git", ["--no-optional-locks", ...args], { cwd, timeout: 1e4, maxBuffer: 20 * 1024 * 1024 });
     return stdout.trim();
   } catch {
     return null;

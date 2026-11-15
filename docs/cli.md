@@ -135,10 +135,13 @@ stderr reports `[worktree] <phrase> <path> (<branch>)`. The phrase is
 `uncommitted` when the branch still points at its base, `committed` when
 all work is committed, `committed with uncommitted edits` when files still
 need committing, or `unchanged and removed` when nothing was left to keep.
-Branches containing changed work are kept. Workflow runs report the same
+Branches containing changed work are kept. A detached checkout reports
+`(detached at <commit>)` in place of the branch. Workflow runs report the same
 lines for changed worktrees, omitting unchanged ones. A finalisation failure
 reports `[worktree] finalisation failed for <path> (<branch>): <message>`;
-the retained result's state is `unknown`.
+the retained result's state is `unknown`. Cleanup also retains a created
+branch holding commits absent from its base, even when the worker checked
+out the base again; the diagnostic names that branch and its commit.
 
 A failed worker exits 1 with the partial-result envelope (below) rather than
 printing a bare `null`. Its `error.kind` and `error.message` carry the last

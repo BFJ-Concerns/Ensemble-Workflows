@@ -693,7 +693,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       if (!reportUnchanged && event.params.changed !== true) {
         return;
       }
-      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${branch})\n`);
+      const location = event.params.branch === null && typeof event.params.tipCommit === "string"
+        ? `detached at ${event.params.tipCommit}` : branch;
+      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${location})\n`);
     });
     const runnerOptions = {
       source,

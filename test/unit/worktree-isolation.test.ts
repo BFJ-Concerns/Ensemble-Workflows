@@ -444,3 +444,32 @@ for (const detached of [false, true]) {
     }
   });
 }
+
+for (const ending of ["detached", "other-branch"] as const) {
+  test(`cleanup retains commits on the created ref when HEAD returns to base ${ending}`, async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ensemble-retain-created-ref-"));
+    const repo = path.join(directory, "repo");
+    try {
+      await initialiseRepo(repo);
+      const manager = new GitWorktreeIsolationManager();
+      const worktree = await manager.create(repo);
+      await writeFile(path.join(worktree.path, "result.txt"), "worker output");
+      await git(worktree.path, ["add", "."]);
+      await git(worktree.path, ["commit", "-m", "worker output"]);
+      const committed = (await git(worktree.path, ["rev-parse", "HEAD"])).trim();
+      await git(worktree.path, ending === "detached"
+        ? ["checkout", "--detach", worktree.baseCommit]
+        : ["checkout", "-b", "at-base", worktree.baseCommit]);
+      await assert.rejects(manager.finish(worktree), (error: Error) => {
+        assert.match(error.message, /retaining worktree.*holds commits absent from base/);
+        assert.ok(error.message.includes(worktree.branch));
+        assert.ok(error.message.includes(committed));
+        return true;
+      });
+      await access(worktree.path);
+      assert.equal((await git(repo, ["rev-parse", worktree.branch])).trim(), committed);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}

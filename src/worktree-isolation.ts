@@ -120,8 +120,18 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     if (repoRoot === undefined) {
       throw new Error(`worktree was not created by this manager: ${worktree.path}`);
     }
+    // HEAD may have been detached or switched back to the base after commits
+    // were made on the created branch. Keep that ref unless its entire history
+    // is already reachable from the base, independently of the current HEAD.
+    const createdRef = `refs/heads/${worktree.branch}`;
+    const createdTip = (await git(repoRoot, ["rev-parse", "--verify", createdRef])).trim();
+    const extraCommits = (await git(repoRoot, ["rev-list", "--count", `${worktree.baseCommit}..${createdTip}`])).trim();
+    if (extraCommits !== "0") {
+      throw new Error(`retaining worktree ${worktree.path}: branch ${worktree.branch} at ${createdTip} holds commits absent from base ${worktree.baseCommit}`);
+    }
     await git(repoRoot, ["worktree", "remove", worktree.path]);
-    await git(repoRoot, ["branch", "-D", worktree.branch]);
+    // Compare-and-delete also protects a ref moved after the inspection.
+    await git(repoRoot, ["update-ref", "--no-deref", "-d", createdRef, createdTip]);
     this.#worktreeRoots.delete(worktree.path);
     // When this was the container's last worktree, the empty directory goes
     // with it rather than persisting beside the user's repository. rmdir is

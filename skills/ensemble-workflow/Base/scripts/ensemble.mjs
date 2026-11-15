@@ -18099,8 +18099,14 @@ var GitWorktreeIsolationManager = class {
     if (repoRoot === void 0) {
       throw new Error(`worktree was not created by this manager: ${worktree.path}`);
     }
+    const createdRef = `refs/heads/${worktree.branch}`;
+    const createdTip = (await git2(repoRoot, ["rev-parse", "--verify", createdRef])).trim();
+    const extraCommits = (await git2(repoRoot, ["rev-list", "--count", `${worktree.baseCommit}..${createdTip}`])).trim();
+    if (extraCommits !== "0") {
+      throw new Error(`retaining worktree ${worktree.path}: branch ${worktree.branch} at ${createdTip} holds commits absent from base ${worktree.baseCommit}`);
+    }
     await git2(repoRoot, ["worktree", "remove", worktree.path]);
-    await git2(repoRoot, ["branch", "-D", worktree.branch]);
+    await git2(repoRoot, ["update-ref", "--no-deref", "-d", createdRef, createdTip]);
     this.#worktreeRoots.delete(worktree.path);
     try {
       await rmdir(path8.dirname(worktree.path));
@@ -28087,6 +28093,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       params: {
         path: worktree.path,
         branch: worktree.branch,
+        tipCommit: worktree.tipCommit,
         state: worktree.state,
         changed: worktree.changed,
         removed: worktree.removed
@@ -36388,7 +36395,8 @@ async function runEnsembleCli(argv, options = {}) {
       if (!reportUnchanged && event.params.changed !== true) {
         return;
       }
-      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${branch})
+      const location = event.params.branch === null && typeof event.params.tipCommit === "string" ? `detached at ${event.params.tipCommit}` : branch;
+      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${location})
 `);
     });
     const runnerOptions = {

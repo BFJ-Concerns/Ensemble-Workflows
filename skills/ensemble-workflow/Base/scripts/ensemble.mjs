@@ -18045,6 +18045,7 @@ function findErrorCode(error, code) {
 import { randomUUID as randomUUID8 } from "node:crypto";
 
 // src/agent-placement.ts
+import { statSync as statSync2 } from "node:fs";
 import { stat as stat4 } from "node:fs/promises";
 import path9 from "node:path";
 
@@ -18195,16 +18196,11 @@ var AgentPlacementManager = class {
   }
   async assertUsableCwd(options) {
     const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
-    try {
-      if (!(await stat4(requestedCwd)).isDirectory()) {
-        throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`);
-      }
-    } catch (error) {
-      if (error instanceof AgentCwdRejectedError) {
-        throw error;
-      }
-      throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`, { cause: error });
-    }
+    await assertDirectory(requestedCwd, () => stat4(requestedCwd));
+  }
+  assertUsableCwdSync(options) {
+    const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
+    assertDirectory(requestedCwd, () => statSync2(requestedCwd));
   }
   async open(options) {
     const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
@@ -18223,6 +18219,24 @@ var AgentPlacementManager = class {
 };
 function resolveAgentCwd(baseCwd, requestedCwd) {
   return path9.resolve(baseCwd, requestedCwd ?? ".");
+}
+function assertDirectory(requestedCwd, read) {
+  const reject = (cause) => {
+    throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`, { cause });
+  };
+  const check = (stats) => {
+    if (!stats.isDirectory()) reject();
+  };
+  let result;
+  try {
+    result = read();
+  } catch (error) {
+    return reject(error);
+  }
+  if (result instanceof Promise) {
+    return result.then(check, reject);
+  }
+  check(result);
 }
 
 // src/admission.ts
@@ -27120,28 +27134,30 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * option the call itself would refuse before spawning — a target beside a
    * literal engine or model, a missing or unknown engine, an opencode call
    * with no registered model, a fallback chain entry that cannot resolve, a
-   * strip or lean start a target cannot honour — is refused here with the
-   * same error.
+   * strip or lean start a target cannot honour, a schema that cannot
+   * compile, or an unusable cwd — is refused here with the same error.
    */
-  lookupDispatch(options, applyDefaults = (resolved) => withTargetChain(resolved, resolved)) {
+  lookupDispatch(options = {}, applyDefaults = (resolved) => withTargetChain(resolved, resolved)) {
+    options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
     const declared = options;
     const name = declared.target ?? null;
     if (name !== null && declared.engine === void 0 && declared.model === void 0 && !isNamedTargetBound(this.#namedTargets, name)) {
       return { target: name, bound: false, engine: null, model: null, family: null };
     }
-    const resolved = applyDefaults(this.resolveNamedTarget(options));
+    const resolved = snapshotAgentCwd(applyDefaults(this.resolveNamedTarget(options)));
     assertValidAgentOptions(resolved);
-    const engine = this.#engineFor(resolved.engine);
-    if (engine instanceof OpenCodeEngineAdapter) {
-      if (resolved.model === void 0) {
-        throw new OpenCodeModelRequiredError(engine.modelRegistry);
-      }
-      validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
+    const chain = settleChain(this.#namedTargets, resolved.fallback, resolved);
+    if (resolved.schema !== void 0) {
+      assertCompilableSchema(resolved.schema);
     }
+    if (resolved.cwd !== void 0) {
+      this.#placement.assertUsableCwdSync(resolved);
+    }
+    const engine = this.#engineFor(resolved.engine);
     const strip = effectiveStrip(this.#strip, resolved.strip);
     const lean = effectiveLean(this.#lean, resolved.lean);
-    const targets = [engine, ...settleChain(this.#namedTargets, resolved.fallback, resolved).map((entry) => this.#chainEngineFor(entry))];
+    const targets = [engine, ...chain.map((entry) => this.#chainEngineFor(entry))];
     for (const target of targets) {
       if (strip.length > 0) {
         resolveStripEnforcement(target.name, target.capabilities, strip);
@@ -27149,6 +27165,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (lean) {
         resolveLeanStart(target.name, target.leanStart);
       }
+    }
+    if (engine instanceof OpenCodeEngineAdapter) {
+      if (resolved.model === void 0) {
+        throw new OpenCodeModelRequiredError(engine.modelRegistry);
+      }
+      validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
     }
     const model = resolved.model ?? null;
     return { target: name, bound: true, engine: engine.name, model, family: modelFamilyOf(engine.name, model, this.openCodeModelRegistry) };

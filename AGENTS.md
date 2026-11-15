@@ -19,8 +19,14 @@ a single run. `README.md` gives the overview; `docs/` is the usage reference.
   gate. Legs that need a model read `ENSEMBLE_LIVE_CODEX_MODEL` or
   `ENSEMBLE_LIVE_OPENCODE_MODEL` and skip while it is unset.
 
+`scripts/run-test-suite.mjs` runs every compiled test pattern it is given
+(the whole suite by default) and refuses to start if any pattern names no
+file. It withholds the calling shell's run settings (`ENSEMBLE_HOLD_SCOPE`,
+`ENSEMBLE_STATUS_DIR` and the rest of the environment layer) from the tests,
+so a test that needs one declares it.
+
 A live run through `scripts/run-test-suite.mjs` (`ENSEMBLE_LIVE=1`, the whole
-suite or one file) first settles the daemon serving the machine's Claude
+suite or named files) first settles the daemon serving the machine's Claude
 config home, once, in `test/live/suite-setup.ts`. A live test that depends on
 that daemon reads the published record with `suiteClaudeDaemon()`
 (`test/live/suite-claude-daemon.ts`); it never starts or stops that home's

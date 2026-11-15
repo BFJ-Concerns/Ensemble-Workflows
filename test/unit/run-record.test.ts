@@ -20,6 +20,7 @@ import type { LiveAttemptStart, RuntimeAgentRecord } from "../../src/run-record.
 import { runEnsembleCli } from "../../src/cli.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
+import { holdWorkflowDeadline } from "../workflow-deadline-hold.js";
 
 import type { EngineAdapter, EngineInvocation } from "../../src/engines.js";
 import type { EngineName, RuntimeOptions, TokenUsageBreakdown, TurnResult } from "../../src/types.js";
@@ -1166,6 +1167,8 @@ test("CLI timeout leaves a usable partial archive with meta.task", async () => {
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
+  // The deadline lands once the second call hangs, after the first finished.
+  const deadline = holdWorkflowDeadline();
   const exitCode = await runEnsembleCli(["--timeout=80", script], {
     cwd,
     stdout,
@@ -1173,11 +1176,11 @@ test("CLI timeout leaves a usable partial archive with meta.task", async () => {
     runRecordDir: store,
     createRuntime: async () =>
       new EnsembleRuntime({
-        engines: new EngineRegistry([new HangOnPromptEngine("codex", 2)]),
+        engines: new EngineRegistry([new HangOnPromptEngine("codex", 2, () => deadline.release())]),
         defaultTurnTimeoutMs: 1_000,
         defaultMaxAttempts: 1
       })
-  });
+  }).finally(() => deadline.restore());
 
   assert.equal(exitCode, 1);
   assert.match(stderr.text(), /Workflow timed out after 80ms/);
@@ -1447,7 +1450,8 @@ class HangOnPromptEngine implements EngineAdapter {
 
   constructor(
     readonly name: EngineName,
-    concurrency: number
+    concurrency: number,
+    private readonly onHangStarted: () => void = () => {}
   ) {
     this.concurrency = concurrency;
     this.scheduler = new Scheduler(concurrency);
@@ -1465,6 +1469,7 @@ class HangOnPromptEngine implements EngineAdapter {
         if (prompt === "hang") {
           // Model the live process handle a real executing worker owns.
           liveWorker = setInterval(() => {}, 60_000);
+          this.onHangStarted();
           await new Promise<never>((_resolve, reject) => {
             rejectHang = reject;
           });

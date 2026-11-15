@@ -1,6 +1,8 @@
 import { failureEvidenceMarker, removeTestDirectory } from "../dist/test/failure-evidence.js";
 
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { isRunScopedEnvironmentVariable } from "../dist/src/ambient-settings.js";
+
+import { glob, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,7 +25,21 @@ if (!Number.isInteger(inheritedSuiteDepth) || inheritedSuiteDepth < 0 || inherit
   process.exit(1);
 }
 
-const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
+const repositoryRoot = path.resolve(import.meta.dirname, "..");
+// Every pattern given runs, resolved against the repository root as the test
+// child's cwd is. A pattern that names no file is refused rather than passed
+// over, so a mistyped path among several cannot pass as a green run.
+const testPatterns = process.argv.length > 2 ? process.argv.slice(2) : ["dist/test/**/*.test.js"];
+const unmatchedPatterns = [];
+for (const pattern of testPatterns) {
+  if (!(await patternMatchesAFile(pattern))) unmatchedPatterns.push(pattern);
+}
+if (unmatchedPatterns.length > 0) {
+  process.stderr.write(
+    `Suite runner refused to start: no test file matches ${unmatchedPatterns.map((pattern) => JSON.stringify(pattern)).join(", ")} (patterns resolve against ${repositoryRoot})\n`
+  );
+  process.exit(1);
+}
 const ansiSgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 // A descendant can retain the test process's output pipe after that process
 // exits. Keep accepting its final output, but do not let that inherited pipe
@@ -43,9 +59,8 @@ const pendingSuiteDirectory = await mkdtemp(path.join(temporaryRoot, pendingSuit
 await mkdir(path.join(pendingSuiteDirectory, "schema-cache"));
 // The whole suite writes run records to a per-run temp store, so a test that
 // forgets to isolate itself cannot pollute the durable archive by omission
-// (22,127 fixture runs had accumulated there against ~4,200 real ones). An
-// ENSEMBLE_RUN_RECORD_DIR already set by the invoker is a deliberate choice
-// and wins; tests that set their own stores are likewise unaffected.
+// (22,127 fixture runs had accumulated there against ~4,200 real ones). Tests
+// that set their own stores are unaffected.
 await mkdir(path.join(pendingSuiteDirectory, "run-records"));
 const suiteDirectory = path.join(temporaryRoot, handoffSuiteName(path.basename(pendingSuiteDirectory)));
 // The move makes the pre-spawn hand-off explicit. A later recovery can reclaim
@@ -69,13 +84,13 @@ const liveSuiteSetup =
 const child = spawn(
   process.execPath,
   suiteTestChildProgram === undefined
-    ? ["--test", "--test-reporter=tap", ...liveSuiteSetup, testGlob]
+    ? ["--test", "--test-reporter=tap", ...liveSuiteSetup, ...testPatterns]
     : [suiteTestChildProgram],
   {
-    cwd: path.resolve(import.meta.dirname, ".."),
+    cwd: repositoryRoot,
     env: {
+      ...withoutRunScopedSettings(process.env),
       ENSEMBLE_RUN_RECORD_DIR: recordStoreDirectory,
-      ...process.env,
       TMPDIR: suiteDirectory,
       ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory,
       ENSEMBLE_SUITE_RUNNER_DEPTH: String(inheritedSuiteDepth + 1)
@@ -196,6 +211,22 @@ try {
   await writeFile(path.join(suiteDirectory, "owner.json"), `${JSON.stringify({ childProcessGroup: child.pid })}\n`);
 } finally {
   completeSetup();
+}
+
+async function patternMatchesAFile(pattern) {
+  for await (const entry of glob(pattern, { cwd: repositoryRoot, withFileTypes: true })) {
+    if (entry.isFile()) return true;
+  }
+  return false;
+}
+
+// The settings a run reads from its environment — hold scope, caller
+// identity, record and status locations, ceilings — belong to the invoking
+// shell's own runs. A gate started from inside a build run inherits that
+// run's, and a test result must not depend on where the gate was started, so
+// the test child never sees them; a test that wants one declares it.
+function withoutRunScopedSettings(environment) {
+  return Object.fromEntries(Object.entries(environment).filter(([name]) => !isRunScopedEnvironmentVariable(name)));
 }
 
 async function recoverFinishedSuites(directory) {

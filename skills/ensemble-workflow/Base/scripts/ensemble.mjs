@@ -22120,7 +22120,8 @@ var ClaudeCliControlPlane = class {
       status: typeof record.status === "string" ? record.status : "unknown",
       state: normaliseState(record.state),
       present: true,
-      ...waitingFor !== void 0 ? { waitingFor } : {}
+      ...waitingFor !== void 0 ? { waitingFor } : {},
+      ...typeof record.sessionId === "string" ? { sessionId: record.sessionId } : {}
     };
   }
   async transcriptPath(handle) {
@@ -23539,13 +23540,33 @@ var ClaudeEngineInvocation = class {
       if (ran !== null && command !== null) {
         return { state: "command-not-skill", command, ran };
       }
-      if (command !== null && receipt.state === "missing" && dialog.held(await this.#controlPlane.poll(handle))) {
-        return { state: "command-not-skill", command, ran: "interactive" };
+      if (command !== null && receipt.state === "missing") {
+        const status = await this.#controlPlane.poll(handle);
+        if (dialog.held(status)) return { state: "command-not-skill", command, ran: "interactive" };
+        const replaced = await this.#commandInReplacingSession(handle, status, command);
+        if (replaced !== null) return { state: "command-not-skill", command, ran: replaced };
       }
       if (receipt.state !== "missing" || Date.now() >= deadline) {
         return receipt;
       }
       await this.#pollDelay();
+    }
+  }
+  /**
+   * Claude Code's account of `command` in the session that replaced the
+   * handle's, when the roster names one: a built-in command that replaces
+   * the conversation (`/clear`, measured on Claude Code 2.1.325) records
+   * itself in the new session's transcript and never in the handle's, so
+   * the handle's transcript shows neither a receipt nor the command.
+   */
+  async #commandInReplacingSession(handle, status, command) {
+    if (status.sessionId === void 0 || status.sessionId === handle.sessionId) return null;
+    const replacing = await this.#controlPlane.transcriptPath({ ...handle, sessionId: status.sessionId });
+    if (replacing === null) return null;
+    try {
+      return unrunCommand((await readTranscriptFile(replacing)).entries, 0, command);
+    } catch {
+      return null;
     }
   }
   /**
@@ -23737,6 +23758,13 @@ var ClaudeEngineInvocation = class {
         continue;
       }
       absences = 0;
+      if (!sawLife && opening !== void 0 && openingCommandName !== null) {
+        const replaced = await this.#commandInReplacingSession(handle, status, openingCommandName);
+        if (replaced !== null) {
+          this.#pending = null;
+          throw new ClaudeCommandNotSkillError(commandNotSkillAccount(opening.what, openingCommandName, replaced));
+        }
+      }
       if (status.state === "blocked") {
         if (!sawLife && opening !== void 0) {
           if (openingCommandName !== null && openingDialog.held(status)) {

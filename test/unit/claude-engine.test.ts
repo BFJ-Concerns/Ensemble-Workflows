@@ -3531,3 +3531,92 @@ test("a held session's follow-up opening with a panel command fails that turn al
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * A plane whose session takes a command-led message as Claude Code 2.1.325
+ * takes `/clear`: the roster moves the row to a new native session, whose
+ * transcript records the command, and the handle's own transcript never
+ * records it (for a fresh session, never appears at all).
+ */
+class ReplacingCommandPlane extends FakeControlPlane {
+  replaced = false;
+  readonly replacingPath: string;
+  constructor(readonly dir: string, turns: ScriptedTurn[]) {
+    super(dir, turns, { submissionRows: (sent) => (sent.startsWith("/clear") ? [] : undefined) });
+    this.replacingPath = path.join(dir, "replacing-session.jsonl");
+  }
+  async #replace(message: string): Promise<void> {
+    if (!message.startsWith("/clear")) return;
+    this.replaced = true;
+    await writeFile(this.replacingPath, [
+      JSON.stringify({ type: "user", isMeta: true, message: { role: "user", content: "<local-command-caveat>The command below was run directly in Claude Code.</local-command-caveat>" } }),
+      JSON.stringify({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>" } }),
+      JSON.stringify({ type: "system", subtype: "local_command", content: "<local-command-stdout></local-command-stdout>" })
+    ].map((row) => `${row}\n`).join(""));
+  }
+  override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+    const handle = await super.dispatch(options);
+    await this.#replace(options.prompt);
+    return handle;
+  }
+  override async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
+    const submitted = await super.steer(handle, message);
+    await this.#replace(message);
+    return submitted;
+  }
+  override async transcriptPath(handle?: ClaudeSessionHandle): Promise<string | null> {
+    if (handle?.sessionId === "replacing-session") return this.replaced ? this.replacingPath : null;
+    // A fresh session replaced by its opening never writes its own transcript.
+    if (this.replaced && this.dispatched.length === 1 && this.steerCount === 0) return null;
+    return super.transcriptPath();
+  }
+  override async poll(): Promise<ClaudeSessionStatus> {
+    const status = await super.poll();
+    return this.replaced && status.present ? { ...status, state: "blocked", sessionId: "replacing-session" } : status;
+  }
+}
+
+test("a task opening with a command that replaces the session fails naming it, unretried", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-replacing-"));
+  try {
+    const plane = new ReplacingCommandPlane(dir, [{}]);
+    const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 600_000, firstLifeTimeoutMs: 600_000, turnTimeoutMs: 600_000 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+    try {
+      assert.equal(await runtime.agent("/clear", { engine: "claude" }), null);
+      assert.equal(plane.dispatchCount, 1);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind), ["claude-command-not-skill"]);
+      assert.match(attempts[0]?.failure?.message ?? "",
+        /^the opening prompt opens with \/clear, which Claude Code took as a command, and no skill named \/clear ran: \/clear is one of Claude Code's built-in commands, which it ran in place of a model turn/);
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a held session's follow-up opening with a command that replaces the session fails at once naming it", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-replacing-session-"));
+  try {
+    const plane = new ReplacingCommandPlane(dir, [{ assistant: { text: "first answer" } }, {}]);
+    const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 600_000 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+    try {
+      const session = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await session.send("first"), "first answer");
+      assert.equal(await session.send("/clear"), null);
+      const attempts = records.at(-1)?.attempts ?? [];
+      assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind), ["claude-command-not-skill"]);
+      assert.ok(attempts[0]?.failure?.message.startsWith("the follow-up turn opens with /clear"));
+      await session.close();
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

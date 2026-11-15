@@ -237,6 +237,12 @@ export interface ClaudeSessionStatus {
   state: ClaudeSessionState;
   /** Present on a blocked session when the daemon records what it is waiting for. */
   waitingFor?: string;
+  /**
+   * The native session the roster row now names. It differs from the
+   * handle's once the session has replaced its conversation, as `/clear`
+   * does: Claude Code then writes to that session's transcript.
+   */
+  sessionId?: string;
   /** False once the session has left the roster (exited / removed). */
   present: boolean;
 }
@@ -964,7 +970,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       status: typeof record.status === "string" ? record.status : "unknown",
       state: normaliseState(record.state),
       present: true,
-      ...(waitingFor !== undefined ? { waitingFor } : {})
+      ...(waitingFor !== undefined ? { waitingFor } : {}),
+      ...(typeof record.sessionId === "string" ? { sessionId: record.sessionId } : {})
     };
   }
 

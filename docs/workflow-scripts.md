@@ -702,7 +702,11 @@ two reasons:
   that opens an interactive panel, such as `/help` or `/login`, writes
   nothing to the transcript and leaves the worker waiting on the panel; the
   call fails once the worker has waited on it for five seconds (or the
-  receipt deadline, when that is shorter).
+  receipt deadline, when that is shorter). A built-in command that replaces
+  the conversation, such as `/clear`, moves the worker to a new native
+  session and records itself there; Ensemble reads that session's
+  transcript for it. In a `session()`, the session that follows such a
+  command is no longer the one Ensemble holds, so later turns fail too.
 
 In a `session()`, only the turn that opened with the command fails; the
 session stays open for its next turn. To send text that begins with a slash

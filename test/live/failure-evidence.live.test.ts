@@ -8,6 +8,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { removeTestDirectory } from "../failure-evidence.js";
+import { findClaudeTranscript } from "./claude-transcript-path.js";
 import { liveOpenCodeModel } from "./live-models.js";
 import { partialOutputProbePrompt, probePaths, waitForPath } from "./held-worker-probes.js";
 
@@ -331,21 +332,11 @@ async function waitForNewClaudeWorker(existingSessions: ReadonlySet<string>, cwd
 
 async function waitForClaudeTranscript(sessionId: string, signal: AbortSignal): Promise<string> {
   const projectsRoot = path.join(homedir(), ".claude", "projects");
-  const filename = `${sessionId}.jsonl`;
   const deadline = Date.now() + 150_000;
   while (Date.now() < deadline) {
-    // The worker's project directory may itself appear after registration.
-    const projectDirectories = await readdir(projectsRoot, { withFileTypes: true });
-    const candidates = projectDirectories
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(projectsRoot, entry.name, filename));
-    for (const candidate of candidates) {
-      try {
-        await readFile(candidate, "utf8");
-        return candidate;
-      } catch {
-        // The exact session transcript has not appeared in this project directory yet.
-      }
+    const transcript = await findClaudeTranscript(projectsRoot, sessionId);
+    if (transcript !== null) {
+      return transcript;
     }
     await observationPoll(250, signal);
   }

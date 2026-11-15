@@ -35514,6 +35514,8 @@ var AGENT_INVOCATION_OPTIONS = {
   isolation: { type: "string" },
   identity: { type: "boolean" },
   schema: { type: "string" },
+  fallback: { type: "string" },
+  "timeout-ms": { type: "string" },
   "max-attempts": { type: "string" },
   strip: { type: "string", multiple: true },
   task: { type: "string" },
@@ -36560,7 +36562,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     }
     if (optionName(argument) === "--fallback-model") {
       throw new CliUsageError(
-        "--fallback-model was retired; declare a script-side fallback chain in agent() or defaults instead."
+        "--fallback-model was retired; use --fallback with a JSON fallback chain instead."
       );
     }
   }
@@ -36604,6 +36606,13 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
       throw new CliUsageError(`--schema from ${source}: ${error.message}`);
     }
   }
+  const fallback = parsed.values.fallback === void 0 ? void 0 : await parseJsonValue(parsed.values.fallback, cwd, "--fallback");
+  try {
+    assertValidFallbackChain(fallback);
+  } catch (error) {
+    throw new CliUsageError(`--fallback: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const agentTimeoutMs = parseTimeoutMs(parsed.values["timeout-ms"], "--timeout-ms");
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
   const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
@@ -36624,6 +36633,8 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...isolation !== void 0 ? { isolation } : {},
     ...parsed.values.identity === true ? { identity: true } : {},
     ...schema !== void 0 ? { schema } : {},
+    ...fallback !== void 0 ? { fallback } : {},
+    ...agentTimeoutMs !== void 0 ? { timeoutMs: agentTimeoutMs } : {},
     ...maxAttempts !== void 0 ? { maxAttempts } : {},
     ...strip !== void 0 ? { strip } : {}
   };
@@ -36969,16 +36980,16 @@ function parseAgentCeiling(value) {
   }
   return ceiling;
 }
-function parseTimeoutMs(value) {
+function parseTimeoutMs(value, flag = "--timeout") {
   if (value === void 0) {
     return void 0;
   }
   const timeoutMs = Number(value);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
-    throw new CliUsageError(`--timeout value must be a positive integer of milliseconds; got ${value}`);
+    throw new CliUsageError(`${flag} value must be a positive integer of milliseconds; got ${value}`);
   }
   if (timeoutMs > MAX_TIMER_DELAY_MS) {
-    throw new CliUsageError(`--timeout value must be at most ${MAX_TIMER_DELAY_MS} milliseconds; got ${value}`);
+    throw new CliUsageError(`${flag} value must be at most ${MAX_TIMER_DELAY_MS} milliseconds; got ${value}`);
   }
   return timeoutMs;
 }
@@ -37155,6 +37166,8 @@ var AGENT_OPTION_SYNOPSES = [
   "--isolation worktree",
   "--identity",
   "--schema '<json>|@file'",
+  "--fallback '<json>|@file'",
+  "--timeout-ms ms",
   "--max-attempts N",
   "--task <identity>",
   "--strip capability",

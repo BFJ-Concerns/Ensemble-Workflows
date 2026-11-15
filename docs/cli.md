@@ -52,6 +52,7 @@ Run options (before the script path):
 Agent options (after agent, before the prompt):
   --model <model>  --effort <effort>  --label <label>  --phase <phase>
   --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'
+  --fallback '<json>|@file'  --timeout-ms ms
   --max-attempts N  --task <identity>  --strip capability  --budget engine=N
   --agent-ceiling N|null  --concurrency engine=N  --timeout ms
   --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run
@@ -80,7 +81,7 @@ a script argument spelled like a run option, put `--` before the script path:
 | Option | Description |
 |---|---|
 | `--json-args '<json>'`, `--json-args @file` | Replace the positional arguments with a parsed JSON value, inline or read from a file. At most 256 levels of nested arrays or objects |
-| `--budget engine=N` | Token-spend ceiling for one engine, checked before queueing each call or session turn. Already-admitted calls still run and can overshoot the ceiling (see [Budgets](workflow-scripts.md#budgets)). Repeatable, one engine each |
+| `--budget engine=N` | Token-spend ceiling for one engine, checked before queueing each call or session turn. Spend counts every token class the engine reports, cache reads included (see [`budget`](workflow-scripts.md#budget-worktrees-and-args)). Already-admitted calls still run and can overshoot the ceiling (see [Budgets](workflow-scripts.md#budgets)). Repeatable, one engine each |
 | `--concurrency engine=N` | Maximum parallel workers on one engine. Repeatable, one engine each |
 | `--agent-ceiling N` | Maximum parallel workers across every engine. `--agent-ceiling null` lifts a ceiling set in the environment or configuration file for this run |
 | `--timeout ms` | Whole-run deadline, at most 2147483647. Distinct from an `agent()` call's own `timeoutMs` |
@@ -113,6 +114,8 @@ the prompt.
 | `--effort <effort>` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh`; on opencode, one of the model's declared variants |
 | `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed. A schema Ensemble cannot compile is a usage error (exit 2), naming the inline argument or resolved file path, the invalid location and a correction |
 | `--identity` | Print the identified result `{ label, phase, output, failure }` instead of the bare output |
+| `--fallback '<json>'`, `--fallback @file` | Ordered fallback chain, as in `agent()`: an array of `{ engine, model, effort? }` or `{ target, effort? }` entries. Invalid chains are refused before any worker starts |
+| `--timeout-ms ms` | Per-agent deadline, as `timeoutMs` in a script; a positive integer at most 2147483647, separate from the whole-run `--timeout` |
 | `--max-attempts N` | Attempt bound (default 3), as `maxAttempts` in a script |
 | `--cwd <path>` | Working directory for the worker; must be an existing directory |
 | `--isolation worktree` | Run the worker in a fresh git worktree |
@@ -124,8 +127,10 @@ The run options `--budget`, `--concurrency`, `--agent-ceiling`, `--timeout`,
 `--worker-scope` apply here too.
 
 The option semantics match `agent()` in a script; see
-[`agent()` options](workflow-scripts.md#agent-options). There is no fallback
-flag: a fallback chain is declared in a script. With `--isolation worktree`
+[`agent()` options](workflow-scripts.md#agent-options). For example,
+`--fallback '[{"engine":"claude","model":"sonnet"}]'` retries an availability
+failure on that target; `--fallback @chain.json` reads the same array from a
+file relative to the invocation directory. With `--isolation worktree`
 stderr reports `[worktree] <phrase> <path> (<branch>)`. The phrase is
 `uncommitted` when the branch still points at its base, `committed` when
 all work is committed, `committed with uncommitted edits` when files still

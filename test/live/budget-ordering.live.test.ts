@@ -152,7 +152,7 @@ async function runNodeAndReadStatus(
     child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
     child.once("error", reject);
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
       clearInterval(poll);
       resolve({ code, stdout, stderr });
     });

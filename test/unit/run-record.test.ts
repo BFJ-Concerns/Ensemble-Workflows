@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import fsPromises, { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import fsPromises, { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
@@ -20,6 +20,7 @@ import type { LiveAttemptStart, RuntimeAgentRecord } from "../../src/run-record.
 import { runEnsembleCli } from "../../src/cli.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
+import { holdWorkflowDeadline } from "../workflow-deadline-hold.js";
 
 import type { EngineAdapter, EngineInvocation } from "../../src/engines.js";
 import type { EngineName, RuntimeOptions, TokenUsageBreakdown, TurnResult } from "../../src/types.js";
@@ -909,6 +910,38 @@ test("a running worker's cold record leaves unmeasured time and outcome unknown 
   }
 });
 
+test("recording git state never refreshes the repository index", async () => {
+  const cwd = await gitRepo("ensemble-record-no-index-refresh-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-no-index-refresh-store-"));
+  try {
+    const tracked = path.join(cwd, "package.json");
+    const index = path.join(cwd, ".git/index");
+    const originalIndex = await readFile(index);
+    // The contents stay clean but git's cached stat is stale. A normal
+    // status would refresh the index, acquiring its optional write lock.
+    await utimes(tracked, new Date("2000-01-01"), new Date("2000-01-01"));
+    const writer = await RunRecordWriter.start({
+      storeDir: store, cwd, runUuid: "no-index-refresh",
+      workflowPath: path.join(cwd, "workflow.js"), workflowSource: "return true;",
+      args: [], cliFlags: { jsonArgs: false }
+    });
+    assert.deepEqual(await readFile(index), originalIndex, "start inspection rewrote the index");
+    await utimes(tracked, new Date("2001-01-01"), new Date("2001-01-01"));
+    await writer.finish({ status: "complete", exitCode: 0, result: true });
+    assert.deepEqual(await readFile(index), originalIndex, "end inspection rewrote the index");
+    assert.equal(writer.manifest.git.start.dirty, false);
+    assert.equal(writer.manifest.git.end?.dirty, false);
+    assert.equal(writer.manifest.git.end?.head, writer.manifest.git.start.head);
+    // Prove the fixture offered an index refresh, rather than merely
+    // exercising a repository where status had nothing to update.
+    await execFileAsync("git", ["status", "--porcelain"], { cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "1" } });
+    assert.notDeepEqual(await readFile(index), originalIndex);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
 test("standalone git diff write stages beside its destination and succeeds", async () => {
   const source = await readFile("src/run-record.ts", "utf8");
   const standaloneWrite = source.match(/async function writeStandaloneText[\s\S]*?\n}/)?.[0] ?? "";
@@ -1134,6 +1167,8 @@ test("CLI timeout leaves a usable partial archive with meta.task", async () => {
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
+  // The deadline lands once the second call hangs, after the first finished.
+  const deadline = holdWorkflowDeadline();
   const exitCode = await runEnsembleCli(["--timeout=80", script], {
     cwd,
     stdout,
@@ -1141,11 +1176,11 @@ test("CLI timeout leaves a usable partial archive with meta.task", async () => {
     runRecordDir: store,
     createRuntime: async () =>
       new EnsembleRuntime({
-        engines: new EngineRegistry([new HangOnPromptEngine("codex", 2)]),
+        engines: new EngineRegistry([new HangOnPromptEngine("codex", 2, () => deadline.release())]),
         defaultTurnTimeoutMs: 1_000,
         defaultMaxAttempts: 1
       })
-  });
+  }).finally(() => deadline.restore());
 
   assert.equal(exitCode, 1);
   assert.match(stderr.text(), /Workflow timed out after 80ms/);
@@ -1415,7 +1450,8 @@ class HangOnPromptEngine implements EngineAdapter {
 
   constructor(
     readonly name: EngineName,
-    concurrency: number
+    concurrency: number,
+    private readonly onHangStarted: () => void = () => {}
   ) {
     this.concurrency = concurrency;
     this.scheduler = new Scheduler(concurrency);
@@ -1433,6 +1469,7 @@ class HangOnPromptEngine implements EngineAdapter {
         if (prompt === "hang") {
           // Model the live process handle a real executing worker owns.
           liveWorker = setInterval(() => {}, 60_000);
+          this.onHangStarted();
           await new Promise<never>((_resolve, reject) => {
             rejectHang = reject;
           });

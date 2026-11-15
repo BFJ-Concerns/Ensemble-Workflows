@@ -22,13 +22,17 @@ test("suite runner ignores an ambient direct-child override outside its test con
   try {
     const childProgram = path.join(directory, "empty-child.mjs");
     await writeFile(childProgram, "");
-    const result = await runNode([runnerPath, path.join(directory, "empty/**/*.test.js")], {
+    // The override would exit 0 silently; only the real Node test consumer
+    // runs this failing test and fails the suite.
+    const failingTest = path.join(directory, "real-consumer.test.js");
+    await writeFile(failingTest, 'import test from "node:test";\ntest("only the real consumer runs this", () => { throw new Error("ran"); });\n');
+    const result = await runNode([runnerPath, failingTest], {
       ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: childProgram,
       NODE_TEST_CONTEXT: undefined,
       ...spawningTestMarker
     });
     assert.equal(result.code, 1, result.stderr);
-    assert.match(result.stderr, /Test suite matched no tests/);
+    assert.match(result.stdout, /^not ok \d+ - only the real consumer runs this$/m);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

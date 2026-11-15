@@ -279,7 +279,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
-  validateTargets(parsed, configFile);
+  validateNamedTargetBindings(parsed.targets, configFile);
   if (parsed.effort !== undefined) {
     assertEffortSection(parsed.effort, (key, detail) => {
       throw fileValueError(configFile, `effort${key ? `.${key}` : ""}`, detail);
@@ -432,8 +432,7 @@ function validateOpenCodeModelDeclaration(key: string, declaration: unknown, con
  * for a call naming opencode literally; the chain is judged here by the
  * rule every chain meets.
  */
-function validateTargets(root: Record<string, unknown>, configFile: string): void {
-  const section = root.targets;
+export function validateNamedTargetBindings(section: unknown, configFile: string): void {
   if (section === undefined) {
     return;
   }
@@ -467,9 +466,8 @@ function validateTargets(root: Record<string, unknown>, configFile: string): voi
       }
       throw error;
     }
-    // A chain entry naming a target takes that target's binding, so the
-    // name must be bound here; whether it binds opencode is judged at
-    // dispatch, as for an entry a script writes.
+    // A chain entry naming a target must resolve to a bound engine that
+    // can participate in fallback. The binding's own chain does not nest.
     for (const [index, entry] of (binding.fallback ?? []).entries()) {
       if (entry.target === undefined) continue;
       // The type forbids the pair; the file's JSON does not.

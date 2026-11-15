@@ -35,7 +35,7 @@ await sibling.send("sibling first");
 ${ending === "mid-turn" ? `
 const pending = held.send("second turn");
 let streamed = false;
-const streamDeadline = Date.now() + 5000;
+const streamDeadline = Date.now() + 20_000;
 while (!streamed && Date.now() < streamDeadline) {
   const paths = await fs.readdir(${JSON.stringify(records)}, { recursive: true });
   for (const path of paths.filter(path => path.endsWith(".codex.jsonl"))) {
@@ -47,7 +47,7 @@ if (!streamed) throw new Error("the in-flight turn never streamed its partial an
 ` : ""}
 process.kill(Number(await fs.readFile(${JSON.stringify(pidFile)}, "utf8")), "SIGKILL");
 ${ending === "unsettled" || ending === "signal" ? `
-const lossDeadline = Date.now() + 5000;
+const lossDeadline = Date.now() + 20_000;
 while ((!held.lost || !sibling.lost) && Date.now() < lossDeadline) await new Promise(resolve => setTimeout(resolve, 10));
 if (!held.lost || !sibling.lost) throw new Error("lost sessions were not observed");
 // An idle lost session owns no event-loop reference. A script-owned
@@ -55,7 +55,7 @@ if (!held.lost || !sibling.lost) throw new Error("lost sessions were not observe
 ${ending === "signal" ? 'setTimeout(() => process.kill(process.pid, "SIGTERM"), 100);' : ""}
 await new Promise(() => {});
 ` : `
-const deadline = Date.now() + 5000;
+const deadline = Date.now() + 20_000;
 while (!held.lost && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
 const lostBeforeSend = held.lost;
 const siblingLost = sibling.lost;

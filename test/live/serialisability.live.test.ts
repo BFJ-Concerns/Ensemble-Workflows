@@ -145,6 +145,6 @@ function runNode(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number
     child.stdout.on("data", (chunk: string) => (stdout += chunk));
     child.stderr.on("data", (chunk: string) => (stderr += chunk));
     child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, stdout, stderr }));
+    child.once("close", (code) => resolve({ code, stdout, stderr }));
   });
 }

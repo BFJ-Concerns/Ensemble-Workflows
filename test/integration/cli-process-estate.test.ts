@@ -21,6 +21,7 @@ import type { EngineName } from "../../src/types.js";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const turnTimeoutAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-turn-timeout.mjs");
 const delayedAgentWritePreloadPath = path.resolve("test/fixtures/delay-agent-record-writes.mjs");
+const workflowTimeoutReleasePath = path.resolve("test/fixtures/codex/release-workflow-timeout.mjs");
 // This only catches a wedged fixture process. It is not a product deadline and
 // must leave room for the gate's many process estates to contend for the host.
 const estateProcessHangGuardMs = 30_000;
@@ -534,17 +535,26 @@ test("built CLI terminalises an abandoned parallel sibling in the sealed archive
       `
     );
 
+    // The 20 ms deadline is released by the first delayed agent-record
+    // write, so it lands while dispatch records are writing rather than
+    // while a slow host is still loading the script.
+    const deadlineControl = path.join(path.dirname(fixture.script), "deadline-control");
+    await writeFile(deadlineControl, "");
     const result = await fixture.runArgsWithEnv(
       ["--timeout=20", "--concurrency=codex=1", fixture.script],
       {
         ENSEMBLE_RUN_RECORD: "1",
-        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${delayedAgentWritePreloadPath}`.trim()
+        ENSEMBLE_WORKFLOW_TIMEOUT_CONTROL: deadlineControl,
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${workflowTimeoutReleasePath} --import=${delayedAgentWritePreloadPath}`.trim()
       },
       estateProcessHangGuardMs
     );
 
     assert.equal(result.code, 1, result.stderr);
     assert.match(result.stderr, /Workflow timed out/i);
+    const deadlines = await readFile(deadlineControl, "utf8");
+    assert.match(deadlines, /^armed:workflow:\d+:20$/m);
+    assert.match(deadlines, /^ready$/m, "the deadline fired before any dispatch record was writing");
     const agents = await readArchivedAgentsInSeparateProcess(fixture.dataHome);
     const abandoned = agents.find((agent) => agent.label === "abandoned-sibling-15");
     assert.ok(abandoned, "expected the separately-read archive to contain the abandoned sibling");

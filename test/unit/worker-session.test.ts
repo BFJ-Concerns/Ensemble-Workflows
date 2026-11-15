@@ -567,14 +567,14 @@ test("an identified held session distinguishes a failed schema turn from a valid
   assert.ok(session);
   runtime.notePhase("Check");
   const first = await session.send("fail", { schema: { type: "null" } }) as {
-    label: string | null; phase: string | null; output: unknown; failure: { message: string } | null;
+    label: string | null; phase: string | null; output: unknown; failure: { kind: string; message: string } | null;
   };
   runtime.notePhase("Answer");
   const second = await session.send("answer null", { schema: { type: "null" } });
   assert.equal(first.label, "held");
   assert.equal(first.phase, "Check");
   assert.equal(first.output, null);
-  assert.match(first.failure?.message ?? "", /schema-validation/);
+  assert.equal(first.failure?.kind, "schema-validation");
   assert.deepEqual(second, { label: "held", phase: "Answer", output: null, failure: null });
   assert.deepEqual(transport.turns.map((turn) => turn.threadId), ["thread-1", "thread-1"]);
   await runtime.close();
@@ -605,7 +605,7 @@ test("identified session setup failures retain their envelope through both combi
               ? await parallel([send], () => {})
               : await pipeline(["go"], [send], () => {});
             assert.deepEqual(result, [identity ? {
-              label: "held", phase: "build", output: null, failure: { message: "setup failed" }
+              label: "held", phase: "build", output: null, failure: { kind: "Error", message: "setup failed" }
             } : null]);
             assert.equal(runtime.lastAgentRecord()?.attempts.length, 0);
           }
@@ -1256,11 +1256,10 @@ test("a held session whose opening prompt arrived altered is never launched agai
       // One launch, ever: the session that took the altered opening is the
       // session that answers, so its context is never split across two.
       assert.equal(controlPlane.dispatchCount, 1);
-      // The replacement repeats everything the launch carried — the
-      // preamble a later turn's message leaves out, not the task alone —
-      // and went in only once the altered turn had ended.
+      // The replacement repeats the opening exactly as the launch carried
+      // it, and went in only once the altered turn had ended.
       const opening = controlPlane.dispatched[0]?.prompt ?? "";
-      assert.ok(opening.length > "orient yourself".length);
+      assert.equal(opening, "orient yourself");
       assert.equal(controlPlane.steered.length, 1);
       assert.match(controlPlane.steered[0] ?? "", REPLACEMENT);
       assert.ok(controlPlane.steered[0]?.endsWith(`\n\n${opening}`));

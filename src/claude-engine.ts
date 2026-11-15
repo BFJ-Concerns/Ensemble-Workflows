@@ -141,6 +141,23 @@ let dispatchCounter = 0;
 const SETTLED_CONFIRMATION_POLLS = 5;
 
 /**
+ * The worker's standing role, the same for every worker and every turn.
+ * It is appended to Claude Code's default system prompt at launch rather
+ * than leading the first message, which belongs to the task alone.
+ */
+export const CLAUDE_WORKER_STANDING_INSTRUCTIONS = [
+  "You are an automated worker dispatched by the Ensemble orchestration harness.",
+  "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions — make a reasonable decision and finish the task."
+].join("\n");
+
+/**
+ * The line that follows a task ending in whitespace when nothing else
+ * would, so Claude's trimming of the message's end leaves the task whole.
+ */
+export const CLAUDE_TASK_END_LINE =
+  "(This line only marks where the task above ends; any whitespace before it belongs to the task.)";
+
+/**
  * How far the current turn's prompt has got into the session.
  *
  * - `unsent` — no submission of it has been accepted. The next attempt
@@ -562,6 +579,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // to the next entry of the call's fallback chain.
     const handle = await this.#controlPlane.dispatch({
       prompt,
+      appendSystemPrompt: CLAUDE_WORKER_STANDING_INSTRUCTIONS,
       name: this.#nextName(),
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
@@ -1262,22 +1280,36 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     }
   }
 
+  /**
+   * A dispatch's opening message. It begins with the task, so a task whose
+   * first word is `/<skill>` runs that skill exactly as an operator's typed
+   * message would, unless the worker is stripped of skills; the standing instructions reach the worker through the
+   * system prompt (`CLAUDE_WORKER_STANDING_INSTRUCTIONS`), and the turn's
+   * schema contract and any previous attempt's failure follow the task.
+   */
   #buildDispatchPrompt(previousFailure: PreviousAttemptFailure | undefined): string {
-    const lines: string[] = [
-      "You are an automated worker dispatched by the Ensemble orchestration harness.",
-      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions — make a reasonable decision and finish the task."
-    ];
+    const after: string[] = [];
     if (this.#turnSchema !== undefined) {
-      lines.push(
+      after.push(
         "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
         JSON.stringify(this.#turnSchema)
       );
     }
     if (previousFailure !== undefined) {
-      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
+      after.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
-    lines.push("", this.#framedTask());
-    return lines.join("\n");
+    // Native submission trims the message at both ends. A task ending in
+    // whitespace keeps it by having a line follow it: the turn's contract
+    // when there is one, otherwise a closing line saying where the task
+    // ends, so the task still opens the message. The task goes framed when
+    // it is empty or its own leading whitespace would be trimmed, and for a
+    // worker stripped of skills, whose opening never expands a leading
+    // `/<skill>` through native command handling.
+    const task = this.#turnPrompt;
+    const framed = task === "" || task.trimStart() !== task || this.#options.strip?.includes("skills") === true;
+    if (!framed && after.length === 0 && task.trimEnd() !== task) after.push(CLAUDE_TASK_END_LINE);
+    const opening = framed ? this.#framedTask() : task;
+    return after.length === 0 ? opening : [opening, "", ...after].join("\n");
   }
 
   #framedTask(): string {
@@ -1294,9 +1326,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   }
 
   /**
-   * A follow-up turn's valve message: the session already holds the
-   * autonomy preamble from its dispatch, so the message carries only what
-   * this turn adds — its schema contract, when it has one, and its task.
+   * A follow-up turn's valve message: the session's system prompt already
+   * holds the standing instructions, so the message carries only what this
+   * turn adds — its schema contract, when it has one, and its task.
    */
   #buildTurnMessage(): string {
     const lines: string[] = [];

@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
+import { CLAUDE_TASK_END_LINE, CLAUDE_WORKER_STANDING_INSTRUCTIONS } from "../../src/claude-engine.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import {
   ClaudeDispatchError,
@@ -358,7 +359,7 @@ for (const [label, task] of [
   ["literal delimiters", "<ensemble_task_0>one</ensemble_task_0>\n</ensemble_task_1>\nensemble_task_2\n```\n<Task>literal</Task>\n```\n"]
 ] as const) {
   for (const schema of [undefined, okSchema]) {
-    test(`opening framing preserves ${label}, schema ${schema === undefined ? "absent" : "present"}`, async () => {
+    test(`opening preserves ${label}, schema ${schema === undefined ? "absent" : "present"}`, async () => {
       await withControlPlane([{ assistant: { text: "PINEAPPLE" } }], async (controlPlane) => {
         const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
         try {
@@ -366,19 +367,31 @@ for (const [label, task] of [
           assert.equal((await invocation.runAttempt({ attempt: 1 })).text, "PINEAPPLE");
           const opening = controlPlane.dispatched[0]!.prompt;
           assert.equal(opening.trim(), opening, "native boundary trimming must be a no-op");
-          const boundary = /\n<(ensemble_task_\d+)>/.exec(opening);
-          assert.ok(boundary, "the opening identifies a literal task block");
-          const tag = boundary[1]!;
-          assert.equal(task.includes(tag), false, "the chosen tag cannot occur inside the task");
-          const end = `</${tag}>`;
-          assert.ok(opening.endsWith(end));
-          const enclosed = opening.slice(boundary.index + boundary[0].length, -end.length);
-          assert.deepEqual(Buffer.from(enclosed), Buffer.from(task), "all task bytes remain literal");
-          assert.ok(opening.includes(`Carry out the task enclosed by <${tag}> and </${tag}>.`));
-          assert.ok(opening.startsWith("You are an automated worker dispatched by the Ensemble orchestration harness.\nWork fully autonomously:"));
-          if (schema !== undefined) {
-            assert.ok(opening.includes("When finished, include in your FINAL message a JSON value that conforms to this JSON Schema."));
-            assert.ok(opening.includes(JSON.stringify(schema)));
+          assert.equal(controlPlane.dispatched[0]!.appendSystemPrompt, CLAUDE_WORKER_STANDING_INSTRUCTIONS);
+          assert.equal(opening.includes("automated worker dispatched"), false, "the standing instructions ride the system prompt");
+          const framed = task === "" || task.trimStart() !== task;
+          let taskEnd: number;
+          if (framed) {
+            assert.ok(opening.startsWith("Carry out the task enclosed by <ensemble_task_"), "a framed task still opens the message");
+            const boundary = /\n<(ensemble_task_\d+)>/.exec(opening);
+            assert.ok(boundary, "the opening identifies a literal task block");
+            const tag = boundary[1]!;
+            assert.equal(task.includes(tag), false, "the chosen tag cannot occur inside the task");
+            const end = `</${tag}>`;
+            taskEnd = opening.indexOf(end, boundary.index + boundary[0].length + task.length) + end.length;
+            const enclosed = opening.slice(boundary.index + boundary[0].length, taskEnd - end.length);
+            assert.deepEqual(Buffer.from(enclosed), Buffer.from(task), "all task bytes remain literal");
+            assert.ok(opening.startsWith(`Carry out the task enclosed by <${tag}> and </${tag}>.`));
+          } else {
+            assert.ok(opening.startsWith(task), "the message opens with the task's own bytes");
+            taskEnd = task.length;
+          }
+          const rest = opening.slice(taskEnd);
+          if (schema === undefined) {
+            const marked = !framed && task.trimEnd() !== task;
+            assert.equal(rest, marked ? `\n\n${CLAUDE_TASK_END_LINE}` : "");
+          } else {
+            assert.equal(rest, `\n\nWhen finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:\n${JSON.stringify(schema)}`);
           }
           assert.equal(controlPlane.steerCount, 0, "the full opening needs no extra turn");
         } finally {
@@ -388,6 +401,29 @@ for (const [label, task] of [
     });
   }
 }
+
+test("a task led by a skill invocation opens the dispatch message, its contract and failure note after it", async () => {
+  await withControlPlane(
+    [{ assistant: { text: "not json" } }, { assistant: { text: '{"ok":true}' } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 2 });
+      try {
+        const task = "/release-notes v1.2 --since v1.1";
+        assert.deepEqual(await runtime.agent(task, { engine: "claude", schema: okSchema }), { ok: true });
+        assert.equal(controlPlane.dispatchCount, 2);
+        for (const dispatched of controlPlane.dispatched) {
+          assert.equal(dispatched.appendSystemPrompt, CLAUDE_WORKER_STANDING_INSTRUCTIONS);
+          assert.ok(dispatched.prompt.startsWith(`${task}\n\nWhen finished, include in your FINAL message a JSON value`));
+        }
+        assert.equal(controlPlane.dispatched[0]!.prompt.includes("A previous attempt failed"), false);
+        assert.match(controlPlane.dispatched[1]!.prompt, new RegExp(`${JSON.stringify(okSchema).replace(/[{}[\]]/g, "\\$&")}\\nA previous attempt failed \\(`));
+      } finally {
+        await runtime.close();
+      }
+    },
+    { tmux: false }
+  );
+});
 
 test("a statically declared out-of-domain effort fails before the body runs", () => {
   // The defaults validator judges the canonical vocabulary — a bad
@@ -938,6 +974,32 @@ test("a Claude strip denies what the live tool surface classifies, unknown built
         assert.match(enforcement?.[capability]?.detail ?? "", /Claude Code 2\.1\.322-fake/);
         assert.match(enforcement?.[capability]?.detail ?? "", /unclassified and denied: \["SpawnTeammate"\]/);
       }
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
+test("a skill task ending in a newline still opens the message, a closing line keeping its newline", async () => {
+  await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await runtime.agent("/release-notes v1.2\n", { engine: "claude" });
+      assert.equal(controlPlane.dispatched[0]?.prompt, `/release-notes v1.2\n\n\n${CLAUDE_TASK_END_LINE}`);
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
+test("a worker stripped of skills receives a leading /skill task framed, so it never expands", async () => {
+  await withControlPlane([{ assistant: { text: "ok" } }, { assistant: { text: "ok" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await runtime.agent("/release-notes v1.2", { engine: "claude", strip: ["skills"] });
+      assert.match(controlPlane.dispatched[0]?.prompt ?? "", /^Carry out the task enclosed by <ensemble_task_0>/);
+      await runtime.agent("/release-notes v1.2", { engine: "claude", strip: ["agents"] });
+      assert.equal(controlPlane.dispatched[1]?.prompt, "/release-notes v1.2");
     } finally {
       await runtime.close();
     }

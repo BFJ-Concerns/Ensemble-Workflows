@@ -2,6 +2,7 @@ import { resolveEffort, isCanonicalEffort, assertEffortSection, effortPolicyKeys
 import type { EffortPolicy, EffortResolution } from "./effort-resolution.js";
 import { randomUUID } from "node:crypto";
 
+import { validateNamedTargetBindings } from "./ambient-settings.js";
 import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
@@ -343,7 +344,7 @@ function identifiedResult(options: { label?: string }, output: unknown, record: 
     label: options.label ?? null,
     phase: record.phase,
     output,
-    failure: record.status === "complete" ? null : { message: settledFailureMessage(record) }
+    failure: record.status === "complete" ? null : settledFailureAccount(record)
   };
 }
 
@@ -606,6 +607,9 @@ export class EnsembleRuntime {
       throw new InvalidAgentOptionValueError("lean", options.lean, "a boolean");
     }
     this.#lean = options.lean === true;
+    if (options.namedTargets !== undefined) {
+      validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
+    }
     this.#namedTargets = options.namedTargets ?? null;
     this.#effortPolicy = options.effortPolicy ?? null;
     if (this.#effortPolicy !== null) {
@@ -678,6 +682,9 @@ export class EnsembleRuntime {
   }
 
   static async create(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
+    if (options.namedTargets !== undefined) {
+      validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
+    }
     let runtime: EnsembleRuntime | null = null;
     const cwd = options.cwd ?? process.cwd();
     // Judged before any engine substrate is built, and resolved here for
@@ -3535,12 +3542,6 @@ function settledFailureAccount(record: RuntimeAgentRecord): { kind: string; mess
   return attemptedFailureAccount(record) ?? record.terminationCause ?? {
     kind: "unavailable", message: "the agent failed without a recorded cause"
   };
-}
-
-/** The one-line rendering of that account an identified envelope's `failure` carries. */
-function settledFailureMessage(record: RuntimeAgentRecord): string {
-  const account = settledFailureAccount(record);
-  return `${account.kind}: ${account.message}`;
 }
 
 function lastRawOutput(record: RuntimeAgentRecord): string | null {

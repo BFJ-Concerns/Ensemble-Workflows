@@ -165,7 +165,7 @@ async function runFixture(schemaDrift?: string, notificationSequences?: unknown[
     const { code, signal } = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolve, reject) => {
         child.once("error", reject);
-        child.once("exit", (code, signal) => resolve({ code, signal }));
+        child.once("close", (code, signal) => resolve({ code, signal }));
       }
     );
     const messages = stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as WireMessage);

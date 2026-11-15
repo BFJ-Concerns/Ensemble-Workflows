@@ -46,15 +46,22 @@ Ensemble is developed and tested on Linux.
 
 ## Getting started
 
-The launcher, `skills/ensemble-workflow/Base/scripts/ensemble.mjs`, is a
-single self-contained file, so a checkout runs it with no install step:
+The launcher, `ensemble.mjs`, is a single self-contained file that runs with
+`node` and needs no install step. Each
+[release](https://github.com/BFJ-Concerns/Ensemble-Workflows/releases)
+publishes it beside a `SHA256SUMS` file. Download both from the latest
+release, check the launcher against the checksum, and run it:
 
 ```sh
-git clone https://github.com/BFJ-Concerns/Ensemble-Workflows.git
-cd Ensemble-Workflows
-node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
-  --engine codex --model gpt-6-luna 'Say hello in one sentence.'
+base=https://github.com/BFJ-Concerns/Ensemble-Workflows/releases/latest/download
+curl -fL -O "$base/ensemble.mjs" -O "$base/SHA256SUMS"
+sha256sum --check SHA256SUMS
+node ensemble.mjs agent --engine codex --model gpt-6-luna 'Say hello in one sentence.'
 ```
+
+`sha256sum --check` prints `ensemble.mjs: OK` when the file matches, and
+fails otherwise. To fetch a particular version instead, replace
+`latest/download` with `download/<tag>`, for example `download/v0.1.0`.
 
 The answer is printed on stdout as JSON. Illustrative output:
 
@@ -66,10 +73,12 @@ The rest of this README writes the launcher as `ensemble`. An alias gives it
 that name:
 
 ```sh
-alias ensemble='node /path/to/Ensemble-Workflows/skills/ensemble-workflow/Base/scripts/ensemble.mjs'
+alias ensemble='node /path/to/ensemble.mjs'
 ```
 
-The launcher can also be copied anywhere on its own and run with `node`.
+The launcher can live anywhere. A checkout of this repository carries the
+same file at `skills/ensemble-workflow/Base/scripts/ensemble.mjs`, built from
+the checkout's own source; see [Building from source](#building-from-source).
 
 ## A first workflow
 

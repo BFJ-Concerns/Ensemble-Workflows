@@ -481,7 +481,7 @@ async function runProcess(command: string, args: string[]): Promise<{ code: numb
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
     child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, stdout, stderr }));
+    child.once("close", (code) => resolve({ code, stdout, stderr }));
   });
 }
 

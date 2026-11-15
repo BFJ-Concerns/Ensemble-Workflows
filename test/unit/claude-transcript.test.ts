@@ -159,6 +159,24 @@ test("submissionReceipt judges the first submission after the mark by equality, 
   });
 });
 
+test("submissionReceipt verifies an expanded command whatever whitespace separated its name from its arguments", () => {
+  const row = (args: string | null): string => JSON.stringify({ type: "user", message: { role: "user", content:
+    `<command-message>review</command-message>\n<command-name>/review</command-name>${args === null ? "" : `\n<command-args>${args}</command-args>`}` } });
+  const read = (args: string | null, message: string) => submissionReceipt(parseTranscriptText(row(args)), 0, message).state;
+  const contract = "When finished, reply with JSON.\n{}";
+  // Claude records the arguments without the whitespace run after the name.
+  assert.equal(read(contract, `/review\n\n${contract}`), "verified");
+  assert.equal(read("v1.2", "/review  v1.2"), "verified");
+  assert.equal(read("v1.2", "/review v1.2"), "verified");
+  assert.equal(read(null, "/review"), "verified");
+  // The name and the arguments are still held to every byte.
+  assert.equal(read("v1.2", "/review v1.3"), "differing");
+  assert.equal(read("v1.2", "/reviewv1.2"), "differing");
+  assert.equal(read("v1.2", "/review x v1.2"), "differing");
+  assert.equal(read("v1.2", "/reviews v1.2"), "differing");
+  assert.equal(read(null, "/review v1.2"), "differing");
+});
+
 test("usageSince counts every figure once per API call and sums across the turn's calls", () => {
   const entries = parseTranscriptText(
     [

@@ -164,6 +164,12 @@ export type ValveSubmission = { submitted: true } | { submitted: false; reason: 
 export interface ClaudeDispatchOptions {
   /** The opening text submitted by launch; the engine verifies its receipt. */
   prompt: string;
+  /**
+   * Text Claude Code appends to its default system prompt for the whole
+   * session (`--append-system-prompt`), lean starts included. The session
+   * records its system prompt once, so every later turn carries it too.
+   */
+  appendSystemPrompt?: string;
   /** Unique per dispatch — how the freshly spawned session is found in the roster. */
   name: string;
   cwd: string;
@@ -594,6 +600,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
     if (options.lean === true) {
       args.push(...LEAN_START_FLAGS);
+    }
+    if (options.appendSystemPrompt !== undefined) {
+      args.push("--append-system-prompt", options.appendSystemPrompt);
     }
     // The worker session runs under the per-user daemon, whose environment
     // predates this run — inheritance cannot deliver the declared variables

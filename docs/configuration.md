@@ -101,6 +101,7 @@ version 1:
 | `status.dir` | string | Directory for live status files; must already exist while status is on |
 | `worker_environment.<engine>` | object of strings | Environment variables injected into that engine's workers |
 | `opencode_models` | object | The models opencode workers may use |
+| `effort` | object | Machine bounds and per-model native level maps (see [effort](#effort)); no flag or environment variable |
 | `targets` | object | Your own names for an engine, with or without a model and a fallback chain |
 
 Every numeric value must be an integer of at least 1. The file is strict: an
@@ -443,6 +444,7 @@ These options have no flag or environment variable:
 | `codexSessionStaleAfterMs` | 60 minutes | When a held Codex session is marked stale |
 | `workerEnvironment` | None | Per-engine variables injected above inherited values; pass the resolved `worker_environment` map explicitly |
 | `openCodeModels` | None | The models opencode workers may name, in the registry entry shape; the library reads no machine configuration, so without this option every opencode call is refused |
+| `effortPolicy` | None | Machine effort policy `{ section, source }`, with the [effort](#effort) section and the file it came from; pass it explicitly because the library reads no machine configuration |
 | `namedTargets` | None | The names calls may give as `target`: `{ bindings, source }`, where `bindings` is the `targets` map and `source` the file it came from, which every refusal names. Without it, every named target is refused as unbound |
 | `openCodeModelSource` | `{ kind: "caller" }` | Where `openCodeModels` were declared: `{ kind: "machine-config", file }` for models taken from a machine configuration file, `{ kind: "caller" }` otherwise. An opencode refusal draws on it to say where models are declared |
 

@@ -8,6 +8,7 @@ import test from "node:test";
 import { removeTestDirectory } from "../failure-evidence.js";
 import { parseTranscriptText, type TranscriptEntry } from "../../src/claude-transcript.js";
 import { findOnlyFile, runNode } from "../integration/estate-process.js";
+import { suiteClaudeDaemon } from "./suite-claude-daemon.js";
 
 const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const skip = process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false;
@@ -38,6 +39,10 @@ async function projectWithSkill(dir: string): Promise<string> {
 }
 
 async function runWorkflow(dir: string, body: string): Promise<{ output: unknown; transcripts: TranscriptEntry[][] }> {
+  // The workers run under the suite's shared daemon; never let a launch
+  // here start one on demand.
+  const daemon = await suiteClaudeDaemon();
+  assert.notEqual(daemon.origin, "unavailable", "the suite did not establish its Claude daemon");
   const workflow = path.join(dir, "workflow.mjs");
   await writeFile(workflow, `export const meta = { name: "claude-opening-skill" };\n${body}`);
   const store = path.join(dir, "records");

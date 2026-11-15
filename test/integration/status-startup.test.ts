@@ -121,6 +121,58 @@ test("stdin script paths preserve piped and redirected workflow source", { timeo
   }
 });
 
+test("inherited descriptor paths retain the launcher's files and pipes", { timeout: 120_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-descriptors-"));
+  try {
+    await mkdir(path.join(directory, "status"));
+    const input = path.join(directory, "workflow.mjs");
+    await writeFile(input, 'export const meta = { name: "descriptor-source" }; return 42;');
+    const alias = path.join(directory, "alias.mjs");
+    await symlink("/dev/fd/5", alias);
+    for (const script of ["/dev/fd/5", "/dev/fd/7", "/dev/fd/9", "/dev/fd/30", "/proc/self/fd/5", alias]) {
+      const descriptor = /fd\/(\d+)$/.exec(script)?.[1] ?? "5";
+      for (const delivery of ["file", "pipe"]) {
+        // Bash supplies real inherited descriptors; Node's stdio pipes are sockets.
+        const command = delivery === "file"
+          ? 'exec "$1" "$2" "$3" ' + descriptor + '<"$4"'
+          : 'cat "$4" | { exec ' + descriptor + '<&0; exec "$1" "$2" "$3"; }';
+        const result = spawnSync("/bin/bash", ["-c", command, "descriptor-workflow", process.execPath, bundle, script, input], {
+          cwd: directory,
+          env: hermeticEstateEnvironment({
+            XDG_CONFIG_HOME: path.join(directory, "config"),
+            ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records"),
+            ENSEMBLE_STATUS_DIR: path.join(directory, "status")
+          }),
+          encoding: "utf8",
+          timeout: 60_000
+        });
+        assert.ifError(result.error);
+        assert.equal(result.status, 0, `${script} (${delivery}): ${result.stderr}`);
+        assert.equal(JSON.parse(result.stdout), 42);
+      }
+    }
+    // A descriptor naming a directory can itself contain a descriptor alias.
+    await symlink("/dev/fd/7", path.join(directory, "nested-alias.mjs"));
+    const nested = spawnSync("/bin/bash", ["-c",
+      'exec 5<"$3" 7<"$4"; exec "$1" "$2" /dev/fd/5/nested-alias.mjs',
+      "directory-descriptor-workflow", process.execPath, bundle, directory, input], {
+      cwd: directory,
+      env: hermeticEstateEnvironment({
+        XDG_CONFIG_HOME: path.join(directory, "config"),
+        ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records"),
+        ENSEMBLE_STATUS_DIR: path.join(directory, "status")
+      }),
+      encoding: "utf8",
+      timeout: 60_000
+    });
+    assert.ifError(nested.error);
+    assert.equal(nested.status, 0, nested.stderr);
+    assert.equal(JSON.parse(nested.stdout), 42);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a directory script path is rejected before supervision starts", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-path-"));
   try {
@@ -144,14 +196,19 @@ test("a directory script path is rejected before supervision starts", async () =
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  for (const sourceKind of ["FIFO", "stdin"]) {
+  for (const sourceKind of ["FIFO", "stdin", "descriptor"]) {
     for (const recording of [true, false]) {
       test(`${signal} settles a ${sourceKind}-blocked source read with recording ${recording ? "on" : "off"}`, { timeout: 90_000 }, async () => {
         const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-interrupt-"));
         const fifo = path.join(directory, "workflow.mjs");
         execFileSync("mkfifo", [fifo]);
-        const stdin = sourceKind === "stdin" ? await open(fifo, "r+") : null;
-        const child = spawn(process.execPath, [bundle, sourceKind === "FIFO" ? fifo : "/dev/stdin"], {
+        const stdin = sourceKind !== "FIFO" ? await open(fifo, "r+") : null;
+        const stdio: ("ignore" | "pipe" | number)[] = [stdin?.fd ?? "ignore", "pipe", "pipe"];
+        if (sourceKind === "descriptor") {
+          stdio[0] = "ignore";
+          stdio.push("ignore", "ignore", stdin!.fd);
+        }
+        const child = spawn(process.execPath, [bundle, sourceKind === "FIFO" ? fifo : sourceKind === "stdin" ? "/dev/stdin" : "/dev/fd/5"], {
           cwd: directory,
           env: hermeticEstateEnvironment({
             XDG_CONFIG_HOME: path.join(directory, "config"),
@@ -160,7 +217,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
             ENSEMBLE_RUN_RECORD_DIR: path.join(directory, "records")
           }),
           signal: AbortSignal.timeout(60_000),
-          stdio: [stdin?.fd ?? "ignore", "pipe", "pipe"]
+          stdio
         });
         const closed = once(child, "close");
         let stdout = "";

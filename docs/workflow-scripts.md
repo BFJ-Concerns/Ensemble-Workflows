@@ -422,10 +422,12 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   each working directory,
   model and strip, until a worker reports serving a different Claude Code
   version. Unstripped workers are never probed.
-  A `skills` strip denies the `Skill` tool; follow-up slash-command expansion
-  is not covered. A follow-up whose text begins with a `/skill` line can
-  still load that skill through Claude Code's native command handling. Avoid
-  forwarding such text verbatim when skill loading is unwanted.
+  A `skills` strip denies the `Skill` tool, and a stripped worker's opening
+  task always arrives inside boundary tags, so a leading `/skill` line in it
+  does not expand. Follow-up slash-command expansion is not covered: a
+  follow-up whose text begins with a `/skill` line can still load that skill
+  through Claude Code's native command handling. Avoid forwarding such text
+  verbatim when skill loading is unwanted.
   The agent record's enforcement detail names the deny rules and `env`
   variables, the Claude Code version that was probed, and which tools were
   denied or left in place. For `skills`, it also states this follow-up boundary.
@@ -610,12 +612,29 @@ Claude client rejections, including rejected credentials and context limits,
 end the request without a blocked-worker nudge, even when the roster reports
 that the worker is awaiting input.
 
-Ensemble encloses the opening task in boundary tags chosen to be absent from
-its text. The caller's text stays literal, including leading and trailing
-whitespace; the closing tag keeps it inside the message when Claude trims
-the message boundary. The complete opening still requires an exact receipt,
-so any input transformation fails delivery explicitly. Host memory, storage
-and model context still bound prompt size.
+A Claude worker receives, in this order:
+
+1. **System prompt:** Claude Code's default system prompt, with Ensemble's
+   standing instructions appended at launch (`--append-system-prompt`, on
+   lean starts too). They tell the worker that it is an automated worker
+   dispatched by the Ensemble orchestration harness and must work fully
+   autonomously, without asking for confirmation or pausing for questions.
+   The session keeps them for every later turn.
+2. **Opening message:** the task itself, first. A task that begins
+   `/<skill> <arguments>` runs that skill, as a message typed into Claude Code
+   would, user-invocable skills included.
+3. **After the task, when present:** a blank line, then the schema contract
+   (the instruction to end with a JSON value and the schema itself), then a
+   note naming the previous attempt's failure on a retry that relaunches.
+
+Claude trims a message at both ends, so the task goes inside boundary tags,
+chosen to be absent from its text and introduced by a line saying they mark
+its boundaries, when it is empty, begins with whitespace, ends with
+whitespace and nothing follows it, or the worker is stripped of `skills`.
+The caller's text stays literal inside them, and a framed task does not
+expand a leading `/skill` line. The complete opening still requires an exact
+receipt, so any input transformation fails delivery explicitly. Host memory,
+storage and model context still bound prompt size.
 
 ### Retries
 

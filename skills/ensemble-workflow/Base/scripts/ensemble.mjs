@@ -21500,6 +21500,9 @@ var ClaudeCliControlPlane = class {
     if (options.lean === true) {
       args.push(...LEAN_START_FLAGS);
     }
+    if (options.appendSystemPrompt !== void 0) {
+      args.push("--append-system-prompt", options.appendSystemPrompt);
+    }
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
     const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.settingsEnv);
@@ -22729,6 +22732,10 @@ function claudeNativeEffort(effort) {
 }
 var dispatchCounter = 0;
 var SETTLED_CONFIRMATION_POLLS = 5;
+var CLAUDE_WORKER_STANDING_INSTRUCTIONS = [
+  "You are an automated worker dispatched by the Ensemble orchestration harness.",
+  "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
+].join("\n");
 var ClaudeEngineInvocation = class {
   #cwd;
   #options;
@@ -23009,6 +23016,7 @@ var ClaudeEngineInvocation = class {
     const prompt = this.#buildDispatchPrompt(previousFailure);
     const handle = await this.#controlPlane.dispatch({
       prompt,
+      appendSystemPrompt: CLAUDE_WORKER_STANDING_INSTRUCTIONS,
       name: this.#nextName(),
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
@@ -23584,22 +23592,28 @@ var ClaudeEngineInvocation = class {
     } catch {
     }
   }
+  /**
+   * A dispatch's opening message. It begins with the task, so a task whose
+   * first word is `/<skill>` runs that skill exactly as an operator's typed
+   * message would, unless the worker is stripped of skills; the standing instructions reach the worker through the
+   * system prompt (`CLAUDE_WORKER_STANDING_INSTRUCTIONS`), and the turn's
+   * schema contract and any previous attempt's failure follow the task.
+   */
   #buildDispatchPrompt(previousFailure) {
-    const lines = [
-      "You are an automated worker dispatched by the Ensemble orchestration harness.",
-      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
-    ];
+    const after = [];
     if (this.#turnSchema !== void 0) {
-      lines.push(
+      after.push(
         "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
         JSON.stringify(this.#turnSchema)
       );
     }
     if (previousFailure !== void 0) {
-      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
+      after.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
-    lines.push("", this.#framedTask());
-    return lines.join("\n");
+    const task = this.#turnPrompt;
+    const framed = task === "" || task.trimStart() !== task || after.length === 0 && task.trimEnd() !== task || this.#options.strip?.includes("skills") === true;
+    const opening = framed ? this.#framedTask() : task;
+    return after.length === 0 ? opening : [opening, "", ...after].join("\n");
   }
   #framedTask() {
     let tagIndex = 0;
@@ -23611,9 +23625,9 @@ var ClaudeEngineInvocation = class {
     ].join("\n");
   }
   /**
-   * A follow-up turn's valve message: the session already holds the
-   * autonomy preamble from its dispatch, so the message carries only what
-   * this turn adds — its schema contract, when it has one, and its task.
+   * A follow-up turn's valve message: the session's system prompt already
+   * holds the standing instructions, so the message carries only what this
+   * turn adds — its schema contract, when it has one, and its task.
    */
   #buildTurnMessage() {
     const lines = [];

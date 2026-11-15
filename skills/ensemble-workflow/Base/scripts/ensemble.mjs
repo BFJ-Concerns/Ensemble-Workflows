@@ -18491,6 +18491,7 @@ import path11 from "node:path";
 import { execFile as execFile3, spawn } from "node:child_process";
 import { readFile as readFile5, readdir as readdir4 } from "node:fs/promises";
 import path10 from "node:path";
+var PLACEMENT_ATTEMPTS = 3;
 var RUN_SCOPE_GROUP = "run";
 var DEFAULT_STOP_BOUNDS = { stopGraceMs: 2e3, confirmMs: 3e3 };
 var SystemdWorkerScopes = class {
@@ -18504,8 +18505,16 @@ var SystemdWorkerScopes = class {
   #moveTimeoutMs;
   #cgroupRoot;
   #stopBounds;
-  /** Units this manager created, by group: the set `close()` stops. */
+  /** The unit each group's processes are placed in now, by group. */
   #units = /* @__PURE__ */ new Map();
+  /**
+   * Units of each group the manager failed. They stay owned — stopped by
+   * `stop()` and `close()` with the group's current unit — because a
+   * process that never moved on to a replacement is still in one.
+   */
+  #failedUnits = /* @__PURE__ */ new Map();
+  /** How many scopes each group has had created, so a replacement for a failed one takes a fresh name. */
+  #generations = /* @__PURE__ */ new Map();
   /** One placement at a time per group, so concurrent first placements create one scope rather than race for the name. */
   #groupTurns = /* @__PURE__ */ new Map();
   #closed = false;
@@ -18538,26 +18547,70 @@ var SystemdWorkerScopes = class {
     if (this.#closed) {
       return { kind: "refused", reason: "the scope manager is closed" };
     }
-    const unit = this.unitFor(group);
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    let unplaced = "the processes to place exited while being placed";
+    for (let attempt = 0; attempt < PLACEMENT_ATTEMPTS; attempt += 1) {
       const pids = requested.filter(isLive);
       if (pids.length === 0) {
         return { kind: "refused", reason: "every process to place had already exited" };
       }
-      const outcome = this.#units.has(group) ? await this.#attach(unit, pids, true) : await this.#start(unit, pids, true);
+      const held = this.#units.get(group);
+      const unit = held ?? this.#nextUnit(group);
+      const outcome = held !== void 0 ? await this.#attach(unit, pids, true) : await this.#start(unit, pids, true);
       if (outcome === null) {
         this.#units.set(group, unit);
         if (!await this.#moved(unit, pids)) {
           return { kind: "refused", reason: `the manager accepted ${unit} but its processes had not moved within ${this.#moveTimeoutMs}ms` };
         }
-        return { kind: "placed", unit, pids };
+        const state = await this.#activeState(unit);
+        if (state.kind === "unreadable") {
+          return { kind: "refused", reason: `the processes moved into ${unit} but its state could not be read: ${state.reason}` };
+        }
+        if (state.state === "active") {
+          return { kind: "placed", unit, pids };
+        }
+        this.#units.delete(group);
+        this.#failedUnits.set(group, (this.#failedUnits.get(group) ?? /* @__PURE__ */ new Set()).add(unit));
+        unplaced = `the manager left ${unit} ${state.state} after moving its processes`;
+        continue;
       }
       if (/No such process/.test(outcome)) {
+        unplaced = "the processes to place exited while being placed";
         continue;
       }
       return { kind: "refused", reason: outcome };
     }
-    return { kind: "refused", reason: "the processes to place exited while being placed" };
+    return { kind: "refused", reason: unplaced };
+  }
+  /**
+   * The unit a group's next scope is created as: `unitFor(group)` the first
+   * time, then that name with `:<generation>` before `.scope`. A scope the
+   * manager failed keeps its name while processes remain in it, so its
+   * replacement cannot take the same one; the colon is never part of a
+   * group the launcher names, so a generation never meets another group.
+   */
+  #nextUnit(group) {
+    const generation = this.#generations.get(group) ?? 0;
+    this.#generations.set(group, generation + 1);
+    const unit = this.unitFor(group);
+    return generation === 0 ? unit : `${unit.slice(0, -".scope".length)}:${generation}.scope`;
+  }
+  /** The unit's `ActiveState` as the manager reports it on the bus, or why it could not be read. */
+  #activeState(unit) {
+    return new Promise((resolve) => {
+      execFile3(
+        this.#busctlBin,
+        ["--user", "--", "get-property", "org.freedesktop.systemd1", unitObjectPath(unit), "org.freedesktop.systemd1.Unit", "ActiveState"],
+        { env: this.#env, timeout: this.#moveTimeoutMs },
+        (error, stdout, stderr) => {
+          const state = /^s "([^"]*)"$/.exec(stdout.trim())?.[1];
+          if (error === null && state !== void 0) {
+            resolve({ kind: "read", state });
+          } else {
+            resolve({ kind: "unreadable", reason: boundedEvidence(stderr.trim() || error?.message || `unexpected answer: ${stdout.trim()}`) });
+          }
+        }
+      );
+    });
   }
   /**
    * Create the group's scope around these processes. A unit of that name
@@ -18645,22 +18698,39 @@ var SystemdWorkerScopes = class {
     const turn = (this.#groupTurns.get(group) ?? Promise.resolve()).then(() => this.#stopInTurn(group, bounds));
     this.#groupTurns.set(group, turn);
     void turn.then(() => {
-      if (this.#groupTurns.get(group) === turn && !this.#units.has(group)) {
+      if (this.#groupTurns.get(group) === turn && this.#ownedUnits(group).length === 0) {
         this.#groupTurns.delete(group);
       }
     });
     return turn;
   }
   async #stopInTurn(group, bounds) {
-    const unit = this.#units.get(group);
-    if (unit === void 0) {
-      return { kind: "stopped" };
+    const stops = await Promise.all(this.#ownedUnits(group).map(async (unit) => ({ unit, outcome: await this.#stopUnit(unit, bounds) })));
+    const reasons = [];
+    for (const { unit, outcome } of stops) {
+      if (outcome.kind === "stopped") {
+        this.#release(group, unit);
+      } else {
+        reasons.push(outcome.reason);
+      }
     }
-    const outcome = await this.#stopUnit(unit, bounds);
-    if (outcome.kind === "stopped") {
+    return reasons.length === 0 ? { kind: "stopped" } : { kind: "unconfirmed", reason: reasons.join("; ") };
+  }
+  /** Every unit the manager owns for a group: the current one and any the manager failed. */
+  #ownedUnits(group) {
+    const current2 = this.#units.get(group);
+    return [...current2 !== void 0 ? [current2] : [], ...this.#failedUnits.get(group) ?? []];
+  }
+  /** Give up ownership of a unit confirmed empty. */
+  #release(group, unit) {
+    if (this.#units.get(group) === unit) {
       this.#units.delete(group);
     }
-    return outcome;
+    const failed = this.#failedUnits.get(group);
+    failed?.delete(unit);
+    if (failed?.size === 0) {
+      this.#failedUnits.delete(group);
+    }
   }
   /**
    * Signal every process in a unit and wait, within the bounds, until its
@@ -18724,13 +18794,14 @@ var SystemdWorkerScopes = class {
     this.#closed = true;
     await Promise.all([...this.#groupTurns.values()]);
     this.#groupTurns.clear();
-    const stops = await Promise.all(
-      [...this.#units.entries()].map(async ([group, unit]) => ({ group, unit, outcome: await this.#stopUnit(unit, this.#stopBounds) }))
+    const owned = [.../* @__PURE__ */ new Set([...this.#units.keys(), ...this.#failedUnits.keys()])].flatMap(
+      (group) => this.#ownedUnits(group).map((unit) => ({ group, unit }))
     );
+    const stops = await Promise.all(owned.map(async ({ group, unit }) => ({ group, unit, outcome: await this.#stopUnit(unit, this.#stopBounds) })));
     const unconfirmed = [];
     for (const { group, unit, outcome } of stops) {
       if (outcome.kind === "stopped") {
-        this.#units.delete(group);
+        this.#release(group, unit);
       } else {
         unconfirmed.push({ owner: unit, reason: outcome.reason });
       }
@@ -18866,6 +18937,13 @@ function isLive(pid) {
   } catch {
     return false;
   }
+}
+function unitObjectPath(unit) {
+  const escaped = [...Buffer.from(unit, "utf8")].map((byte, index) => {
+    const char = String.fromCharCode(byte);
+    return /[A-Za-z]/.test(char) || index > 0 && /[0-9]/.test(char) ? char : `_${byte.toString(16).padStart(2, "0")}`;
+  }).join("");
+  return `/org/freedesktop/systemd1/unit/${escaped}`;
 }
 function unitSafe(text) {
   return text.replace(/[^A-Za-z0-9:_.-]/g, "_").slice(0, 64);

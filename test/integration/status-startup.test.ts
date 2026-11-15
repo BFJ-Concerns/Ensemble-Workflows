@@ -3,6 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 
 import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
@@ -10,7 +11,7 @@ import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
 const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 test("concurrent runs publish supervision before FIFO source delivery and names before body entry", { timeout: 120_000 }, async () => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-status-startup-");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-startup-"));
   const statusDir = path.join(directory, "status");
   await mkdir(statusDir);
   const children: ReturnType<typeof spawn>[] = [];
@@ -77,7 +78,7 @@ test("concurrent runs publish supervision before FIFO source delivery and names 
 });
 
 test("a directory script path is rejected before supervision starts", async () => {
-  const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-status-path-");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-path-"));
   try {
     const status = path.join(directory, "status");
     await mkdir(status);
@@ -101,7 +102,7 @@ test("a directory script path is rejected before supervision starts", async () =
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   for (const recording of [true, false]) {
     test(`${signal} settles a FIFO-blocked source read with recording ${recording ? "on" : "off"}`, { timeout: 90_000 }, async () => {
-      const directory = await mkdtemp("/mnt/ai-data/scratch/ensemble-status-interrupt-");
+      const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-interrupt-"));
       const fifo = path.join(directory, "workflow.mjs");
       execFileSync("mkfifo", [fifo]);
       const child = spawn(process.execPath, [bundle, fifo], {

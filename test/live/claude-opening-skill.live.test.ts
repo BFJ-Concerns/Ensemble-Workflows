@@ -73,9 +73,10 @@ async function runWorkflow(dir: string, body: string, answered = true): Promise<
       assert.equal(record.status, "complete");
       assert.deepEqual(record.attempts.map(attempt => attempt.failure), [null], "the opening is delivered and answered in one attempt");
     }
+    // A command that opened a panel leaves no transcript to archive.
     const reference = record.transcripts[0];
-    assert.ok(reference);
-    transcripts.push(parseTranscriptText(await readFile(path.join(archive, reference.path), "utf8")));
+    if (answered) assert.ok(reference);
+    transcripts.push(reference === undefined ? [] : parseTranscriptText(await readFile(path.join(archive, reference.path), "utf8")));
   }
   return { output: JSON.parse(result.stdout), transcripts, records };
 }
@@ -207,19 +208,26 @@ test("a Claude task opening with an unknown /word fails at once naming it, unret
       const unknownMs = Date.now() - started;
       const lean = await agent(${JSON.stringify(`/harbour-signal ${name}`)}, { ...options, lean: true });
       const path = await agent("/etc/hostname is a file on this machine. Reply with exactly the word OK and nothing else.", options);
-      return { unknown, unknownMs, lean, path };
+      const panelStarted = Date.now();
+      const panel = await agent("/help please. Reply with exactly the word OK.", options);
+      const panelMs = Date.now() - panelStarted;
+      return { unknown, unknownMs, lean, path, panel, panelMs };
     `, false);
-    const result = output as { unknown: unknown; unknownMs: number; lean: unknown; path: unknown };
+    const result = output as { unknown: unknown; unknownMs: number; lean: unknown; path: unknown; panel: unknown; panelMs: number };
     assert.equal(result.unknown, null);
     assert.equal(result.lean, null);
+    assert.equal(result.panel, null);
+    assert.ok(result.panelMs < 30_000, `the panel command took ${result.panelMs}ms, as long as a missing receipt`);
     assert.ok(result.unknownMs < 30_000, `the unknown command took ${result.unknownMs}ms, as long as a missing receipt`);
     assert.match(String(result.path).trim(), /^OK\.?$/);
-    assert.equal(records.length, 3);
+    assert.equal(records.length, 4);
     assertCommandNotSkill(records[0], "the opening prompt", "/frobnicate-xyz");
     assert.match(records[0]!.attempts[0]!.failure!.message, /knows no skill or command named \/frobnicate-xyz where the worker runs/);
     assertCommandNotSkill(records[1], "the opening prompt", "/harbour-signal");
     assert.deepEqual(records[2]?.attempts.map(attempt => attempt.failure), [null]);
-    console.log(JSON.stringify({ case: "unknown-command", unknownMs: result.unknownMs, path: result.path }));
+    assertCommandNotSkill(records[3], "the opening prompt", "/help");
+    assert.match(records[3]!.attempts[0]!.failure!.message, /opened an interactive panel/);
+    console.log(JSON.stringify({ case: "unknown-command", unknownMs: result.unknownMs, path: result.path, panelMs: result.panelMs }));
   } catch (error) {
     testFailed = true;
     throw error;
@@ -235,15 +243,18 @@ test("a held Claude session's follow-up opening with an unknown /word fails that
       try {
         const first = await held.send("Reply with exactly the word FIRST and nothing else.");
         const unknown = await held.send("/frobnicate-xyz now. Reply with exactly the word OK.");
+        const panel = await held.send("/help now. Reply with exactly the word OK.");
         const third = await held.send("Reply with exactly the word THIRD and nothing else.");
-        return { first, unknown, third };
+        return { first, unknown, panel, third };
       } finally { await held.close(); }
     `, false);
-    const result = output as { first: unknown; unknown: unknown; third: unknown };
+    const result = output as { first: unknown; unknown: unknown; panel: unknown; third: unknown };
     assert.equal(String(result.first).trim(), "FIRST");
     assert.equal(result.unknown, null);
+    assert.equal(result.panel, null);
     assert.equal(String(result.third).trim(), "THIRD");
     assertCommandNotSkill(records[1], "the follow-up turn", "/frobnicate-xyz");
+    assertCommandNotSkill(records[2], "the follow-up turn", "/help");
     console.log(JSON.stringify({ case: "unknown-command-session", answer: output }));
   } catch (error) {
     testFailed = true;

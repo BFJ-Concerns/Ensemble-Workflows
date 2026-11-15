@@ -698,7 +698,11 @@ two reasons:
   Code. A lean worker loads none of the operator's installed skills, so a
   skill a script names at the head of a lean worker's task does not run.
 - The name is one of Claude Code's built-in commands, such as `/config` or
-  `/resume`. Claude Code runs it in place of a model turn.
+  `/resume`. Claude Code runs it in place of a model turn. A built-in command
+  that opens an interactive panel, such as `/help` or `/login`, writes
+  nothing to the transcript and leaves the worker waiting on the panel; the
+  call fails once the worker has waited on it for five seconds (or the
+  receipt deadline, when that is shorter).
 
 In a `session()`, only the turn that opened with the command fails; the
 session stays open for its next turn. To send text that begins with a slash

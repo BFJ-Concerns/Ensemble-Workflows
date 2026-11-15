@@ -1047,7 +1047,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // Native input dialogs consume Ctrl+G instead of opening the editor.
       // Decline the request for human input, then wait for the daemon to
       // acknowledge that the dialog has closed before addressing the prompt.
-      if (status.state === "blocked" && status.waitingFor !== undefined && (await this.poll(handle)).waitingFor !== undefined) {
+      // A built-in command's panel (`/help`) opened by an earlier message
+      // is such a dialog too, though the roster then reports the session
+      // `done` rather than `blocked`: the input request is the signal.
+      if (status.waitingFor !== undefined && (await this.poll(handle)).waitingFor !== undefined) {
         const cancelled = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Escape"]);
         if (!cancelled.ok) return refused("tmux send-keys (cancel input)", cancelled);
         for (;;) {

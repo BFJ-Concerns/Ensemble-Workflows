@@ -22184,7 +22184,7 @@ var ClaudeCliControlPlane = class {
       if (!created.ok) return refused("tmux new-session", created);
       await delay(this.#valveAttachSettleMs, signal);
       const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
-      if (status.state === "blocked" && status.waitingFor !== void 0 && (await this.poll(handle)).waitingFor !== void 0) {
+      if (status.waitingFor !== void 0 && (await this.poll(handle)).waitingFor !== void 0) {
         const cancelled = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Escape"]);
         if (!cancelled.ok) return refused("tmux send-keys (cancel input)", cancelled);
         for (; ; ) {
@@ -23530,6 +23530,7 @@ var ClaudeEngineInvocation = class {
   async #awaitReceipt(handle, submission, observers) {
     const deadline = Date.now() + this.#receiptTimeoutMs;
     const command = submission.carriesTurn ? openingCommand(submission.message) : null;
+    const dialog = this.#commandDialogWatch();
     for (; ; ) {
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle, observers);
@@ -23538,11 +23539,36 @@ var ClaudeEngineInvocation = class {
       if (ran !== null && command !== null) {
         return { state: "command-not-skill", command, ran };
       }
+      if (command !== null && receipt.state === "missing" && dialog.held(await this.#controlPlane.poll(handle))) {
+        return { state: "command-not-skill", command, ran: "interactive" };
+      }
       if (receipt.state !== "missing" || Date.now() >= deadline) {
         return receipt;
       }
       await this.#pollDelay();
     }
+  }
+  /**
+   * A watch over roster polls for a command's interactive panel: `held`
+   * answers true once polls have reported the session waiting on
+   * `CLAUDE_COMMAND_DIALOG` (a fresh session's state reads `blocked`, a
+   * held one's after a settled turn `done`) without a break for the grace period (bounded
+   * by the receipt deadline). Callers ask only while the session holds no
+   * record of the command-led message.
+   */
+  #commandDialogWatch() {
+    const grace = Math.min(CLAUDE_COMMAND_DIALOG_GRACE_MS, this.#receiptTimeoutMs);
+    let since = null;
+    return {
+      held: (status) => {
+        if (status.waitingFor !== CLAUDE_COMMAND_DIALOG) {
+          since = null;
+          return false;
+        }
+        since ??= Date.now();
+        return Date.now() - since >= grace;
+      }
+    };
   }
   /**
    * Account for a submission an earlier attempt left pending, before this
@@ -23636,6 +23662,8 @@ var ClaudeEngineInvocation = class {
     let assistantEvidence = "";
     let waitingOn = null;
     let awaitingTask = false;
+    const openingCommandName = opening === void 0 ? null : openingCommand(opening.message);
+    const openingDialog = this.#commandDialogWatch();
     for (; ; ) {
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle, observers);
@@ -23711,6 +23739,10 @@ var ClaudeEngineInvocation = class {
       absences = 0;
       if (status.state === "blocked") {
         if (!sawLife && opening !== void 0) {
+          if (openingCommandName !== null && openingDialog.held(status)) {
+            this.#pending = null;
+            throw new ClaudeCommandNotSkillError(commandNotSkillAccount(opening.what, openingCommandName, "interactive"));
+          }
           await this.#pollDelay();
           if (Date.now() >= deadline) {
             throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
@@ -24145,8 +24177,10 @@ function claudeAttemptFailure(error) {
   }
   return { kind: "claude-worker-error", message: error.message };
 }
+var CLAUDE_COMMAND_DIALOG = "dialog open";
+var CLAUDE_COMMAND_DIALOG_GRACE_MS = 5e3;
 function commandNotSkillAccount(what, command, ran) {
-  const cause = ran === "unknown" ? `Claude Code knows no skill or command named ${command} where the worker runs, so the message never reached the model. A skill named this way must be installed for the worker's Claude Code; a lean worker loads none of the operator's installed skills` : `${command} is one of Claude Code's built-in commands, which it ran in place of a model turn, so the message never reached the model`;
+  const cause = ran === "unknown" ? `Claude Code knows no skill or command named ${command} where the worker runs, so the message never reached the model. A skill named this way must be installed for the worker's Claude Code; a lean worker loads none of the operator's installed skills` : ran === "built-in" ? `${command} is one of Claude Code's built-in commands, which it ran in place of a model turn, so the message never reached the model` : `${command} is one of Claude Code's built-in commands, which opened an interactive panel in place of a model turn, so the message never reached the model`;
   return `${what} opens with ${command}, which Claude Code took as a command, and no skill named ${command} ran: ${cause}. To send text that begins with a slash, put something before it`;
 }
 function textIdentity(text) {

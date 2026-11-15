@@ -3458,3 +3458,76 @@ test("a held session's follow-up opening with an unknown command fails that turn
     { submissionRows: commandRows }
   );
 });
+
+/**
+ * A plane whose session takes a command-led message as Claude Code 2.1.325
+ * takes `/help`: it writes nothing, and the roster reports it blocked on
+ * an open dialog. `withTranscript` false leaves the opening with no
+ * transcript at all, as a fresh session's is.
+ */
+class CommandPanelPlane extends FakeControlPlane {
+  panelOpen = false;
+  constructor(dir: string, turns: ScriptedTurn[], readonly withTranscript: boolean) {
+    super(dir, turns, { submissionRows: (sent) => (sent.startsWith("/help") ? [] : undefined) });
+  }
+  override async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+    this.panelOpen = options.prompt.startsWith("/help");
+    return super.dispatch(options);
+  }
+  override async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
+    this.panelOpen = message.startsWith("/help");
+    return super.steer(handle, message);
+  }
+  override async transcriptPath(): Promise<string | null> {
+    return this.panelOpen && !this.withTranscript ? null : super.transcriptPath();
+  }
+  override async poll(): Promise<ClaudeSessionStatus> {
+    return this.panelOpen ? { status: "waiting", state: "blocked", present: true, waitingFor: "dialog open" } : super.poll();
+  }
+}
+
+for (const withTranscript of [false, true]) {
+  test(`a task opening with a command that opens an interactive panel fails naming it, unretried${withTranscript ? ", its transcript already begun" : ", before any transcript"}`, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-panel-"));
+    try {
+      const plane = new CommandPanelPlane(dir, [{}], withTranscript);
+      const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 100, firstLifeTimeoutMs: 600_000, turnTimeoutMs: 600_000 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+      try {
+        assert.equal(await runtime.agent("/help please. Reply OK.", { engine: "claude" }), null);
+        assert.equal(plane.dispatchCount, 1);
+        const attempts = records.at(-1)?.attempts ?? [];
+        assert.deepEqual(attempts.map((attempt) => attempt.failure?.kind), ["claude-command-not-skill"]);
+        assert.match(attempts[0]?.failure?.message ?? "",
+          /^the opening prompt opens with \/help, which Claude Code took as a command, and no skill named \/help ran: \/help is one of Claude Code's built-in commands, which opened an interactive panel/);
+      } finally {
+        await runtime.close();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a held session's follow-up opening with a panel command fails that turn alone, and the session takes the next", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-panel-session-"));
+  try {
+    const plane = new CommandPanelPlane(dir, [{ assistant: { text: "first answer" } }, {}, { assistant: { text: "third answer" } }], true);
+    const runtime = makeRuntime(plane, { maxAttempts: 3, receiptTimeoutMs: 100 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record)) } as unknown as RunRecordWriter);
+    try {
+      const session = runtime.createWorkerSession({ engine: "claude" });
+      assert.equal(await session.send("first"), "first answer");
+      assert.equal(await session.send("/help now"), null);
+      assert.deepEqual((records.at(-1)?.attempts ?? []).map((attempt) => attempt.failure?.kind), ["claude-command-not-skill"]);
+      assert.equal(await session.send("third"), "third answer");
+      await session.close();
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -42,7 +42,7 @@ import { CANONICAL_EFFORT_DOMAIN } from "./engine-option-validation.js";
 import { CLAUDE_ROSTER_ABSENCE_BOUND, CLAUDE_ROSTER_LOSS_REASON } from "./claude-control-plane.js";
 
 import type { CanonicalEffort } from "./engine-option-validation.js";
-import type { ClaudeControlPlane, ClaudeDispatchOptions, ClaudeSessionHandle } from "./claude-control-plane.js";
+import type { ClaudeControlPlane, ClaudeDispatchOptions, ClaudeSessionHandle, ClaudeSessionStatus } from "./claude-control-plane.js";
 import type { SubmissionReceipt, TranscriptApiError, TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
 import type {
   EngineAttemptContext,
@@ -783,6 +783,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   ): Promise<SubmissionReceipt | CommandNotSkill> {
     const deadline = Date.now() + this.#receiptTimeoutMs;
     const command = submission.carriesTurn ? openingCommand(submission.message) : null;
+    const dialog = this.#commandDialogWatch();
     for (;;) {
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle, observers);
@@ -795,11 +796,37 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       if (ran !== null && command !== null) {
         return { state: "command-not-skill", command, ran };
       }
+      if (command !== null && receipt.state === "missing" && dialog.held(await this.#controlPlane.poll(handle))) {
+        return { state: "command-not-skill", command, ran: "interactive" };
+      }
       if (receipt.state !== "missing" || Date.now() >= deadline) {
         return receipt;
       }
       await this.#pollDelay();
     }
+  }
+
+  /**
+   * A watch over roster polls for a command's interactive panel: `held`
+   * answers true once polls have reported the session waiting on
+   * `CLAUDE_COMMAND_DIALOG` (a fresh session's state reads `blocked`, a
+   * held one's after a settled turn `done`) without a break for the grace period (bounded
+   * by the receipt deadline). Callers ask only while the session holds no
+   * record of the command-led message.
+   */
+  #commandDialogWatch(): { held: (status: ClaudeSessionStatus) => boolean } {
+    const grace = Math.min(CLAUDE_COMMAND_DIALOG_GRACE_MS, this.#receiptTimeoutMs);
+    let since: number | null = null;
+    return {
+      held: (status) => {
+        if (status.waitingFor !== CLAUDE_COMMAND_DIALOG) {
+          since = null;
+          return false;
+        }
+        since ??= Date.now();
+        return Date.now() - since >= grace;
+      }
+    };
   }
 
   /**
@@ -915,6 +942,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // transiently unreadable transcript must not turn a waiting session
     // into a settled-but-unproven one for the collection error to catch.
     let awaitingTask = false;
+    const openingCommandName = opening === undefined ? null : openingCommand(opening.message);
+    const openingDialog = this.#commandDialogWatch();
 
     for (;;) {
       this.#assertOpen();
@@ -1012,6 +1041,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // transcript is flushed. Its receipt must verify before a nudge
         // can take a later boundary; otherwise the opening acknowledges it.
         if (!sawLife && opening !== undefined) {
+          if (openingCommandName !== null && openingDialog.held(status)) {
+            this.#pending = null;
+            throw new ClaudeCommandNotSkillError(commandNotSkillAccount(opening.what, openingCommandName, "interactive"));
+          }
           await this.#pollDelay();
           if (Date.now() >= deadline) {
             throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
@@ -1576,19 +1609,45 @@ function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
 interface CommandNotSkill {
   state: "command-not-skill";
   command: string;
-  ran: "unknown" | "built-in";
+  ran: UnrunCommand;
 }
+
+/**
+ * How an opening command ran no skill: `unknown` and `built-in` as the
+ * transcript shows them (`unrunCommand`), and `interactive` for a built-in
+ * command that opened a panel, which writes nothing to the transcript and
+ * leaves the session blocked on `CLAUDE_COMMAND_DIALOG`.
+ */
+type UnrunCommand = "unknown" | "built-in" | "interactive";
+
+/**
+ * What the roster reports a session waiting for while a command's
+ * interactive panel is open (Claude Code 2.1.325: `/help`, `/login`,
+ * `/status`). No model turn can raise a dialog before the session records
+ * the message it is answering, so a session blocked on one with no record
+ * of a command-led message is blocked on that command's panel.
+ */
+const CLAUDE_COMMAND_DIALOG = "dialog open";
+
+/**
+ * How long a session must stay blocked on a dialog, with no record of its
+ * command-led message, before the dialog is taken as the command's panel:
+ * the roster can report a block before the transcript is flushed.
+ */
+const CLAUDE_COMMAND_DIALOG_GRACE_MS = 5_000;
 
 /**
  * The failure account for a message whose opening command ran no skill. It
  * names the command and says no skill by that name ran; the likeliest cause
  * of an unknown name is a skill missing where the worker runs.
  */
-function commandNotSkillAccount(what: string, command: string, ran: "unknown" | "built-in"): string {
+function commandNotSkillAccount(what: string, command: string, ran: UnrunCommand): string {
   const cause = ran === "unknown"
     ? `Claude Code knows no skill or command named ${command} where the worker runs, so the message never reached the model. ` +
       "A skill named this way must be installed for the worker's Claude Code; a lean worker loads none of the operator's installed skills"
-    : `${command} is one of Claude Code's built-in commands, which it ran in place of a model turn, so the message never reached the model`;
+    : ran === "built-in"
+      ? `${command} is one of Claude Code's built-in commands, which it ran in place of a model turn, so the message never reached the model`
+      : `${command} is one of Claude Code's built-in commands, which opened an interactive panel in place of a model turn, so the message never reached the model`;
   return `${what} opens with ${command}, which Claude Code took as a command, and no skill named ${command} ran: ${cause}. ` +
     "To send text that begins with a slash, put something before it";
 }

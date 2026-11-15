@@ -1335,6 +1335,7 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
       params: {
         path: "/fake/worktree-1",
         branch: "ensemble-workflows/fake-1",
+        tipCommit: "fake-base-1-tip",
         state: "committed",
         changed: true,
         removed: false
@@ -1371,6 +1372,7 @@ test("a held session publishes its worktree state only when the session closes",
       params: {
         path: "/fake/worktree-1",
         branch: "ensemble-workflows/fake-1",
+        tipCommit: "fake-base-1-tip",
         state: "committed",
         changed: true,
         removed: false

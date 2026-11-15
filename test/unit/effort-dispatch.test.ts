@@ -18,12 +18,13 @@ import type { EffortPolicy } from "../../src/effort-resolution.js";
 
 const answer = (): EngineAttemptResult => ({ text: "done", deltaText: "done", durationMs: 1, firstDeltaMs: 1, items: {}, tokenUsageEvents: [] });
 
-function fixture(policy?: EffortPolicy, refuse?: "returned" | "thrown" | "availability") {
+function fixture(policy?: EffortPolicy, refuse?: "returned" | "thrown" | "availability" | "worker-output") {
   const dispatched: EngineTurnOptions[] = [];
   const records = new Map<number, RuntimeAgentRecord>();
   let attempts = 0;
+  const engineName: EngineAdapter["name"] = refuse === "returned" ? "claude" : "codex";
   const engine: EngineAdapter = {
-    name: "codex", concurrency: 1, schedule: (body) => body(), close: async () => undefined,
+    name: engineName, concurrency: 1, schedule: (body) => body(), close: async () => undefined,
     effortReport: async () => ({ identity: "unknown", levels: { low: "low", high: "high" } }),
     createInvocation: (_prompt, options) => {
       dispatched.push(options);
@@ -31,12 +32,16 @@ function fixture(policy?: EffortPolicy, refuse?: "returned" | "thrown" | "availa
         attempts++;
         if (refuse === "availability" && options.model === "unknown") throw appServerErrorFromPayload("turn", { code: "serverOverloaded", message: "overloaded" });
         if (refuse === "thrown") {
-          const error = new Error("Unsupported value: reasoning.effort minimal is not supported for this model");
+          const error = appServerErrorFromPayload("turn", { code: "badRequest",
+            message: "Unsupported value: reasoning.effort minimal is not supported for this model",
+            data: { param: "reasoning.effort", supported_values: ["low", "high"] } });
           attachFailedTurnResult(error, { ...answer(), text: "", resolvedEffort: "minimal" });
           throw error;
         }
         if (refuse === "returned") return { ...answer(), text: "", resolvedEffort: "minimal",
-          attemptFailure: { kind: "claude-worker-diagnostic", message: "Invalid reasoning_effort: supported values are low and high" } };
+          attemptFailure: { kind: "claude-worker-diagnostic", message: "Invalid reasoning_effort: supported values are low and high" },
+          diagnostics: { apiError: { status: 400, code: "invalid_request_error" } } };
+        if (refuse === "worker-output") return { ...answer(), text: "invalid effort level", deltaText: "invalid effort level" };
         return answer();
       } };
     },
@@ -49,7 +54,7 @@ function fixture(policy?: EffortPolicy, refuse?: "returned" | "thrown" | "availa
     ...(policy === undefined ? {} : { effortPolicy: policy }) });
   runtime.setRunRecorder({ recordAgent: async (record: RuntimeAgentRecord) => { records.set(record.id, structuredClone(record)); },
     recordAttemptStart: async () => undefined, recordAttemptEnd: async () => undefined } as unknown as RunRecordWriter);
-  return { runtime, dispatched, records, attempts: () => attempts };
+  return { runtime, dispatched, records, engineName, attempts: () => attempts };
 }
 
 test("impossible machine bounds refuse before an invocation is created", async () => {
@@ -81,7 +86,7 @@ for (const kind of ["returned", "thrown"] as const) {
   test(`a ${kind} provider effort refusal settles once and names no served effort`, async () => {
     const f = fixture(undefined, kind);
     try {
-      assert.equal(await f.runtime.agent("work", { engine: "codex", model: "unknown", effort: "low", fallback: [{ engine: "codex", model: "gpt-6-luna" }] }), null);
+      assert.equal(await f.runtime.agent("work", { engine: f.engineName, model: "unknown", effort: "low", fallback: [{ engine: f.engineName, model: "gpt-6-luna" }] }), null);
       assert.equal(f.attempts(), 1);
       const record = [...f.records.values()][0]!;
       assert.equal(record.resolvedEffort, null);
@@ -90,6 +95,17 @@ for (const kind of ["returned", "thrown"] as const) {
     } finally { await f.runtime.close(); }
   });
 }
+
+test("worker output about invalid effort retries as output rather than settling as effort-rejected", async () => {
+  const f = fixture(undefined, "worker-output");
+  try {
+    assert.equal(await f.runtime.agent("work", { engine: "codex", model: "unknown", effort: "low",
+      schema: { type: "object", required: ["answer"] } }), null);
+    assert.equal(f.attempts(), 3);
+    assert.deepEqual([...f.records.values()][0]!.attempts.map((attempt) => attempt.failure?.kind),
+      ["invalid-json", "invalid-json", "invalid-json"]);
+  } finally { await f.runtime.close(); }
+});
 
 test("a fallback target takes its own clamp and preserves each attempt's resolution", async () => {
   const f = fixture(undefined, "availability");

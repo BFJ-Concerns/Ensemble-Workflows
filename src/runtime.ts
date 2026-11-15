@@ -2625,6 +2625,7 @@ export class EnsembleRuntime {
       params: {
         path: worktree.path,
         branch: worktree.branch,
+        tipCommit: worktree.tipCommit,
         state: worktree.state,
         changed: worktree.changed,
         removed: worktree.removed

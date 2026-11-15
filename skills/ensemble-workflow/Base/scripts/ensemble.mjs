@@ -16660,7 +16660,7 @@ function addProviderCost(target, event) {
 
 // src/run-record.ts
 var execFileAsync = promisify(execFile);
-var SCHEMA_VERSION = 6;
+var SCHEMA_VERSION = 7;
 var MANIFEST_PATH = "manifest.json";
 function namedTargetsRecord(targets) {
   if (targets === void 0) {
@@ -18099,8 +18099,14 @@ var GitWorktreeIsolationManager = class {
     if (repoRoot === void 0) {
       throw new Error(`worktree was not created by this manager: ${worktree.path}`);
     }
+    const createdRef = `refs/heads/${worktree.branch}`;
+    const createdTip = (await git2(repoRoot, ["rev-parse", "--verify", createdRef])).trim();
+    const extraCommits = (await git2(repoRoot, ["rev-list", "--count", `${worktree.baseCommit}..${createdTip}`])).trim();
+    if (extraCommits !== "0") {
+      throw new Error(`retaining worktree ${worktree.path}: branch ${worktree.branch} at ${createdTip} holds commits absent from base ${worktree.baseCommit}`);
+    }
     await git2(repoRoot, ["worktree", "remove", worktree.path]);
-    await git2(repoRoot, ["branch", "-D", worktree.branch]);
+    await git2(repoRoot, ["update-ref", "--no-deref", "-d", createdRef, createdTip]);
     this.#worktreeRoots.delete(worktree.path);
     try {
       await rmdir(path8.dirname(worktree.path));
@@ -19233,9 +19239,6 @@ function settlesWithoutRetry(failure) {
 }
 function diagnoseAttemptFailure(evidence) {
   const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
-  if (isEffortRejection(`${failure.message} ${appServerDiagnostic?.payload ?? ""}`)) {
-    return { kind: "effort-rejected", message: failure.message };
-  }
   if (failure.kind === SESSION_LOST_KIND) {
     return failure;
   }
@@ -19243,6 +19246,9 @@ function diagnoseAttemptFailure(evidence) {
   const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
   if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
     return failure;
+  }
+  if (isProviderEffortRejection(evidence)) {
+    return { kind: "effort-rejected", message: failure.message };
   }
   const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
@@ -19425,6 +19431,30 @@ function claudeApiErrorOf(diagnostics) {
 }
 function isEffortRejection(message) {
   return /(?:reasoning[._ -]?effort|model_reasoning_effort|reasoning level|effort level)/i.test(message) && /(?:unsupported|not supported|does not support|not (?:a )?valid|invalid|not allowed|must be one of|supported values|supported (?:efforts|levels))/i.test(message);
+}
+function isProviderEffortRejection(evidence) {
+  const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
+  if (engine === "claude" && failure.kind === "claude-worker-diagnostic") {
+    const api = claudeApiErrorOf(diagnostics);
+    return api !== null && (api.status === 400 || api.status === 422 || api.status === null && (api.code === "invalid_request_error" || api.code === "invalid_request")) && isEffortRejection(failure.message);
+  }
+  if (engine !== "codex" || appServerDiagnostic?.payload == null) return false;
+  if (appServerDiagnostic.httpStatusCode != null && appServerDiagnostic.httpStatusCode !== 400 && appServerDiagnostic.httpStatusCode !== 422) return false;
+  try {
+    const payload = JSON.parse(appServerDiagnostic.payload);
+    const param = objectField(payload, "param");
+    if ((appServerDiagnostic.code === "badRequest" || appServerDiagnostic.code === -32602 || appServerDiagnostic.httpStatusCode === 400 || appServerDiagnostic.httpStatusCode === 422) && typeof param === "string" && /^(?:reasoning[._]effort|model_reasoning_effort)$/.test(param)) {
+      return isEffortRejection(failure.message) || Array.isArray(objectField(payload, "supported_values"));
+    }
+    const message = objectField(objectField(payload, "error"), "message");
+    if (typeof message !== "string") return false;
+    const providerError = objectField(JSON.parse(message), "error");
+    const providerMessage = objectField(providerError, "message");
+    const providerParam = objectField(providerError, "param");
+    return objectField(providerError, "type") === "invalid_request_error" && typeof providerMessage === "string" && isEffortRejection(`${providerMessage} ${typeof providerParam === "string" ? providerParam : ""}`);
+  } catch {
+    return false;
+  }
 }
 
 // src/fallback-source.ts
@@ -28087,6 +28117,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       params: {
         path: worktree.path,
         branch: worktree.branch,
+        tipCommit: worktree.tipCommit,
         state: worktree.state,
         changed: worktree.changed,
         removed: worktree.removed
@@ -36388,7 +36419,8 @@ async function runEnsembleCli(argv, options = {}) {
       if (!reportUnchanged && event.params.changed !== true) {
         return;
       }
-      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${branch})
+      const location = event.params.branch === null && typeof event.params.tipCommit === "string" ? `detached at ${event.params.tipCommit}` : branch;
+      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${location})
 `);
     });
     const runnerOptions = {

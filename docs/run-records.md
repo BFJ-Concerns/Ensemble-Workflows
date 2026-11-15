@@ -22,7 +22,7 @@ runtime writes:
 
 | Artefact family | Version field | Current version |
 |---|---|---|
-| [Durable run records](#run-record-schema) | `schema_version` | `6` |
+| [Durable run records](#run-record-schema) | `schema_version` | `7` |
 | [Completion sentinel](#completion-sentinel) | `schema_version` | `4` |
 | [Live status](#ensemblerun-uuidlocaljson-schema) | `schema` | `5` |
 
@@ -643,9 +643,7 @@ families; their versions are listed in [Schema versions](#schema-versions).
   on Codex, or `null`), `turns_settled` (how many of the session's turns had
   settled), `turn_in_flight` (the turn then running, or `null` when the
   session was idle), `reason` (the engine's account), and `at`. The field
-  joined the manifest within schema version 6: an earlier version-6
-  manifest may omit it, and its absence there says nothing about lost
-  sessions.
+  is an array, empty when no session loss was observed.
 - `tallies`: `name -> number`, the counts the script recorded with `tally()`,
   stored verbatim (last write per name wins) and written as each is recorded,
   so a count recorded before the run ended is in the archive whether or not
@@ -819,7 +817,10 @@ The fields present throughout a record's lifetime are:
   `effort` fields Claude Code writes on each assistant transcript entry —
   and `null` when the engine reported none, never an echo of the request.
   A provider effort rejection clears `resolved_effort` on the agent and
-  attempt, records `effort-rejected`, and settles without retrying.
+  attempt, records `effort-rejected`, and settles without retrying. This
+  diagnosis requires a provider request-refusal envelope; a worker's words
+  about effort, an output-validation failure or a lost session are not
+  evidence of a provider refusal.
   A Codex `modelNotFound` rejection clears the thread's reported model and
   effort: its configured model was not served. That attempt books under
   `unresolved` in the cost roll-up.
@@ -867,10 +868,10 @@ The fields present throughout a record's lifetime are:
   [`worktrees`](workflow-scripts.md#budget-worktrees-and-args). Held-session
   turns receive the final block together when the session closes. Recover
   committed work through `tip_commit`; `branch` reflects the worker's final
-  checkout, except for `unknown`, which retains the original dispatch branch. `state` joined
-  the record within its schema version, so an agent record from an older
-  Ensemble checkout can lack it; read a missing `state` as unrecorded, and
-  rely on `changed` there.
+  checkout, except for `unknown`, which retains the original dispatch branch.
+  Cleanup retains that branch if it holds commits absent from `base_commit`,
+  even when the final checkout is clean at the base; finalisation then reports
+  `unknown` and a diagnostic naming the retained branch and its commit.
 - `phase`: the explicit agent/session option, or the current run phase set by
   `phase(title)` when the agent or session turn queues; `null` if neither is
   set. Later phase changes do not alter an existing agent record.
@@ -933,8 +934,9 @@ The fields present throughout a record's lifetime are:
     included.
   - `status`: `"complete"`, `"failed"`, or `"abandoned"`. An abandoned entry
     is one whose outcome was never observed. It keeps the evidence persisted
-    while it ran: `attempt`, `target`, `named_target`, `started_at`, `resolved_model` and
-    `resolved_effort`. Every outcome field — `ended_at`, `duration_ms`,
+    while it ran: `attempt`, `target`, `named_target`, `started_at`, `resolved_model`,
+    `resolved_effort` and `effort_resolution`. Every outcome field — `ended_at`,
+    `duration_ms`,
     `first_delta_ms`, `raw_output`, `validated_output`, `failure`,
     `classification`, `chain_decision`, `observed_failure`, `worker_exit`,
     `app_server_diagnostic` — is `null`, which here means unobserved, not
@@ -955,6 +957,9 @@ The fields present throughout a record's lifetime are:
     settled attempt never has a `null` duration), and `first_delta_ms`.
   - `raw_output`, `validated_output`, `resolved_model` (including a held
     session's observed model on later turns), and `resolved_effort`.
+  - `effort_resolution`: the target's harness resolution, with the same shape
+    as the agent-level field; `null` for omitted effort or a raw opencode
+    variant. An abandoned attempt retains the resolution persisted at start.
   - `failure`: `{ kind, message }` or `null`.
   - `classification` and `chain_decision` (below).
   - `observed_failure`: when the run's own ending ended the turn, `failure`
@@ -1077,6 +1082,7 @@ on the same target.
 | Rule | Class | Meaning |
 |---|---|---|
 | `output` | `output` | Empty output, unparseable JSON, or an answer that fails its schema |
+| `effort.rejected` | `unclassified` | The provider refused the requested reasoning level; *settles* |
 | `<engine>.authentication-failure` | `unclassified` | The engine's credentials were rejected |
 | `<engine>.model-not-found` | `unclassified` | The engine does not know the model |
 | `substrate.refused` | `availability` | The launch environment denied a resource the engine needs, before its substrate started |

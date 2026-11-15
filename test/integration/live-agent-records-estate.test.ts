@@ -23,7 +23,7 @@ test("the live reader discovers archives without entering resource-probe directo
     // A probe is outside the archive tree even when its contents resemble
     // an archive. Parsing this file proves the reader crossed that boundary.
     await writeFile(path.join(probe, "manifest.json"), "not an archive");
-    const keys: string[] = JSON.parse(await readFile(path.resolve("test/fixtures/run-record/v6-agent-keys.json"), "utf8"));
+    const keys: string[] = JSON.parse(await readFile(path.resolve("test/fixtures/run-record/v7-agent-keys.json"), "utf8"));
     await writeFile(path.join(agentDirectory, "agent.json"), JSON.stringify({
       ...Object.fromEntries(keys.map((key) => [key, null])),
       id: 1, label: "settled", status: "complete", attempts: [], session: null

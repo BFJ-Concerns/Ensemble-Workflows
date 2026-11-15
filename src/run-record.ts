@@ -47,7 +47,7 @@ const execFileAsync = promisify(execFile);
  * no attempt book no leaf. Readers must check this version before
  * interpreting the documents; abandonment reconciles only this version.
  */
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const MANIFEST_PATH = "manifest.json";
 
 /**
@@ -580,7 +580,7 @@ interface AbandonmentRecord {
 }
 
 interface Manifest {
-  schema_version: 6;
+  schema_version: 7;
   kind: "run_manifest";
   run_id: string;
   run_uuid: string;

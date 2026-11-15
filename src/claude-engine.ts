@@ -35,10 +35,10 @@ import {
 } from "./claude-transcript.js";
 import { isPreparedClaudeStrip } from "./claude-tool-surface.js";
 import { subtractUsage } from "./usage-summary.js";
-import { CANONICAL_EFFORT_DOMAIN } from "./engine-option-validation.js";
+import { CANONICAL_EFFORT_DOMAIN } from "./effort-resolution.js";
 import { CLAUDE_ROSTER_ABSENCE_BOUND, CLAUDE_ROSTER_LOSS_REASON } from "./claude-control-plane.js";
 
-import type { CanonicalEffort } from "./engine-option-validation.js";
+import type { CanonicalEffort } from "./effort-resolution.js";
 import type { ClaudeControlPlane, ClaudeDispatchOptions, ClaudeSessionHandle } from "./claude-control-plane.js";
 import type { SubmissionReceipt, TranscriptApiError, TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
 import type {

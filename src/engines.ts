@@ -40,6 +40,7 @@ import type { EngineCapabilityTable, PreparedStrip, StrippableCapability } from 
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { WorkerExitStatus } from "./errors.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
+import type { EngineEffortReport } from "./effort-resolution.js";
 import type { OpenCodeRunner } from "./opencode-engine.js";
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode-model-registry.js";
 import type { ResourceRequirement } from "./resource-preflight.js";
@@ -263,6 +264,29 @@ export interface EngineAdapter {
    * failure and advances a remaining chain entry without requesting a worker.
    */
   prepareStrip?(strip: readonly StrippableCapability[], context: StripPreparationContext): Promise<PreparedStrip>;
+  /**
+   * The identity of a model this engine is asked to run, as the built-in
+   * effort table knows models (`EffortDispatch.identity`): for an engine
+   * that reaches models by names of its own, such as a registry key
+   * standing for a routed model, so a well-known model is recognised
+   * whatever route reaches it. Undefined where the engine cannot name the
+   * model behind the name. Optional: absent, the dispatched name is the
+   * model's identity.
+   */
+  modelIdentity?(model: string): string | undefined;
+  /**
+   * The engine's own account of the model a dispatch runs on, for effort
+   * resolution (`EffortDispatch.engineReport`): which model that is — the
+   * engine's default where `model` is undefined — and the levels the
+   * engine says it serves. Resolves null where the engine can give none:
+   * it does not list the model, or its listing could not be read. A
+   * missing report is never a failed dispatch — the level falls to the
+   * next source — and a substrate that is down refuses the worker it is
+   * then asked for, as it does without a report. Optional: an engine with
+   * no such account leaves a model's served levels to the machine's map
+   * and the built-in table.
+   */
+  effortReport?(model: string | undefined): Promise<EngineEffortReport | null>;
   schedule<T>(task: () => Promise<T>): Promise<T>;
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation;
   /**

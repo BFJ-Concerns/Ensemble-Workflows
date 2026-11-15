@@ -14337,6 +14337,12 @@ function resolveStripEnforcement(engine, table, strip) {
   return routes;
 }
 
+// src/effort-resolution.ts
+var CANONICAL_EFFORT_DOMAIN = ["minimal", "low", "medium", "high", "xhigh"];
+function isCanonicalEffort(value) {
+  return CANONICAL_EFFORT_DOMAIN.includes(value);
+}
+
 // src/opencode-model-registry.ts
 var StaticOpenCodeModelRegistry = class {
   #models = /* @__PURE__ */ new Map();
@@ -14371,9 +14377,8 @@ var defaultOpenCodeModelRegistry = createOpenCodeModelRegistry([]);
 
 // src/engine-option-validation.ts
 var MAX_TIMER_DELAY_MS = 2147483647;
-var CANONICAL_EFFORT_DOMAIN = ["minimal", "low", "medium", "high", "xhigh"];
 function assertCanonicalEffortSupported(effort) {
-  if (effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(effort)) {
+  if (effort !== void 0 && !isCanonicalEffort(effort)) {
     throw new InvalidAgentOptionValueError(
       "effort",
       effort,
@@ -14593,7 +14598,7 @@ function assertValidFallbackChain(chain) {
         );
       }
     }
-    if (target.effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(target.effort)) {
+    if (target.effort !== void 0 && !isCanonicalEffort(target.effort)) {
       throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
     }
     if (target.target !== void 0) {

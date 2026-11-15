@@ -1,3 +1,5 @@
+import { assertEffortSection } from "./effort-resolution.js";
+import type { EffortPolicy, EffortSection } from "./effort-resolution.js";
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -110,6 +112,7 @@ export interface AmbientSettings {
    * `workerEnvironment`; with no section, no name is bound.
    */
   namedTargets: NamedTargets;
+  effortPolicy: EffortPolicy;
 }
 
 export interface AmbientSettingFlags {
@@ -141,6 +144,7 @@ interface MachineConfig {
   worker_environment?: Partial<Record<EngineName, Record<string, string>>>;
   opencode_models?: Record<string, OpenCodeModelDeclaration>;
   targets?: Record<string, NamedTargetBinding>;
+  effort?: EffortSection;
 }
 
 type OpenCodeBillingMode = NonNullable<OpenCodeModelRegistryEntry["billing"]>["mode"];
@@ -208,7 +212,8 @@ export function resolveAmbientSettings(input: {
     statusDir: resolveStatus(config, input.env, input.cwd, configFile),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models),
-    namedTargets: { bindings: config?.targets ?? {}, source: configFile }
+    namedTargets: { bindings: config?.targets ?? {}, source: configFile },
+    effortPolicy: { section: config?.effort ?? {}, source: configFile }
   };
 }
 
@@ -255,7 +260,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   if (!newer) {
     assertKnownKeys(
       parsed,
-      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets"],
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "effort"],
       configFile
     );
   }
@@ -275,6 +280,11 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
   validateNamedTargetBindings(parsed.targets, configFile);
+  if (parsed.effort !== undefined) {
+    assertEffortSection(parsed.effort, (key, detail) => {
+      throw fileValueError(configFile, `effort${key ? `.${key}` : ""}`, detail);
+    });
+  }
   return parsed as unknown as MachineConfig;
 }
 

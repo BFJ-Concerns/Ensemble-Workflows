@@ -36,6 +36,7 @@ for (const gate of ["engine-cap", "agent-ceiling"] as const) {
   try {
     const releaseFile = path.join(directory, "release");
     const acknowledgements = path.join(directory, "observed");
+    const capture = path.join(directory, "codex-wire.jsonl");
     await writeFile(acknowledgements, "");
     const workflow = path.join(directory, "workflow.mjs");
     await writeFile(workflow, `
@@ -76,10 +77,19 @@ for (const gate of ["engine-cap", "agent-ceiling"] as const) {
     const result = await runNode([consumer, spec], { ...env,
       ENSEMBLE_CONCURRENCY_CODEX: gate === "engine-cap" ? "1" : "12",
       ENSEMBLE_AGENT_CEILING: gate === "agent-ceiling" ? "1" : "null",
+      ENSEMBLE_FAKE_CODEX_CAPTURE: capture,
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(notifications),
       ENSEMBLE_FAKE_CODEX_FIRST_DELTA_CONTROL: acknowledgements, ENSEMBLE_FAKE_CODEX_STALL_AFTER_NOTIFICATION_SEQUENCE: "1"
     }, 70_000);
     assert.equal(result.code, 0, result.stderr);
+    const requests = (await readFile(capture, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as { method: string; params?: { includeHidden?: boolean } });
+    const discovery = requests.filter((request) => request.method === "model/list");
+    // Keep requested-model unknown: this journey must exercise discovery and
+    // pass-through, rather than bypassing discovery through a built-in row.
+    // Four dispatches resolve once each; a retry and a held follow-up reuse it.
+    assert.equal(discovery.length, 4);
+    assert.ok(discovery.every((request) => request.params?.includeHidden === true));
     const report = JSON.parse(result.stdout);
     assert.equal(report.stdout, "complete");
     assert.equal(report.snapshot.totals.done, 4);

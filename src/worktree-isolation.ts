@@ -23,9 +23,9 @@ export interface IsolatedWorktree {
  * - `uncommitted`: the work is only in the worktree's files — staged,
  *   unstaged or untracked — and the branch still points at the base commit.
  * - `committed`: the tip moved off the base commit and the files are clean,
- *   so the branch holds all of the work.
+ *   so tipCommit identifies all of the work.
  * - `committed-and-uncommitted`: the tip moved and files are left
- *   uncommitted, so the branch holds only part of the work.
+ *   uncommitted, so tipCommit identifies only part of the work.
  * - `unknown`: finalisation failed, so none of the above was established.
  */
 export type WorktreeState =
@@ -42,7 +42,7 @@ export type WorktreeState =
  * `unchanged` keeps the worktree and its branch, `unknown` included, since a
  * failed finalisation did not prove there was nothing to keep.
  */
-export type IsolatedWorktreeRecord = IsolatedWorktree & (
+export type IsolatedWorktreeRecord = Omit<IsolatedWorktree, "branch"> & { branch: string | null } & (
   | { state: "unchanged"; tipCommit: string; changed: false; removed: true }
   | {
       state: "uncommitted" | "committed" | "committed-and-uncommitted";
@@ -97,6 +97,8 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     // tip; either observation keeps the worktree, or `branch -D` below would
     // orphan the commits.
     const tip = (await git(worktree.path, ["rev-parse", "HEAD"])).trim();
+    const branch = (await git(worktree.path, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    const finalBranch = branch === "HEAD" ? null : branch;
     const state = inspectedState({
       committed: tip !== worktree.baseCommit,
       uncommitted: status.trim().length > 0
@@ -106,6 +108,7 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
       this.#worktreeRoots.delete(worktree.path);
       return {
         ...worktree,
+        branch: finalBranch,
         state,
         tipCommit: tip,
         changed: true,
@@ -117,8 +120,18 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     if (repoRoot === undefined) {
       throw new Error(`worktree was not created by this manager: ${worktree.path}`);
     }
+    // HEAD may have been detached or switched back to the base after commits
+    // were made on the created branch. Keep that ref unless its entire history
+    // is already reachable from the base, independently of the current HEAD.
+    const createdRef = `refs/heads/${worktree.branch}`;
+    const createdTip = (await git(repoRoot, ["rev-parse", "--verify", createdRef])).trim();
+    const extraCommits = (await git(repoRoot, ["rev-list", "--count", `${worktree.baseCommit}..${createdTip}`])).trim();
+    if (extraCommits !== "0") {
+      throw new Error(`retaining worktree ${worktree.path}: branch ${worktree.branch} at ${createdTip} holds commits absent from base ${worktree.baseCommit}`);
+    }
     await git(repoRoot, ["worktree", "remove", worktree.path]);
-    await git(repoRoot, ["branch", "-D", worktree.branch]);
+    // Compare-and-delete also protects a ref moved after the inspection.
+    await git(repoRoot, ["update-ref", "--no-deref", "-d", createdRef, createdTip]);
     this.#worktreeRoots.delete(worktree.path);
     // When this was the container's last worktree, the empty directory goes
     // with it rather than persisting beside the user's repository. rmdir is

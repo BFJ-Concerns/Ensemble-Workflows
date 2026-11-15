@@ -1,0 +1,42 @@
+{
+  "args": [
+    "archive_path",
+    "canonical_archive_path",
+    "sha256"
+  ],
+  "manifest": [
+    "args",
+    "budget_ceilings",
+    "caller_identity",
+    "cli_flags",
+    "concurrency",
+    "cost_rollup",
+    "effort",
+    "ended_at",
+    "environment",
+    "error",
+    "files",
+    "git",
+    "harness",
+    "hold_events",
+    "integrity",
+    "kind",
+    "meta",
+    "named_targets",
+    "namespace",
+    "owner",
+    "result",
+    "run_id",
+    "run_timeout_ms",
+    "run_uuid",
+    "schema_version",
+    "session_events",
+    "started_at",
+    "status",
+    "tallies",
+    "tallies_unavailable",
+    "worker_scope",
+    "workflow",
+    "workflow_invocations"
+  ]
+}

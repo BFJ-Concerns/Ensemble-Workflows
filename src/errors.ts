@@ -1,3 +1,4 @@
+import type { EffortBounds } from "./effort-resolution.js";
 import type { EngineAttemptResult } from "./engines.js";
 import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 import type { EngineTranscriptArtifact } from "./types.js";
@@ -737,6 +738,40 @@ export class FallbackTargetRejectedError extends AgentOptionRejectedError {
 export class NamedTargetRejectedError extends AgentOptionRejectedError {
   constructor(detail: string) {
     super(`Invalid named target: ${detail}`);
+  }
+}
+
+/**
+ * Thrown before a worker spawns when the machine's effort bounds for the
+ * dispatched target admit no level its model serves. The machine declared
+ * one limit and the model's served levels another, and a dispatch that
+ * honoured either would break the other, so the worker is not dispatched.
+ * The message names each bound with the `effort` section key that set it,
+ * the model, and where the section was read from.
+ */
+export class EffortBoundsUnservedError extends AgentOptionRejectedError {
+  constructor(refusal: {
+    engine: string;
+    /** The model the dispatch runs on, or null where it pinned none and its engine named none. */
+    model: string | null;
+    requested: string;
+    bounds: EffortBounds;
+    /** The canonical levels the model serves, ascending. */
+    served: readonly string[];
+    /** Where the bounds were read from (`EffortPolicy.source`). */
+    source: string;
+  }) {
+    const bounds = [
+      ...(refusal.bounds.ceiling !== null ? [`ceiling ${refusal.bounds.ceiling.level} (effort key ${JSON.stringify(refusal.bounds.ceiling.key)})`] : []),
+      ...(refusal.bounds.floor !== null ? [`floor ${refusal.bounds.floor.level} (effort key ${JSON.stringify(refusal.bounds.floor.key)})`] : [])
+    ];
+    super(
+      `effort ${JSON.stringify(refusal.requested)} cannot be served on ${refusal.engine} ` +
+        `${refusal.model !== null ? `model ${JSON.stringify(refusal.model)}` : "at the engine's default model"}: ` +
+        `the machine's ${bounds.join(" and ")} in ${refusal.source} admit${bounds.length === 1 ? "s" : ""} none of the levels the model serves ` +
+        `(${refusal.served.join(" | ")}). The worker was not dispatched. ` +
+        "Move the bound, or declare the model's served levels in the effort section."
+    );
   }
 }
 

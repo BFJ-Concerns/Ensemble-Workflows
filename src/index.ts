@@ -225,3 +225,8 @@ async function getDefaultRuntime(): Promise<EnsembleRuntime> {
   defaultRuntime ??= createRuntimeInstance();
   return defaultRuntime;
 }
+
+export type {
+  CanonicalEffort, EffortPolicy, EffortSection, EffortTargetPolicy,
+  EffortResolution, EngineEffortReport, ServedEffortLevels
+} from "./effort-resolution.js";

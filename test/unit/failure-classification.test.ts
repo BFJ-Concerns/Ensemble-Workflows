@@ -348,3 +348,58 @@ test("only a failure a retry would meet again settles its call without one", () 
     assert.equal(settlesWithoutRetry({ kind }), false, kind);
   }
 });
+
+
+test("a provider effort rejection in the structured payload settles without a retry or chain advance", () => {
+  const error = appServerErrorFromPayload("turn", { code: "badRequest", message: "Unsupported value minimal for this model",
+    data: { param: "reasoning.effort", supported_values: ["none", "low", "high"] } });
+  const original = evidence({ engine: "codex", failure: { kind: error.name, message: error.message }, appServerDiagnostic: appServerDiagnosticOf(error) });
+  const failure = diagnoseAttemptFailure(original);
+  assert.equal(failure.kind, "effort-rejected");
+  assert.equal(settlesWithoutRetry(failure), true);
+  assert.deepEqual(classifyAttemptFailure({ ...original, failure }), { class: "unclassified", rule: "effort.rejected" });
+});
+
+test("effort words from workers, lost sessions and substrate errors never become a provider refusal", () => {
+  for (const kind of ["invalid-json", "schema-validation", "empty-output", "session-lost", "AppServerExitedError", "TurnTimeoutError"]) {
+    const failure = { kind, message: "The worker wrote: invalid effort level" };
+    assert.deepEqual(diagnoseAttemptFailure(evidence({ engine: "codex", failure })), failure);
+  }
+  const failure = { kind: "claude-worker-diagnostic", message: "invalid reasoning_effort" };
+  assert.deepEqual(diagnoseAttemptFailure(evidence({ engine: "claude", failure })), failure);
+  assert.deepEqual(diagnoseAttemptFailure(evidence({ engine: "claude", failure: { ...failure, kind: "session-lost" },
+    diagnostics: { apiError: { status: 400, code: "invalid_request_error" } } })), { ...failure, kind: "session-lost" });
+});
+
+test("Claude effort rejection needs the synthetic API request-refusal evidence", () => {
+  const failure = { kind: "claude-worker-diagnostic", message: "Invalid reasoning_effort: supported values are low and high" };
+  for (const status of [400, 422]) {
+    assert.equal(diagnoseAttemptFailure(evidence({ engine: "claude", failure,
+      diagnostics: { apiError: { status, code: "invalid_request_error" } } })).kind, "effort-rejected");
+  }
+  for (const status of [401, 429, 503]) {
+    assert.notEqual(diagnoseAttemptFailure(evidence({ engine: "claude", failure,
+      diagnostics: { apiError: { status, code: "invalid_request_error" } } })).kind, "effort-rejected");
+  }
+});
+
+test("Codex effort rejection reads the provider's typed error rather than arbitrary payload text", () => {
+  const failure = { kind: "AppServerRequestError", message: "failed" };
+  const provider = { error: { type: "invalid_request_error", message: "Unsupported reasoning.effort minimal" } };
+  const payload = JSON.stringify({ error: { message: JSON.stringify(provider) } });
+  assert.equal(diagnoseAttemptFailure(evidence({ engine: "codex", failure,
+    appServerDiagnostic: { code: "other", payload } })).kind, "effort-rejected");
+  for (const arbitrary of ["invalid effort level", JSON.stringify({ text: "invalid effort level" }), JSON.stringify(provider)]) {
+    assert.deepEqual(diagnoseAttemptFailure(evidence({ engine: "codex", failure,
+      appServerDiagnostic: { code: "other", payload: arbitrary } })), failure);
+  }
+});
+
+test("echoed worker text inside a provider error is not an effort refusal", () => {
+  const failure = { kind: "AppServerRequestError", message: "request failed" };
+  const provider = { error: { type: "invalid_request_error", message: "missing input",
+    request: { prompt: "invalid effort level" } } };
+  const payload = JSON.stringify({ error: { message: JSON.stringify(provider) } });
+  assert.deepEqual(diagnoseAttemptFailure(evidence({ engine: "codex", failure,
+    appServerDiagnostic: { code: "other", payload } })), failure);
+});

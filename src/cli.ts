@@ -397,6 +397,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // The file as resolved from this invocation's env, not process.env:
       // a refusal names the file this run actually read.
       openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
+      effortPolicy: ambientSettings.effortPolicy,
       namedTargets: ambientSettings.namedTargets,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
@@ -476,6 +477,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         concurrency: recordConcurrency(ambientSettings, progress),
         workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
+        effortPolicy: ambientSettings.effortPolicy,
         namedTargets: ambientSettings.namedTargets
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
@@ -691,7 +693,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       if (!reportUnchanged && event.params.changed !== true) {
         return;
       }
-      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${branch})\n`);
+      const location = event.params.branch === null && typeof event.params.tipCommit === "string"
+        ? `detached at ${event.params.tipCommit}` : branch;
+      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${location})\n`);
     });
     const runnerOptions = {
       source,

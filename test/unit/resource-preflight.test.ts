@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { ENGINE_RESOURCE_RESOLVERS, claudeConfigDirectory, engineResourceRequirements } from "../../src/engine-resources.js";
-import { createDefaultEngineRegistry, EngineRegistry, type EngineAdapter } from "../../src/engines.js";
+import { createDefaultEngineRegistry, CodexEngineAdapter, EngineRegistry, type EngineAdapter } from "../../src/engines.js";
 import { launchEnvironment } from "../../src/engine-environment.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { SubstrateRefusedError } from "../../src/errors.js";
@@ -460,3 +460,58 @@ test("probe cleanup errors stay pre-spawn and do not poison later resource check
     await gate.require("codex");
   });
 });
+
+
+for (const held of [false, true]) {
+  for (const model of [undefined, "unlisted-model"]) {
+    test(`resource denial precedes Codex discovery for ${held ? "a session" : "a call"} with ${model ?? "no model pin"}`, async () => {
+      await withDirectory(async (dir) => {
+        const blocker = path.join(dir, "codex-home");
+        await writeFile(blocker, "not a directory");
+        const touched: string[] = [];
+        const ran: EngineName[] = [];
+        const codex = new CodexEngineAdapter({ concurrency: 1, transport: {
+          cwd: dir,
+          listModels: async () => {
+            touched.push("model/list");
+            return [{ model: "unlisted-model", isDefault: true, supportedReasoningEfforts: ["high"] }];
+          },
+          openThread: async () => { touched.push("thread/start"); return "thread"; },
+          runTurn: async () => {
+            touched.push("turn/start");
+            return { text: "unexpected", deltaText: "unexpected", durationMs: 1, firstDeltaMs: 1, items: {}, tokenUsageEvents: [] };
+          },
+          close: async () => undefined
+        } });
+        const fallback = recordingAdapter("claude", ran);
+        fallback.createSession = (options) => ({
+          beginTurn: (prompt) => fallback.createInvocation(prompt, options),
+          close: async () => undefined
+        });
+        const runtime = new EnsembleRuntime({ cwd: dir, defaultMaxAttempts: 3,
+          engines: new EngineRegistry([codex, fallback], [], (engine) =>
+            engine === "codex" ? [requirement({ owner: "codex", path: blocker })] : []) });
+        const send = async (withFallback: boolean) => {
+          const options = { engine: "codex" as const, effort: "high",
+            ...(model === undefined ? {} : { model }),
+            ...(withFallback ? { fallback: [{ engine: "claude" as const, model: "fallback-model" }] } : {}) };
+          if (!held) return runtime.agent("work", options);
+          const session = runtime.createWorkerSession(options);
+          try { return await session.send("work"); }
+          finally { await session.close(); }
+        };
+        try {
+          await assert.rejects(send(false), ResourcePreflightRefusedError);
+          assert.deepEqual(touched, [], "denial must precede even lazy capability discovery");
+          assert.equal(await send(true), "fallback answer");
+          assert.deepEqual(touched, []);
+          assert.deepEqual(ran, ["claude"]);
+          const attempts = runtime.lastAgentRecord()?.attempts;
+          assert.equal(attempts?.[0]?.classification?.rule, "preflight.resource-denied");
+          assert.equal(attempts?.[0]?.chainDecision, "advanced");
+          assert.equal(attempts?.[1]?.target.engine, "claude");
+        } finally { await runtime.close(); }
+      });
+    });
+  }
+}

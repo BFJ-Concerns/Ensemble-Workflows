@@ -927,7 +927,7 @@ test("a started turn with no output expires before its ordinary timeout and reco
     assert.equal(await runtime.agent("start but never speak", { engine: "codex", timeoutMs: 2_000, maxAttempts: 1 }), null);
     assert.ok(Date.now() - startedAt < 1_000, "first-output expiry must win over the 2s turn timeout");
     const attempt = records.at(-1)?.attempts.at(-1);
-    assert.equal(records.at(-1)?.status, "failed");
+    assert.equal(records.at(-1)?.status, "timed-out");
     assert.equal(attempt?.status, "failed");
     assert.equal(attempt?.failure?.kind, "AppServerFirstOutputTimeoutError");
     assert.match(attempt?.failure?.message ?? "", /first output-bearing frame within 250ms/);

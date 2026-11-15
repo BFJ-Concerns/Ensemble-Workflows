@@ -111,7 +111,7 @@ the prompt.
 | `--engine <engine>` | `codex`, `claude`, or `opencode`. Required unless `--target` is given |
 | `--target <name>` | A named target from the machine configuration's [`targets`](configuration.md#targets) section, in place of `--engine` and `--model`. Given beside either, it fails the run before the worker spawns, naming the configuration file, as does a name the file does not bind |
 | `--model <model>` | Model to run. Required for opencode |
-| `--effort <effort>` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh`; on opencode, one of the model's declared variants |
+| `--effort <effort>` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; resolved against known served levels and [machine bounds](configuration.md#effort). On opencode, a declared raw variant is also accepted when no machine bound applies |
 | `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed. A schema Ensemble cannot compile is a usage error (exit 2), naming the inline argument or resolved file path, the invalid location and a correction |
 | `--identity` | Print the identified result `{ label, phase, output, failure }` instead of the bare output |
 | `--fallback '<json>'`, `--fallback @file` | Ordered fallback chain, as in `agent()`: an array of `{ engine, model, effort? }` or `{ target, effort? }` entries. Invalid chains are refused before any worker starts |
@@ -135,10 +135,13 @@ stderr reports `[worktree] <phrase> <path> (<branch>)`. The phrase is
 `uncommitted` when the branch still points at its base, `committed` when
 all work is committed, `committed with uncommitted edits` when files still
 need committing, or `unchanged and removed` when nothing was left to keep.
-Branches containing changed work are kept. Workflow runs report the same
+Branches containing changed work are kept. A detached checkout reports
+`(detached at <commit>)` in place of the branch. Workflow runs report the same
 lines for changed worktrees, omitting unchanged ones. A finalisation failure
 reports `[worktree] finalisation failed for <path> (<branch>): <message>`;
-the retained result's state is `unknown`.
+the retained result's state is `unknown`. Cleanup also retains a created
+branch holding commits absent from its base, even when the worker checked
+out the base again; the diagnostic names that branch and its commit.
 
 A failed worker exits 1 with the partial-result envelope (below) rather than
 printing a bare `null`. Its `error.kind` and `error.message` carry the last

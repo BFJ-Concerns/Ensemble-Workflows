@@ -22,7 +22,7 @@ runtime writes:
 
 | Artefact family | Version field | Current version |
 |---|---|---|
-| [Durable run records](#run-record-schema) | `schema_version` | `6` |
+| [Durable run records](#run-record-schema) | `schema_version` | `7` |
 | [Completion sentinel](#completion-sentinel) | `schema_version` | `4` |
 | [Live status](#ensemblerun-uuidlocaljson-schema) | `schema` | `5` |
 
@@ -609,6 +609,9 @@ families; their versions are listed in [Schema versions](#schema-versions).
 - `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
   ceilings and whole-run timeout, each as `{ value, layer }`. Both are set by
   flag only, so their layers are `flag` or `default`.
+- `effort`: the machine effort policy `{ section, source }`, or `null` when
+  the runtime received none; `section` contains the bounds and native-level
+  maps in force, and `source` names the machine configuration file.
 - `named_targets`: the named targets in force when the run started —
   `source`, the machine configuration file path or the source supplied by a
   library caller (`null` for a library run given none), and `bindings`, each name's
@@ -640,9 +643,7 @@ families; their versions are listed in [Schema versions](#schema-versions).
   on Codex, or `null`), `turns_settled` (how many of the session's turns had
   settled), `turn_in_flight` (the turn then running, or `null` when the
   session was idle), `reason` (the engine's account), and `at`. The field
-  joined the manifest within schema version 6: an earlier version-6
-  manifest may omit it, and its absence there says nothing about lost
-  sessions.
+  is an array, empty when no session loss was observed.
 - `tallies`: `name -> number`, the counts the script recorded with `tally()`,
   stored verbatim (last write per name wins) and written as each is recorded,
   so a count recorded before the run ended is in the archive whether or not
@@ -742,6 +743,8 @@ While an attempt executes, on any engine, the record also has
   attempt.
 - `named_target`: the named target this attempt was asked for through, as on
   a settled attempt.
+- `effort_resolution`: dispatch provenance, present when the runtime resolved
+  a canonical effort; the shape matches a settled attempt below.
 - `transcript`: a path once a readable file exists, otherwise `null`.
   opencode has no live transcript, so its value stays `null`.
 - `resolved_model` and `resolved_effort`: the served identity the engine has
@@ -798,10 +801,26 @@ The fields present throughout a record's lifetime are:
   target the session was created through in `named_target`; later turns'
   top-level `model` uses the target that answered the first turn, even when
   that was a fallback.
+- `effort_resolution`: the last dispatched target's harness resolution, or
+  `null` for an omitted effort or raw opencode variant. It carries `requested`,
+  `bounds` (each of `floor` and `ceiling` is `{ level, key }` or `null`),
+  `served` (`{ source, level }` or `null` for pass-through), and `dispatched`
+  (the native name). Sources are `machine-map`, `built-in-table` and
+  `engine-report`, in that order. This is dispatch provenance, never evidence
+  that the provider served the chosen level. Each settled attempt carries its
+  own `effort_resolution` with the same shape; a running `current_attempt`
+  carries it when effort was resolved, and an abandoned attempt retains it.
+  Earlier attempts retain their own target's resolution after a fallback.
+  Older records may omit these fields.
 - `resolved_model` / `resolved_effort`: what was actually served, as the
   engine reported it — Codex's `thread/start` answer, or the `model` and
   `effort` fields Claude Code writes on each assistant transcript entry —
   and `null` when the engine reported none, never an echo of the request.
+  A provider effort rejection clears `resolved_effort` on the agent and
+  attempt, records `effort-rejected`, and settles without retrying. This
+  diagnosis requires a provider request-refusal envelope; a worker's words
+  about effort, an output-validation failure or a lost session are not
+  evidence of a provider refusal.
   A Codex `modelNotFound` rejection clears the thread's reported model and
   effort: its configured model was not served. That attempt books under
   `unresolved` in the cost roll-up.
@@ -842,14 +861,17 @@ The fields present throughout a record's lifetime are:
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).
-- `worktree`: the isolated worktree's `branch`, `base_commit`, `state`,
-  `tip_commit`, `changed`, and `removed` — or `null`. `state` is
+- `worktree`: the isolated worktree's final `branch` (`null` for detached
+  HEAD), `base_commit`, `state`, `tip_commit`, `changed`, and `removed` — or `null`. `state` is
   `"unchanged"`, `"uncommitted"`, `"committed"`,
   `"committed-and-uncommitted"`, or `"unknown"`, as for a script's
-  [`worktrees`](workflow-scripts.md#budget-worktrees-and-args). `state` joined
-  the record within its schema version, so an agent record from an older
-  Ensemble checkout can lack it; read a missing `state` as unrecorded, and
-  rely on `changed` there.
+  [`worktrees`](workflow-scripts.md#budget-worktrees-and-args). Held-session
+  turns receive the final block together when the session closes. Recover
+  committed work through `tip_commit`; `branch` reflects the worker's final
+  checkout, except for `unknown`, which retains the original dispatch branch.
+  Cleanup retains that branch if it holds commits absent from `base_commit`,
+  even when the final checkout is clean at the base; finalisation then reports
+  `unknown` and a diagnostic naming the retained branch and its commit.
 - `phase`: the explicit agent/session option, or the current run phase set by
   `phase(title)` when the agent or session turn queues; `null` if neither is
   set. Later phase changes do not alter an existing agent record.
@@ -912,8 +934,9 @@ The fields present throughout a record's lifetime are:
     included.
   - `status`: `"complete"`, `"failed"`, or `"abandoned"`. An abandoned entry
     is one whose outcome was never observed. It keeps the evidence persisted
-    while it ran: `attempt`, `target`, `named_target`, `started_at`, `resolved_model` and
-    `resolved_effort`. Every outcome field — `ended_at`, `duration_ms`,
+    while it ran: `attempt`, `target`, `named_target`, `started_at`, `resolved_model`,
+    `resolved_effort` and `effort_resolution`. Every outcome field — `ended_at`,
+    `duration_ms`,
     `first_delta_ms`, `raw_output`, `validated_output`, `failure`,
     `classification`, `chain_decision`, `observed_failure`, `worker_exit`,
     `app_server_diagnostic` — is `null`, which here means unobserved, not
@@ -934,6 +957,9 @@ The fields present throughout a record's lifetime are:
     settled attempt never has a `null` duration), and `first_delta_ms`.
   - `raw_output`, `validated_output`, `resolved_model` (including a held
     session's observed model on later turns), and `resolved_effort`.
+  - `effort_resolution`: the target's harness resolution, with the same shape
+    as the agent-level field; `null` for omitted effort or a raw opencode
+    variant. An abandoned attempt retains the resolution persisted at start.
   - `failure`: `{ kind, message }` or `null`.
   - `classification` and `chain_decision` (below).
   - `observed_failure`: when the run's own ending ended the turn, `failure`
@@ -1056,6 +1082,7 @@ on the same target.
 | Rule | Class | Meaning |
 |---|---|---|
 | `output` | `output` | Empty output, unparseable JSON, or an answer that fails its schema |
+| `effort.rejected` | `unclassified` | The provider refused the requested reasoning level; *settles* |
 | `<engine>.authentication-failure` | `unclassified` | The engine's credentials were rejected |
 | `<engine>.model-not-found` | `unclassified` | The engine does not know the model |
 | `substrate.refused` | `availability` | The launch environment denied a resource the engine needs, before its substrate started |

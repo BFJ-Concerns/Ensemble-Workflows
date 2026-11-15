@@ -9,6 +9,7 @@ import {
   UnrecognisedAgentOptionError
 } from "./errors.js";
 import { assertValidStripOption } from "./capability-stripping.js";
+import { CANONICAL_EFFORT_DOMAIN, isCanonicalEffort } from "./effort-resolution.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
@@ -17,23 +18,9 @@ import type { AgentOptions, EngineName, FallbackTarget, LiteralWorkerSessionOpti
 /** Node's 32-bit setTimeout ceiling: above it the platform's timer silently misbehaves. */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
-/**
- * The one effort vocabulary every `agent()` and `defaults` declaration
- * speaks: one canonical vocabulary, converted per engine rather than an
- * engine-owned domain. The harness owns this domain and judges it
- * pre-spawn; each engine's adapter converts a canonical level to its own
- * native form, clamping to the nearest level the engine offers, and the
- * resolved native value lands in the run record so a clamped dispatch is
- * observable, never silent. opencode is exempt, being held at its existing
- * surface: its `effort` names the registry entry's served variants and is
- * judged against them by the adapter.
- */
-export const CANONICAL_EFFORT_DOMAIN = ["minimal", "low", "medium", "high", "xhigh"] as const;
-
-export type CanonicalEffort = (typeof CANONICAL_EFFORT_DOMAIN)[number];
-
+/** The option-level judgement of the canonical effort vocabulary: an `effort` outside it is refused before any worker spawns. */
 export function assertCanonicalEffortSupported(effort: unknown): void {
-  if (effort !== undefined && !(CANONICAL_EFFORT_DOMAIN as readonly unknown[]).includes(effort)) {
+  if (effort !== undefined && !isCanonicalEffort(effort)) {
     throw new InvalidAgentOptionValueError(
       "effort",
       effort,
@@ -152,11 +139,9 @@ export function assertValidAgentOptions(options: object): void {
   // A call naming a target has no engine until the name resolves, and is
   // judged again then.
   const engine = read("engine", "an engine name");
-  if (engine !== unreadable && engine !== "opencode" && target === undefined) {
-    const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
-    if (effort !== unreadable) {
-      collect(() => assertCanonicalEffortSupported(effort));
-    }
+  const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+  if (effort !== unreadable && (effort === "ultra" || (engine !== unreadable && engine !== "opencode" && target === undefined))) {
+    collect(() => assertCanonicalEffortSupported(effort));
   }
   for (const key of ["timeoutMs", "maxAttempts"] as const) {
     const value = read(key, "a positive integer");
@@ -231,6 +216,7 @@ export function assertValidWorkerSessionOptions(options: object): void {
   }
 
   const values = options as Record<string, unknown>;
+  if (values.effort === "ultra") assertCanonicalEffortSupported(values.effort);
   if (values.isolation !== undefined && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
   }
@@ -318,7 +304,7 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
         );
       }
     }
-    if (target.effort !== undefined && !(CANONICAL_EFFORT_DOMAIN as readonly unknown[]).includes(target.effort)) {
+    if (target.effort !== undefined && !isCanonicalEffort(target.effort)) {
       throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
     }
     if (target.target !== undefined) {
@@ -359,6 +345,7 @@ export function validateEngineDefaults(
   openCodeModelRegistry: OpenCodeModelRegistry = defaultOpenCodeModelRegistry
 ): void {
   assertValidFallbackChain(defaults.fallback);
+  if (defaults.effort === "ultra") assertCanonicalEffortSupported(defaults.effort);
   if (engine !== "opencode") {
     // A bad static declaration fails before the body runs, not at the
     // first paid dispatch — the same canonical domain agent() enforces.
@@ -369,7 +356,7 @@ export function validateEngineDefaults(
     // The registry owns the variant domain; a declared effort is judged
     // here only when the declared model names the entry to judge against —
     // an effort defaulted without a model waits for the call that names one.
-    if (defaults.effort !== undefined && !model.variants.includes(defaults.effort)) {
+    if (defaults.effort !== undefined && !isCanonicalEffort(defaults.effort) && !model.variants.includes(defaults.effort)) {
       throw new InvalidAgentOptionValueError(
         "effort",
         defaults.effort,

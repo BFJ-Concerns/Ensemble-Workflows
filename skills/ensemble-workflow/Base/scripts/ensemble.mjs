@@ -14183,20 +14183,25 @@ import { homedir as homedir5, hostname as hostname4 } from "node:os";
 import path19 from "node:path";
 import { parseArgs } from "node:util";
 
-// src/ambient-settings.ts
-import { accessSync, constants, readFileSync, statSync } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import path4 from "node:path";
-
-// src/concurrency-defaults.ts
-function defaultCodexConcurrency() {
-  return 12;
+// src/built-in-effort-levels.ts
+var BUILT_IN_SERVED_LEVELS = {
+  // Codex CLI 0.162.1 model/list, 2026-10-26: canonical listed levels.
+  "gpt-6.1-sol": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-6-astra": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-6-sol": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-5.6-sol": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-5.6-terra": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-5.6-luna": levels("low", "medium", "high", "xhigh", "max"),
+  "gpt-5.5": levels("low", "medium", "high", "xhigh"),
+  // Provider acceptance of none and refusal of minimal: 2026-11-06
+  // owner ruling, correcting the incomplete Codex 0.162.1 listing.
+  "gpt-6-luna": levels("none", "low", "medium", "high", "xhigh", "max")
+};
+function levels(...names) {
+  return Object.fromEntries(names.map((name) => [name, name]));
 }
-function defaultClaudeConcurrency() {
-  return 12;
-}
-function defaultOpenCodeConcurrency() {
-  return 2;
+function builtInServedLevels(identity) {
+  return Object.hasOwn(BUILT_IN_SERVED_LEVELS, identity) ? BUILT_IN_SERVED_LEVELS[identity] : void 0;
 }
 
 // src/errors.ts
@@ -14540,6 +14545,17 @@ var NamedTargetRejectedError = class extends AgentOptionRejectedError {
     super(`Invalid named target: ${detail}`);
   }
 };
+var EffortBoundsUnservedError = class extends AgentOptionRejectedError {
+  constructor(refusal) {
+    const bounds = [
+      ...refusal.bounds.ceiling !== null ? [`ceiling ${refusal.bounds.ceiling.level} (effort key ${JSON.stringify(refusal.bounds.ceiling.key)})`] : [],
+      ...refusal.bounds.floor !== null ? [`floor ${refusal.bounds.floor.level} (effort key ${JSON.stringify(refusal.bounds.floor.key)})`] : []
+    ];
+    super(
+      `effort ${JSON.stringify(refusal.requested)} cannot be served on ${refusal.engine} ${refusal.model !== null ? `model ${JSON.stringify(refusal.model)}` : "at the engine's default model"}: the machine's ${bounds.join(" and ")} in ${refusal.source} admit${bounds.length === 1 ? "s" : ""} none of the levels the model serves (${refusal.served.join(" | ")}). The worker was not dispatched. Move the bound, or declare the model's served levels in the effort section.`
+    );
+  }
+};
 var LeanStartUnsupportedError = class extends AgentOptionRejectedError {
   constructor(engine, detail) {
     super(
@@ -14648,6 +14664,149 @@ function describeError(error) {
   return { kind: "error", message: String(error) };
 }
 
+// src/effort-resolution.ts
+var CANONICAL_EFFORT_DOMAIN = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+function isCanonicalEffort(value) {
+  return CANONICAL_EFFORT_DOMAIN.includes(value);
+}
+function effortPolicyKeys(engine, model) {
+  return [...model !== void 0 ? [`${engine}:${model}`] : [], engine, "*"];
+}
+var ENGINE_NAMES = ["codex", "claude", "opencode"];
+var EFFORT_TARGET_POLICY_FIELDS = ["ceiling", "floor", "levels"];
+function assertEffortSection(section, fail) {
+  if (!isPlainObject(section)) {
+    fail("", 'must be a JSON object of target keys ("*", an engine, or engine:model) to { ceiling?, floor?, levels? }');
+  }
+  for (const [key, entry] of Object.entries(section)) {
+    const separator = key.indexOf(":");
+    const engine = separator === -1 ? key : key.slice(0, separator);
+    const model = separator === -1 ? void 0 : key.slice(separator + 1);
+    if (key !== "*" && !ENGINE_NAMES.includes(engine)) {
+      fail(key, `target keys are "*", an engine (${ENGINE_NAMES.join(" | ")}), or engine:model`);
+    }
+    if (model !== void 0 && model.trim().length === 0) {
+      fail(key, "an engine:model key must name its model");
+    }
+    if (!isPlainObject(entry)) {
+      fail(key, "must be a JSON object of ceiling, floor and levels");
+    }
+    for (const field of Object.keys(entry)) {
+      if (!EFFORT_TARGET_POLICY_FIELDS.includes(field)) {
+        fail(`${key}.${field}`, `unknown field; an entry carries ${EFFORT_TARGET_POLICY_FIELDS.join(", ")}`);
+      }
+    }
+    const { ceiling, floor, levels: levels2 } = entry;
+    for (const [field, level] of [["ceiling", ceiling], ["floor", floor]]) {
+      if (level !== void 0 && !isCanonicalEffort(level)) {
+        fail(`${key}.${field}`, `must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+      }
+    }
+    if (isCanonicalEffort(ceiling) && isCanonicalEffort(floor) && effortRank(floor) > effortRank(ceiling)) {
+      fail(key, `floor ${floor} is above ceiling ${ceiling}`);
+    }
+    if (levels2 === void 0) {
+      continue;
+    }
+    if (model === void 0) {
+      fail(`${key}.levels`, "served levels belong to one model: declare them on an engine:model key");
+    }
+    if (!isPlainObject(levels2) || Object.keys(levels2).length === 0) {
+      fail(`${key}.levels`, "must be a non-empty JSON object of canonical levels to the model's native names");
+    }
+    for (const [level, native] of Object.entries(levels2)) {
+      if (!isCanonicalEffort(level)) {
+        fail(`${key}.levels.${level}`, `levels are keyed by canonical level: ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+      }
+      if (typeof native !== "string" || native.trim().length === 0 || native === "ultra") {
+        fail(`${key}.levels.${level}`, "must be the non-empty native name the engine is dispatched with");
+      }
+    }
+  }
+}
+function effortRank(level) {
+  return CANONICAL_EFFORT_DOMAIN.indexOf(level);
+}
+async function resolveEffort(dispatch) {
+  let model = dispatch.model;
+  let identity = dispatch.identity;
+  let report = null;
+  if (model === void 0) {
+    report = await dispatch.engineReport();
+    model = report?.identity ?? void 0;
+    identity = model;
+  }
+  const section = dispatch.policy?.section ?? {};
+  const keys = effortPolicyKeys(dispatch.engine, model);
+  const bound = (field) => {
+    for (const key of keys) {
+      const level = Object.hasOwn(section, key) ? section[key]?.[field] : void 0;
+      if (level !== void 0) return { level, key };
+    }
+    return null;
+  };
+  const bounds = { ceiling: bound("ceiling"), floor: bound("floor") };
+  const lower = bounds.floor === null ? 0 : effortRank(bounds.floor.level);
+  const upper = bounds.ceiling === null ? CANONICAL_EFFORT_DOMAIN.length - 1 : effortRank(bounds.ceiling.level);
+  const bounded2 = Math.min(upper, Math.max(lower, effortRank(dispatch.requested)));
+  let levels2 = model === void 0 ? void 0 : section[`${dispatch.engine}:${model}`]?.levels;
+  let source = "machine-map";
+  if (levels2 === void 0) {
+    levels2 = identity === void 0 ? void 0 : builtInServedLevels(identity);
+    source = "built-in-table";
+  }
+  if (levels2 === void 0) {
+    if (dispatch.model !== void 0) report = await dispatch.engineReport();
+    levels2 = report?.identity == null ? void 0 : builtInServedLevels(report.identity);
+    if (levels2 === void 0) {
+      levels2 = report?.levels ?? void 0;
+      source = "engine-report";
+    }
+  }
+  const candidates = CANONICAL_EFFORT_DOMAIN.filter((level) => {
+    const rank2 = effortRank(level);
+    return rank2 >= lower && rank2 <= upper && (levels2 === void 0 || levels2[level] !== void 0 && levels2[level] !== "ultra");
+  });
+  if (candidates.length === 0) {
+    throw new EffortBoundsUnservedError({
+      engine: dispatch.engine,
+      model: model ?? null,
+      requested: dispatch.requested,
+      bounds,
+      source: dispatch.policy?.source ?? "the model's served levels",
+      served: CANONICAL_EFFORT_DOMAIN.filter((level) => levels2?.[level] !== void 0)
+    });
+  }
+  const chosen = candidates.reduce(
+    (best, level) => Math.abs(effortRank(level) - bounded2) < Math.abs(effortRank(best) - bounded2) ? level : best
+  );
+  return {
+    requested: dispatch.requested,
+    bounds,
+    served: levels2 === void 0 ? null : { source, level: chosen },
+    dispatched: levels2?.[chosen] ?? chosen
+  };
+}
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/ambient-settings.ts
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import path4 from "node:path";
+
+// src/concurrency-defaults.ts
+function defaultCodexConcurrency() {
+  return 12;
+}
+function defaultClaudeConcurrency() {
+  return 12;
+}
+function defaultOpenCodeConcurrency() {
+  return 2;
+}
+
 // src/capability-stripping.ts
 var STRIPPABLE_CAPABILITIES = ["skills", "agents"];
 var CAPABILITY_SET = new Set(STRIPPABLE_CAPABILITIES);
@@ -14713,9 +14872,8 @@ var defaultOpenCodeModelRegistry = createOpenCodeModelRegistry([]);
 
 // src/engine-option-validation.ts
 var MAX_TIMER_DELAY_MS = 2147483647;
-var CANONICAL_EFFORT_DOMAIN = ["minimal", "low", "medium", "high", "xhigh"];
 function assertCanonicalEffortSupported(effort) {
-  if (effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(effort)) {
+  if (effort !== void 0 && !isCanonicalEffort(effort)) {
     throw new InvalidAgentOptionValueError(
       "effort",
       effort,
@@ -14805,11 +14963,9 @@ function assertValidAgentOptions(options) {
     collect(() => assertValidTargetName(target));
   }
   const engine = read("engine", "an engine name");
-  if (engine !== unreadable && engine !== "opencode" && target === void 0) {
-    const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
-    if (effort !== unreadable) {
-      collect(() => assertCanonicalEffortSupported(effort));
-    }
+  const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+  if (effort !== unreadable && (effort === "ultra" || engine !== unreadable && engine !== "opencode" && target === void 0)) {
+    collect(() => assertCanonicalEffortSupported(effort));
   }
   for (const key of ["timeoutMs", "maxAttempts"]) {
     const value = read(key, "a positive integer");
@@ -14876,6 +15032,7 @@ function assertValidWorkerSessionOptions(options) {
     }
   }
   const values = options;
+  if (values.effort === "ultra") assertCanonicalEffortSupported(values.effort);
   if (values.isolation !== void 0 && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
   }
@@ -14935,7 +15092,7 @@ function assertValidFallbackChain(chain) {
         );
       }
     }
-    if (target.effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(target.effort)) {
+    if (target.effort !== void 0 && !isCanonicalEffort(target.effort)) {
       throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
     }
     if (target.target !== void 0) {
@@ -14964,12 +15121,13 @@ function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRe
 }
 function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaultOpenCodeModelRegistry) {
   assertValidFallbackChain(defaults.fallback);
+  if (defaults.effort === "ultra") assertCanonicalEffortSupported(defaults.effort);
   if (engine !== "opencode") {
     assertCanonicalEffortSupported(defaults.effort);
   }
   if (engine === "opencode" && defaults.model !== void 0) {
     const model = requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
-    if (defaults.effort !== void 0 && !model.variants.includes(defaults.effort)) {
+    if (defaults.effort !== void 0 && !isCanonicalEffort(defaults.effort) && !model.variants.includes(defaults.effort)) {
       throw new InvalidAgentOptionValueError(
         "effort",
         defaults.effort,
@@ -15744,7 +15902,8 @@ function resolveAmbientSettings(input) {
     statusDir: resolveStatus(config, input.env, input.cwd, configFile),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models),
-    namedTargets: { bindings: config?.targets ?? {}, source: configFile }
+    namedTargets: { bindings: config?.targets ?? {}, source: configFile },
+    effortPolicy: { section: config?.effort ?? {}, source: configFile }
   };
 }
 function machineConfigPath(env) {
@@ -15774,7 +15933,7 @@ function readMachineConfig(configFile) {
   if (!newer) {
     assertKnownKeys(
       parsed,
-      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets"],
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "effort"],
       configFile
     );
   }
@@ -15793,6 +15952,11 @@ function readMachineConfig(configFile) {
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
   validateNamedTargetBindings(parsed.targets, configFile);
+  if (parsed.effort !== void 0) {
+    assertEffortSection(parsed.effort, (key, detail) => {
+      throw fileValueError(configFile, `effort${key ? `.${key}` : ""}`, detail);
+    });
+  }
   return parsed;
 }
 function validateSection(root, key, knownKeys, configFile, validate) {
@@ -16372,8 +16536,13 @@ var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
   "CodexSubstrateRefusedError",
   "ClaudeDispatchError"
 ]);
+var DEADLINE_FAILURE_KINDS = /* @__PURE__ */ new Set([
+  "TurnTimeoutError",
+  "AppServerFirstOutputTimeoutError",
+  "claude-poll-timeout"
+]);
 function isTimeoutFailureKind(kind) {
-  return kind === "TurnTimeoutError" || kind.endsWith("-timeout");
+  return DEADLINE_FAILURE_KINDS.has(kind);
 }
 function runEndingFailureKind(status) {
   return `run-${status}`;
@@ -16493,7 +16662,7 @@ function addProviderCost(target, event) {
 
 // src/run-record.ts
 var execFileAsync = promisify(execFile);
-var SCHEMA_VERSION = 6;
+var SCHEMA_VERSION = 7;
 var MANIFEST_PATH = "manifest.json";
 function namedTargetsRecord(targets) {
   if (targets === void 0) {
@@ -16520,6 +16689,7 @@ function abandonedAttemptEntry(live) {
     target: { engine: live.target.engine, model: live.target.model },
     // A live entry written before attempts named their target has none.
     named_target: live.named_target ?? null,
+    effort_resolution: live.effort_resolution ?? null,
     failure: null,
     classification: null,
     chain_decision: null,
@@ -16621,6 +16791,7 @@ var RunRecordWriter = class _RunRecordWriter {
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       named_targets: namedTargetsRecord(options.namedTargets),
+      effort: options.effortPolicy ?? null,
       git: {
         start: gitStart,
         end: null
@@ -16838,6 +17009,7 @@ var RunRecordWriter = class _RunRecordWriter {
         transcript: null,
         target: { engine: start.target.engine, model: start.target.model },
         named_target: start.namedTarget,
+        ...start.effortResolution === void 0 ? {} : { effort_resolution: start.effortResolution },
         resolved_model: start.identity.resolvedModel,
         resolved_effort: start.identity.resolvedEffort
       });
@@ -17035,6 +17207,7 @@ var RunRecordWriter = class _RunRecordWriter {
       fallback: record.fallback,
       fallback_source: { ...record.fallbackSource },
       named_target: record.namedTarget === null ? null : { ...record.namedTarget },
+      effort_resolution: record.effortResolution ?? null,
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
@@ -17077,6 +17250,7 @@ var RunRecordWriter = class _RunRecordWriter {
         status: attempt.status,
         target: attempt.target,
         named_target: attempt.namedTarget,
+        effort_resolution: attempt.effortResolution ?? null,
         failure: attempt.failure,
         classification: attempt.classification,
         chain_decision: attempt.chainDecision,
@@ -17906,6 +18080,8 @@ var GitWorktreeIsolationManager = class {
   async finish(worktree) {
     const status = await git2(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
     const tip = (await git2(worktree.path, ["rev-parse", "HEAD"])).trim();
+    const branch = (await git2(worktree.path, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    const finalBranch = branch === "HEAD" ? null : branch;
     const state = inspectedState({
       committed: tip !== worktree.baseCommit,
       uncommitted: status.trim().length > 0
@@ -17914,6 +18090,7 @@ var GitWorktreeIsolationManager = class {
       this.#worktreeRoots.delete(worktree.path);
       return {
         ...worktree,
+        branch: finalBranch,
         state,
         tipCommit: tip,
         changed: true,
@@ -17924,8 +18101,14 @@ var GitWorktreeIsolationManager = class {
     if (repoRoot === void 0) {
       throw new Error(`worktree was not created by this manager: ${worktree.path}`);
     }
+    const createdRef = `refs/heads/${worktree.branch}`;
+    const createdTip = (await git2(repoRoot, ["rev-parse", "--verify", createdRef])).trim();
+    const extraCommits = (await git2(repoRoot, ["rev-list", "--count", `${worktree.baseCommit}..${createdTip}`])).trim();
+    if (extraCommits !== "0") {
+      throw new Error(`retaining worktree ${worktree.path}: branch ${worktree.branch} at ${createdTip} holds commits absent from base ${worktree.baseCommit}`);
+    }
     await git2(repoRoot, ["worktree", "remove", worktree.path]);
-    await git2(repoRoot, ["branch", "-D", worktree.branch]);
+    await git2(repoRoot, ["update-ref", "--no-deref", "-d", createdRef, createdTip]);
     this.#worktreeRoots.delete(worktree.path);
     try {
       await rmdir(path8.dirname(worktree.path));
@@ -19049,6 +19232,7 @@ var SESSION_LOST_KIND = "session-lost";
 var SETTLING_FAILURE_KINDS = /* @__PURE__ */ new Set([
   // Codex refused the authored schema before generation, and a retry sends the same schema.
   "CodexSchemaSubsetUnsupportedError",
+  "effort-rejected",
   // The held worker no longer exists, and a retry would address the same absent session.
   SESSION_LOST_KIND,
   // Claude Code ran no skill for the command the task opens with, and a retry sends the same opening.
@@ -19066,6 +19250,9 @@ function diagnoseAttemptFailure(evidence) {
   const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
   if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
     return failure;
+  }
+  if (isProviderEffortRejection(evidence)) {
+    return { kind: "effort-rejected", message: failure.message };
   }
   const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
@@ -19154,6 +19341,7 @@ var OPENCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["TurnTimeoutError", { class: "unclassified", rule: "opencode.deadline" }]
 ]);
 function classifyAttemptFailure(evidence) {
+  if (evidence.failure.kind === "effort-rejected") return { class: "unclassified", rule: "effort.rejected" };
   const { kind } = evidence.failure;
   if (kind === "authentication-failure" || kind === "model-not-found") {
     return { class: "unclassified", rule: `${evidence.engine}.${kind}` };
@@ -19247,6 +19435,33 @@ function claudeApiErrorOf(diagnostics) {
     status: typeof record.status === "number" ? record.status : null,
     code: typeof record.code === "string" ? record.code : null
   };
+}
+function isEffortRejection(message) {
+  return /(?:reasoning[._ -]?effort|model_reasoning_effort|reasoning level|effort level)/i.test(message) && /(?:unsupported|not supported|does not support|not (?:a )?valid|invalid|not allowed|must be one of|supported values|supported (?:efforts|levels))/i.test(message);
+}
+function isProviderEffortRejection(evidence) {
+  const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
+  if (engine === "claude" && failure.kind === "claude-worker-diagnostic") {
+    const api = claudeApiErrorOf(diagnostics);
+    return api !== null && (api.status === 400 || api.status === 422 || api.status === null && (api.code === "invalid_request_error" || api.code === "invalid_request")) && isEffortRejection(failure.message);
+  }
+  if (engine !== "codex" || appServerDiagnostic?.payload == null) return false;
+  if (appServerDiagnostic.httpStatusCode != null && appServerDiagnostic.httpStatusCode !== 400 && appServerDiagnostic.httpStatusCode !== 422) return false;
+  try {
+    const payload = JSON.parse(appServerDiagnostic.payload);
+    const param = objectField(payload, "param");
+    if ((appServerDiagnostic.code === "badRequest" || appServerDiagnostic.code === -32602 || appServerDiagnostic.httpStatusCode === 400 || appServerDiagnostic.httpStatusCode === 422) && typeof param === "string" && /^(?:reasoning[._]effort|model_reasoning_effort)$/.test(param)) {
+      return isEffortRejection(failure.message) || Array.isArray(objectField(payload, "supported_values"));
+    }
+    const message = objectField(objectField(payload, "error"), "message");
+    if (typeof message !== "string") return false;
+    const providerError = objectField(JSON.parse(message), "error");
+    const providerMessage = objectField(providerError, "message");
+    const providerParam = objectField(providerError, "param");
+    return objectField(providerError, "type") === "invalid_request_error" && typeof providerMessage === "string" && isEffortRejection(`${providerMessage} ${typeof providerParam === "string" ? providerParam : ""}`);
+  } catch {
+    return false;
+  }
 }
 
 // src/fallback-source.ts
@@ -19964,1378 +20179,408 @@ var EngineResourceGate = class {
   }
 };
 
-// src/engines.ts
-import { randomUUID as randomUUID7 } from "node:crypto";
+// src/claude-engine.ts
+import { createHash as createHash4, randomUUID as randomUUID5 } from "node:crypto";
 
-// src/app-server.ts
-import { spawn as spawn3 } from "node:child_process";
-import { createInterface } from "node:readline";
-
-// src/engine-environment.ts
-import path14 from "node:path";
-var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
-function launchEnvironment(engine, declared, inherited = process.env) {
-  const env = writtenEnvironment(engine, declared, inherited);
-  if (engine === "claude") {
-    env[SANDBOXED_WORKSPACE_VARIABLE] = "1";
-    if (env.CLAUDE_CONFIG_DIR) {
-      env.CLAUDE_CONFIG_DIR = path14.resolve(env.CLAUDE_CONFIG_DIR.normalize("NFC"));
-    }
-  }
-  return env;
+// src/claude-transcript.ts
+import { readFile as readFile7 } from "node:fs/promises";
+function expandedCommand(content) {
+  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
+  return command === null ? null : { name: command[1] ?? "", args: command[2] ?? "" };
 }
-function writtenEnvironment(engine, declared, inherited = process.env) {
-  return engine === "claude" ? { ...withoutRunScopedVariables(inherited), ...declared } : { ...inherited, ...declared };
+function submittedUserText(entry) {
+  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
+  const content = entry.message?.content;
+  if (typeof content !== "string") return null;
+  const command = expandedCommand(content);
+  if (command === null) return content;
+  return command.args === "" ? command.name : `${command.name} ${command.args}`;
 }
-
-// src/app-server.ts
-var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
-var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
-var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
-var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
-var STDIN_CLOSE_EXIT_GRACE_MS = 500;
-var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
-var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
-var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
-var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
-var SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1e3;
-var MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
-var SKILL_DISCOVERY_DEADLINE_MS = 3e4;
-var MAX_REMEMBERED_SETTLED_TURN_IDS = 256;
-var LazyCodexAppServerTransport = class {
-  cwd;
-  #options;
-  #transportPromise;
-  #startupCancellation = new AbortController();
-  #closed = false;
-  #terminationListeners = /* @__PURE__ */ new Set();
-  #terminationError;
-  constructor(options) {
-    this.cwd = options.cwd;
-    this.#options = options;
-  }
-  onTermination(listener) {
-    if (this.#closed) return () => {
-    };
-    if (this.#terminationError !== void 0) {
-      try {
-        listener(this.#terminationError);
-      } catch {
-      }
-      return () => {
-      };
+function commandReceives(content, message) {
+  const command = expandedCommand(content);
+  if (command === null) return false;
+  if (command.args === "") return message === command.name;
+  const separator = message.length - command.name.length - command.args.length;
+  return separator > 0 && message.startsWith(command.name) && message.endsWith(command.args) && /^\s+$/.test(message.slice(command.name.length, command.name.length + separator));
+}
+function submissionReceipt(entries, mark, message) {
+  for (let index = Math.max(0, mark); index < entries.length; index += 1) {
+    const entry = entries[index];
+    const received = entry === void 0 ? null : submittedUserText(entry);
+    if (received === null) {
+      continue;
     }
-    this.#terminationListeners.add(listener);
-    return () => {
-      this.#terminationListeners.delete(listener);
-    };
+    const content = entry?.message?.content;
+    return received === message || content === message || typeof content === "string" && commandReceives(content, message) ? { state: "verified" } : { state: "differing", received };
   }
-  async openThread(options) {
-    const transport = await this.#transport();
-    return transport.openThread(options);
-  }
-  async listSkills(cwd) {
-    const transport = await this.#transport();
-    return transport.listSkills(cwd);
-  }
-  async runTurn(threadId, prompt, options) {
-    const transport = await this.#transport();
-    return transport.runTurn(threadId, prompt, options);
-  }
-  async close() {
-    this.#closed = true;
-    this.#terminationListeners.clear();
-    this.#startupCancellation.abort(new AppServerExitedError("codex app-server transport is closed"));
-    if (this.#transportPromise === void 0) {
-      return;
+  return { state: "missing" };
+}
+function openingCommand(message) {
+  const command = /^(\/[a-zA-Z0-9_][a-zA-Z0-9:_-]*)(?:\s|$)/.exec(message);
+  return command === null ? null : command[1] ?? null;
+}
+function unrunCommand(entries, mark, command) {
+  for (let index = Math.max(0, mark); index < entries.length; index += 1) {
+    const entry = entries[index];
+    const content = entry?.content ?? entry?.message?.content;
+    if (typeof content !== "string") continue;
+    if (entry?.type === "system" && (content === `Unknown command: ${command}` || content.startsWith(`Unknown command: ${command}. `))) {
+      return "unknown";
     }
-    let transport;
-    try {
-      transport = await this.#transportPromise;
-    } catch {
-      return;
-    }
-    await transport.close();
-  }
-  #transport() {
-    if (this.#closed) {
-      return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
-    }
-    this.#transportPromise ??= CodexAppServerTransport.start(this.#options, this.#startupCancellation.signal).then((transport) => {
-      transport.onTermination((error) => this.#noteTermination(error));
-      return transport;
-    }).catch((error) => {
-      this.#noteTermination(error instanceof Error ? error : new Error(String(error)));
-      throw error;
-    });
-    return this.#transportPromise;
-  }
-  #noteTermination(error) {
-    if (this.#closed || this.#terminationError !== void 0) return;
-    this.#terminationError = error;
-    for (const listener of this.#terminationListeners) {
-      try {
-        listener(error);
-      } catch {
-      }
-    }
-    this.#terminationListeners.clear();
-  }
-};
-var CodexAppServerTransport = class _CodexAppServerTransport {
-  cwd;
-  #process;
-  #requestTimeoutMs;
-  #retryPromiseSilenceTimeoutMs;
-  #firstOutputTimeoutMs;
-  #startupHandshakeTimeoutMs;
-  #skillDiscoveryStabilityIntervalMs;
-  #skillDiscoveryDeadlineMs;
-  #nextId = 0;
-  #pending = /* @__PURE__ */ new Map();
-  #turns = /* @__PURE__ */ new Map();
-  #transcripts = /* @__PURE__ */ new Map();
-  /**
-   * Each open thread's served identity as its `thread/start` answer reported
-   * it — the model and reasoning effort the thread runs at for its whole
-   * life. `#completeTurn` prunes a turn's transcript buffer, so a held
-   * session's later turns re-register from here rather than from nothing:
-   * the engine confirmed the identity once, and every turn on the thread is
-   * served under it.
-   */
-  #threadIdentity = /* @__PURE__ */ new Map();
-  /** Ids of turns this transport has settled, insertion-ordered so the bound evicts the oldest. */
-  #settledTurnIds = /* @__PURE__ */ new Set();
-  #stderrTail = [];
-  #exitStatus = null;
-  #hasExited = false;
-  #stdinFailureGrace;
-  #terminalError;
-  #writeFailureWaiters = /* @__PURE__ */ new Set();
-  #onEvent;
-  #closing = false;
-  #terminationListeners = /* @__PURE__ */ new Set();
-  constructor(options) {
-    this.cwd = options.cwd;
-    this.#requestTimeoutMs = options.requestTimeoutMs;
-    this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
-    this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
-    this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
-    this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
-    this.#skillDiscoveryDeadlineMs = options.skillDiscoveryDeadlineMs ?? SKILL_DISCOVERY_DEADLINE_MS;
-    this.#onEvent = options.onEvent;
-    this.#process = spawn3(options.codexBin, ["app-server"], {
-      cwd: options.cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: launchEnvironment("codex", options.workerEnv)
-    });
-    this.#wireReader();
-    this.#wireStderr();
-    this.#process.stdin.on("error", () => {
-      this.#scheduleStdinFailure();
-    });
-    this.#process.once("exit", (code, signal) => {
-      this.#exitStatus = { exitCode: code, signal };
-      this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
-    });
-    this.#process.once("error", (error) => {
-      this.#failAll(new AppServerExitedError(`codex app-server process error: ${error.message}`));
-    });
-  }
-  static async start(options, signal) {
-    signal?.throwIfAborted();
-    const transport = new _CodexAppServerTransport(options);
-    const cancelStartup = () => {
-      transport.#failAll(new AppServerExitedError("codex app-server startup cancelled"));
-    };
-    signal?.addEventListener("abort", cancelStartup, { once: true });
-    try {
-      if (transport.#process.pid !== void 0 && options.scopes !== void 0) {
-        const pid = transport.#process.pid;
-        const outcome = await options.scopes.place(options.scopeGroup ?? "codex", [pid]);
-        if (outcome.kind !== "placed") {
-          options.onEvent?.({
-            method: "codex/workerScopePlacement",
-            params: { pid, kind: outcome.kind, ...outcome.kind === "refused" ? { reason: outcome.reason } : {} },
-            receivedAt: Date.now()
-          });
-        }
-      }
-      signal?.throwIfAborted();
-      await transport.#handshake(options.clientName, options.clientVersion);
-    } catch (error) {
-      await transport.close();
-      throw error;
-    } finally {
-      signal?.removeEventListener("abort", cancelStartup);
-    }
-    return transport;
-  }
-  /** Idle server state cannot settle a script; only a request or turn can. */
-  #updateLiveness() {
-    const referenced = !this.#hasExited && (this.#pending.size > 0 || this.#turns.size > 0);
-    if (this.#exitStatus === null) {
-      if (referenced) this.#process.ref();
-      else this.#process.unref();
-    }
-    for (const pipe of [this.#process.stdin, this.#process.stdout, this.#process.stderr]) {
-      if (pipe.destroyed) continue;
-      if (referenced) pipe.ref();
-      else pipe.unref();
+    if ((entry?.type === "system" || entry?.type === "user") && content.startsWith(`<command-name>${command}</command-name>`)) {
+      return "built-in";
     }
   }
-  async openThread(options) {
-    const config = threadStartConfig(options);
-    const requestParams = {
-      cwd: options.cwd ?? this.cwd,
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-      ephemeral: true,
-      ...options.model !== void 0 ? { model: options.model } : {},
-      ...config !== void 0 ? { config } : {}
-    };
-    const result = await this.#request("thread/start", requestParams);
-    const resultObject = asJsonObject(result);
-    const directThreadId = resultObject?.threadId;
-    const nestedThread = asJsonObject(resultObject?.thread);
-    const nestedThreadId = nestedThread?.id;
-    const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
-    if (threadId !== null) {
-      const resolvedModel = resultObject?.model;
-      const resolvedEffort = resultObject?.reasoningEffort;
-      const identity = {
-        resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
-        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null
-      };
-      this.#threadIdentity.set(threadId, identity);
-      this.#transcripts.set(threadId, {
-        ...identity,
-        events: [
-          {
-            direction: "client",
-            method: "thread/start",
-            params: requestParams,
-            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-          },
-          {
-            direction: "server",
-            method: "thread/start/result",
-            result,
-            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-          }
-        ]
-      });
-      return threadId;
-    }
-    throw new AppServerRequestError("thread/start", {
-      code: void 0,
-      message: "response did not contain result.thread.id or result.threadId",
-      data: result
-    });
-  }
-  onTermination(listener) {
-    if (this.#closing) return () => {
-    };
-    if (this.#terminalError !== void 0) {
-      try {
-        listener(this.#terminalError);
-      } catch {
-      }
-      return () => {
-      };
-    }
-    this.#terminationListeners.add(listener);
-    return () => {
-      this.#terminationListeners.delete(listener);
-    };
-  }
-  async listSkills(cwd = this.cwd) {
-    const startedAt = Date.now();
-    let previousNames;
-    let observedExpansion = false;
-    let unchangedSinceFirstSample = true;
-    for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
-      const names = await this.#listSkillsOnce(cwd);
-      if (observedExpansion && previousNames !== void 0 && sameStrings(previousNames, names)) {
-        return names;
-      }
-      if (previousNames !== void 0) {
-        if (!sameStrings(previousNames, names)) {
-          unchangedSinceFirstSample = false;
-        }
-        if (strictlyContainsAll(names, previousNames)) {
-          observedExpansion = true;
-        } else if (!sameStrings(previousNames, names)) {
-          observedExpansion = false;
-        }
-      }
-      if (unchangedSinceFirstSample && attempt === MAX_SKILL_DISCOVERY_ATTEMPTS) {
-        return names;
-      }
-      previousNames = names;
-      if (Date.now() - startedAt >= this.#skillDiscoveryDeadlineMs) {
-        throw new AppServerRequestError("skills/list", {
-          code: "discovery_deadline",
-          message: `skill discovery exceeded its ${this.#skillDiscoveryDeadlineMs}ms aggregate bound before stabilising`
-        });
-      }
-      if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
-      }
-    }
-    throw new AppServerRequestError("skills/list", {
-      code: "unstable_discovery",
-      message: `skill discovery observed neither a growing set followed by stability nor one set unchanged across all ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
-    });
-  }
-  async #listSkillsOnce(cwd) {
-    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
-    const entries = result?.data;
-    if (!Array.isArray(entries)) {
-      throw new AppServerRequestError("skills/list", {
-        code: "invalid_response",
-        message: "response omitted the discovered skill entries"
-      });
-    }
-    const names = /* @__PURE__ */ new Set();
-    for (const entry of entries) {
-      const entryObject = asJsonObject(entry);
-      const errors = entryObject?.errors;
-      const skills = entryObject?.skills;
-      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
-        throw new AppServerRequestError("skills/list", {
-          code: "incomplete_discovery",
-          message: "could not establish the complete discovered skill set"
-        });
-      }
-      for (const skill of skills) {
-        const name = asJsonObject(skill)?.name;
-        if (typeof name !== "string" || name.length === 0) {
-          throw new AppServerRequestError("skills/list", {
-            code: "invalid_response",
-            message: "response included a skill without a name"
-          });
-        }
-        names.add(name);
-      }
-    }
-    return [...names].sort();
-  }
-  async runTurn(threadId, prompt, options) {
-    if (!this.#transcripts.has(threadId)) {
-      this.#transcripts.set(threadId, {
-        ...this.#threadIdentity.get(threadId) ?? { resolvedModel: null, resolvedEffort: null },
-        events: []
-      });
-    }
-    const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
-    state.onTranscriptEvent = options.onTranscriptEvent;
-    state.progress = options;
-    this.#reportTurnIdentity(threadId, state);
-    this.#turns.set(threadId, state);
-    this.#updateLiveness();
-    for (const event of this.#transcripts.get(threadId).events) {
-      this.#observeTranscriptEvent(state, event);
-    }
-    state.promise.catch(() => void 0);
-    try {
-      const params = {
-        threadId,
-        input: [{ type: "text", text: prompt }],
-        sandboxPolicy: { type: "dangerFullAccess" }
-      };
-      if (options.schema !== void 0) {
-        params.outputSchema = options.schema;
-      }
-      if (options.model !== void 0) {
-        params.model = options.model;
-      }
-      this.#appendTranscript(threadId, {
-        direction: "client",
-        method: "turn/start",
-        params,
-        recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
-      const result = asJsonObject(await this.#request("turn/start", params));
-      const startedTurn = asJsonObject(result?.turn);
-      if (typeof startedTurn?.id === "string") {
-        state.turnId = startedTurn.id;
-      }
-      return await state.promise;
-    } catch (error) {
-      if (this.#turns.get(threadId) === state) {
-        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
-        throw error;
-      }
-      return await state.promise;
-    } finally {
-      this.#updateLiveness();
-    }
-  }
-  /** Number of thread transcripts currently held in memory. Observability for tests. */
-  openTranscripts() {
-    return this.#transcripts.size;
-  }
-  async close() {
-    this.#closing = true;
-    this.#terminationListeners.clear();
-    if (!this.#hasExited) {
-      this.#failAll(new AppServerExitedError("codex app-server closed"));
-    }
-    this.#threadIdentity.clear();
-    this.#transcripts.clear();
-    if (this.#exitStatus !== null || this.#process.pid === void 0) {
-      return;
-    }
-    this.#process.stdin.end();
-    this.#process.kill("SIGTERM");
-    await new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        this.#process.kill("SIGKILL");
-        resolve();
-      }, 5e3);
-      this.#process.once("exit", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-    });
-  }
-  async #handshake(clientName, clientVersion) {
-    try {
-      await this.#request(
-        "initialize",
-        {
-          clientInfo: {
-            name: clientName,
-            version: clientVersion
-          }
-        },
-        this.#startupHandshakeTimeoutMs
-      );
-    } catch (error) {
-      if (error instanceof TurnTimeoutError) {
-        throw new AppServerStartupTimeoutError(this.#startupHandshakeTimeoutMs);
-      }
-      throw error;
-    }
-    this.#sendNotification("initialized", {});
-  }
-  #request(method, params, timeoutMs = this.#requestTimeoutMs) {
-    const id = this.#nextId + 1;
-    this.#nextId = id;
-    const payload = JSON.stringify({ id, method, params });
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.#pending.delete(id);
-        reject(
-          new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`, {
-            kind: "request",
-            timeoutMs,
-            method
-          })
-        );
-      }, timeoutMs);
-      this.#pending.set(id, { method, resolve, reject, timeout });
-      this.#updateLiveness();
-      this.#writeLine(payload).catch((error) => {
-        this.#pending.delete(id);
-        clearTimeout(timeout);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      });
-    }).finally(() => this.#updateLiveness());
-  }
-  #sendNotification(method, params) {
-    void this.#writeLine(JSON.stringify({ method, params })).catch(() => {
-    });
-  }
-  /** Sends a request through stdin without retaining or awaiting its response. */
-  async #sendUnacknowledgedRequest(method, params) {
-    const id = this.#nextId + 1;
-    this.#nextId = id;
-    await this.#writeLine(JSON.stringify({ id, method, params }));
-  }
-  async #writeLine(line) {
-    if (this.#hasExited) {
-      const failure = new AppServerExitedError(this.#terminalError?.message ?? "codex app-server is not running");
-      if (this.#exitStatus !== null) {
-        attachWorkerExitStatus(failure, this.#exitStatus);
-      }
-      throw failure;
-    }
-    const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
-    await new Promise((resolve, reject) => {
-      this.#process.stdin.write(`${framedLine}
-`, (error) => {
-        if (error !== null && error !== void 0) {
-          this.#scheduleStdinFailure();
-          if (this.#terminalError !== void 0) {
-            reject(this.#terminalError);
-          } else {
-            this.#writeFailureWaiters.add(reject);
-          }
-          return;
-        }
-        resolve();
-      });
-    });
-  }
-  #wireReader() {
-    let chunks = [];
-    let byteLength = 0;
-    let prefix = Buffer.alloc(0);
-    let discardingOversizedLine = false;
-    let oversizedLineByteLength = 0;
-    const resetLine = () => {
-      chunks = [];
-      byteLength = 0;
-      prefix = Buffer.alloc(0);
-      discardingOversizedLine = false;
-      oversizedLineByteLength = 0;
-    };
-    const retain = (chunk) => {
-      if (chunk.length === 0) {
-        return;
-      }
-      chunks.push(chunk);
-      byteLength += chunk.length;
-      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
-        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
-      }
-    };
-    const reportOversizedLine = () => {
-      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
-    };
-    const handleRetainedLine = () => {
-      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-      resetLine();
-      this.#handleLine(line);
-    };
-    this.#process.stdout.on("data", (chunk) => {
-      let offset2 = 0;
-      while (offset2 < chunk.length) {
-        const newline = chunk.indexOf(10, offset2);
-        const end = newline === -1 ? chunk.length : newline;
-        const segment = chunk.subarray(offset2, end);
-        if (discardingOversizedLine) {
-          oversizedLineByteLength += segment.length;
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
-          retain(segment);
-          if (newline !== -1) {
-            handleRetainedLine();
-          }
-        } else {
-          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
-          retain(segment.subarray(0, retainedBytes));
-          discardingOversizedLine = true;
-          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        }
-        offset2 = newline === -1 ? chunk.length : newline + 1;
-      }
-    });
-    this.#process.stdout.once("end", () => {
-      if (discardingOversizedLine) {
-        reportOversizedLine();
-        resetLine();
-      } else if (byteLength > 0) {
-        handleRetainedLine();
-      }
-      if (this.#hasExited) {
-        return;
-      }
-      const grace = setTimeout(() => {
-        this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
-      }, STDOUT_CLOSE_EXIT_GRACE_MS);
-      grace.unref();
-      this.#process.once("exit", () => {
-        clearTimeout(grace);
-      });
-    });
-  }
-  #wireStderr() {
-    const reader = createInterface({ input: this.#process.stderr });
-    reader.on("line", (line) => {
-      this.#stderrTail.push(line);
-      if (this.#stderrTail.length > 50) {
-        this.#stderrTail.shift();
-      }
-    });
-  }
-  #handleLine(line) {
+  return null;
+}
+function parseTranscriptText(text) {
+  const entries = [];
+  for (const line of text.split("\n")) {
     if (line.trim().length === 0) {
-      return;
+      continue;
     }
-    const parsed = parseRpcMessage(line);
-    if (parsed === null) {
-      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_CHARACTERS));
-      return;
-    }
-    const id = typeof parsed.id === "number" ? parsed.id : null;
-    const method = typeof parsed.method === "string" ? parsed.method : null;
-    if (id !== null && method !== null) {
-      this.#onEvent?.({
-        method: "server/request/denied",
-        params: { requestId: id, requestMethod: method },
-        receivedAt: Date.now()
-      });
-      const requestParams = asJsonObject(parsed.params);
-      if (requestParams !== null) {
-        const turn = this.#turnCorrelatedBy(requestParams);
-        if (turn !== void 0) {
-          this.#disarmRetryPromiseSilenceDeadline(turn);
-          this.#disarmFirstOutputDeadline(turn);
-          this.#noteTurnFirstOutput(turn);
-          try {
-            turn.progress.onOutput?.();
-          } catch {
-          }
-        }
-      }
-      this.#sendApprovalDenial(id);
-      return;
-    }
-    if (id !== null && ("result" in parsed || "error" in parsed)) {
-      this.#handleResponse(id, parsed);
-      return;
-    }
-    if (method !== null) {
-      this.#handleNotification(method, asJsonObject(parsed.params) ?? {});
+    const entry = parseLine(line);
+    if (entry !== null) {
+      entries.push(entry);
     }
   }
-  #reportDecodeFailure(byteLength, linePrefix) {
-    this.#onEvent?.({
-      method: "transport/decodeFailed",
-      params: { byteLength, linePrefix },
-      receivedAt: Date.now()
-    });
-  }
-  #handleResponse(id, message) {
-    const pending = this.#pending.get(id);
-    if (pending === void 0) {
-      return;
-    }
-    this.#pending.delete(id);
-    clearTimeout(pending.timeout);
-    if (message.error !== void 0) {
-      pending.reject(appServerErrorFromPayload(pending.method, asRpcError(message.error)));
-      return;
-    }
-    pending.resolve(message.result);
-  }
-  #handleNotification(method, params) {
-    this.#onEvent?.({ method, params, receivedAt: Date.now() });
-    const threadId = params.threadId;
-    if (typeof threadId !== "string") {
-      return;
-    }
-    this.#appendTranscript(threadId, {
-      direction: "server",
-      method,
-      params,
-      recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-    const turn = this.#turns.get(threadId);
-    if (turn === void 0) {
-      return;
-    }
-    const speaksForTurn = this.#correlatesWithTurn(turn, params);
-    if (speaksForTurn) {
-      this.#disarmRetryPromiseSilenceDeadline(turn);
-      if (isOutputBearingTurnFrame(method)) {
-        this.#disarmFirstOutputDeadline(turn);
-        this.#noteTurnFirstOutput(turn);
-        try {
-          turn.progress.onOutput?.();
-        } catch {
-        }
-      }
-    }
-    const now = Date.now();
-    if (isTurnProgressNotification(method)) {
-      turn.consecutiveRetryPromises = 0;
-    }
-    if (method === "turn/started") {
-      return;
-    }
-    if (method === "model/rerouted") {
-      if (!speaksForTurn) {
-        return;
-      }
-      const toModel = params.toModel;
-      const transcript = this.#transcripts.get(threadId);
-      if (transcript !== void 0 && typeof toModel === "string" && toModel.length > 0) {
-        transcript.resolvedModel = toModel;
-        this.#reportTurnIdentity(threadId, turn);
-      }
-      return;
-    }
-    if (method === "item/started") {
-      const item = asJsonObject(params.item);
-      const itemType = itemTypeFromItem(item);
-      turn.items.set(itemType, (turn.items.get(itemType) ?? 0) + 1);
-      return;
-    }
-    if (method === "item/agentMessage/delta") {
-      if (turn.firstDeltaAt === null) {
-        turn.firstDeltaAt = now;
-      }
-      if (typeof params.delta === "string") {
-        turn.deltaText += params.delta;
-      }
-      return;
-    }
-    if (method === "item/completed") {
-      const item = asJsonObject(params.item);
-      const itemType = itemTypeFromItem(item);
-      if (itemType === "agentMessage" && typeof item?.text === "string") {
-        turn.itemText = item.text;
-      }
-      return;
-    }
-    if (method === "thread/tokenUsage/updated") {
-      const event = tokenUsageEventFromParams(params);
-      if (event !== null) {
-        turn.tokenUsageEvents.push(event);
-        try {
-          turn.progress.onUsage?.(event);
-        } catch {
-        }
-      }
-      return;
-    }
-    if (method === "thread/status/changed") {
-      const status = asJsonObject(params.status);
-      if (status?.type === "systemError") {
-        this.#armSystemErrorDiagnosticGrace(threadId, turn, method, params);
-      }
-      return;
-    }
-    if (method === "turn/completed") {
-      if (!speaksForTurn) {
-        return;
-      }
-      turn.completedAt = now;
-      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
-        return;
-      }
-      this.#completeTurn(threadId, turn);
-      return;
-    }
-    if (method === "error") {
-      if (!speaksForTurn) {
-        return;
-      }
-      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-        void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
-        return;
-      }
-      if (params.willRetry === true) {
-        turn.consecutiveRetryPromises += 1;
-        if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
-          const diagnostic = errorPayloadFromNotification(params);
-          void this.#rejectTurn(
-            threadId,
-            turn,
-            attachAppServerDiagnostic(
-              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
-              appServerDiagnosticFromPayload(diagnostic)
-            )
-          );
-          return;
-        }
-        this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
-        return;
-      }
-      void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
-    }
-  }
-  /**
-   * Whether an inbound frame speaks for the live turn on its thread. Thread
-   * identity has already matched; a frame naming a different turn (a
-   * straggler from an abandoned turn on a recycled thread) must neither
-   * disarm the live turn's deadline, settle it, nor stamp its served model.
-   * Frames carrying no turn identity are thread-scoped and count: ephemeral
-   * threads run one turn, so the thread speaking is the turn's server
-   * speaking.
-   *
-   * A turn learns its id from the first correlated frame when the
-   * `turn/start` response has not yet named it — except that an id this
-   * transport has already settled is never learned: a straggler arriving in
-   * that window would otherwise teach the live turn the abandoned turn's
-   * identity, and every later straggler would correlate.
-   */
-  #correlatesWithTurn(turn, params) {
-    const turnId = turnIdFromParams(params);
-    if (turnId === void 0) {
-      return true;
-    }
-    if (turn.turnId === void 0) {
-      if (this.#settledTurnIds.has(turnId)) {
-        return false;
-      }
-      turn.turnId = turnId;
-      return true;
-    }
-    return turn.turnId === turnId;
-  }
-  /** Remember a settled turn's id so its stragglers can never be learned as a later turn's identity. */
-  #rememberSettledTurn(turn) {
-    if (turn.turnId === void 0) {
-      return;
-    }
-    this.#settledTurnIds.add(turn.turnId);
-    if (this.#settledTurnIds.size > MAX_REMEMBERED_SETTLED_TURN_IDS) {
-      const oldest = this.#settledTurnIds.values().next().value;
-      if (oldest !== void 0) {
-        this.#settledTurnIds.delete(oldest);
-      }
-    }
-  }
-  /** Resolves an inbound frame's params to the live turn they speak for, if any. */
-  #turnCorrelatedBy(params) {
-    const threadId = params.threadId;
-    if (typeof threadId !== "string") {
-      return void 0;
-    }
-    const turn = this.#turns.get(threadId);
-    if (turn === void 0 || !this.#correlatesWithTurn(turn, params)) {
-      return void 0;
-    }
-    return turn;
-  }
-  #disarmRetryPromiseSilenceDeadline(turn) {
-    if (turn.retryPromiseSilenceDeadline !== void 0) {
-      clearTimeout(turn.retryPromiseSilenceDeadline);
-      turn.retryPromiseSilenceDeadline = void 0;
-    }
-  }
-  #disarmSystemErrorDiagnosticGrace(turn) {
-    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-      clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
-      turn.systemErrorDiagnosticGraceDeadline = void 0;
-    }
-  }
-  #armSystemErrorDiagnosticGrace(threadId, turn, method, statusParams) {
-    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-      return;
-    }
-    const diagnostic = {
-      code: void 0,
-      message: "Codex app-server reported terminal systemError without a diagnostic",
-      data: statusParams
-    };
-    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
-      new AppServerSystemError(method, diagnostic),
-      appServerDiagnosticFromPayload(diagnostic)
-    );
-    turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
-    }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
-  }
-  #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
-    const diagnostic = errorPayloadFromNotification(promiseParams);
-    turn.retryPromiseSilenceDeadline = setTimeout(() => {
-      void this.#rejectTurn(
-        threadId,
-        turn,
-        attachAppServerDiagnostic(
-          new AppServerRetryPromiseBrokenError(
-            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
-            diagnostic
-          ),
-          appServerDiagnosticFromPayload(diagnostic)
-        )
-      );
-    }, this.#retryPromiseSilenceTimeoutMs);
-  }
-  #disarmFirstOutputDeadline(turn) {
-    if (turn.firstOutputDeadline !== void 0) {
-      clearTimeout(turn.firstOutputDeadline);
-      turn.firstOutputDeadline = void 0;
-    }
-  }
-  #reportTurnIdentity(threadId, turn) {
-    const identity = this.#transcripts.get(threadId);
-    if (identity === void 0) return;
-    try {
-      turn.progress.onIdentity?.({ resolvedModel: identity.resolvedModel, resolvedEffort: identity.resolvedEffort });
-    } catch {
-    }
-  }
-  /**
-   * Fire the supervisor-facing first-output callback, once per turn. Called
-   * only from the frame-driven sites (an output-bearing notification, a
-   * turn-scoped server request) — never from the completion/rejection
-   * teardown, which also disarms the deadline but proves nothing about
-   * output. The callback is observability: a throw inside it must never
-   * affect the turn.
-   */
-  #noteTurnFirstOutput(turn) {
-    if (turn.firstOutputSeen) {
-      return;
-    }
-    turn.firstOutputSeen = true;
-    try {
-      turn.onFirstOutput?.();
-    } catch {
-    }
-  }
-  #armFirstOutputDeadline(threadId, turn) {
-    turn.firstOutputDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstOutputTimeoutMs));
-    }, this.#firstOutputTimeoutMs);
-  }
-  /**
-   * The single terminal path for a failing turn. Every way a turn can end
-   * short of completion — error notification, retry-promise bound,
-   * systemError, per-turn timeout, transport close, process death — comes
-   * through here, so the terminalisation invariant is enforced once: the
-   * worker's accumulated text rides the rejection instead of being deleted
-   * with the turn state.
-   */
-  #rejectTurn(threadId, turn, error) {
-    this.#turns.delete(threadId);
-    if (error instanceof AppServerRequestError && error.code === "modelNotFound") {
-      const identity = this.#transcripts.get(threadId);
-      if (identity !== void 0) {
-        identity.resolvedModel = null;
-        identity.resolvedEffort = null;
-        this.#threadIdentity.set(threadId, { resolvedModel: null, resolvedEffort: null });
-        this.#reportTurnIdentity(threadId, turn);
-      }
-    }
-    if (turn.firstDeltaAt !== null) {
-      attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
-    }
-    const transcript = this.#transcripts.get(threadId);
-    if (transcript !== void 0 && transcript.events.length > 0) {
-      attachPartialTranscript(error, {
-        filename: "transcript.codex.jsonl",
-        format: "jsonl",
-        source: "codex-app-server-events",
-        threadId,
-        content: this.#transcriptText(threadId),
-        partial: turn.completedAt === null
-      });
-    }
-    this.#transcripts.delete(threadId);
-    this.#rememberSettledTurn(turn);
-    clearTimeout(turn.timeout);
-    this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmSystemErrorDiagnosticGrace(turn);
-    this.#disarmFirstOutputDeadline(turn);
-    if (turn.turnId !== void 0) {
-      void this.#sendUnacknowledgedRequest("turn/interrupt", {
-        threadId,
-        turnId: turn.turnId
-      }).catch(() => {
-      });
-    }
-    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
-  }
-  #completeTurn(threadId, turn) {
-    this.#turns.delete(threadId);
-    this.#rememberSettledTurn(turn);
-    clearTimeout(turn.timeout);
-    this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmSystemErrorDiagnosticGrace(turn);
-    this.#disarmFirstOutputDeadline(turn);
-    const text = turn.itemText ?? turn.deltaText;
-    const transcript = this.#transcripts.get(threadId);
-    const result = {
-      text,
-      ...transcript?.resolvedModel !== null && transcript?.resolvedModel !== void 0 ? { resolvedModel: transcript.resolvedModel } : {},
-      ...transcript?.resolvedEffort !== null && transcript?.resolvedEffort !== void 0 ? { resolvedEffort: transcript.resolvedEffort } : {},
-      deltaText: turn.deltaText,
-      durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
-      firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
-      items: Object.fromEntries(turn.items),
-      tokenUsageEvents: turn.tokenUsageEvents,
-      transcriptCapture: transcript === void 0 ? "lost" : "retained",
-      transcripts: [
-        {
-          filename: "transcript.codex.jsonl",
-          format: "jsonl",
-          source: "codex-app-server-events",
-          threadId,
-          content: this.#transcriptText(threadId)
-        }
-      ]
-    };
-    if (turn.itemText !== void 0) {
-      result.itemText = turn.itemText;
-    }
-    this.#transcripts.delete(threadId);
-    turn.resolve(result);
-  }
-  #appendTranscript(threadId, event) {
-    const transcript = this.#transcripts.get(threadId);
-    if (transcript === void 0) {
-      return;
-    }
-    transcript.events.push(event);
-    const turn = this.#turns.get(threadId);
-    if (turn !== void 0) {
-      this.#observeTranscriptEvent(turn, event);
-    }
-  }
-  #observeTranscriptEvent(turn, event) {
-    try {
-      turn.onTranscriptEvent?.(event);
-    } catch {
-    }
-  }
-  #transcriptText(threadId) {
-    const transcript = this.#transcripts.get(threadId);
-    if (transcript === void 0) {
-      return "";
-    }
-    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}
-`;
-  }
-  #createTurnState(threadId, timeoutMs, onFirstOutput) {
-    let resolveTurn = () => void 0;
-    let rejectTurn = () => void 0;
-    const promise = new Promise((resolve, reject) => {
-      resolveTurn = resolve;
-      rejectTurn = reject;
-    });
-    const state = {
-      threadId,
-      turnId: void 0,
-      startedAt: Date.now(),
-      firstDeltaAt: null,
-      firstOutputSeen: false,
-      progress: {},
-      onFirstOutput,
-      onTranscriptEvent: void 0,
-      completedAt: null,
-      deltaText: "",
-      items: /* @__PURE__ */ new Map(),
-      tokenUsageEvents: [],
-      consecutiveRetryPromises: 0,
-      retryPromiseSilenceDeadline: void 0,
-      systemErrorDiagnosticGraceDeadline: void 0,
-      systemErrorDiagnosticFallback: void 0,
-      firstOutputDeadline: void 0,
-      promise,
-      resolve: resolveTurn,
-      reject: rejectTurn,
-      // No timeoutMs → no per-turn deadline; the turn runs until it completes or
-      // the run is stopped. A backstop is the orchestrator's responsibility.
-      timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
-        void this.#rejectTurn(
-          threadId,
-          state,
-          new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`, {
-            kind: "turn",
-            timeoutMs,
-            threadId
-          })
-        );
-      }, timeoutMs)
-    };
-    this.#armFirstOutputDeadline(threadId, state);
-    return state;
-  }
-  #sendApprovalDenial(id) {
-    void this.#writeLine(
-      JSON.stringify({
-        id,
-        result: {
-          decision: "denied",
-          reason: "Ensemble workers run with approvalPolicy never"
-        }
-      })
-    ).catch(() => {
-    });
-  }
-  #scheduleStdinFailure() {
-    if (this.#hasExited || this.#stdinFailureGrace !== void 0) {
-      return;
-    }
-    this.#stdinFailureGrace = setTimeout(() => {
-      this.#failAll(new AppServerExitedError("codex app-server stdin closed unexpectedly"));
-    }, STDIN_CLOSE_EXIT_GRACE_MS);
-    this.#stdinFailureGrace.unref();
-  }
-  #failAll(error) {
-    if (this.#hasExited) {
-      return;
-    }
-    this.#hasExited = true;
-    if (this.#stdinFailureGrace !== void 0) {
-      clearTimeout(this.#stdinFailureGrace);
-      this.#stdinFailureGrace = void 0;
-    }
-    const stderr = this.#stderrTail.length > 0 ? `
-Recent stderr:
-${this.#stderrTail.join("\n")}` : "";
-    const wrapped = new AppServerExitedError(`${error.message}${stderr}`);
-    this.#terminalError = wrapped;
-    if (this.#exitStatus !== null) {
-      attachWorkerExitStatus(wrapped, this.#exitStatus);
-    }
-    if (!this.#closing) {
-      for (const listener of this.#terminationListeners) {
-        try {
-          listener(wrapped);
-        } catch {
-        }
-      }
-    }
-    this.#terminationListeners.clear();
-    for (const reject of this.#writeFailureWaiters) {
-      reject(wrapped);
-    }
-    this.#writeFailureWaiters.clear();
-    for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(wrapped);
-    }
-    this.#pending.clear();
-    for (const [threadId, turn] of [...this.#turns]) {
-      const perTurn = new AppServerExitedError(wrapped.message);
-      if (this.#exitStatus !== null) {
-        attachWorkerExitStatus(perTurn, this.#exitStatus);
-      }
-      void this.#rejectTurn(threadId, turn, perTurn);
-    }
-    this.#turns.clear();
-    this.#transcripts.clear();
-  }
-};
-function appServerErrorFromPayload(method, errorPayload) {
-  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
-  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
-  return attachAppServerDiagnostic(error, diagnostic);
+  return entries;
 }
-function appServerErrorFromNotification(params) {
-  const errorPayload = errorPayloadFromNotification(params);
-  if (errorPayload.code === "serverOverloaded") {
-    return attachAppServerDiagnostic(
-      new AppServerOverloadedError("turn notification", errorPayload),
-      appServerDiagnosticFromPayload(errorPayload)
-    );
+function enteredWorktrees(entries) {
+  const worktrees = [];
+  for (const entry of entries) {
+    if (entry.type !== "worktree-state" || entry.worktreeSession === null || typeof entry.worktreeSession !== "object" || Array.isArray(entry.worktreeSession)) continue;
+    const state = entry.worktreeSession;
+    if (typeof state.worktreePath !== "string" || state.worktreePath.length === 0) continue;
+    const branch = typeof state.worktreeBranch === "string" && state.worktreeBranch.length > 0 ? state.worktreeBranch : null;
+    if (!worktrees.some((tree) => tree.path === state.worktreePath && tree.branch === branch)) {
+      worktrees.push({ path: state.worktreePath, branch });
+    }
   }
-  return appServerErrorFromPayload("turn notification", errorPayload);
+  return worktrees;
 }
-function appServerDiagnosticFromPayload(payload) {
-  return {
-    code: payload.code ?? null,
-    httpStatusCode: payload.httpStatusCode ?? null,
-    message: payload.message ?? "unknown app-server error",
-    payload: renderPayloadSafely(payload.data)
-  };
-}
-function codexErrorInfoOf(value) {
-  if (typeof value === "string") {
-    return { code: value, httpStatusCode: void 0 };
-  }
-  const variants = Object.entries(asJsonObject(value) ?? {});
-  const variant = variants.length === 1 ? variants[0] : void 0;
-  if (variant === void 0) {
-    return null;
-  }
-  const [code, detail] = variant;
-  const status = asJsonObject(detail)?.httpStatusCode;
-  return { code, httpStatusCode: Number.isInteger(status) ? status : void 0 };
-}
-function errorPayloadFromNotification(params) {
-  const turnError = asJsonObject(params.error);
-  const codexErrorInfo = turnError?.codexErrorInfo;
-  const errorInfoParts = codexErrorInfoOf(codexErrorInfo);
-  const errorInfo = typeof codexErrorInfo === "string" ? codexErrorInfo : asJsonObject(codexErrorInfo) === null ? void 0 : renderPayloadSafely(codexErrorInfo);
-  const message = typeof turnError?.message === "string" ? turnError.message : void 0;
-  const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
-  const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
-  return {
-    code: errorInfoParts?.code,
-    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
-    data: params,
-    ...errorInfoParts?.httpStatusCode === void 0 ? {} : { httpStatusCode: errorInfoParts.httpStatusCode }
-  };
-}
-function renderPayloadSafely(payload) {
+async function readTranscriptFile(path21) {
+  let text;
   try {
-    return JSON.stringify(payload) ?? "undefined";
+    text = await readFile7(path21, "utf8");
   } catch (error) {
-    return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path21}`, { cause: error });
   }
+  return { path: path21, text, entries: parseTranscriptText(text) };
 }
-function isTurnProgressNotification(method) {
-  return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || // MCP progress is a tool saying it is alive, not the response stream
-  // resuming — the reset set's rationale. Counting it would let a
-  // promise/heartbeat alternation defeat the consecutive-promise bound.
-  method.startsWith("item/") && method !== "item/mcpToolCall/progress";
+function finalAssistantText(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const text = textFromContent(entry.message?.content);
+    if (text !== null && text.length > 0) {
+      return text;
+    }
+  }
+  return null;
 }
-function isOutputBearingTurnFrame(method) {
-  return method !== "turn/started";
+var SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>";
+function endsInSyntheticReply(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    return entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER;
+  }
+  return false;
 }
-function turnIdFromParams(params) {
-  if (typeof params.turnId === "string") {
-    return params.turnId;
+function apiErrorSince(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    if (entry.message?.model !== SYNTHETIC_MODEL_PLACEHOLDER || entry.isApiErrorMessage !== true) {
+      return null;
+    }
+    return {
+      status: typeof entry.apiErrorStatus === "number" ? entry.apiErrorStatus : null,
+      code: typeof entry.error === "string" ? entry.error : null
+    };
   }
-  const turn = asJsonObject(params.turn);
-  return typeof turn?.id === "string" ? turn.id : void 0;
+  return null;
 }
-var MAX_INBOUND_PAYLOAD_DEPTH = 64;
-function payloadContainsInvalidJsonSchema(value, depth = 0) {
-  if (depth >= MAX_INBOUND_PAYLOAD_DEPTH) {
-    return false;
+function resolvedModelSince(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const model = entry.message?.model;
+    if (typeof model === "string" && model.length > 0 && model !== SYNTHETIC_MODEL_PLACEHOLDER) {
+      return model;
+    }
   }
-  if (typeof value === "string") {
-    return value.includes("invalid_json_schema");
-  }
-  if (Array.isArray(value)) {
-    return value.some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
-  }
-  const object = asJsonObject(value);
-  if (object === null) {
-    return false;
-  }
-  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
+  return null;
 }
-function parseRpcMessage(line) {
+function effortSince(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    if (typeof entry.effort === "string" && entry.effort.length > 0) {
+      return entry.effort;
+    }
+  }
+  return null;
+}
+function turnComplete(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const stopReason = entry.message?.stop_reason;
+    return typeof stopReason === "string" && stopReason !== "tool_use" && textFromContent(entry.message?.content) !== null;
+  }
+  return false;
+}
+function usageSince(entries, fromIndex = 0) {
+  const start = Math.max(0, fromIndex);
+  const counted = /* @__PURE__ */ new Set();
+  for (let index = 0; index < Math.min(start, entries.length); index += 1) {
+    const id = entries[index]?.type === "assistant" ? entries[index]?.message?.id : void 0;
+    if (typeof id === "string") {
+      counted.add(id);
+    }
+  }
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheRead = 0;
+  let cacheCreation = 0;
+  let sawUsage = false;
+  for (let index = start; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const usage2 = asRecord(entry.message?.usage);
+    if (usage2 === null) {
+      continue;
+    }
+    const id = entry.message?.id;
+    if (typeof id === "string") {
+      if (counted.has(id)) {
+        continue;
+      }
+      counted.add(id);
+    }
+    sawUsage = true;
+    inputTokens += numeric(usage2.input_tokens);
+    outputTokens += numeric(usage2.output_tokens);
+    cacheRead += numeric(usage2.cache_read_input_tokens);
+    cacheCreation += numeric(usage2.cache_creation_input_tokens);
+  }
+  if (!sawUsage) {
+    return zeroUsage();
+  }
+  const cachedInputTokens = cacheRead + cacheCreation;
+  return {
+    cachedInputTokens,
+    cacheCreationInputTokens: cacheCreation,
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + cachedInputTokens + outputTokens
+  };
+}
+var BACKGROUND_TASK_STARTS = [
+  { pattern: /Command running in background with ID: ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /^Workflow launched in background\. Task ID: ([A-Za-z0-9_-]+)/, from: (call) => call.tool === "Workflow" },
+  { pattern: /Monitor started \(task ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /^Command did not complete within its \S+ timeout and was moved to the background \(ID: ([A-Za-z0-9_-]+)\)/, from: (call) => call.tool === "Bash" }
+];
+var TASK_STOP_RESULT = /Successfully stopped task: ([A-Za-z0-9_-]+)/;
+var TASK_NOTIFICATION_BLOCK = /<task-notification>([\s\S]*?)<\/task-notification>/g;
+var TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
+var TASK_NOTIFICATION_STATUS = /<status>([^<]+)<\/status>/;
+var TASK_NOTIFICATION_EVENT = /<event>([\s\S]*?)<\/event>/;
+var TASK_ENDED_STATUSES = /* @__PURE__ */ new Set(["completed", "failed", "killed", "stopped"]);
+var MONITOR_OWN_NOTICE = /^\s*\[Monitor (?:expired after|timed out|stopped)\b/;
+function outstandingBackgroundTasks(entries, fromIndex = 0) {
+  const toolCalls = /* @__PURE__ */ new Map();
+  const outstanding = /* @__PURE__ */ new Map();
+  const notified = /* @__PURE__ */ new Set();
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === void 0) {
+      continue;
+    }
+    if (entry.type === "assistant") {
+      for (const id of notified) {
+        outstanding.delete(id);
+      }
+      notified.clear();
+      for (const call of toolUseBlocks(entry.message?.content)) {
+        toolCalls.set(call.id, call);
+      }
+      continue;
+    }
+    for (const result of toolResultBlocks(entry.message?.content)) {
+      const call = toolCalls.get(result.toolUseId);
+      if (call === void 0) {
+        continue;
+      }
+      for (const start of BACKGROUND_TASK_STARTS) {
+        const started = start.from(call) ? start.pattern.exec(result.text)?.[1] : void 0;
+        if (started !== void 0) {
+          outstanding.set(started, { id: started, description: call.description });
+        }
+      }
+      if (call.stops) {
+        const stopped = TASK_STOP_RESULT.exec(result.text)?.[1];
+        if (stopped !== void 0 && outstanding.has(stopped)) {
+          notified.add(stopped);
+        }
+      }
+    }
+    for (const notification of deliveredNotifications(entry)) {
+      if (notification.ended && outstanding.has(notification.id)) {
+        notified.add(notification.id);
+      }
+    }
+  }
+  return [...outstanding.values()];
+}
+var BACKGROUNDING_TOOLS = {
+  Bash: (input) => input?.run_in_background === true,
+  Monitor: () => true
+};
+var STOPPING_TOOL = "TaskStop";
+function toolUseBlocks(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const calls = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type !== "tool_use" || typeof record.id !== "string") {
+      continue;
+    }
+    const input = asRecord(record.input);
+    const backgrounds = typeof record.name === "string" && (BACKGROUNDING_TOOLS[record.name]?.(input) ?? false);
+    const stops = record.name === STOPPING_TOOL;
+    const description = typeof input?.description === "string" && input.description.length > 0 ? input.description : typeof input?.command === "string" && input.command.length > 0 ? input.command.slice(0, 200) : typeof record.name === "string" ? record.name : "background task";
+    calls.push({ id: record.id, tool: typeof record.name === "string" ? record.name : null, description, backgrounds, stops });
+  }
+  return calls;
+}
+function toolResultBlocks(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const results = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type !== "tool_result" || typeof record.tool_use_id !== "string") {
+      continue;
+    }
+    results.push({ toolUseId: record.tool_use_id, text: blockText(record.content) });
+  }
+  return results;
+}
+function deliveredNotifications(entry) {
+  let texts;
+  if (entry.type === "user") {
+    texts = messageTexts(entry.message?.content);
+  } else if (entry.type === "attachment") {
+    const attachment = asRecord(entry.attachment);
+    texts = attachment?.type === "queued_command" && typeof attachment.prompt === "string" ? [attachment.prompt] : [];
+  } else {
+    return [];
+  }
+  const notifications = [];
+  for (const text of texts) {
+    for (const block of text.matchAll(TASK_NOTIFICATION_BLOCK)) {
+      const body = block[1] ?? "";
+      const id = TASK_NOTIFICATION_ID.exec(body)?.[1];
+      if (id !== void 0) {
+        notifications.push({ id, ended: notificationEnded(body) });
+      }
+    }
+  }
+  return notifications;
+}
+function notificationEnded(body) {
+  const status = TASK_NOTIFICATION_STATUS.exec(body)?.[1]?.trim();
+  if (status !== void 0) {
+    return TASK_ENDED_STATUSES.has(status);
+  }
+  return MONITOR_OWN_NOTICE.test(TASK_NOTIFICATION_EVENT.exec(body)?.[1] ?? "");
+}
+function messageTexts(content) {
+  if (typeof content === "string") {
+    return [content];
+  }
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const texts = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type === "text" && typeof record.text === "string") {
+      texts.push(record.text);
+    }
+  }
+  return texts;
+}
+function blockText(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content.map((block) => {
+    const record = asRecord(block);
+    return record?.type === "text" && typeof record.text === "string" ? record.text : "";
+  }).join("\n");
+}
+function parseLine(line) {
   try {
     const parsed = JSON.parse(line);
-    return asJsonObject(parsed);
+    return asRecord(parsed) === null ? null : parsed;
   } catch {
     return null;
   }
 }
-function threadStartConfig(options) {
-  if (options.threadConfig === void 0 && options.effort === void 0) {
-    return void 0;
+function textFromContent(content) {
+  if (typeof content === "string") {
+    return content;
   }
-  return {
-    ...options.threadConfig,
-    ...options.effort !== void 0 ? { model_reasoning_effort: options.effort } : {}
-  };
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const parts = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type === "text" && typeof record.text === "string") {
+      parts.push(record.text);
+    }
+  }
+  return parts.length > 0 ? parts.join("") : null;
 }
-function asJsonObject(value) {
+function asRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
 }
-function sameStrings(left, right) {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
+function numeric(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
-function strictlyContainsAll(candidate, baseline) {
-  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
-}
-function asRpcError(value) {
-  const object = asJsonObject(value);
-  if (object === null) {
-    return { code: void 0, message: String(value) };
-  }
+function zeroUsage() {
   return {
-    code: typeof object.code === "number" ? object.code : void 0,
-    message: typeof object.message === "string" ? object.message : void 0,
-    data: object.data
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0
   };
-}
-function itemTypeFromItem(item) {
-  if (item === null) {
-    return "?";
-  }
-  const itemType = item.itemType ?? item.type;
-  return typeof itemType === "string" ? itemType : "?";
-}
-
-// src/claude-control-plane.ts
-import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID as randomUUID4 } from "node:crypto";
-import { setTimeout as sleep } from "node:timers/promises";
-import { access as access2, mkdtemp as mkdtemp3, readFile as readFile7, readdir as readdir6, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
-import { hostname as hostname3 } from "node:os";
-import path16 from "node:path";
-
-// src/engine-resources.ts
-import { createHash as createHash3 } from "node:crypto";
-import { homedir as homedir3 } from "node:os";
-import path15 from "node:path";
-function codexResources(env) {
-  const declared = env.written.CODEX_HOME;
-  const home = declared ? declaredDirectory(readSetting("CODEX_HOME", declared, env.cwd)) : defaultDirectory({ rule: "$HOME/.codex", movedBy: "CODEX_HOME" }, homeRoot(env.written, env.cwd), ".codex");
-  return [{ owner: "codex", role: "Codex home", access: "create-entries", ...home }];
-}
-function claudeResources(env) {
-  const config = claudeConfigDirectory(env.worker, env.cwd);
-  const uid = process.getuid?.() ?? 0;
-  const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path15.join(env.worker.PREFIX, "tmp") : "/tmp";
-  const daemon = path15.join(daemonRoot, `cc-daemon-${uid}`, createHash3("sha256").update(config).digest("hex").slice(0, 8));
-  const homeLocation = env.written.CLAUDE_CONFIG_DIR ? declaredDirectory(readSetting("CLAUDE_CONFIG_DIR", env.written.CLAUDE_CONFIG_DIR, process.cwd())).location : defaultDirectory({ rule: "$HOME/.claude", movedBy: "CLAUDE_CONFIG_DIR" }, homeRoot(env.written, env.cwd), ".claude").location;
-  const home = { path: config, location: homeLocation };
-  const global = env.written.CLAUDE_CONFIG_DIR ? home : defaultDirectory({ rule: "$HOME (.claude.json)", movedBy: "CLAUDE_CONFIG_DIR" }, homeRoot(env.written, env.cwd));
-  const scratch = temporaryLocation(env.launcher, process.cwd(), "launcher ");
-  const valve = env.launcher.TMUX_TMPDIR ? declaredDirectory(readSetting("launcher TMUX_TMPDIR", env.launcher.TMUX_TMPDIR, process.cwd())) : defaultDirectory({ rule: "/tmp", movedBy: "launcher TMUX_TMPDIR" }, "/tmp");
-  const workerScratch = env.written.CLAUDE_CODE_TMPDIR ? declaredDirectory(readSetting("CLAUDE_CODE_TMPDIR", env.written.CLAUDE_CODE_TMPDIR, env.cwd), `claude-${uid}`) : temporaryLocation(env.written, env.cwd, "", `claude-${uid}`);
-  return [
-    { owner: "claude", role: "Claude home", access: "create-entries", ...home },
-    { owner: "claude", role: "Claude global configuration", access: "create-entries", ...global },
-    { owner: "claude", role: "daemon sockets", access: "bind-socket", ...fixedDirectory(`${daemonRoot}/cc-daemon-<uid>/<config hash>`, daemon) },
-    { owner: "claude", role: "dispatch settings scratch files", access: "create-entries", ...scratch },
-    { owner: "claude", role: "reply valve sockets", access: "bind-socket", ...valve },
-    { owner: "claude", role: "Claude scratch files", access: "create-entries", ...workerScratch }
-  ];
-}
-function openCodeResources(env) {
-  const homes = [
-    ["XDG_DATA_HOME", ".local/share", "data"],
-    ["XDG_CONFIG_HOME", ".config", "configuration"],
-    ["XDG_STATE_HOME", ".local/state", "state"],
-    ["XDG_CACHE_HOME", ".cache", "cache"]
-  ];
-  return [
-    ...homes.map(([key, fallback, role]) => ({
-      owner: "opencode",
-      role: `opencode ${role}`,
-      access: "create-entries",
-      ...env.written[key] ? declaredDirectory(readSetting(key, env.written[key], env.cwd), "opencode") : defaultDirectory({ rule: `$HOME/${fallback}`, movedBy: key }, homeRoot(env.written, env.cwd), fallback, "opencode")
-    })),
-    { owner: "opencode", role: "opencode scratch files", access: "create-entries", ...temporaryLocation(env.written, env.cwd, "", "opencode") }
-  ];
-}
-function claudeConfigDirectory(env, cwd) {
-  return path15.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path15.join(homeOf(env), ".claude")).normalize("NFC"));
-}
-function claudeValveDirectory(env) {
-  return path15.resolve(env.TMUX_TMPDIR || "/tmp");
-}
-function temporaryDirectory(env, cwd) {
-  return temporaryLocation(env, cwd);
-}
-function temporaryLocation(env, cwd, qualifier = "", ...below) {
-  for (const key of ["TMPDIR", "TMP", "TEMP"]) {
-    if (env[key]) return declaredDirectory(readSetting(`${qualifier}${key}`, env[key], cwd), ...below);
-  }
-  return defaultDirectory({ rule: "/tmp", movedBy: `${qualifier}TMPDIR` }, "/tmp", ...below);
-}
-var ENGINE_RESOURCE_RESOLVERS = {
-  codex: codexResources,
-  claude: claudeResources,
-  opencode: openCodeResources
-};
-function engineResourceRequirements(engine, declared, cwd, launcher = process.env) {
-  return ENGINE_RESOURCE_RESOLVERS[engine]({
-    worker: launchEnvironment(engine, declared, launcher),
-    written: writtenEnvironment(engine, declared, launcher),
-    launcher,
-    cwd
-  });
-}
-function homeRoot(env, base) {
-  return env.HOME ? readSetting("HOME", env.HOME, base) : homedir3();
-}
-function homeOf(env) {
-  return env.HOME !== void 0 && env.HOME.length > 0 ? env.HOME : homedir3();
 }
 
 // src/claude-tool-surface.ts
@@ -21510,6 +20755,114 @@ function enforcementDetail(derived, capability, confirmation) {
     `a second probe under these settings offered none of them and kept every unrelated tool (${confirmation.tools.length} tools)`,
     ...capability === "skills" ? ["follow-up slash-command expansion is not covered; a leading /skill line can still load a skill"] : []
   ].join("; ");
+}
+
+// src/claude-control-plane.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID as randomUUID4 } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
+import { access as access2, mkdtemp as mkdtemp3, readFile as readFile8, readdir as readdir6, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
+import { hostname as hostname3 } from "node:os";
+import path16 from "node:path";
+
+// src/engine-resources.ts
+import { createHash as createHash3 } from "node:crypto";
+import { homedir as homedir3 } from "node:os";
+import path15 from "node:path";
+
+// src/engine-environment.ts
+import path14 from "node:path";
+var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
+function launchEnvironment(engine, declared, inherited = process.env) {
+  const env = writtenEnvironment(engine, declared, inherited);
+  if (engine === "claude") {
+    env[SANDBOXED_WORKSPACE_VARIABLE] = "1";
+    if (env.CLAUDE_CONFIG_DIR) {
+      env.CLAUDE_CONFIG_DIR = path14.resolve(env.CLAUDE_CONFIG_DIR.normalize("NFC"));
+    }
+  }
+  return env;
+}
+function writtenEnvironment(engine, declared, inherited = process.env) {
+  return engine === "claude" ? { ...withoutRunScopedVariables(inherited), ...declared } : { ...inherited, ...declared };
+}
+
+// src/engine-resources.ts
+function codexResources(env) {
+  const declared = env.written.CODEX_HOME;
+  const home = declared ? declaredDirectory(readSetting("CODEX_HOME", declared, env.cwd)) : defaultDirectory({ rule: "$HOME/.codex", movedBy: "CODEX_HOME" }, homeRoot(env.written, env.cwd), ".codex");
+  return [{ owner: "codex", role: "Codex home", access: "create-entries", ...home }];
+}
+function claudeResources(env) {
+  const config = claudeConfigDirectory(env.worker, env.cwd);
+  const uid = process.getuid?.() ?? 0;
+  const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path15.join(env.worker.PREFIX, "tmp") : "/tmp";
+  const daemon = path15.join(daemonRoot, `cc-daemon-${uid}`, createHash3("sha256").update(config).digest("hex").slice(0, 8));
+  const homeLocation = env.written.CLAUDE_CONFIG_DIR ? declaredDirectory(readSetting("CLAUDE_CONFIG_DIR", env.written.CLAUDE_CONFIG_DIR, process.cwd())).location : defaultDirectory({ rule: "$HOME/.claude", movedBy: "CLAUDE_CONFIG_DIR" }, homeRoot(env.written, env.cwd), ".claude").location;
+  const home = { path: config, location: homeLocation };
+  const global = env.written.CLAUDE_CONFIG_DIR ? home : defaultDirectory({ rule: "$HOME (.claude.json)", movedBy: "CLAUDE_CONFIG_DIR" }, homeRoot(env.written, env.cwd));
+  const scratch = temporaryLocation(env.launcher, process.cwd(), "launcher ");
+  const valve = env.launcher.TMUX_TMPDIR ? declaredDirectory(readSetting("launcher TMUX_TMPDIR", env.launcher.TMUX_TMPDIR, process.cwd())) : defaultDirectory({ rule: "/tmp", movedBy: "launcher TMUX_TMPDIR" }, "/tmp");
+  const workerScratch = env.written.CLAUDE_CODE_TMPDIR ? declaredDirectory(readSetting("CLAUDE_CODE_TMPDIR", env.written.CLAUDE_CODE_TMPDIR, env.cwd), `claude-${uid}`) : temporaryLocation(env.written, env.cwd, "", `claude-${uid}`);
+  return [
+    { owner: "claude", role: "Claude home", access: "create-entries", ...home },
+    { owner: "claude", role: "Claude global configuration", access: "create-entries", ...global },
+    { owner: "claude", role: "daemon sockets", access: "bind-socket", ...fixedDirectory(`${daemonRoot}/cc-daemon-<uid>/<config hash>`, daemon) },
+    { owner: "claude", role: "dispatch settings scratch files", access: "create-entries", ...scratch },
+    { owner: "claude", role: "reply valve sockets", access: "bind-socket", ...valve },
+    { owner: "claude", role: "Claude scratch files", access: "create-entries", ...workerScratch }
+  ];
+}
+function openCodeResources(env) {
+  const homes = [
+    ["XDG_DATA_HOME", ".local/share", "data"],
+    ["XDG_CONFIG_HOME", ".config", "configuration"],
+    ["XDG_STATE_HOME", ".local/state", "state"],
+    ["XDG_CACHE_HOME", ".cache", "cache"]
+  ];
+  return [
+    ...homes.map(([key, fallback, role]) => ({
+      owner: "opencode",
+      role: `opencode ${role}`,
+      access: "create-entries",
+      ...env.written[key] ? declaredDirectory(readSetting(key, env.written[key], env.cwd), "opencode") : defaultDirectory({ rule: `$HOME/${fallback}`, movedBy: key }, homeRoot(env.written, env.cwd), fallback, "opencode")
+    })),
+    { owner: "opencode", role: "opencode scratch files", access: "create-entries", ...temporaryLocation(env.written, env.cwd, "", "opencode") }
+  ];
+}
+function claudeConfigDirectory(env, cwd) {
+  return path15.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path15.join(homeOf(env), ".claude")).normalize("NFC"));
+}
+function claudeValveDirectory(env) {
+  return path15.resolve(env.TMUX_TMPDIR || "/tmp");
+}
+function temporaryDirectory(env, cwd) {
+  return temporaryLocation(env, cwd);
+}
+function temporaryLocation(env, cwd, qualifier = "", ...below) {
+  for (const key of ["TMPDIR", "TMP", "TEMP"]) {
+    if (env[key]) return declaredDirectory(readSetting(`${qualifier}${key}`, env[key], cwd), ...below);
+  }
+  return defaultDirectory({ rule: "/tmp", movedBy: `${qualifier}TMPDIR` }, "/tmp", ...below);
+}
+var ENGINE_RESOURCE_RESOLVERS = {
+  codex: codexResources,
+  claude: claudeResources,
+  opencode: openCodeResources
+};
+function engineResourceRequirements(engine, declared, cwd, launcher = process.env) {
+  return ENGINE_RESOURCE_RESOLVERS[engine]({
+    worker: launchEnvironment(engine, declared, launcher),
+    written: writtenEnvironment(engine, declared, launcher),
+    launcher,
+    cwd
+  });
+}
+function homeRoot(env, base) {
+  return env.HOME ? readSetting("HOME", env.HOME, base) : homedir3();
+}
+function homeOf(env) {
+  return env.HOME !== void 0 && env.HOME.length > 0 ? env.HOME : homedir3();
 }
 
 // src/provider-capture.ts
@@ -21969,7 +21322,7 @@ var ClaudeCliControlPlane = class {
       if (error instanceof Error) {
         const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id], cleanup).catch(() => null);
         const file = registered === null ? null : await this.transcriptPath(registered).catch(() => null);
-        const transcript = file === null ? null : await readFile7(file, "utf8").catch(() => null);
+        const transcript = file === null ? null : await readFile8(file, "utf8").catch(() => null);
         const diagnostics = { claudeLaunch: {
           failure: error.message,
           cleanupConfirmed: registered === null,
@@ -22089,7 +21442,7 @@ var ClaudeCliControlPlane = class {
       }
       const dir = path16.join(root, entry.name);
       try {
-        const owner = JSON.parse(await readFile7(path16.join(dir, OWNER_FILENAME), "utf8"));
+        const owner = JSON.parse(await readFile8(path16.join(dir, OWNER_FILENAME), "utf8"));
         if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
           await this.#removeSettingsDir(dir);
         }
@@ -22543,7 +21896,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile7(path16.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile8(path16.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -22667,410 +22020,6 @@ function delay(ms, signal) {
 }
 
 // src/claude-engine.ts
-import { createHash as createHash4, randomUUID as randomUUID5 } from "node:crypto";
-
-// src/claude-transcript.ts
-import { readFile as readFile8 } from "node:fs/promises";
-function expandedCommand(content) {
-  const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
-  return command === null ? null : { name: command[1] ?? "", args: command[2] ?? "" };
-}
-function submittedUserText(entry) {
-  if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary || entry.origin?.kind === "task-notification") return null;
-  const content = entry.message?.content;
-  if (typeof content !== "string") return null;
-  const command = expandedCommand(content);
-  if (command === null) return content;
-  return command.args === "" ? command.name : `${command.name} ${command.args}`;
-}
-function commandReceives(content, message) {
-  const command = expandedCommand(content);
-  if (command === null) return false;
-  if (command.args === "") return message === command.name;
-  const separator = message.length - command.name.length - command.args.length;
-  return separator > 0 && message.startsWith(command.name) && message.endsWith(command.args) && /^\s+$/.test(message.slice(command.name.length, command.name.length + separator));
-}
-function submissionReceipt(entries, mark, message) {
-  for (let index = Math.max(0, mark); index < entries.length; index += 1) {
-    const entry = entries[index];
-    const received = entry === void 0 ? null : submittedUserText(entry);
-    if (received === null) {
-      continue;
-    }
-    const content = entry?.message?.content;
-    return received === message || content === message || typeof content === "string" && commandReceives(content, message) ? { state: "verified" } : { state: "differing", received };
-  }
-  return { state: "missing" };
-}
-function openingCommand(message) {
-  const command = /^(\/[a-zA-Z0-9_][a-zA-Z0-9:_-]*)(?:\s|$)/.exec(message);
-  return command === null ? null : command[1] ?? null;
-}
-function unrunCommand(entries, mark, command) {
-  for (let index = Math.max(0, mark); index < entries.length; index += 1) {
-    const entry = entries[index];
-    const content = entry?.content ?? entry?.message?.content;
-    if (typeof content !== "string") continue;
-    if (entry?.type === "system" && (content === `Unknown command: ${command}` || content.startsWith(`Unknown command: ${command}. `))) {
-      return "unknown";
-    }
-    if ((entry?.type === "system" || entry?.type === "user") && content.startsWith(`<command-name>${command}</command-name>`)) {
-      return "built-in";
-    }
-  }
-  return null;
-}
-function parseTranscriptText(text) {
-  const entries = [];
-  for (const line of text.split("\n")) {
-    if (line.trim().length === 0) {
-      continue;
-    }
-    const entry = parseLine(line);
-    if (entry !== null) {
-      entries.push(entry);
-    }
-  }
-  return entries;
-}
-function enteredWorktrees(entries) {
-  const worktrees = [];
-  for (const entry of entries) {
-    if (entry.type !== "worktree-state" || entry.worktreeSession === null || typeof entry.worktreeSession !== "object" || Array.isArray(entry.worktreeSession)) continue;
-    const state = entry.worktreeSession;
-    if (typeof state.worktreePath !== "string" || state.worktreePath.length === 0) continue;
-    const branch = typeof state.worktreeBranch === "string" && state.worktreeBranch.length > 0 ? state.worktreeBranch : null;
-    if (!worktrees.some((tree) => tree.path === state.worktreePath && tree.branch === branch)) {
-      worktrees.push({ path: state.worktreePath, branch });
-    }
-  }
-  return worktrees;
-}
-async function readTranscriptFile(path21) {
-  let text;
-  try {
-    text = await readFile8(path21, "utf8");
-  } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path21}`, { cause: error });
-  }
-  return { path: path21, text, entries: parseTranscriptText(text) };
-}
-function finalAssistantText(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const text = textFromContent(entry.message?.content);
-    if (text !== null && text.length > 0) {
-      return text;
-    }
-  }
-  return null;
-}
-var SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>";
-function endsInSyntheticReply(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    return entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER;
-  }
-  return false;
-}
-function apiErrorSince(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    if (entry.message?.model !== SYNTHETIC_MODEL_PLACEHOLDER || entry.isApiErrorMessage !== true) {
-      return null;
-    }
-    return {
-      status: typeof entry.apiErrorStatus === "number" ? entry.apiErrorStatus : null,
-      code: typeof entry.error === "string" ? entry.error : null
-    };
-  }
-  return null;
-}
-function resolvedModelSince(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const model = entry.message?.model;
-    if (typeof model === "string" && model.length > 0 && model !== SYNTHETIC_MODEL_PLACEHOLDER) {
-      return model;
-    }
-  }
-  return null;
-}
-function effortSince(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    if (typeof entry.effort === "string" && entry.effort.length > 0) {
-      return entry.effort;
-    }
-  }
-  return null;
-}
-function turnComplete(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const stopReason = entry.message?.stop_reason;
-    return typeof stopReason === "string" && stopReason !== "tool_use" && textFromContent(entry.message?.content) !== null;
-  }
-  return false;
-}
-function usageSince(entries, fromIndex = 0) {
-  const start = Math.max(0, fromIndex);
-  const counted = /* @__PURE__ */ new Set();
-  for (let index = 0; index < Math.min(start, entries.length); index += 1) {
-    const id = entries[index]?.type === "assistant" ? entries[index]?.message?.id : void 0;
-    if (typeof id === "string") {
-      counted.add(id);
-    }
-  }
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheRead = 0;
-  let cacheCreation = 0;
-  let sawUsage = false;
-  for (let index = start; index < entries.length; index += 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const usage2 = asRecord(entry.message?.usage);
-    if (usage2 === null) {
-      continue;
-    }
-    const id = entry.message?.id;
-    if (typeof id === "string") {
-      if (counted.has(id)) {
-        continue;
-      }
-      counted.add(id);
-    }
-    sawUsage = true;
-    inputTokens += numeric(usage2.input_tokens);
-    outputTokens += numeric(usage2.output_tokens);
-    cacheRead += numeric(usage2.cache_read_input_tokens);
-    cacheCreation += numeric(usage2.cache_creation_input_tokens);
-  }
-  if (!sawUsage) {
-    return zeroUsage();
-  }
-  const cachedInputTokens = cacheRead + cacheCreation;
-  return {
-    cachedInputTokens,
-    cacheCreationInputTokens: cacheCreation,
-    inputTokens,
-    outputTokens,
-    totalTokens: inputTokens + cachedInputTokens + outputTokens
-  };
-}
-var BACKGROUND_TASK_STARTS = [
-  { pattern: /Command running in background with ID: ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
-  { pattern: /^Workflow launched in background\. Task ID: ([A-Za-z0-9_-]+)/, from: (call) => call.tool === "Workflow" },
-  { pattern: /Monitor started \(task ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
-  { pattern: /^Command did not complete within its \S+ timeout and was moved to the background \(ID: ([A-Za-z0-9_-]+)\)/, from: (call) => call.tool === "Bash" }
-];
-var TASK_STOP_RESULT = /Successfully stopped task: ([A-Za-z0-9_-]+)/;
-var TASK_NOTIFICATION_BLOCK = /<task-notification>([\s\S]*?)<\/task-notification>/g;
-var TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
-var TASK_NOTIFICATION_STATUS = /<status>([^<]+)<\/status>/;
-var TASK_NOTIFICATION_EVENT = /<event>([\s\S]*?)<\/event>/;
-var TASK_ENDED_STATUSES = /* @__PURE__ */ new Set(["completed", "failed", "killed", "stopped"]);
-var MONITOR_OWN_NOTICE = /^\s*\[Monitor (?:expired after|timed out|stopped)\b/;
-function outstandingBackgroundTasks(entries, fromIndex = 0) {
-  const toolCalls = /* @__PURE__ */ new Map();
-  const outstanding = /* @__PURE__ */ new Map();
-  const notified = /* @__PURE__ */ new Set();
-  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
-    const entry = entries[index];
-    if (entry === void 0) {
-      continue;
-    }
-    if (entry.type === "assistant") {
-      for (const id of notified) {
-        outstanding.delete(id);
-      }
-      notified.clear();
-      for (const call of toolUseBlocks(entry.message?.content)) {
-        toolCalls.set(call.id, call);
-      }
-      continue;
-    }
-    for (const result of toolResultBlocks(entry.message?.content)) {
-      const call = toolCalls.get(result.toolUseId);
-      if (call === void 0) {
-        continue;
-      }
-      for (const start of BACKGROUND_TASK_STARTS) {
-        const started = start.from(call) ? start.pattern.exec(result.text)?.[1] : void 0;
-        if (started !== void 0) {
-          outstanding.set(started, { id: started, description: call.description });
-        }
-      }
-      if (call.stops) {
-        const stopped = TASK_STOP_RESULT.exec(result.text)?.[1];
-        if (stopped !== void 0 && outstanding.has(stopped)) {
-          notified.add(stopped);
-        }
-      }
-    }
-    for (const notification of deliveredNotifications(entry)) {
-      if (notification.ended && outstanding.has(notification.id)) {
-        notified.add(notification.id);
-      }
-    }
-  }
-  return [...outstanding.values()];
-}
-var BACKGROUNDING_TOOLS = {
-  Bash: (input) => input?.run_in_background === true,
-  Monitor: () => true
-};
-var STOPPING_TOOL = "TaskStop";
-function toolUseBlocks(content) {
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  const calls = [];
-  for (const block of content) {
-    const record = asRecord(block);
-    if (record?.type !== "tool_use" || typeof record.id !== "string") {
-      continue;
-    }
-    const input = asRecord(record.input);
-    const backgrounds = typeof record.name === "string" && (BACKGROUNDING_TOOLS[record.name]?.(input) ?? false);
-    const stops = record.name === STOPPING_TOOL;
-    const description = typeof input?.description === "string" && input.description.length > 0 ? input.description : typeof input?.command === "string" && input.command.length > 0 ? input.command.slice(0, 200) : typeof record.name === "string" ? record.name : "background task";
-    calls.push({ id: record.id, tool: typeof record.name === "string" ? record.name : null, description, backgrounds, stops });
-  }
-  return calls;
-}
-function toolResultBlocks(content) {
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  const results = [];
-  for (const block of content) {
-    const record = asRecord(block);
-    if (record?.type !== "tool_result" || typeof record.tool_use_id !== "string") {
-      continue;
-    }
-    results.push({ toolUseId: record.tool_use_id, text: blockText(record.content) });
-  }
-  return results;
-}
-function deliveredNotifications(entry) {
-  let texts;
-  if (entry.type === "user") {
-    texts = messageTexts(entry.message?.content);
-  } else if (entry.type === "attachment") {
-    const attachment = asRecord(entry.attachment);
-    texts = attachment?.type === "queued_command" && typeof attachment.prompt === "string" ? [attachment.prompt] : [];
-  } else {
-    return [];
-  }
-  const notifications = [];
-  for (const text of texts) {
-    for (const block of text.matchAll(TASK_NOTIFICATION_BLOCK)) {
-      const body = block[1] ?? "";
-      const id = TASK_NOTIFICATION_ID.exec(body)?.[1];
-      if (id !== void 0) {
-        notifications.push({ id, ended: notificationEnded(body) });
-      }
-    }
-  }
-  return notifications;
-}
-function notificationEnded(body) {
-  const status = TASK_NOTIFICATION_STATUS.exec(body)?.[1]?.trim();
-  if (status !== void 0) {
-    return TASK_ENDED_STATUSES.has(status);
-  }
-  return MONITOR_OWN_NOTICE.test(TASK_NOTIFICATION_EVENT.exec(body)?.[1] ?? "");
-}
-function messageTexts(content) {
-  if (typeof content === "string") {
-    return [content];
-  }
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  const texts = [];
-  for (const block of content) {
-    const record = asRecord(block);
-    if (record?.type === "text" && typeof record.text === "string") {
-      texts.push(record.text);
-    }
-  }
-  return texts;
-}
-function blockText(content) {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return "";
-  }
-  return content.map((block) => {
-    const record = asRecord(block);
-    return record?.type === "text" && typeof record.text === "string" ? record.text : "";
-  }).join("\n");
-}
-function parseLine(line) {
-  try {
-    const parsed = JSON.parse(line);
-    return asRecord(parsed) === null ? null : parsed;
-  } catch {
-    return null;
-  }
-}
-function textFromContent(content) {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return null;
-  }
-  const parts = [];
-  for (const block of content) {
-    const record = asRecord(block);
-    if (record?.type === "text" && typeof record.text === "string") {
-      parts.push(record.text);
-    }
-  }
-  return parts.length > 0 ? parts.join("") : null;
-}
-function asRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-}
-function numeric(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-function zeroUsage() {
-  return {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0
-  };
-}
-
-// src/claude-engine.ts
 function stripSettingsFor(options) {
   const strip = options.strip ?? [];
   if (strip.length === 0) return {};
@@ -23084,26 +22033,12 @@ function stripSettingsFor(options) {
     ...Object.keys(prepared.settingsEnv).length > 0 ? { settingsEnv: prepared.settingsEnv } : {}
   };
 }
-var CLAUDE_NATIVE_EFFORT = {
-  minimal: "low",
-  low: "low",
-  medium: "medium",
-  high: "high",
-  xhigh: "xhigh"
-};
+var CLAUDE_NATIVE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 function claudeNativeEffort(effort) {
-  if (effort === void 0) {
-    return void 0;
+  if (effort !== void 0 && !CLAUDE_NATIVE_EFFORT_LEVELS.includes(effort)) {
+    throw new InvalidAgentOptionValueError("effort", effort, `a resolved Claude native level (${CLAUDE_NATIVE_EFFORT_LEVELS.join(" | ")})`);
   }
-  const native = CLAUDE_NATIVE_EFFORT[effort];
-  if (native === void 0) {
-    throw new InvalidAgentOptionValueError(
-      "effort",
-      effort,
-      `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")} (the canonical effort vocabulary)`
-    );
-  }
-  return native;
+  return effort;
 }
 var dispatchCounter = 0;
 var SETTLED_CONFIRMATION_POLLS = 5;
@@ -24246,6 +23181,1319 @@ function delay2(ms, signal, abortError) {
     }
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+// src/engines.ts
+import { randomUUID as randomUUID7 } from "node:crypto";
+
+// src/app-server.ts
+import { spawn as spawn3 } from "node:child_process";
+import { createInterface } from "node:readline";
+var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
+var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
+var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+var STDIN_CLOSE_EXIT_GRACE_MS = 500;
+var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
+var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
+var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
+var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
+var SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1e3;
+var MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
+var SKILL_DISCOVERY_DEADLINE_MS = 3e4;
+var MAX_REMEMBERED_SETTLED_TURN_IDS = 256;
+var LazyCodexAppServerTransport = class {
+  cwd;
+  #options;
+  #transportPromise;
+  #startupCancellation = new AbortController();
+  #closed = false;
+  #terminationListeners = /* @__PURE__ */ new Set();
+  #terminationError;
+  constructor(options) {
+    this.cwd = options.cwd;
+    this.#options = options;
+  }
+  onTermination(listener) {
+    if (this.#closed) return () => {
+    };
+    if (this.#terminationError !== void 0) {
+      try {
+        listener(this.#terminationError);
+      } catch {
+      }
+      return () => {
+      };
+    }
+    this.#terminationListeners.add(listener);
+    return () => {
+      this.#terminationListeners.delete(listener);
+    };
+  }
+  async openThread(options) {
+    const transport = await this.#transport();
+    return transport.openThread(options);
+  }
+  async listModels() {
+    const transport = await this.#transport();
+    return transport.listModels();
+  }
+  async listSkills(cwd) {
+    const transport = await this.#transport();
+    return transport.listSkills(cwd);
+  }
+  async runTurn(threadId, prompt, options) {
+    const transport = await this.#transport();
+    return transport.runTurn(threadId, prompt, options);
+  }
+  async close() {
+    this.#closed = true;
+    this.#terminationListeners.clear();
+    this.#startupCancellation.abort(new AppServerExitedError("codex app-server transport is closed"));
+    if (this.#transportPromise === void 0) {
+      return;
+    }
+    let transport;
+    try {
+      transport = await this.#transportPromise;
+    } catch {
+      return;
+    }
+    await transport.close();
+  }
+  #transport() {
+    if (this.#closed) {
+      return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
+    }
+    this.#transportPromise ??= CodexAppServerTransport.start(this.#options, this.#startupCancellation.signal).then((transport) => {
+      transport.onTermination((error) => this.#noteTermination(error));
+      return transport;
+    }).catch((error) => {
+      this.#noteTermination(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    });
+    return this.#transportPromise;
+  }
+  #noteTermination(error) {
+    if (this.#closed || this.#terminationError !== void 0) return;
+    this.#terminationError = error;
+    for (const listener of this.#terminationListeners) {
+      try {
+        listener(error);
+      } catch {
+      }
+    }
+    this.#terminationListeners.clear();
+  }
+};
+var CodexAppServerTransport = class _CodexAppServerTransport {
+  cwd;
+  #process;
+  #requestTimeoutMs;
+  #retryPromiseSilenceTimeoutMs;
+  #firstOutputTimeoutMs;
+  #startupHandshakeTimeoutMs;
+  #skillDiscoveryStabilityIntervalMs;
+  #skillDiscoveryDeadlineMs;
+  #nextId = 0;
+  #pending = /* @__PURE__ */ new Map();
+  #turns = /* @__PURE__ */ new Map();
+  #transcripts = /* @__PURE__ */ new Map();
+  /**
+   * Each open thread's served identity as its `thread/start` answer reported
+   * it — the model and reasoning effort the thread runs at for its whole
+   * life. `#completeTurn` prunes a turn's transcript buffer, so a held
+   * session's later turns re-register from here rather than from nothing:
+   * the engine confirmed the identity once, and every turn on the thread is
+   * served under it.
+   */
+  #threadIdentity = /* @__PURE__ */ new Map();
+  /** Ids of turns this transport has settled, insertion-ordered so the bound evicts the oldest. */
+  #settledTurnIds = /* @__PURE__ */ new Set();
+  #stderrTail = [];
+  #exitStatus = null;
+  #hasExited = false;
+  #stdinFailureGrace;
+  #terminalError;
+  #writeFailureWaiters = /* @__PURE__ */ new Set();
+  #onEvent;
+  #closing = false;
+  #terminationListeners = /* @__PURE__ */ new Set();
+  constructor(options) {
+    this.cwd = options.cwd;
+    this.#requestTimeoutMs = options.requestTimeoutMs;
+    this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
+    this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
+    this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
+    this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
+    this.#skillDiscoveryDeadlineMs = options.skillDiscoveryDeadlineMs ?? SKILL_DISCOVERY_DEADLINE_MS;
+    this.#onEvent = options.onEvent;
+    this.#process = spawn3(options.codexBin, ["app-server"], {
+      cwd: options.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: launchEnvironment("codex", options.workerEnv)
+    });
+    this.#wireReader();
+    this.#wireStderr();
+    this.#process.stdin.on("error", () => {
+      this.#scheduleStdinFailure();
+    });
+    this.#process.once("exit", (code, signal) => {
+      this.#exitStatus = { exitCode: code, signal };
+      this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
+    });
+    this.#process.once("error", (error) => {
+      this.#failAll(new AppServerExitedError(`codex app-server process error: ${error.message}`));
+    });
+  }
+  static async start(options, signal) {
+    signal?.throwIfAborted();
+    const transport = new _CodexAppServerTransport(options);
+    const cancelStartup = () => {
+      transport.#failAll(new AppServerExitedError("codex app-server startup cancelled"));
+    };
+    signal?.addEventListener("abort", cancelStartup, { once: true });
+    try {
+      if (transport.#process.pid !== void 0 && options.scopes !== void 0) {
+        const pid = transport.#process.pid;
+        const outcome = await options.scopes.place(options.scopeGroup ?? "codex", [pid]);
+        if (outcome.kind !== "placed") {
+          options.onEvent?.({
+            method: "codex/workerScopePlacement",
+            params: { pid, kind: outcome.kind, ...outcome.kind === "refused" ? { reason: outcome.reason } : {} },
+            receivedAt: Date.now()
+          });
+        }
+      }
+      signal?.throwIfAborted();
+      await transport.#handshake(options.clientName, options.clientVersion);
+    } catch (error) {
+      await transport.close();
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", cancelStartup);
+    }
+    return transport;
+  }
+  /** Idle server state cannot settle a script; only a request or turn can. */
+  #updateLiveness() {
+    const referenced = !this.#hasExited && (this.#pending.size > 0 || this.#turns.size > 0);
+    if (this.#exitStatus === null) {
+      if (referenced) this.#process.ref();
+      else this.#process.unref();
+    }
+    for (const pipe of [this.#process.stdin, this.#process.stdout, this.#process.stderr]) {
+      if (pipe.destroyed) continue;
+      if (referenced) pipe.ref();
+      else pipe.unref();
+    }
+  }
+  async openThread(options) {
+    const config = threadStartConfig(options);
+    const requestParams = {
+      cwd: options.cwd ?? this.cwd,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      ephemeral: true,
+      ...options.model !== void 0 ? { model: options.model } : {},
+      ...config !== void 0 ? { config } : {}
+    };
+    const result = await this.#request("thread/start", requestParams);
+    const resultObject = asJsonObject(result);
+    const directThreadId = resultObject?.threadId;
+    const nestedThread = asJsonObject(resultObject?.thread);
+    const nestedThreadId = nestedThread?.id;
+    const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
+    if (threadId !== null) {
+      const resolvedModel = resultObject?.model;
+      const resolvedEffort = resultObject?.reasoningEffort;
+      const identity = {
+        resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
+        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null
+      };
+      this.#threadIdentity.set(threadId, identity);
+      this.#transcripts.set(threadId, {
+        ...identity,
+        events: [
+          {
+            direction: "client",
+            method: "thread/start",
+            params: requestParams,
+            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+          },
+          {
+            direction: "server",
+            method: "thread/start/result",
+            result,
+            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+          }
+        ]
+      });
+      return threadId;
+    }
+    throw new AppServerRequestError("thread/start", {
+      code: void 0,
+      message: "response did not contain result.thread.id or result.threadId",
+      data: result
+    });
+  }
+  onTermination(listener) {
+    if (this.#closing) return () => {
+    };
+    if (this.#terminalError !== void 0) {
+      try {
+        listener(this.#terminalError);
+      } catch {
+      }
+      return () => {
+      };
+    }
+    this.#terminationListeners.add(listener);
+    return () => {
+      this.#terminationListeners.delete(listener);
+    };
+  }
+  async listModels() {
+    const listed = [];
+    const cursors = /* @__PURE__ */ new Set();
+    let cursor = null;
+    do {
+      const result = asJsonObject(await this.#request("model/list", { includeHidden: true, ...cursor !== null ? { cursor } : {} }));
+      const entries = result?.data;
+      if (!Array.isArray(entries)) {
+        throw new AppServerRequestError("model/list", {
+          code: "invalid_response",
+          message: "response omitted the model entries"
+        });
+      }
+      for (const entry of entries) {
+        const model = asJsonObject(entry);
+        const name = model?.model;
+        const efforts = model?.supportedReasoningEfforts;
+        if (typeof name !== "string" || name.length === 0 || !Array.isArray(efforts)) {
+          throw new AppServerRequestError("model/list", {
+            code: "invalid_response",
+            message: "a model entry omitted its name or its supported reasoning efforts"
+          });
+        }
+        listed.push({
+          model: name,
+          isDefault: model?.isDefault === true,
+          supportedReasoningEfforts: efforts.map((effort) => asJsonObject(effort)?.reasoningEffort).filter((effort) => typeof effort === "string" && effort.length > 0)
+        });
+      }
+      const next = result?.nextCursor;
+      cursor = typeof next === "string" && next.length > 0 ? next : null;
+      if (cursor !== null && cursors.has(cursor)) {
+        throw new AppServerRequestError("model/list", {
+          code: "invalid_response",
+          message: `pagination repeated the cursor ${JSON.stringify(cursor)}`
+        });
+      }
+      if (cursor !== null) {
+        cursors.add(cursor);
+      }
+    } while (cursor !== null);
+    return listed;
+  }
+  async listSkills(cwd = this.cwd) {
+    const startedAt = Date.now();
+    let previousNames;
+    let observedExpansion = false;
+    let unchangedSinceFirstSample = true;
+    for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
+      const names = await this.#listSkillsOnce(cwd);
+      if (observedExpansion && previousNames !== void 0 && sameStrings(previousNames, names)) {
+        return names;
+      }
+      if (previousNames !== void 0) {
+        if (!sameStrings(previousNames, names)) {
+          unchangedSinceFirstSample = false;
+        }
+        if (strictlyContainsAll(names, previousNames)) {
+          observedExpansion = true;
+        } else if (!sameStrings(previousNames, names)) {
+          observedExpansion = false;
+        }
+      }
+      if (unchangedSinceFirstSample && attempt === MAX_SKILL_DISCOVERY_ATTEMPTS) {
+        return names;
+      }
+      previousNames = names;
+      if (Date.now() - startedAt >= this.#skillDiscoveryDeadlineMs) {
+        throw new AppServerRequestError("skills/list", {
+          code: "discovery_deadline",
+          message: `skill discovery exceeded its ${this.#skillDiscoveryDeadlineMs}ms aggregate bound before stabilising`
+        });
+      }
+      if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
+      }
+    }
+    throw new AppServerRequestError("skills/list", {
+      code: "unstable_discovery",
+      message: `skill discovery observed neither a growing set followed by stability nor one set unchanged across all ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
+    });
+  }
+  async #listSkillsOnce(cwd) {
+    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
+    const entries = result?.data;
+    if (!Array.isArray(entries)) {
+      throw new AppServerRequestError("skills/list", {
+        code: "invalid_response",
+        message: "response omitted the discovered skill entries"
+      });
+    }
+    const names = /* @__PURE__ */ new Set();
+    for (const entry of entries) {
+      const entryObject = asJsonObject(entry);
+      const errors = entryObject?.errors;
+      const skills = entryObject?.skills;
+      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
+        throw new AppServerRequestError("skills/list", {
+          code: "incomplete_discovery",
+          message: "could not establish the complete discovered skill set"
+        });
+      }
+      for (const skill of skills) {
+        const name = asJsonObject(skill)?.name;
+        if (typeof name !== "string" || name.length === 0) {
+          throw new AppServerRequestError("skills/list", {
+            code: "invalid_response",
+            message: "response included a skill without a name"
+          });
+        }
+        names.add(name);
+      }
+    }
+    return [...names].sort();
+  }
+  async runTurn(threadId, prompt, options) {
+    if (!this.#transcripts.has(threadId)) {
+      this.#transcripts.set(threadId, {
+        ...this.#threadIdentity.get(threadId) ?? { resolvedModel: null, resolvedEffort: null },
+        events: []
+      });
+    }
+    const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
+    state.onTranscriptEvent = options.onTranscriptEvent;
+    state.progress = options;
+    this.#reportTurnIdentity(threadId, state);
+    this.#turns.set(threadId, state);
+    this.#updateLiveness();
+    for (const event of this.#transcripts.get(threadId).events) {
+      this.#observeTranscriptEvent(state, event);
+    }
+    state.promise.catch(() => void 0);
+    try {
+      const params = {
+        threadId,
+        input: [{ type: "text", text: prompt }],
+        sandboxPolicy: { type: "dangerFullAccess" }
+      };
+      if (options.schema !== void 0) {
+        params.outputSchema = options.schema;
+      }
+      if (options.model !== void 0) {
+        params.model = options.model;
+      }
+      this.#appendTranscript(threadId, {
+        direction: "client",
+        method: "turn/start",
+        params,
+        recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      const result = asJsonObject(await this.#request("turn/start", params));
+      const startedTurn = asJsonObject(result?.turn);
+      if (typeof startedTurn?.id === "string") {
+        state.turnId = startedTurn.id;
+      }
+      return await state.promise;
+    } catch (error) {
+      if (this.#turns.get(threadId) === state) {
+        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      }
+      return await state.promise;
+    } finally {
+      this.#updateLiveness();
+    }
+  }
+  /** Number of thread transcripts currently held in memory. Observability for tests. */
+  openTranscripts() {
+    return this.#transcripts.size;
+  }
+  async close() {
+    this.#closing = true;
+    this.#terminationListeners.clear();
+    if (!this.#hasExited) {
+      this.#failAll(new AppServerExitedError("codex app-server closed"));
+    }
+    this.#threadIdentity.clear();
+    this.#transcripts.clear();
+    if (this.#exitStatus !== null || this.#process.pid === void 0) {
+      return;
+    }
+    this.#process.stdin.end();
+    this.#process.kill("SIGTERM");
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.#process.kill("SIGKILL");
+        resolve();
+      }, 5e3);
+      this.#process.once("exit", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+  }
+  async #handshake(clientName, clientVersion) {
+    try {
+      await this.#request(
+        "initialize",
+        {
+          clientInfo: {
+            name: clientName,
+            version: clientVersion
+          }
+        },
+        this.#startupHandshakeTimeoutMs
+      );
+    } catch (error) {
+      if (error instanceof TurnTimeoutError) {
+        throw new AppServerStartupTimeoutError(this.#startupHandshakeTimeoutMs);
+      }
+      throw error;
+    }
+    this.#sendNotification("initialized", {});
+  }
+  #request(method, params, timeoutMs = this.#requestTimeoutMs) {
+    const id = this.#nextId + 1;
+    this.#nextId = id;
+    const payload = JSON.stringify({ id, method, params });
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(
+          new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`, {
+            kind: "request",
+            timeoutMs,
+            method
+          })
+        );
+      }, timeoutMs);
+      this.#pending.set(id, { method, resolve, reject, timeout });
+      this.#updateLiveness();
+      this.#writeLine(payload).catch((error) => {
+        this.#pending.delete(id);
+        clearTimeout(timeout);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
+    }).finally(() => this.#updateLiveness());
+  }
+  #sendNotification(method, params) {
+    void this.#writeLine(JSON.stringify({ method, params })).catch(() => {
+    });
+  }
+  /** Sends a request through stdin without retaining or awaiting its response. */
+  async #sendUnacknowledgedRequest(method, params) {
+    const id = this.#nextId + 1;
+    this.#nextId = id;
+    await this.#writeLine(JSON.stringify({ id, method, params }));
+  }
+  async #writeLine(line) {
+    if (this.#hasExited) {
+      const failure = new AppServerExitedError(this.#terminalError?.message ?? "codex app-server is not running");
+      if (this.#exitStatus !== null) {
+        attachWorkerExitStatus(failure, this.#exitStatus);
+      }
+      throw failure;
+    }
+    const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+    await new Promise((resolve, reject) => {
+      this.#process.stdin.write(`${framedLine}
+`, (error) => {
+        if (error !== null && error !== void 0) {
+          this.#scheduleStdinFailure();
+          if (this.#terminalError !== void 0) {
+            reject(this.#terminalError);
+          } else {
+            this.#writeFailureWaiters.add(reject);
+          }
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+  #wireReader() {
+    let chunks = [];
+    let byteLength = 0;
+    let prefix = Buffer.alloc(0);
+    let discardingOversizedLine = false;
+    let oversizedLineByteLength = 0;
+    const resetLine = () => {
+      chunks = [];
+      byteLength = 0;
+      prefix = Buffer.alloc(0);
+      discardingOversizedLine = false;
+      oversizedLineByteLength = 0;
+    };
+    const retain = (chunk) => {
+      if (chunk.length === 0) {
+        return;
+      }
+      chunks.push(chunk);
+      byteLength += chunk.length;
+      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
+        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
+      }
+    };
+    const reportOversizedLine = () => {
+      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
+    };
+    const handleRetainedLine = () => {
+      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+      resetLine();
+      this.#handleLine(line);
+    };
+    this.#process.stdout.on("data", (chunk) => {
+      let offset2 = 0;
+      while (offset2 < chunk.length) {
+        const newline = chunk.indexOf(10, offset2);
+        const end = newline === -1 ? chunk.length : newline;
+        const segment = chunk.subarray(offset2, end);
+        if (discardingOversizedLine) {
+          oversizedLineByteLength += segment.length;
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
+          retain(segment);
+          if (newline !== -1) {
+            handleRetainedLine();
+          }
+        } else {
+          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
+          retain(segment.subarray(0, retainedBytes));
+          discardingOversizedLine = true;
+          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        }
+        offset2 = newline === -1 ? chunk.length : newline + 1;
+      }
+    });
+    this.#process.stdout.once("end", () => {
+      if (discardingOversizedLine) {
+        reportOversizedLine();
+        resetLine();
+      } else if (byteLength > 0) {
+        handleRetainedLine();
+      }
+      if (this.#hasExited) {
+        return;
+      }
+      const grace = setTimeout(() => {
+        this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
+      }, STDOUT_CLOSE_EXIT_GRACE_MS);
+      grace.unref();
+      this.#process.once("exit", () => {
+        clearTimeout(grace);
+      });
+    });
+  }
+  #wireStderr() {
+    const reader = createInterface({ input: this.#process.stderr });
+    reader.on("line", (line) => {
+      this.#stderrTail.push(line);
+      if (this.#stderrTail.length > 50) {
+        this.#stderrTail.shift();
+      }
+    });
+  }
+  #handleLine(line) {
+    if (line.trim().length === 0) {
+      return;
+    }
+    const parsed = parseRpcMessage(line);
+    if (parsed === null) {
+      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_CHARACTERS));
+      return;
+    }
+    const id = typeof parsed.id === "number" ? parsed.id : null;
+    const method = typeof parsed.method === "string" ? parsed.method : null;
+    if (id !== null && method !== null) {
+      this.#onEvent?.({
+        method: "server/request/denied",
+        params: { requestId: id, requestMethod: method },
+        receivedAt: Date.now()
+      });
+      const requestParams = asJsonObject(parsed.params);
+      if (requestParams !== null) {
+        const turn = this.#turnCorrelatedBy(requestParams);
+        if (turn !== void 0) {
+          this.#disarmRetryPromiseSilenceDeadline(turn);
+          this.#disarmFirstOutputDeadline(turn);
+          this.#noteTurnFirstOutput(turn);
+          try {
+            turn.progress.onOutput?.();
+          } catch {
+          }
+        }
+      }
+      this.#sendApprovalDenial(id);
+      return;
+    }
+    if (id !== null && ("result" in parsed || "error" in parsed)) {
+      this.#handleResponse(id, parsed);
+      return;
+    }
+    if (method !== null) {
+      this.#handleNotification(method, asJsonObject(parsed.params) ?? {});
+    }
+  }
+  #reportDecodeFailure(byteLength, linePrefix) {
+    this.#onEvent?.({
+      method: "transport/decodeFailed",
+      params: { byteLength, linePrefix },
+      receivedAt: Date.now()
+    });
+  }
+  #handleResponse(id, message) {
+    const pending = this.#pending.get(id);
+    if (pending === void 0) {
+      return;
+    }
+    this.#pending.delete(id);
+    clearTimeout(pending.timeout);
+    if (message.error !== void 0) {
+      pending.reject(appServerErrorFromPayload(pending.method, asRpcError(message.error)));
+      return;
+    }
+    pending.resolve(message.result);
+  }
+  #handleNotification(method, params) {
+    this.#onEvent?.({ method, params, receivedAt: Date.now() });
+    const threadId = params.threadId;
+    if (typeof threadId !== "string") {
+      return;
+    }
+    this.#appendTranscript(threadId, {
+      direction: "server",
+      method,
+      params,
+      recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    const turn = this.#turns.get(threadId);
+    if (turn === void 0) {
+      return;
+    }
+    const speaksForTurn = this.#correlatesWithTurn(turn, params);
+    if (speaksForTurn) {
+      this.#disarmRetryPromiseSilenceDeadline(turn);
+      if (isOutputBearingTurnFrame(method)) {
+        this.#disarmFirstOutputDeadline(turn);
+        this.#noteTurnFirstOutput(turn);
+        try {
+          turn.progress.onOutput?.();
+        } catch {
+        }
+      }
+    }
+    const now = Date.now();
+    if (isTurnProgressNotification(method)) {
+      turn.consecutiveRetryPromises = 0;
+    }
+    if (method === "turn/started") {
+      return;
+    }
+    if (method === "model/rerouted") {
+      if (!speaksForTurn) {
+        return;
+      }
+      const toModel = params.toModel;
+      const transcript = this.#transcripts.get(threadId);
+      if (transcript !== void 0 && typeof toModel === "string" && toModel.length > 0) {
+        transcript.resolvedModel = toModel;
+        this.#reportTurnIdentity(threadId, turn);
+      }
+      return;
+    }
+    if (method === "item/started") {
+      const item = asJsonObject(params.item);
+      const itemType = itemTypeFromItem(item);
+      turn.items.set(itemType, (turn.items.get(itemType) ?? 0) + 1);
+      return;
+    }
+    if (method === "item/agentMessage/delta") {
+      if (turn.firstDeltaAt === null) {
+        turn.firstDeltaAt = now;
+      }
+      if (typeof params.delta === "string") {
+        turn.deltaText += params.delta;
+      }
+      return;
+    }
+    if (method === "item/completed") {
+      const item = asJsonObject(params.item);
+      const itemType = itemTypeFromItem(item);
+      if (itemType === "agentMessage" && typeof item?.text === "string") {
+        turn.itemText = item.text;
+      }
+      return;
+    }
+    if (method === "thread/tokenUsage/updated") {
+      const event = tokenUsageEventFromParams(params);
+      if (event !== null) {
+        turn.tokenUsageEvents.push(event);
+        try {
+          turn.progress.onUsage?.(event);
+        } catch {
+        }
+      }
+      return;
+    }
+    if (method === "thread/status/changed") {
+      const status = asJsonObject(params.status);
+      if (status?.type === "systemError") {
+        this.#armSystemErrorDiagnosticGrace(threadId, turn, method, params);
+      }
+      return;
+    }
+    if (method === "turn/completed") {
+      if (!speaksForTurn) {
+        return;
+      }
+      turn.completedAt = now;
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+        return;
+      }
+      this.#completeTurn(threadId, turn);
+      return;
+    }
+    if (method === "error") {
+      if (!speaksForTurn) {
+        return;
+      }
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+        return;
+      }
+      if (params.willRetry === true) {
+        turn.consecutiveRetryPromises += 1;
+        if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
+          const diagnostic = errorPayloadFromNotification(params);
+          void this.#rejectTurn(
+            threadId,
+            turn,
+            attachAppServerDiagnostic(
+              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
+              appServerDiagnosticFromPayload(diagnostic)
+            )
+          );
+          return;
+        }
+        this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
+        return;
+      }
+      void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+    }
+  }
+  /**
+   * Whether an inbound frame speaks for the live turn on its thread. Thread
+   * identity has already matched; a frame naming a different turn (a
+   * straggler from an abandoned turn on a recycled thread) must neither
+   * disarm the live turn's deadline, settle it, nor stamp its served model.
+   * Frames carrying no turn identity are thread-scoped and count: ephemeral
+   * threads run one turn, so the thread speaking is the turn's server
+   * speaking.
+   *
+   * A turn learns its id from the first correlated frame when the
+   * `turn/start` response has not yet named it — except that an id this
+   * transport has already settled is never learned: a straggler arriving in
+   * that window would otherwise teach the live turn the abandoned turn's
+   * identity, and every later straggler would correlate.
+   */
+  #correlatesWithTurn(turn, params) {
+    const turnId = turnIdFromParams(params);
+    if (turnId === void 0) {
+      return true;
+    }
+    if (turn.turnId === void 0) {
+      if (this.#settledTurnIds.has(turnId)) {
+        return false;
+      }
+      turn.turnId = turnId;
+      return true;
+    }
+    return turn.turnId === turnId;
+  }
+  /** Remember a settled turn's id so its stragglers can never be learned as a later turn's identity. */
+  #rememberSettledTurn(turn) {
+    if (turn.turnId === void 0) {
+      return;
+    }
+    this.#settledTurnIds.add(turn.turnId);
+    if (this.#settledTurnIds.size > MAX_REMEMBERED_SETTLED_TURN_IDS) {
+      const oldest = this.#settledTurnIds.values().next().value;
+      if (oldest !== void 0) {
+        this.#settledTurnIds.delete(oldest);
+      }
+    }
+  }
+  /** Resolves an inbound frame's params to the live turn they speak for, if any. */
+  #turnCorrelatedBy(params) {
+    const threadId = params.threadId;
+    if (typeof threadId !== "string") {
+      return void 0;
+    }
+    const turn = this.#turns.get(threadId);
+    if (turn === void 0 || !this.#correlatesWithTurn(turn, params)) {
+      return void 0;
+    }
+    return turn;
+  }
+  #disarmRetryPromiseSilenceDeadline(turn) {
+    if (turn.retryPromiseSilenceDeadline !== void 0) {
+      clearTimeout(turn.retryPromiseSilenceDeadline);
+      turn.retryPromiseSilenceDeadline = void 0;
+    }
+  }
+  #disarmSystemErrorDiagnosticGrace(turn) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
+      turn.systemErrorDiagnosticGraceDeadline = void 0;
+    }
+  }
+  #armSystemErrorDiagnosticGrace(threadId, turn, method, statusParams) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      return;
+    }
+    const diagnostic = {
+      code: void 0,
+      message: "Codex app-server reported terminal systemError without a diagnostic",
+      data: statusParams
+    };
+    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
+      new AppServerSystemError(method, diagnostic),
+      appServerDiagnosticFromPayload(diagnostic)
+    );
+    turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+    }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
+  }
+  #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
+    const diagnostic = errorPayloadFromNotification(promiseParams);
+    turn.retryPromiseSilenceDeadline = setTimeout(() => {
+      void this.#rejectTurn(
+        threadId,
+        turn,
+        attachAppServerDiagnostic(
+          new AppServerRetryPromiseBrokenError(
+            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
+            diagnostic
+          ),
+          appServerDiagnosticFromPayload(diagnostic)
+        )
+      );
+    }, this.#retryPromiseSilenceTimeoutMs);
+  }
+  #disarmFirstOutputDeadline(turn) {
+    if (turn.firstOutputDeadline !== void 0) {
+      clearTimeout(turn.firstOutputDeadline);
+      turn.firstOutputDeadline = void 0;
+    }
+  }
+  #reportTurnIdentity(threadId, turn) {
+    const identity = this.#transcripts.get(threadId);
+    if (identity === void 0) return;
+    try {
+      turn.progress.onIdentity?.({ resolvedModel: identity.resolvedModel, resolvedEffort: identity.resolvedEffort });
+    } catch {
+    }
+  }
+  /**
+   * Fire the supervisor-facing first-output callback, once per turn. Called
+   * only from the frame-driven sites (an output-bearing notification, a
+   * turn-scoped server request) — never from the completion/rejection
+   * teardown, which also disarms the deadline but proves nothing about
+   * output. The callback is observability: a throw inside it must never
+   * affect the turn.
+   */
+  #noteTurnFirstOutput(turn) {
+    if (turn.firstOutputSeen) {
+      return;
+    }
+    turn.firstOutputSeen = true;
+    try {
+      turn.onFirstOutput?.();
+    } catch {
+    }
+  }
+  #armFirstOutputDeadline(threadId, turn) {
+    turn.firstOutputDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstOutputTimeoutMs));
+    }, this.#firstOutputTimeoutMs);
+  }
+  /**
+   * The single terminal path for a failing turn. Every way a turn can end
+   * short of completion — error notification, retry-promise bound,
+   * systemError, per-turn timeout, transport close, process death — comes
+   * through here, so the terminalisation invariant is enforced once: the
+   * worker's accumulated text rides the rejection instead of being deleted
+   * with the turn state.
+   */
+  #rejectTurn(threadId, turn, error) {
+    this.#turns.delete(threadId);
+    if (error instanceof AppServerRequestError && error.code === "modelNotFound") {
+      const identity = this.#transcripts.get(threadId);
+      if (identity !== void 0) {
+        identity.resolvedModel = null;
+        identity.resolvedEffort = null;
+        this.#threadIdentity.set(threadId, { resolvedModel: null, resolvedEffort: null });
+        this.#reportTurnIdentity(threadId, turn);
+      }
+    }
+    if (turn.firstDeltaAt !== null) {
+      attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
+    }
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript !== void 0 && transcript.events.length > 0) {
+      attachPartialTranscript(error, {
+        filename: "transcript.codex.jsonl",
+        format: "jsonl",
+        source: "codex-app-server-events",
+        threadId,
+        content: this.#transcriptText(threadId),
+        partial: turn.completedAt === null
+      });
+    }
+    this.#transcripts.delete(threadId);
+    this.#rememberSettledTurn(turn);
+    clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
+    this.#disarmFirstOutputDeadline(turn);
+    if (turn.turnId !== void 0) {
+      void this.#sendUnacknowledgedRequest("turn/interrupt", {
+        threadId,
+        turnId: turn.turnId
+      }).catch(() => {
+      });
+    }
+    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
+  }
+  #completeTurn(threadId, turn) {
+    this.#turns.delete(threadId);
+    this.#rememberSettledTurn(turn);
+    clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
+    this.#disarmFirstOutputDeadline(turn);
+    const text = turn.itemText ?? turn.deltaText;
+    const transcript = this.#transcripts.get(threadId);
+    const result = {
+      text,
+      ...transcript?.resolvedModel !== null && transcript?.resolvedModel !== void 0 ? { resolvedModel: transcript.resolvedModel } : {},
+      ...transcript?.resolvedEffort !== null && transcript?.resolvedEffort !== void 0 ? { resolvedEffort: transcript.resolvedEffort } : {},
+      deltaText: turn.deltaText,
+      durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
+      firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
+      items: Object.fromEntries(turn.items),
+      tokenUsageEvents: turn.tokenUsageEvents,
+      transcriptCapture: transcript === void 0 ? "lost" : "retained",
+      transcripts: [
+        {
+          filename: "transcript.codex.jsonl",
+          format: "jsonl",
+          source: "codex-app-server-events",
+          threadId,
+          content: this.#transcriptText(threadId)
+        }
+      ]
+    };
+    if (turn.itemText !== void 0) {
+      result.itemText = turn.itemText;
+    }
+    this.#transcripts.delete(threadId);
+    turn.resolve(result);
+  }
+  #appendTranscript(threadId, event) {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === void 0) {
+      return;
+    }
+    transcript.events.push(event);
+    const turn = this.#turns.get(threadId);
+    if (turn !== void 0) {
+      this.#observeTranscriptEvent(turn, event);
+    }
+  }
+  #observeTranscriptEvent(turn, event) {
+    try {
+      turn.onTranscriptEvent?.(event);
+    } catch {
+    }
+  }
+  #transcriptText(threadId) {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === void 0) {
+      return "";
+    }
+    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}
+`;
+  }
+  #createTurnState(threadId, timeoutMs, onFirstOutput) {
+    let resolveTurn = () => void 0;
+    let rejectTurn = () => void 0;
+    const promise = new Promise((resolve, reject) => {
+      resolveTurn = resolve;
+      rejectTurn = reject;
+    });
+    const state = {
+      threadId,
+      turnId: void 0,
+      startedAt: Date.now(),
+      firstDeltaAt: null,
+      firstOutputSeen: false,
+      progress: {},
+      onFirstOutput,
+      onTranscriptEvent: void 0,
+      completedAt: null,
+      deltaText: "",
+      items: /* @__PURE__ */ new Map(),
+      tokenUsageEvents: [],
+      consecutiveRetryPromises: 0,
+      retryPromiseSilenceDeadline: void 0,
+      systemErrorDiagnosticGraceDeadline: void 0,
+      systemErrorDiagnosticFallback: void 0,
+      firstOutputDeadline: void 0,
+      promise,
+      resolve: resolveTurn,
+      reject: rejectTurn,
+      // No timeoutMs → no per-turn deadline; the turn runs until it completes or
+      // the run is stopped. A backstop is the orchestrator's responsibility.
+      timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
+        void this.#rejectTurn(
+          threadId,
+          state,
+          new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`, {
+            kind: "turn",
+            timeoutMs,
+            threadId
+          })
+        );
+      }, timeoutMs)
+    };
+    this.#armFirstOutputDeadline(threadId, state);
+    return state;
+  }
+  #sendApprovalDenial(id) {
+    void this.#writeLine(
+      JSON.stringify({
+        id,
+        result: {
+          decision: "denied",
+          reason: "Ensemble workers run with approvalPolicy never"
+        }
+      })
+    ).catch(() => {
+    });
+  }
+  #scheduleStdinFailure() {
+    if (this.#hasExited || this.#stdinFailureGrace !== void 0) {
+      return;
+    }
+    this.#stdinFailureGrace = setTimeout(() => {
+      this.#failAll(new AppServerExitedError("codex app-server stdin closed unexpectedly"));
+    }, STDIN_CLOSE_EXIT_GRACE_MS);
+    this.#stdinFailureGrace.unref();
+  }
+  #failAll(error) {
+    if (this.#hasExited) {
+      return;
+    }
+    this.#hasExited = true;
+    if (this.#stdinFailureGrace !== void 0) {
+      clearTimeout(this.#stdinFailureGrace);
+      this.#stdinFailureGrace = void 0;
+    }
+    const stderr = this.#stderrTail.length > 0 ? `
+Recent stderr:
+${this.#stderrTail.join("\n")}` : "";
+    const wrapped = new AppServerExitedError(`${error.message}${stderr}`);
+    this.#terminalError = wrapped;
+    if (this.#exitStatus !== null) {
+      attachWorkerExitStatus(wrapped, this.#exitStatus);
+    }
+    if (!this.#closing) {
+      for (const listener of this.#terminationListeners) {
+        try {
+          listener(wrapped);
+        } catch {
+        }
+      }
+    }
+    this.#terminationListeners.clear();
+    for (const reject of this.#writeFailureWaiters) {
+      reject(wrapped);
+    }
+    this.#writeFailureWaiters.clear();
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(wrapped);
+    }
+    this.#pending.clear();
+    for (const [threadId, turn] of [...this.#turns]) {
+      const perTurn = new AppServerExitedError(wrapped.message);
+      if (this.#exitStatus !== null) {
+        attachWorkerExitStatus(perTurn, this.#exitStatus);
+      }
+      void this.#rejectTurn(threadId, turn, perTurn);
+    }
+    this.#turns.clear();
+    this.#transcripts.clear();
+  }
+};
+function appServerErrorFromPayload(method, errorPayload) {
+  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
+  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
+  return attachAppServerDiagnostic(error, diagnostic);
+}
+function appServerErrorFromNotification(params) {
+  const errorPayload = errorPayloadFromNotification(params);
+  if (errorPayload.code === "serverOverloaded") {
+    return attachAppServerDiagnostic(
+      new AppServerOverloadedError("turn notification", errorPayload),
+      appServerDiagnosticFromPayload(errorPayload)
+    );
+  }
+  return appServerErrorFromPayload("turn notification", errorPayload);
+}
+function appServerDiagnosticFromPayload(payload) {
+  return {
+    code: payload.code ?? null,
+    httpStatusCode: payload.httpStatusCode ?? null,
+    message: payload.message ?? "unknown app-server error",
+    payload: renderPayloadSafely(payload.data)
+  };
+}
+function codexErrorInfoOf(value) {
+  if (typeof value === "string") {
+    return { code: value, httpStatusCode: void 0 };
+  }
+  const variants = Object.entries(asJsonObject(value) ?? {});
+  const variant = variants.length === 1 ? variants[0] : void 0;
+  if (variant === void 0) {
+    return null;
+  }
+  const [code, detail] = variant;
+  const status = asJsonObject(detail)?.httpStatusCode;
+  return { code, httpStatusCode: Number.isInteger(status) ? status : void 0 };
+}
+function errorPayloadFromNotification(params) {
+  const turnError = asJsonObject(params.error);
+  const codexErrorInfo = turnError?.codexErrorInfo;
+  const errorInfoParts = codexErrorInfoOf(codexErrorInfo);
+  const errorInfo = typeof codexErrorInfo === "string" ? codexErrorInfo : asJsonObject(codexErrorInfo) === null ? void 0 : renderPayloadSafely(codexErrorInfo);
+  const message = typeof turnError?.message === "string" ? turnError.message : void 0;
+  const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
+  const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
+  return {
+    code: errorInfoParts?.code,
+    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
+    data: params,
+    ...errorInfoParts?.httpStatusCode === void 0 ? {} : { httpStatusCode: errorInfoParts.httpStatusCode }
+  };
+}
+function renderPayloadSafely(payload) {
+  try {
+    return JSON.stringify(payload) ?? "undefined";
+  } catch (error) {
+    return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
+  }
+}
+function isTurnProgressNotification(method) {
+  return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || // MCP progress is a tool saying it is alive, not the response stream
+  // resuming — the reset set's rationale. Counting it would let a
+  // promise/heartbeat alternation defeat the consecutive-promise bound.
+  method.startsWith("item/") && method !== "item/mcpToolCall/progress";
+}
+function isOutputBearingTurnFrame(method) {
+  return method !== "turn/started";
+}
+function turnIdFromParams(params) {
+  if (typeof params.turnId === "string") {
+    return params.turnId;
+  }
+  const turn = asJsonObject(params.turn);
+  return typeof turn?.id === "string" ? turn.id : void 0;
+}
+var MAX_INBOUND_PAYLOAD_DEPTH = 64;
+function payloadContainsInvalidJsonSchema(value, depth = 0) {
+  if (depth >= MAX_INBOUND_PAYLOAD_DEPTH) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return value.includes("invalid_json_schema");
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
+  }
+  const object = asJsonObject(value);
+  if (object === null) {
+    return false;
+  }
+  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
+}
+function parseRpcMessage(line) {
+  try {
+    const parsed = JSON.parse(line);
+    return asJsonObject(parsed);
+  } catch {
+    return null;
+  }
+}
+function threadStartConfig(options) {
+  if (options.threadConfig === void 0 && options.effort === void 0) {
+    return void 0;
+  }
+  return {
+    ...options.threadConfig,
+    ...options.effort !== void 0 ? { model_reasoning_effort: options.effort } : {}
+  };
+}
+function asJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function sameStrings(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+function strictlyContainsAll(candidate, baseline) {
+  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
+}
+function asRpcError(value) {
+  const object = asJsonObject(value);
+  if (object === null) {
+    return { code: void 0, message: String(value) };
+  }
+  return {
+    code: typeof object.code === "number" ? object.code : void 0,
+    message: typeof object.message === "string" ? object.message : void 0,
+    data: object.data
+  };
+}
+function itemTypeFromItem(item) {
+  if (item === null) {
+    return "?";
+  }
+  const itemType = item.itemType ?? item.type;
+  return typeof itemType === "string" ? itemType : "?";
 }
 
 // src/claude-strip-preparation.ts
@@ -25721,6 +25969,18 @@ var CodexEngineAdapter = class {
   schedule(task) {
     return this.#scheduler.schedule(task);
   }
+  async effortReport(model) {
+    if (this.#transport.listModels === void 0) return null;
+    try {
+      const models = await this.#transport.listModels();
+      const entry = models.find((entry2) => model === void 0 ? entry2.isDefault : entry2.model === model);
+      if (entry === void 0) return null;
+      const levels2 = Object.fromEntries(entry.supportedReasoningEfforts.filter(isCanonicalEffort).map((level) => [level, level]));
+      return { identity: entry.model, levels: Object.keys(levels2).length === 0 ? null : levels2 };
+    } catch {
+      return null;
+    }
+  }
   createInvocation(prompt, options) {
     return new CodexEngineInvocation({
       prompt,
@@ -25928,6 +26188,9 @@ var ClaudeEngineAdapter = class {
   prepareStrip(strip, context) {
     return this.#strips.prepare({ strip, ...context });
   }
+  async effortReport(model) {
+    return { identity: model ?? null, levels: Object.fromEntries(CLAUDE_NATIVE_EFFORT_LEVELS.map((level) => [level, level])) };
+  }
   createInvocation(prompt, options) {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
@@ -26021,6 +26284,17 @@ var OpenCodeEngineAdapter = class {
   schedule(task) {
     return this.#scheduler.schedule(task);
   }
+  modelIdentity(model) {
+    const routed = this.#modelRegistry.get(model)?.providerModel;
+    return routed?.split("/").at(-1);
+  }
+  async effortReport(model) {
+    if (model === void 0) return null;
+    const entry = this.#modelRegistry.get(model);
+    if (entry === void 0) return null;
+    const levels2 = Object.fromEntries(entry.variants.filter(isCanonicalEffort).map((level) => [level, level]));
+    return { identity: this.modelIdentity(model) ?? null, levels: Object.keys(levels2).length === 0 ? null : levels2 };
+  }
   createInvocation(prompt, options) {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
@@ -26029,7 +26303,9 @@ var OpenCodeEngineAdapter = class {
       throw new OpenCodeModelRequiredError(this.#modelRegistry);
     }
     const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
-    if (options.effort !== void 0 && !model.variants.includes(options.effort)) {
+    const resolution = options.effortResolution;
+    const modelBackedEffort = resolution !== void 0 && resolution.served !== null && resolution.dispatched === options.effort;
+    if (options.effort !== void 0 && (options.effort === "ultra" || !modelBackedEffort && !model.variants.includes(options.effort))) {
       throw new InvalidAgentOptionValueError(
         "effort",
         options.effort,
@@ -26296,6 +26572,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #lean;
   /** The machine's named targets, or null where the run was given none (every name is then unbound). */
   #namedTargets;
+  #effortPolicy;
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
   #runRecorder = null;
@@ -26360,6 +26637,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
     }
     this.#namedTargets = options.namedTargets ?? null;
+    this.#effortPolicy = options.effortPolicy ?? null;
+    if (this.#effortPolicy !== null) {
+      assertEffortSection(this.#effortPolicy.section, (key, detail) => {
+        throw new InvalidAgentOptionValueError(`effort.${key}`, null, detail);
+      });
+    }
     this.budget = new TokenBudget(options.budgetCeilings);
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
@@ -26461,6 +26744,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.strip !== void 0 ? { strip: options.strip } : {},
       ...options.lean !== void 0 ? { lean: options.lean } : {},
       ...options.namedTargets !== void 0 ? { namedTargets: options.namedTargets } : {},
+      ...options.effortPolicy !== void 0 ? { effortPolicy: options.effortPolicy } : {},
       ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : {},
       ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {}
     });
@@ -26790,6 +27074,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       turnCount: 0,
       lastTurnEndedAt: null,
       inFlight: false,
+      records: [],
+      effortResolution: null,
       pendingTurn: null,
       closed: false,
       lost: null
@@ -26882,9 +27168,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
         state.stripRoutes,
         state.leanRoute
       );
+      agentRecord.effortResolution = state.effortResolution;
       agentRecord.resolvedModel = state.resolvedModel;
       agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
+      state.records.push(agentRecord);
       const unsettled = { record: agentRecord, stage: "dispatching" };
       this.#unsettledAgentRecords.set(agentId, unsettled);
       try {
@@ -26950,6 +27238,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let preparedStrip;
     const preparationStartedAt = Date.now();
     try {
+      if (state.engineSession === null) {
+        state.effortResolution = await this.#resolveEffortFor(agentRecord, targetEngine, options);
+      }
+      target.effortResolution = state.effortResolution;
       preparedStrip = state.engineSession === null ? await this.#prepareStripFor(agentRecord, targetEngine, options, state.placement.cwd) : void 0;
     } catch (error) {
       if (error instanceof SubstrateRefusedError && this.#recordPreparationFailure(
@@ -26975,6 +27267,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         state.engine,
         {
           ...this.#engineTurnOptions(options, state.placement.cwd),
+          ...state.effortResolution === null ? {} : { effort: state.effortResolution.dispatched, effortResolution: state.effortResolution },
           ...preparedStrip !== void 0 ? { preparedStrip } : {}
         },
         {
@@ -27088,12 +27381,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       try {
         const worktree = await this.#placement.close(placement);
         if (worktree !== null) {
-          this.worktrees.push(worktree);
+          await this.#publishSessionWorktree(state, worktree);
           this.#emitWorktreeFinished(worktree);
         }
       } catch (error) {
         if (placement.worktree !== void 0) {
-          this.worktrees.push(unknownWorktreeRecord(placement.worktree));
+          await this.#publishSessionWorktree(state, unknownWorktreeRecord(placement.worktree));
           this.#emitEvent({
             method: "worktree/finalisationFailed",
             params: {
@@ -27485,6 +27778,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         startedAt: new Date(startedAt).toISOString(),
         target: { engine: target.engine, model: target.model ?? null },
         namedTarget: target.namedTarget,
+        ...target.effortResolution == null ? {} : { effortResolution: target.effortResolution },
         identity: record === void 0 || record.session === null ? { resolvedModel: null, resolvedEffort: null } : { resolvedModel: record.resolvedModel, resolvedEffort: record.resolvedEffort }
       }));
     }
@@ -27822,10 +28116,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const attempts = { target, ledger, chainRemains };
     const preparationStartedAt = Date.now();
     try {
+      const effortResolution = await this.#resolveEffortFor(agentRecord, engine, options);
+      target.effortResolution = effortResolution;
       const preparedStrip = await this.#prepareStripFor(agentRecord, engine, options, placement.cwd);
       if (this.#closed) throw new EngineShutdownError(engine.name);
       invocation = engine.createInvocation(prompt, {
         ...this.#engineTurnOptions(options, placement.cwd),
+        ...effortResolution === null ? {} : { effort: effortResolution.dispatched, effortResolution },
         ...preparedStrip !== void 0 ? { preparedStrip } : {}
       });
       if (options.schema !== void 0) {
@@ -27904,8 +28201,18 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     return completion.execution;
   }
+  async #publishSessionWorktree(state, worktree) {
+    this.worktrees.push(worktree);
+    for (const record of state.records) {
+      this.#setWorktreeRecord(record, worktree);
+      await this.#recordAgentSafely(record);
+    }
+  }
   #publishWorktree(agentRecord, worktree) {
     this.worktrees.push(worktree);
+    this.#setWorktreeRecord(agentRecord, worktree);
+  }
+  #setWorktreeRecord(agentRecord, worktree) {
     agentRecord.worktree = {
       branch: worktree.branch,
       baseCommit: worktree.baseCommit,
@@ -27927,6 +28234,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       params: {
         path: worktree.path,
         branch: worktree.branch,
+        tipCommit: worktree.tipCommit,
         state: worktree.state,
         changed: worktree.changed,
         removed: worktree.removed
@@ -28145,12 +28453,16 @@ var EnsembleRuntime = class _EnsembleRuntime {
       appServerDiagnostic: null,
       diagnostics: result.diagnostics
     });
+    if (failure.kind === "effort-rejected") {
+      delete result.resolvedEffort;
+      record.resolvedEffort = null;
+    }
     const classification = this.#classify(attempts.target.engine, failure, null, result.diagnostics);
     const refused2 = classification.class === "availability" && attempts.chainRemains;
     if (!refused2) {
       attempts.ledger.answered += 1;
     }
-    const settles = !refused2 && settlesWithoutRetry(result.attemptFailure);
+    const settles = !refused2 && settlesWithoutRetry(failure);
     this.#pushFailedAttempt(
       record,
       attemptRecord(
@@ -28187,6 +28499,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       diagnostics: failedTurnResultOf(error)?.diagnostics
     });
     const failedResult = failedTurnResultOf(error);
+    if (observed2.kind === "effort-rejected") {
+      if (failedResult !== null) delete failedResult.resolvedEffort;
+      record.resolvedEffort = null;
+    }
     if (failedResult !== null) {
       recordTurnMetadata(record, failedResult);
     }
@@ -28204,7 +28520,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...partialTranscript !== null ? { transcripts: [partialTranscript] } : {},
       ...firstDeltaMs !== null ? { firstDeltaMs } : {}
     } : null);
-    const settles = settlesWithoutRetry(failureFromError(error));
+    const settles = settlesWithoutRetry(failure);
     const retries = !refused2 && !this.#crossesSpawnBoundary(error) && !settles && boundRemains(attempts.ledger);
     this.#pushFailedAttempt(
       record,
@@ -28231,6 +28547,41 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const attempt = ++attempts.ledger.dispatched;
     this.progress.noteAttempt(agentId, attempt);
     return this.#recordThrownFailure(record, attempt, error, startedAt, attempts).refused;
+  }
+  async #resolveEffortFor(record, engine, options) {
+    record.effortResolution = null;
+    const policyModel = engine.name === "opencode" && options.model !== void 0 ? this.openCodeModelRegistry?.get(options.model)?.key ?? options.model : options.model;
+    const reportEffort = async () => {
+      if (engine.effortReport === void 0) return null;
+      await this.#resourceGate.require(engine.name, record.resolvedCwd);
+      return engine.effortReport(options.model);
+    };
+    if (!isCanonicalEffort(options.effort)) {
+      const section = this.#effortPolicy?.section;
+      if (section !== void 0) {
+        let model = policyModel;
+        if (model === void 0 && Object.values(section).some((entry) => entry.floor !== void 0 || entry.ceiling !== void 0)) {
+          model = (await reportEffort())?.identity ?? void 0;
+        }
+        const key = effortPolicyKeys(engine.name, model).find((key2) => section[key2]?.ceiling !== void 0 || section[key2]?.floor !== void 0);
+        if (key !== void 0) throw new InvalidAgentOptionValueError(
+          "effort",
+          options.effort,
+          `an explicit canonical level for ${engine.name}:${model ?? "default"} under effort key ${JSON.stringify(key)} in ${this.#effortPolicy?.source}; an unspecified or raw effort cannot be compared with machine bounds`
+        );
+      }
+      return null;
+    }
+    const resolution = await resolveEffort({
+      requested: options.effort,
+      engine: engine.name,
+      model: policyModel,
+      identity: options.model === void 0 ? void 0 : engine.modelIdentity?.(options.model) ?? options.model,
+      policy: this.#effortPolicy,
+      engineReport: reportEffort
+    });
+    record.effortResolution = resolution;
+    return resolution;
   }
   async #prepareStripFor(record, engine, options, cwd) {
     if (options.strip === void 0 || options.strip.length === 0 || engine.prepareStrip === void 0) return void 0;
@@ -28397,6 +28748,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       resolvedCwd: resolveAgentCwd(this.#placement.baseCwd, options.cwd),
       isolation: options.isolation ?? null,
       worktree: null,
+      effortResolution: null,
       label: options.label ?? null,
       phase: options.phase ?? null,
       status: "in-progress",
@@ -28449,6 +28801,7 @@ function attemptRecord(attempt, target, status, failure, rawOutput, validatedOut
     status,
     target: { engine: target.engine, model: target.model ?? null },
     namedTarget: target.namedTarget,
+    effortResolution: target.effortResolution ?? null,
     failure,
     classification,
     chainDecision,
@@ -35910,6 +36263,7 @@ async function runEnsembleCli(argv, options = {}) {
       // The file as resolved from this invocation's env, not process.env:
       // a refusal names the file this run actually read.
       openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
+      effortPolicy: ambientSettings.effortPolicy,
       namedTargets: ambientSettings.namedTargets,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
@@ -35977,6 +36331,7 @@ async function runEnsembleCli(argv, options = {}) {
         concurrency: recordConcurrency(ambientSettings, progress),
         workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
+        effortPolicy: ambientSettings.effortPolicy,
         namedTargets: ambientSettings.namedTargets
       });
       runtime.setRunRecorder?.(runRecordWriter);
@@ -36181,7 +36536,8 @@ async function runEnsembleCli(argv, options = {}) {
       if (!reportUnchanged && event.params.changed !== true) {
         return;
       }
-      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${branch})
+      const location = event.params.branch === null && typeof event.params.tipCommit === "string" ? `detached at ${event.params.tipCommit}` : branch;
+      stderr.write(`[worktree] ${worktreeStatePhrase(event.params.state)} ${worktreePath} (${location})
 `);
     });
     const runnerOptions = {

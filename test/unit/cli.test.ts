@@ -636,6 +636,26 @@ for (const mode of ["workflow", "agent"] as const) {
   }
 }
 
+test("CLI names the commit of a detached finished worktree", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-detached-worktree-"));
+  try {
+    const runtime = fakeRuntime();
+    runtime.onEvent = (listener) => {
+      listener({ method: "worktree/finished", params: {
+        path: "/repo/worker", branch: null, tipCommit: "abc123", state: "committed", changed: true, removed: false
+      }, receivedAt: 0 });
+      return () => {};
+    };
+    const stderr = new CaptureStream();
+    assert.equal(await runEnsembleCli(["agent", "--engine=codex", "--isolation=worktree", "work"], {
+      cwd: directory, stdout: new CaptureStream(), stderr, runRecordDir: null, createRuntime: async () => runtime
+    }), 0);
+    assert.equal(stderr.text(), "[worktree] committed /repo/worker (detached at abc123)\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("CLI reports a worktree finalisation failure through the operator log", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worktree-finalisation-"));
   const script = path.join(directory, "workflow.js");
@@ -1573,7 +1593,8 @@ test("workflow invocation rejects duplicate scalar tuning flags before runtime c
   assert.equal(runtimeCreations, 0);
 });
 
-test("ensemble agent reports a recoverable branch carrying the worker commit", async () => {
+for (const detached of [false, true]) {
+test(`ensemble agent reports a recoverable ${detached ? "detached commit" : "branch"} carrying the worker commit`, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-worktree-"));
   await execFileAsync("git", ["init"], { cwd: directory });
   await execFileAsync("git", ["config", "user.email", "test@example.invalid"], { cwd: directory });
@@ -1582,7 +1603,7 @@ test("ensemble agent reports a recoverable branch carrying the worker commit", a
   await execFileAsync("git", ["add", "README.md"], { cwd: directory });
   await execFileAsync("git", ["commit", "-m", "initial"], { cwd: directory });
 
-  const engine = new CommittingEngine();
+  const engine = new CommittingEngine(detached);
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
   try {
@@ -1598,8 +1619,9 @@ test("ensemble agent reports a recoverable branch carrying the worker commit", a
 
     assert.equal(exitCode, 0, stderr.text());
     assert.equal(stdout.text(), '"committed"\n');
-    assert.match(stderr.text(), /\[worktree\] committed .* \(ensemble-workflows\/[^)]+\)\n/);
-    const branch = stderr.text().match(/\((ensemble-workflows\/[^)]+)\)/)?.[1];
+    const branch = detached
+      ? stderr.text().match(/\(detached at ([a-f0-9]{40})\)/)?.[1]
+      : stderr.text().match(/\((ensemble-workflows\/[^)]+)\)/)?.[1];
     assert.ok(branch, stderr.text());
     const { stdout: committed } = await execFileAsync("git", ["show", `${branch}:worker-receipt.txt`], {
       cwd: directory
@@ -1613,6 +1635,7 @@ test("ensemble agent reports a recoverable branch carrying the worker commit", a
     await rm(directory, { recursive: true, force: true });
   }
 });
+}
 
 test("ensemble agent reports an unchanged worktree branch before removing it", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-clean-worktree-"));
@@ -3341,6 +3364,8 @@ class CommittingEngine implements EngineAdapter {
   readonly scheduler = new Scheduler(1);
   cwd: string | null = null;
 
+  constructor(private readonly detached = false) {}
+
   schedule<T>(task: () => Promise<T>): Promise<T> {
     return this.scheduler.schedule(task);
   }
@@ -3353,6 +3378,7 @@ class CommittingEngine implements EngineAdapter {
     this.cwd = cwd;
     return {
       runAttempt: async () => {
+        if (this.detached) await execFileAsync("git", ["checkout", "--detach"], { cwd });
         await writeFile(path.join(cwd, "worker-receipt.txt"), "WORKER_COMMIT_RECEIPT\n");
         await execFileAsync("git", ["add", "worker-receipt.txt"], { cwd });
         await execFileAsync("git", ["commit", "-m", "worker commit"], { cwd });

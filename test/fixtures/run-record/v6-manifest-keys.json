@@ -11,6 +11,7 @@
     "cli_flags",
     "concurrency",
     "cost_rollup",
+    "effort",
     "ended_at",
     "environment",
     "error",

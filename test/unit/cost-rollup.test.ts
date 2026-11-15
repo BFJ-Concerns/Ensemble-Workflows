@@ -268,8 +268,8 @@ test("a retried attempt that timed out before reporting usage measured none of i
   ]);
 });
 
-test("every recorded timeout spelling ends its own attempt as timed out", () => {
-  for (const failureKind of ["TurnTimeoutError", "claude-poll-timeout", "claude-first-life-timeout", "claude-registration-timeout"]) {
+test("every recorded deadline spelling ends its own attempt as timed out", () => {
+  for (const failureKind of ["TurnTimeoutError", "AppServerFirstOutputTimeoutError", "claude-poll-timeout"]) {
     const rollup = buildCostRollup([
       agent(1, [
         attempt(1, { failureKind, tokenUsageEvents: [] }),
@@ -279,6 +279,22 @@ test("every recorded timeout spelling ends its own attempt as timed out", () => 
     assert.deepEqual(
       rollup.codex?.["gpt-6-luna"]?.unobserved,
       [{ agent: 1, attempt: 1, reason: "worker-timed-out", measured: "none" }],
+      failureKind
+    );
+  }
+});
+
+test("a Claude worker that never registered or came to life was not cut short by a deadline", () => {
+  for (const failureKind of ["claude-registration-timeout", "claude-first-life-timeout"]) {
+    const rollup = buildCostRollup([
+      agent(1, [
+        attempt(1, { failureKind, tokenUsageEvents: [] }),
+        attempt(2, { failureKind: "SomeEngineFailure" })
+      ])
+    ]);
+    assert.deepEqual(
+      rollup.codex?.["gpt-6-luna"]?.unobserved,
+      [{ agent: 1, attempt: 1, reason: "engine-reported-no-usage", measured: "none" }],
       failureKind
     );
   }
@@ -315,7 +331,7 @@ test("an agent whose start evidence may be missing books an unnumbered unobserve
 });
 
 function archivedRecord(status: string, attempts: unknown[], extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return { schema_version: 6, kind: "agent_record", id: 2, engine: "codex", status, resolved_model: null, attempts, ...extra };
+  return { schema_version: 7, kind: "agent_record", id: 2, engine: "codex", status, resolved_model: null, attempts, ...extra };
 }
 
 function archivedAttempt(status: string): Record<string, unknown> {

@@ -318,12 +318,16 @@ and a `state` saying where its work is:
 |---|---|
 | `"unchanged"` | No commit and no uncommitted file; the worktree and its branch were removed |
 | `"uncommitted"` | The work is only in the worktree's files (staged, unstaged, or untracked); the branch still points at `baseCommit` |
-| `"committed"` | The branch holds all of the work |
-| `"committed-and-uncommitted"` | The branch holds commits, and the worktree also has uncommitted files |
+| `"committed"` | `tipCommit` holds all of the work |
+| `"committed-and-uncommitted"` | `tipCommit` holds commits, and the worktree also has uncommitted files |
 | `"unknown"` | Clean-up failed, so nothing is claimed about the worktree's contents; it is kept |
 
 `tipCommit` is the commit the worktree ended on, or `null` when the state is
-`"unknown"`. `changed` is `true` for every state except `"unchanged"`, and
+`"unknown"`. `branch` names the branch checked out at finalisation, or is
+`null` for detached HEAD; use `tipCommit` to recover detached commits. On
+failed inspection (`"unknown"`), the branch is the original dispatch branch
+and its current contents are unestablished. Every turn of a held session
+receives this final worktree block when the session closes. `changed` is `true` for every state except `"unchanged"`, and
 `removed` is `true` only for `"unchanged"`.
 
 `args` is the array of positional string arguments from the command line, or
@@ -340,7 +344,7 @@ engine, throws before any worker spawns.
 | `engine` | Engine to run on |
 | `target` | A named target the machine configuration binds, in place of `engine` and `model` (see [Named targets](#named-targets)) |
 | `model` | Model to run (see per-engine notes below) |
-| `effort` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh` |
+| `effort` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `schema` | JSON Schema the answer must satisfy |
 | `fallback` | Ordered chain of `{ engine, model, effort? }` or `{ target, effort? }` targets (see [Fallback chains](#fallback-chains)) |
 | `cwd` | Worker working directory; must exist. Defaults to the run's working directory |
@@ -370,13 +374,26 @@ lists the accepted type names, and invalid `properties` asks for a JSON object.
 | | Codex | Claude | opencode |
 |---|---|---|---|
 | `model` | Optional; without one the engine's default is used and noted on stderr | Optional; without one a warning is printed on stderr | **Required**: a key or route declared in [`opencode_models`](configuration.md#opencode_models) |
-| `effort` | Sent to the engine as the thread's effort | Mapped to the nearest level Claude Code supports (`minimal` becomes `low`) | Must name one of the model's declared `variants` |
+| `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` |
 | `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
 | `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess |
 | `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Not supported: throws before the worker spawns |
 | `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Not supported: throws before the worker spawns |
 | `fallback` entry | Yes | Yes | No |
 | `session()` | Yes | Yes | No: throws before the worker spawns |
+
+Effort resolves for each dispatch target, including a fallback entry and a
+held session's first turn. Capability discovery passes the engine's resource
+preflight before it may start a substrate; a denial is an availability
+refusal, so a remaining fallback entry can run without starting that engine.
+The order is `none < minimal < low < medium < high < xhigh < max`; `ultra` is refused even when an engine advertises it.
+Machine ceilings and floors apply before selection of the nearest served
+level inside those bounds; equal-distance ties choose the lower level. No
+served level inside the bounds means a pre-spawn refusal naming the model,
+bound keys and machine file. [Machine effort policy](configuration.md#effort)
+describes the settings and source precedence. A provider's explicit refusal
+of a reasoning level settles the call after that attempt, with no retry or
+fallback advance and no claim that the rejected level was served.
 
 The run record shows what each engine actually served: `resolved_model` and
 `resolved_effort` come from the engine's own report — Codex's answer when the
@@ -801,11 +818,14 @@ are told apart:
   the receipt deadline. For different text, the message names the UTF-8 size
   and SHA-256 digest of what was sent and of what arrived; for no trace, of
   what was sent alone. A submission that turns up after its turn has
-  settled fails the attempt with a message saying so, naming neither. Once
-  a turn's text has been submitted without a verified receipt, the retry
-  sends it again behind a preface telling the worker that an earlier copy
-  did not arrive as sent and is void. A reply to altered text is never
-  returned as the turn's value.
+  settled fails the attempt with a message saying so: one that arrived as
+  sent names neither text, and one that arrived as different text names the
+  size and digest of both. In a session, once a turn's text has been
+  submitted without a verified receipt, the retry sends it again behind a
+  preface telling the worker that an earlier copy did not arrive as sent
+  and is void. A one-shot call's retry dispatches its task afresh in a new
+  session, with a note naming the failed attempt's kind and message. A
+  reply to altered text is never returned as the turn's value.
 
 Ensemble verifies the opening prompt's receipt before nudging a Claude worker.
 For a worker awaiting native input, it cancels the input dialog and waits for

@@ -1,3 +1,4 @@
+import type { EffortPolicy, EffortResolution } from "./effort-resolution.js";
 import { createHash, type Hash } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -46,7 +47,7 @@ const execFileAsync = promisify(execFile);
  * no attempt book no leaf. Readers must check this version before
  * interpreting the documents; abandonment reconciles only this version.
  */
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const MANIFEST_PATH = "manifest.json";
 
 /**
@@ -94,6 +95,7 @@ export interface RunRecordStartOptions {
   effectiveSettings?: EffectiveRunSettingsRecord;
   /** The named targets in force, for the manifest's `named_targets`; omitted, the run had none. */
   namedTargets?: NamedTargets;
+  effortPolicy?: EffortPolicy;
   /** Opaque identity supplied by the process that invoked this run, if any. */
   callerIdentity?: string;
   startedAt?: string;
@@ -170,6 +172,7 @@ export interface RuntimeAgentAttemptRecord {
   target: { engine: EngineName; model: string | null };
   /** The named target this attempt's target was asked for through, or null where it was named literally (a chain entry, or a call naming its engine). */
   namedTarget: string | null;
+  effortResolution?: EffortResolution | null;
   failure: { kind: string; message: string } | null;
   /**
    * How the harness classified this failed attempt: the class and the
@@ -245,6 +248,7 @@ export interface LiveAttemptIdentity {
 
 /** What the runtime knows as an attempt's execution begins. */
 export interface LiveAttemptStart {
+  effortResolution?: EffortResolution;
   attempt: number;
   startedAt: string;
   /** The target dispatched to: the requested pin, null when unpinned — as the settled attempt's `target`. */
@@ -269,6 +273,7 @@ export interface LiveAttemptStart {
  * Snake-case because it is stored and published exactly as held.
  */
 export interface LiveAttemptRecord {
+  effort_resolution?: EffortResolution;
   attempt: number;
   started_at: string;
   /** Codex: the archive-relative live file; Claude: the session's own absolute JSONL path; null until readable. */
@@ -289,6 +294,7 @@ export interface LiveAttemptRecord {
  * `status`.
  */
 export interface AbandonedAttemptEntry {
+  effort_resolution: EffortResolution | null;
   attempt: number;
   status: "abandoned";
   target: { engine: EngineName; model: string | null };
@@ -319,6 +325,7 @@ export function abandonedAttemptEntry(live: LiveAttemptRecord): AbandonedAttempt
     target: { engine: live.target.engine, model: live.target.model },
     // A live entry written before attempts named their target has none.
     named_target: live.named_target ?? null,
+    effort_resolution: live.effort_resolution ?? null,
     failure: null,
     classification: null,
     chain_decision: null,
@@ -359,6 +366,7 @@ export interface RuntimeAgentRecord {
   };
   model: string | null;
   effort: string | null;
+  effortResolution?: EffortResolution | null;
   /** The fallback chain in force for this record; null when none applies. */
   fallback: FallbackTarget[] | null;
   /**
@@ -386,7 +394,7 @@ export interface RuntimeAgentRecord {
   resolvedCwd: string;
   isolation: "worktree" | null;
   worktree: {
-    branch: string;
+    branch: string | null;
     baseCommit: string;
     state: WorktreeState;
     tipCommit: string | null;
@@ -572,7 +580,7 @@ interface AbandonmentRecord {
 }
 
 interface Manifest {
-  schema_version: 6;
+  schema_version: 7;
   kind: "run_manifest";
   run_id: string;
   run_uuid: string;
@@ -618,6 +626,7 @@ interface Manifest {
    * and chain null where the binding names none.
    */
   named_targets: NamedTargetsRecord;
+  effort: EffortPolicy | null;
   git: {
     start: GitState;
     end: GitState | null;
@@ -882,6 +891,7 @@ export class RunRecordWriter {
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       named_targets: namedTargetsRecord(options.namedTargets),
+      effort: options.effortPolicy ?? null,
       git: {
         start: gitStart,
         end: null
@@ -1126,6 +1136,7 @@ export class RunRecordWriter {
         transcript: null,
         target: { engine: start.target.engine, model: start.target.model },
         named_target: start.namedTarget,
+        ...(start.effortResolution === undefined ? {} : { effort_resolution: start.effortResolution }),
         resolved_model: start.identity.resolvedModel,
         resolved_effort: start.identity.resolvedEffort
       });
@@ -1346,6 +1357,7 @@ export class RunRecordWriter {
       fallback: record.fallback,
       fallback_source: { ...record.fallbackSource },
       named_target: record.namedTarget === null ? null : { ...record.namedTarget },
+      effort_resolution: record.effortResolution ?? null,
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
@@ -1396,6 +1408,7 @@ export class RunRecordWriter {
         status: attempt.status,
         target: attempt.target,
         named_target: attempt.namedTarget,
+        effort_resolution: attempt.effortResolution ?? null,
         failure: attempt.failure,
         classification: attempt.classification,
         chain_decision: attempt.chainDecision,

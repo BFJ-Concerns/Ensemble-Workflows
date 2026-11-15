@@ -21,6 +21,13 @@ const exec = promisify(execFile);
 const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const live = process.env.ENSEMBLE_LIVE === "1";
 const claudeModel = process.env.ENSEMBLE_LIVE_CLAUDE_MODEL ?? "haiku";
+// The longest wait a probe's text names is its hold limit, and a worker may
+// take that wait as one sleep call rather than the polls it is asked for.
+// The hold limit therefore sits far enough under the turn's deadline that a
+// worker sleeping all of it after the slowest allowed start (`observe`'s
+// 420 s) still wakes, finds the release written, and replies in time.
+const HOLD_LIMIT_SECONDS = 240;
+const TURN_DEADLINE_MS = 900_000;
 
 type Grouping = "worker" | "run";
 interface Scenario {
@@ -69,12 +76,12 @@ for (const scenario of scenarios) {
     const box = `ensemble-proof-${id}.scope`;
     const engines = scenario.direct ? [scenario.direct] : ["claude", "claude", "codex", "codex"] as const;
     const probes = engines.map((_, index): HeldProbe => ({
-      paths: probePaths(root, `first-${index}`), evidence: { kind: "cgroup" }, token: `RELEASED_${randomUUID()}`
+      paths: probePaths(root, `first-${index}`), evidence: { kind: "cgroup" }, token: `RELEASED_${randomUUID()}`, holdLimitSeconds: HOLD_LIMIT_SECONDS
     }));
     const follow = engines.map((_, index): HeldProbe => ({
-      paths: probePaths(root, `follow-${index}`), evidence: { kind: "cgroup" }, token: `FOLLOW_${randomUUID()}`
+      paths: probePaths(root, `follow-${index}`), evidence: { kind: "cgroup" }, token: `FOLLOW_${randomUUID()}`, holdLimitSeconds: HOLD_LIMIT_SECONDS
     }));
-    const sibling: HeldProbe = { paths: probePaths(root, "outside-sibling"), evidence: { kind: "cgroup" }, token: `SIBLING_${randomUUID()}` };
+    const sibling: HeldProbe = { paths: probePaths(root, "outside-sibling"), evidence: { kind: "cgroup" }, token: `SIBLING_${randomUUID()}`, holdLimitSeconds: HOLD_LIMIT_SECONDS };
     const units = new Set<string>();
     const observations: Record<string, unknown> = claude ? { claudeExecutable: claude.executable, selectedClaudeVersion: claude.version } : {};
     let run: ReturnType<typeof launch> | undefined;
@@ -109,11 +116,11 @@ for (const scenario of scenarios) {
       const flags = scenario.flag ? [`--worker-scope=${scenario.flag}`] : [];
       let args: string[];
       if (scenario.direct) {
-        args = ["agent", `--engine=${scenario.direct}`, `--model=${scenario.direct === "claude" ? claudeModel : liveCodexModel}`, ...flags, heldProbePrompt(probes[0]!)];
+        args = ["agent", `--engine=${scenario.direct}`, `--model=${scenario.direct === "claude" ? claudeModel : liveCodexModel}`, `--timeout-ms=${TURN_DEADLINE_MS}`, ...flags, heldProbePrompt(probes[0]!)];
       } else {
         const script = path.join(root, "workflow.js");
         const calls = engines.map((engine, index) => {
-          const options = JSON.stringify({ engine, model: engine === "claude" ? claudeModel : liveCodexModel, cwd: root, label: `scope-${index}`, maxAttempts: 1, timeoutMs: 600_000 });
+          const options = JSON.stringify({ engine, model: engine === "claude" ? claudeModel : liveCodexModel, cwd: root, label: `scope-${index}`, maxAttempts: 1, timeoutMs: TURN_DEADLINE_MS });
           if (!scenario.followUp) return `agent(${JSON.stringify(heldProbePrompt(probes[index]!))}, ${options})`;
           return `(async () => { const worker = session(${options}); try { const first = await worker.send(${JSON.stringify(heldProbePrompt(probes[index]!))}); const second = await worker.send(${JSON.stringify(heldProbeFollowUpPrompt(follow[index]!))}); return { first, second }; } finally { await worker.close(); } })()`;
         });

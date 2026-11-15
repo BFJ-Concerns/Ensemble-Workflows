@@ -18920,6 +18920,28 @@ function attributeMergedChain(merged, callFallback, engine) {
   return handOffFallbackSource(merged, { kind: "none" });
 }
 
+// src/option-overrides.ts
+function withOptionOverrides(options, overrides) {
+  return new Proxy({}, {
+    get(_target, property, receiver) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) ? overrides[property] : Reflect.get(options, property, receiver);
+    },
+    has(_target, property) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) || Reflect.has(options, property);
+    },
+    ownKeys() {
+      return [.../* @__PURE__ */ new Set([...Reflect.ownKeys(options), ...Object.keys(overrides)])];
+    },
+    getOwnPropertyDescriptor(_target, property) {
+      if (typeof property === "string" && Object.hasOwn(overrides, property)) {
+        return { value: overrides[property], writable: true, enumerable: true, configurable: true };
+      }
+      const descriptor = Reflect.getOwnPropertyDescriptor(options, property);
+      return descriptor === void 0 ? void 0 : { ...descriptor, configurable: true };
+    }
+  });
+}
+
 // src/named-targets.ts
 var resolutions = /* @__PURE__ */ new WeakMap();
 function resolveNamedTarget(targets, options) {
@@ -18935,16 +18957,11 @@ function resolveNamedTarget(targets, options) {
     );
   }
   const binding = bindingFor(targets, name);
-  const resolved = {};
-  for (const [key, value] of Object.entries(options)) {
-    if (key !== "target") {
-      resolved[key] = value;
-    }
-  }
-  resolved.engine = binding.engine;
-  if (binding.model !== void 0) {
-    resolved.model = binding.model;
-  }
+  const resolved = withOptionOverrides(options, {
+    target: void 0,
+    engine: binding.engine,
+    ...binding.model !== void 0 ? { model: binding.model } : {}
+  });
   resolutions.set(resolved, {
     resolution: { name, source: targets.source, engine: binding.engine, model: binding.model ?? null },
     fallback: binding.fallback
@@ -18959,7 +18976,7 @@ function withTargetChain(from, to) {
   let settled = to;
   if (to.fallback === void 0 && carried.fallback !== void 0) {
     settled = handOffFallbackSource(
-      { ...to, fallback: carried.fallback.map((entry) => ({ ...entry })) },
+      withOptionOverrides(to, { fallback: carried.fallback.map((entry) => ({ ...entry })) }),
       { kind: "target", target: carried.resolution.name }
     );
   }
@@ -25676,26 +25693,6 @@ function optionsForTarget(options, target) {
   return new Proxy(options, {
     get(source, property, receiver) {
       return typeof property === "string" && property in overrides ? overrides[property] : Reflect.get(source, property, receiver);
-    }
-  });
-}
-function withOptionOverrides(options, overrides) {
-  return new Proxy({}, {
-    get(_target, property, receiver) {
-      return typeof property === "string" && Object.hasOwn(overrides, property) ? overrides[property] : Reflect.get(options, property, receiver);
-    },
-    has(_target, property) {
-      return typeof property === "string" && Object.hasOwn(overrides, property) || Reflect.has(options, property);
-    },
-    ownKeys() {
-      return [.../* @__PURE__ */ new Set([...Reflect.ownKeys(options), ...Object.keys(overrides)])];
-    },
-    getOwnPropertyDescriptor(_target, property) {
-      if (typeof property === "string" && Object.hasOwn(overrides, property)) {
-        return { value: overrides[property], writable: true, enumerable: true, configurable: true };
-      }
-      const descriptor = Reflect.getOwnPropertyDescriptor(options, property);
-      return descriptor === void 0 ? void 0 : { ...descriptor, configurable: true };
     }
   });
 }

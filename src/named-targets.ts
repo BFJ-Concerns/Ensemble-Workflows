@@ -1,5 +1,6 @@
 import { FallbackTargetRejectedError, NamedTargetRejectedError } from "./errors.js";
 import { handOffFallbackSource } from "./fallback-source.js";
+import { withOptionOverrides } from "./option-overrides.js";
 
 import type { EngineName, FallbackTarget } from "./types.js";
 
@@ -56,10 +57,10 @@ interface DeclaredTarget {
 
 /**
  * Resolve the named target `options` declares, if any. Without one, the
- * options are returned unchanged. With one, a new options object is
- * returned in which the binding's engine (and its model, where it names
- * one) stands in for the name, and `target` is gone; the resolution rides
- * on it by identity for {@link withTargetChain} and
+ * options are returned unchanged. With one, a view over them is returned in
+ * which the binding's engine (and its model, where it names one) stands in
+ * for the name, and `target` reads as unset; the resolution rides on it by
+ * identity for {@link withTargetChain} and
  * {@link namedTargetResolutionOf}.
  *
  * Refused before anything spawns, naming the name and the file: a target
@@ -82,21 +83,18 @@ export function resolveNamedTarget<T extends object>(targets: NamedTargets | nul
     );
   }
   const binding = bindingFor(targets, name);
-  const resolved: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(options)) {
-    if (key !== "target") {
-      resolved[key] = value;
-    }
-  }
-  resolved.engine = binding.engine;
-  if (binding.model !== undefined) {
-    resolved.model = binding.model;
-  }
+  // A view, not a copy, so options an accessor, prototype or Proxy trap
+  // supplies survive resolution; `target` reads as unset from here on.
+  const resolved = withOptionOverrides(options, {
+    target: undefined,
+    engine: binding.engine,
+    ...(binding.model !== undefined ? { model: binding.model } : {})
+  });
   resolutions.set(resolved, {
     resolution: { name, source: (targets as NamedTargets).source, engine: binding.engine, model: binding.model ?? null },
     fallback: binding.fallback
   });
-  return resolved as T;
+  return resolved;
 }
 
 /**
@@ -116,7 +114,7 @@ export function withTargetChain<T extends { fallback?: FallbackTarget[] }>(from:
   let settled = to;
   if (to.fallback === undefined && carried.fallback !== undefined) {
     settled = handOffFallbackSource(
-      { ...to, fallback: carried.fallback.map((entry) => ({ ...entry })) },
+      withOptionOverrides(to, { fallback: carried.fallback.map((entry) => ({ ...entry })) }),
       { kind: "target", target: carried.resolution.name }
     );
   }

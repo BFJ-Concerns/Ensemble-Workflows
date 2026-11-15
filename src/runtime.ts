@@ -10,6 +10,7 @@ import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } from "./failure-classification.js";
 import { fallbackSourceOf } from "./fallback-source.js";
+import { withOptionOverrides } from "./option-overrides.js";
 import { namedTargetResolutionOf, resolveNamedTarget, settleChain, withTargetChain } from "./named-targets.js";
 import type { NamedTargetResolution, NamedTargets, SettledChainEntry } from "./named-targets.js";
 
@@ -254,38 +255,6 @@ function optionsForTarget<T extends { engine?: EngineName; model?: string; effor
 interface UnsettledAgentRecord {
   record: RuntimeAgentRecord;
   stage: "dispatching" | "admitting";
-}
-
-/**
- * The author's options with a few properties settled by the runtime — the
- * effective strip, the lean start — laid over them. A view over the
- * author's object, not a copy, for the reason `optionsForTarget` gives: a
- * copy would drop options an author's accessor or Proxy trap supplies. The
- * overrides answer `get`, `has`, `ownKeys` and property descriptors alike,
- * so a spread or an `in` test downstream sees them as own properties.
- */
-function withOptionOverrides<T extends object>(options: T, overrides: Record<string, unknown>): T {
-  // The empty target permits overrides even when the caller's object is
-  // frozen. Proxy invariants must not tie the effective values to its
-  // non-configurable properties.
-  return new Proxy({} as T, {
-    get(_target, property, receiver) {
-      return typeof property === "string" && Object.hasOwn(overrides, property) ? overrides[property] : Reflect.get(options, property, receiver);
-    },
-    has(_target, property) {
-      return (typeof property === "string" && Object.hasOwn(overrides, property)) || Reflect.has(options, property);
-    },
-    ownKeys() {
-      return [...new Set([...Reflect.ownKeys(options), ...Object.keys(overrides)])];
-    },
-    getOwnPropertyDescriptor(_target, property) {
-      if (typeof property === "string" && Object.hasOwn(overrides, property)) {
-        return { value: overrides[property], writable: true, enumerable: true, configurable: true };
-      }
-      const descriptor = Reflect.getOwnPropertyDescriptor(options, property);
-      return descriptor === undefined ? undefined : { ...descriptor, configurable: true };
-    }
-  });
 }
 
 /**

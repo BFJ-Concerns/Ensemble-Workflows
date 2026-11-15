@@ -256,6 +256,41 @@ test("a library caller's direct agent() call resolves its target and takes the b
   }
 });
 
+test("resolving a target keeps options an accessor, prototype or Proxy trap supplies", async () => {
+  const schema = { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] };
+  const codex = new ChainEngine("codex", [async () => ({ text: '{"ok":true}', deltaText: '{"ok":true}', durationMs: 10, firstDeltaMs: 5, items: {}, tokenUsageEvents: [] })]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    namedTargets: { bindings: { doer: { engine: "codex", model: "gpt-6.1-sol" } }, source: SOURCE }
+  });
+  runtime.setRunRecorder({
+    recordAttemptStart: async () => {},
+    recordAttemptEnd: async () => {},
+    recordAgent: async (record: RuntimeAgentRecord) => { records.push(structuredClone(record)); }
+  } as unknown as RunRecordWriter);
+  // `schema` and `timeoutMs` come from a get trap alone, over an object
+  // whose `identity` is inherited.
+  const inherited = Object.create({ identity: false }) as Record<string, unknown>;
+  inherited.target = "doer";
+  const supplied: Record<string, unknown> = { schema, timeoutMs: 60_000 };
+  const options = new Proxy(inherited, {
+    get: (source, property, receiver) => (typeof property === "string" && property in supplied ? supplied[property] : Reflect.get(source, property, receiver))
+  });
+  try {
+    // The validated object, not the raw text: the trap-supplied schema
+    // reached the dispatch through the resolution.
+    const output = await runtime.agent("structured", options as unknown as Partial<AgentOptions>);
+    assert.deepEqual(output, { ok: true });
+    assert.deepEqual(codex.dispatches.map((dispatch) => dispatch.model), ["gpt-6.1-sol"]);
+    assert.equal(records.at(-1)?.namedTarget?.name, "doer");
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("a literal call carries no named target on its record or attempts", async () => {
   const { runtime, records } = recordingRuntime({ reviewer: { engine: "claude" } });
   try {

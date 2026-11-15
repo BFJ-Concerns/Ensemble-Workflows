@@ -39,7 +39,18 @@ async function projectWithSkill(dir: string): Promise<string> {
   return project;
 }
 
-async function runWorkflow(dir: string, body: string): Promise<{ output: unknown; transcripts: TranscriptEntry[][] }> {
+interface AgentRecord {
+  status: string;
+  attempts: Array<{ failure: { kind: string; message: string } | null; classification: unknown }>;
+  transcripts: Array<{ path: string }>;
+}
+
+/**
+ * Run the workflow and read back each agent's record and first transcript,
+ * in dispatch order. `answered` (the default) requires every call to have
+ * been delivered and answered in one attempt.
+ */
+async function runWorkflow(dir: string, body: string, answered = true): Promise<{ output: unknown; transcripts: TranscriptEntry[][]; records: AgentRecord[] }> {
   // The workers run under the suite's shared daemon; never let a launch
   // here start one on demand.
   const daemon = await suiteClaudeDaemon();
@@ -54,17 +65,19 @@ async function runWorkflow(dir: string, body: string): Promise<{ output: unknown
   const archive = path.dirname(await findOnlyFile(store, "manifest.json"));
   const files = (await readdir(archive, { recursive: true })).filter(file => path.basename(file) === "agent.json").sort();
   const transcripts: TranscriptEntry[][] = [];
+  const records: AgentRecord[] = [];
   for (const file of files) {
-    const record = JSON.parse(await readFile(path.join(archive, file), "utf8")) as {
-      status: string; attempts: Array<{ failure: unknown }>; transcripts: Array<{ path: string }>
-    };
-    assert.equal(record.status, "complete");
-    assert.deepEqual(record.attempts.map(attempt => attempt.failure), [null], "the opening is delivered and answered in one attempt");
+    const record = JSON.parse(await readFile(path.join(archive, file), "utf8")) as AgentRecord;
+    records.push(record);
+    if (answered) {
+      assert.equal(record.status, "complete");
+      assert.deepEqual(record.attempts.map(attempt => attempt.failure), [null], "the opening is delivered and answered in one attempt");
+    }
     const reference = record.transcripts[0];
     assert.ok(reference);
     transcripts.push(parseTranscriptText(await readFile(path.join(archive, reference.path), "utf8")));
   }
-  return { output: JSON.parse(result.stdout), transcripts };
+  return { output: JSON.parse(result.stdout), transcripts, records };
 }
 
 /** The first message the session recorded from its submitter. */
@@ -162,6 +175,76 @@ test("a lean Claude worker holds the standing instructions in its system prompt,
     assert.match(String(output), /automated worker dispatched by the Ensemble orchestration harness/);
     assert.equal(firstSubmission(transcripts[0]!), task, "the first message is the task alone");
     console.log(JSON.stringify({ case: "lean-standing", answer: output }));
+  } catch (error) {
+    testFailed = true;
+    throw error;
+  } finally { await removeTestDirectory(dir, testFailed); }
+});
+
+/** A record's single attempt failed at once on the command, named, and was not retried. */
+function assertCommandNotSkill(record: AgentRecord | undefined, what: string, command: string): void {
+  assert.ok(record);
+  assert.equal(record.status, "failed");
+  assert.equal(record.attempts.length, 1, "the call is not retried");
+  const failure = record.attempts[0]?.failure;
+  assert.equal(failure?.kind, "claude-command-not-skill", failure?.message);
+  assert.deepEqual(record.attempts[0]?.classification, { class: "unclassified", rule: "claude.command-not-skill" });
+  assert.ok(failure?.message.startsWith(`${what} opens with ${command}, which Claude Code took as a command, and no skill named ${command} ran: `), failure?.message);
+}
+
+test("a Claude task opening with an unknown /word fails at once naming it, unretried, while one opening with a path is answered", { skip, timeout: 360_000 }, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-unknown-"));
+  let testFailed = false;
+  try {
+    const project = await projectWithSkill(dir);
+    const name = ship();
+    // maxAttempts above one: the record must still hold one attempt. The
+    // lean worker loads no installed skills, the project's included.
+    const { output, records } = await runWorkflow(dir, `
+      const options = ${JSON.stringify({ ...worker, cwd: project, maxAttempts: 3 })};
+      const started = Date.now();
+      const unknown = await agent("/frobnicate-xyz is not a command. Reply with exactly the word OK.", options);
+      const unknownMs = Date.now() - started;
+      const lean = await agent(${JSON.stringify(`/harbour-signal ${name}`)}, { ...options, lean: true });
+      const path = await agent("/etc/hostname is a file on this machine. Reply with exactly the word OK and nothing else.", options);
+      return { unknown, unknownMs, lean, path };
+    `, false);
+    const result = output as { unknown: unknown; unknownMs: number; lean: unknown; path: unknown };
+    assert.equal(result.unknown, null);
+    assert.equal(result.lean, null);
+    assert.ok(result.unknownMs < 30_000, `the unknown command took ${result.unknownMs}ms, as long as a missing receipt`);
+    assert.match(String(result.path).trim(), /^OK\.?$/);
+    assert.equal(records.length, 3);
+    assertCommandNotSkill(records[0], "the opening prompt", "/frobnicate-xyz");
+    assert.match(records[0]!.attempts[0]!.failure!.message, /knows no skill or command named \/frobnicate-xyz where the worker runs/);
+    assertCommandNotSkill(records[1], "the opening prompt", "/harbour-signal");
+    assert.deepEqual(records[2]?.attempts.map(attempt => attempt.failure), [null]);
+    console.log(JSON.stringify({ case: "unknown-command", unknownMs: result.unknownMs, path: result.path }));
+  } catch (error) {
+    testFailed = true;
+    throw error;
+  } finally { await removeTestDirectory(dir, testFailed); }
+});
+
+test("a held Claude session's follow-up opening with an unknown /word fails that turn alone, and the session answers the next", { skip, timeout: 360_000 }, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opening-unknown-session-"));
+  let testFailed = false;
+  try {
+    const { output, records } = await runWorkflow(dir, `
+      const held = session(${JSON.stringify({ ...worker, cwd: dir, maxAttempts: 3 })});
+      try {
+        const first = await held.send("Reply with exactly the word FIRST and nothing else.");
+        const unknown = await held.send("/frobnicate-xyz now. Reply with exactly the word OK.");
+        const third = await held.send("Reply with exactly the word THIRD and nothing else.");
+        return { first, unknown, third };
+      } finally { await held.close(); }
+    `, false);
+    const result = output as { first: unknown; unknown: unknown; third: unknown };
+    assert.equal(String(result.first).trim(), "FIRST");
+    assert.equal(result.unknown, null);
+    assert.equal(String(result.third).trim(), "THIRD");
+    assertCommandNotSkill(records[1], "the follow-up turn", "/frobnicate-xyz");
+    console.log(JSON.stringify({ case: "unknown-command-session", answer: output }));
   } catch (error) {
     testFailed = true;
     throw error;

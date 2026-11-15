@@ -5,6 +5,7 @@ import {
   ClaudeBlockedError,
   InvalidAgentOptionValueError,
   ClaudeCollectionError,
+  ClaudeCommandNotSkillError,
   ClaudeDeliveryError,
   ClaudeFirstLifeTimeoutError,
   ClaudePollTimeoutError,
@@ -30,6 +31,8 @@ import {
   readTranscriptFile,
   resolvedModelSince,
   submissionReceipt,
+  openingCommand,
+  unrunCommand,
   turnComplete,
   usageSince
 } from "./claude-transcript.js";
@@ -735,9 +738,17 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * - The receipt is missing at the deadline → `ClaudeDeliveryError`, with
    *   the submission left pending: it may yet land, so the next attempt
    *   reads its receipt again before sending (`#accountForPending`).
+   * - The message opened with a command that ran no skill →
+   *   `ClaudeCommandNotSkillError`, as soon as the transcript shows it.
+   *   Claude Code took the message as that command and nothing of it
+   *   reached the model, so nothing is pending.
    */
   async #requireReceipt(handle: ClaudeSessionHandle, submission: Submission, observers: AttemptObservers): Promise<void> {
     const receipt = await this.#awaitReceipt(handle, submission, observers);
+    if (receipt.state === "command-not-skill") {
+      this.#pending = null;
+      throw new ClaudeCommandNotSkillError(commandNotSkillAccount(submission.what, receipt.command, receipt.ran));
+    }
     if (receipt.state === "verified") {
       this.#pending = null;
       if (submission.carriesTurn) {
@@ -759,13 +770,19 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     throw failure;
   }
 
-  /** Read the submission's receipt until the transcript shows one, or the receipt deadline passes with it still missing. */
+  /**
+   * Read the submission's receipt until the transcript shows one, or shows
+   * that the command the turn's message opens with ran no skill, or the
+   * receipt deadline passes with it still missing. A built-in command may be
+   * recorded as a user row, which would otherwise read as different text.
+   */
   async #awaitReceipt(
     handle: ClaudeSessionHandle,
     submission: Submission,
     observers: AttemptObservers
-  ): Promise<SubmissionReceipt> {
+  ): Promise<SubmissionReceipt | CommandNotSkill> {
     const deadline = Date.now() + this.#receiptTimeoutMs;
+    const command = submission.carriesTurn ? openingCommand(submission.message) : null;
     for (;;) {
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle, observers);
@@ -773,6 +790,11 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         transcript === null
           ? { state: "missing" }
           : submissionReceipt(transcript.entries, submission.mark, submission.message);
+      const ran = receipt.state === "verified" || transcript === null || command === null
+        ? null : unrunCommand(transcript.entries, submission.mark, command);
+      if (ran !== null && command !== null) {
+        return { state: "command-not-skill", command, ran };
+      }
       if (receipt.state !== "missing" || Date.now() >= deadline) {
         return receipt;
       }
@@ -1528,6 +1550,9 @@ function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
   if (error instanceof ClaudeDeliveryError) {
     return { kind: "claude-delivery-error", message: error.message };
   }
+  if (error instanceof ClaudeCommandNotSkillError) {
+    return { kind: "claude-command-not-skill", message: error.message };
+  }
   if (error instanceof ClaudePollTimeoutError) {
     return { kind: "claude-poll-timeout", message: error.message };
   }
@@ -1545,6 +1570,27 @@ function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
   // degraded. The arm keeps the mapping total for a member added without
   // its own kind, and its `rule: null` classification says so in the archive.
   return { kind: "claude-worker-error", message: error.message };
+}
+
+/** A turn's opening command that Claude Code ran no skill for (`unrunCommand`). */
+interface CommandNotSkill {
+  state: "command-not-skill";
+  command: string;
+  ran: "unknown" | "built-in";
+}
+
+/**
+ * The failure account for a message whose opening command ran no skill. It
+ * names the command and says no skill by that name ran; the likeliest cause
+ * of an unknown name is a skill missing where the worker runs.
+ */
+function commandNotSkillAccount(what: string, command: string, ran: "unknown" | "built-in"): string {
+  const cause = ran === "unknown"
+    ? `Claude Code knows no skill or command named ${command} where the worker runs, so the message never reached the model. ` +
+      "A skill named this way must be installed for the worker's Claude Code; a lean worker loads none of the operator's installed skills"
+    : `${command} is one of Claude Code's built-in commands, which it ran in place of a model turn, so the message never reached the model`;
+  return `${what} opens with ${command}, which Claude Code took as a command, and no skill named ${command} ran: ${cause}. ` +
+    "To send text that begins with a slash, put something before it";
 }
 
 /**

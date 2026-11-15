@@ -652,7 +652,9 @@ A Claude worker receives, in this order:
    The session keeps them for every later turn.
 2. **Opening message:** the task itself, first. A task that begins
    `/<skill> <arguments>` runs that skill, as a message typed into Claude Code
-   would, user-invocable skills included.
+   would, user-invocable skills included. See
+   [Commands at the head of a task](#commands-at-the-head-of-a-task) for
+   which openings Claude Code takes as a command.
 3. **After the task, when present:** a blank line, then the schema contract
    (the instruction to end with a JSON value and the schema itself), then a
    note naming the previous attempt's failure on a retry that relaunches.
@@ -672,10 +674,41 @@ for byte; Claude does not record the whitespace between the two, so any run
 of it there is accepted. Host memory,
 storage and model context still bound prompt size.
 
+#### Commands at the head of a task
+
+Claude Code takes a message as a command when it opens with `/`, then a name
+made of letters, digits, `_`, `:` and `-` that begins with a letter, digit or
+`_`, then whitespace or the end of the message. Everything after the name is
+the command's arguments. Any other opening reaches the worker as text: a path
+such as `/etc/hostname is a file …` is not a command, because the name stops
+at a character a command name cannot hold. The same rule applies to a
+`session()` follow-up that opens with the task. A task framed in boundary
+tags, and a correction or redelivery, which open with Ensemble's own text,
+never begin with a command.
+
+When the name is a skill, the skill runs. When it is not, no skill runs and
+the task never reaches the model, so the call fails at once as
+`claude-command-not-skill` (rule `claude.command-not-skill`) and is not
+retried: every retry would send the same opening to the same Claude Code. The
+failure names the command and says no skill by that name ran, for either of
+two reasons:
+
+- Claude Code knows no skill or command by that name where the worker runs.
+  The usual cause is a skill that is not installed for the worker's Claude
+  Code. A lean worker loads none of the operator's installed skills, so a
+  skill a script names at the head of a lean worker's task does not run.
+- The name is one of Claude Code's built-in commands, such as `/config` or
+  `/resume`. Claude Code runs it in place of a model turn.
+
+In a `session()`, only the turn that opened with the command fails; the
+session stays open for its next turn. To send text that begins with a slash
+as text, put something before it.
+
 ### Retries
 
-Except for Codex output-schema rejections and a session's lost worker
-(`session-lost`), each
+Except for Codex output-schema rejections, a session's lost worker
+(`session-lost`), and a Claude task opening with a command that runs no skill
+(`claude-command-not-skill`), each
 attempt that fails is retried, up to `maxAttempts`, with the failure fed
 back to the worker. Claude corrects in the same session through the prompt
 editor. If tmux becomes unavailable, a one-shot correction starts a fresh session, whose

@@ -14482,6 +14482,8 @@ var ClaudeValveError = class extends ClaudeWorkerError {
 };
 var ClaudeDeliveryError = class extends ClaudeWorkerError {
 };
+var ClaudeCommandNotSkillError = class extends ClaudeWorkerError {
+};
 var ClaudeTranscriptError = class extends ClaudeWorkerError {
 };
 var ClaudeCollectionError = class extends ClaudeWorkerError {
@@ -19048,7 +19050,9 @@ var SETTLING_FAILURE_KINDS = /* @__PURE__ */ new Set([
   // Codex refused the authored schema before generation, and a retry sends the same schema.
   "CodexSchemaSubsetUnsupportedError",
   // The held worker no longer exists, and a retry would address the same absent session.
-  SESSION_LOST_KIND
+  SESSION_LOST_KIND,
+  // Claude Code ran no skill for the command the task opens with, and a retry sends the same opening.
+  "claude-command-not-skill"
 ]);
 function settlesWithoutRetry(failure) {
   return SETTLING_FAILURE_KINDS.has(failure.kind);
@@ -19139,6 +19143,9 @@ var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   // Submitted, but the transcript never showed the session holding the text
   // as sent: evidence about the delivery, not about the engine's availability.
   ["claude-delivery-error", { class: "unclassified", rule: "claude.delivery" }],
+  // The task opened with a command Claude Code ran no skill for: the
+  // operator's text named something absent, not the engine unavailable.
+  ["claude-command-not-skill", { class: "unclassified", rule: "claude.command-not-skill" }],
   ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);
@@ -22694,6 +22701,24 @@ function submissionReceipt(entries, mark, message) {
   }
   return { state: "missing" };
 }
+function openingCommand(message) {
+  const command = /^(\/[a-zA-Z0-9_][a-zA-Z0-9:_-]*)(?:\s|$)/.exec(message);
+  return command === null ? null : command[1] ?? null;
+}
+function unrunCommand(entries, mark, command) {
+  for (let index = Math.max(0, mark); index < entries.length; index += 1) {
+    const entry = entries[index];
+    const content = entry?.content ?? entry?.message?.content;
+    if (typeof content !== "string") continue;
+    if (entry?.type === "system" && (content === `Unknown command: ${command}` || content.startsWith(`Unknown command: ${command}. `))) {
+      return "unknown";
+    }
+    if ((entry?.type === "system" || entry?.type === "user") && content.startsWith(`<command-name>${command}</command-name>`)) {
+      return "built-in";
+    }
+  }
+  return null;
+}
 function parseTranscriptText(text) {
   const entries = [];
   for (const line of text.split("\n")) {
@@ -23467,9 +23492,17 @@ var ClaudeEngineInvocation = class {
    * - The receipt is missing at the deadline → `ClaudeDeliveryError`, with
    *   the submission left pending: it may yet land, so the next attempt
    *   reads its receipt again before sending (`#accountForPending`).
+   * - The message opened with a command that ran no skill →
+   *   `ClaudeCommandNotSkillError`, as soon as the transcript shows it.
+   *   Claude Code took the message as that command and nothing of it
+   *   reached the model, so nothing is pending.
    */
   async #requireReceipt(handle, submission, observers) {
     const receipt = await this.#awaitReceipt(handle, submission, observers);
+    if (receipt.state === "command-not-skill") {
+      this.#pending = null;
+      throw new ClaudeCommandNotSkillError(commandNotSkillAccount(submission.what, receipt.command, receipt.ran));
+    }
     if (receipt.state === "verified") {
       this.#pending = null;
       if (submission.carriesTurn) {
@@ -23488,13 +23521,23 @@ var ClaudeEngineInvocation = class {
     }
     throw failure;
   }
-  /** Read the submission's receipt until the transcript shows one, or the receipt deadline passes with it still missing. */
+  /**
+   * Read the submission's receipt until the transcript shows one, or shows
+   * that the command the turn's message opens with ran no skill, or the
+   * receipt deadline passes with it still missing. A built-in command may be
+   * recorded as a user row, which would otherwise read as different text.
+   */
   async #awaitReceipt(handle, submission, observers) {
     const deadline = Date.now() + this.#receiptTimeoutMs;
+    const command = submission.carriesTurn ? openingCommand(submission.message) : null;
     for (; ; ) {
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle, observers);
       const receipt = transcript === null ? { state: "missing" } : submissionReceipt(transcript.entries, submission.mark, submission.message);
+      const ran = receipt.state === "verified" || transcript === null || command === null ? null : unrunCommand(transcript.entries, submission.mark, command);
+      if (ran !== null && command !== null) {
+        return { state: "command-not-skill", command, ran };
+      }
       if (receipt.state !== "missing" || Date.now() >= deadline) {
         return receipt;
       }
@@ -24085,6 +24128,9 @@ function claudeAttemptFailure(error) {
   if (error instanceof ClaudeDeliveryError) {
     return { kind: "claude-delivery-error", message: error.message };
   }
+  if (error instanceof ClaudeCommandNotSkillError) {
+    return { kind: "claude-command-not-skill", message: error.message };
+  }
   if (error instanceof ClaudePollTimeoutError) {
     return { kind: "claude-poll-timeout", message: error.message };
   }
@@ -24098,6 +24144,10 @@ function claudeAttemptFailure(error) {
     return { kind: "claude-worker-diagnostic", message: error.message };
   }
   return { kind: "claude-worker-error", message: error.message };
+}
+function commandNotSkillAccount(what, command, ran) {
+  const cause = ran === "unknown" ? `Claude Code knows no skill or command named ${command} where the worker runs, so the message never reached the model. A skill named this way must be installed for the worker's Claude Code; a lean worker loads none of the operator's installed skills` : `${command} is one of Claude Code's built-in commands, which it ran in place of a model turn, so the message never reached the model`;
+  return `${what} opens with ${command}, which Claude Code took as a command, and no skill named ${command} ran: ${cause}. To send text that begins with a slash, put something before it`;
 }
 function textIdentity(text) {
   return `${Buffer.byteLength(text, "utf8")} UTF-8 bytes, sha256 ${createHash4("sha256").update(text).digest("hex")}`;

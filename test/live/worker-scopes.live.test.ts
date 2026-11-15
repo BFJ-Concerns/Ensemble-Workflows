@@ -21,13 +21,18 @@ const exec = promisify(execFile);
 const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const live = process.env.ENSEMBLE_LIVE === "1";
 const claudeModel = process.env.ENSEMBLE_LIVE_CLAUDE_MODEL ?? "haiku";
-// The longest wait a probe's text names is its hold limit, and a worker may
-// take that wait as one sleep call rather than the polls it is asked for.
-// The hold limit therefore sits far enough under the turn's deadline that a
-// worker sleeping all of it after the slowest allowed start (`observe`'s
-// 420 s) still wakes, finds the release written, and replies in time.
-const HOLD_LIMIT_SECONDS = 240;
-const TURN_DEADLINE_MS = 900_000;
+// Each wait the test allows itself before releasing its probes.
+const PROBE_START_MS = 420_000;
+const SIBLING_START_MS = 420_000;
+// A probe that is ready early holds while the others start and the outside
+// sibling starts, so its hold limit covers both windows with room to spare.
+// The longest wait a probe's text names is that hold limit, and a worker may
+// take it as one sleep call rather than the polls it is asked for. The turn's
+// deadline therefore exceeds the slowest allowed start plus the whole hold
+// limit, so a worker that sleeps all of it still wakes, finds the release
+// written, and replies in time.
+const HOLD_LIMIT_SECONDS = 900;
+const TURN_DEADLINE_MS = PROBE_START_MS + HOLD_LIMIT_SECONDS * 1000 + 180_000;
 
 type Grouping = "worker" | "run";
 interface Scenario {
@@ -59,7 +64,7 @@ for (const scenario of scenarios) {
   test(`built launcher scopes: ${scenario.name}`, {
     skip: !live ? "ENSEMBLE_LIVE must be 1"
       : scenario.direct !== "claude" && liveCodexModel === undefined ? "ENSEMBLE_LIVE_CODEX_MODEL is unset" : false,
-    timeout: 1_200_000
+    timeout: 3_600_000
   }, async (t) => {
     await exec("systemctl", ["--user", "show-environment"]).catch((error: unknown) => {
       throw new Error("UNPROVEN: a reachable systemd user manager is required", { cause: error });
@@ -155,7 +160,7 @@ for (const scenario of scenarios) {
         siblingHandle = await siblingPlane.dispatch({
           prompt: heldProbePrompt(sibling), name: `sibling-${id}`, cwd: root, model: claudeModel
         });
-        await waitForPath(sibling.paths.ready, 420_000);
+        await waitForPath(sibling.paths.ready, SIBLING_START_MS);
         const siblingGroup = (await readFile(sibling.paths.evidence, "utf8")).trim().slice(3);
         assert.equal(containingSlice(`0::${siblingGroup}`), parent, "the sibling is inside the tested run's slice");
         const afterSibling = await supervisorSnapshot(claude.executable, env);
@@ -260,7 +265,7 @@ for (const scenario of scenarios) {
 
 async function observe(probes: HeldProbe[], run: ReturnType<typeof launch>, engines: readonly string[], env: NodeJS.ProcessEnv, slice: string, box: string, fallback: boolean, units: Set<string>): Promise<string[]> {
   await Promise.all(probes.map(async (probe) => {
-    const deadline = Date.now() + 420_000;
+    const deadline = Date.now() + PROBE_START_MS;
     for (;;) {
       if (run.settled) throw new Error(`launcher settled before handshake: ${JSON.stringify(await run.result)}`);
       try {

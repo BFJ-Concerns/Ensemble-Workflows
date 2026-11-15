@@ -34812,6 +34812,61 @@ async function createRuntime2(options = {}) {
   return createRuntime(options);
 }
 
+// src/workflow-source-reader.ts
+import { spawn as spawn4 } from "node:child_process";
+var readerSource = `
+  const { readFileSync } = require("node:fs");
+  try {
+    process.stdout.write(readFileSync(process.argv[1]));
+  } catch (error) {
+    process.stderr.write(JSON.stringify({ message: error.message, code: error.code }));
+    process.exitCode = 1;
+  }
+`;
+async function readWorkflowSource(scriptPath, signal) {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const child = spawn4(process.execPath, ["--input-type=commonjs", "-e", readerSource, scriptPath], {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let source = "";
+    let diagnostic = "";
+    let processError = null;
+    child.stdout.setEncoding("utf8").on("data", (chunk) => {
+      source += chunk;
+    });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => {
+      diagnostic += chunk;
+    });
+    child.on("error", (error) => {
+      processError = error;
+    });
+    const abort = () => {
+      child.kill("SIGKILL");
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    child.once("close", (code, terminatingSignal) => {
+      signal.removeEventListener("abort", abort);
+      if (signal.aborted) {
+        reject(signal.reason);
+      } else if (code === 0) {
+        resolve(source);
+      } else {
+        let cause = processError ?? new Error(diagnostic || `Source reader ended with ${terminatingSignal ?? code}`);
+        if (diagnostic.length > 0) {
+          try {
+            const details = JSON.parse(diagnostic);
+            cause = Object.assign(new Error(details.message), { code: details.code });
+          } catch {
+          }
+        }
+        reject(workflowScriptReadError(scriptPath, cause));
+      }
+    });
+  });
+}
+
 // src/cli.ts
 var MAX_JSON_ARGS_DEPTH = 256;
 var AGENT_INVOCATION_OPTIONS = {
@@ -35120,7 +35175,9 @@ async function runEnsembleCli(argv, options = {}) {
         }
       }
     }
-    const source = prepared.source ?? await readWorkflowScript(prepared.workflowPath);
+    const sourceAbort = new AbortController();
+    void ending.promise.catch((error) => sourceAbort.abort(error));
+    const source = prepared.source ?? await readWorkflowSource(prepared.workflowPath, sourceAbort.signal);
     if (runRecordDir !== null && runRecordDir.length > 0) {
       runRecordWriter = await RunRecordWriter.start({
         storeDir: runRecordDir,

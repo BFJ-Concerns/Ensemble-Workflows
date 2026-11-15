@@ -909,7 +909,7 @@ export async function checkWorkflowScriptPath(scriptPath: string): Promise<void>
   }
 }
 
-function workflowScriptReadError(scriptPath: string, error: unknown): WorkflowScriptReadError {
+export function workflowScriptReadError(scriptPath: string, error: unknown): WorkflowScriptReadError {
   const code = (error as { code?: unknown }).code;
   const reason =
     code === "ENOENT"

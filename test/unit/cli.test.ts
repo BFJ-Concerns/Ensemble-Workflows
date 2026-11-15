@@ -318,10 +318,9 @@ test("a SIGINT delivered as the sentinel path is announced still writes the inte
     const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
     assert.equal(sentinel.outcome, "interrupted");
     assert.equal(sentinel.exit_code, 130);
-    const result = JSON.parse(await readFile(path.join(path.dirname(announced[1]!), "result.json"), "utf8")) as {
-      exit_code: number;
-    };
-    assert.equal(result.exit_code, 130);
+    // An ending before source delivery cannot archive source it never received.
+    assert.deepEqual((sentinel as { manifest?: unknown }).manifest, { unavailable: "recording-start-failed" });
+    await assert.rejects(access(path.join(path.dirname(announced[1]!), "result.json")), { code: "ENOENT" });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -2264,7 +2263,7 @@ test("an interrupt observed before the script body starts ends the run without s
     await assert.rejects(access(startedMarker), "the script body must not start once the run is declared interrupted");
     assert.doesNotMatch(stderr.text(), /\[phase\] waiting/);
     const lines = stderr.text().trimEnd().split("\n");
-    assert.match(lines.at(-1) ?? "", /^Interrupted \(SIGINT\) — partial result on stdout; record: /, "the hand-off line is stderr's last line");
+    assert.match(lines.at(-1) ?? "", /^Interrupted \(SIGINT\) — partial result on stdout$/, "the hand-off line is stderr's last line");
     assert.deepEqual(JSON.parse(stdout.text()), {
       partial: true,
       reason: "interrupted",

@@ -12,8 +12,9 @@ import { describeError, HoldTimeoutError, InvalidAgentSchemaError, PreSpawnAutho
 import { answerHold, defaultHoldsDirectory, enumerateHolds, holdListingState, resolveHoldScope } from "./holds.js";
 import { boundedEvidence, presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
 import { createRuntime } from "./index.js";
-import { checkWorkflowScriptPath, readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
+import { checkWorkflowScriptPath, readWorkflowMeta, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
+import { readWorkflowSource } from "./workflow-source-reader.js";
 import { resolveRunId, RunRecordWriter } from "./run-record.js";
 import { assertCompilableSchema } from "./schema.js";
 import { declaredDirectory, defaultDirectory, readSetting } from "./resource-location.js";
@@ -454,7 +455,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     }
 
     // Supervision is visible even while the source read is stalled.
-    const source = prepared.source ?? await readWorkflowScript(prepared.workflowPath);
+    const sourceAbort = new AbortController();
+    void ending.promise.catch((error: unknown) => sourceAbort.abort(error));
+    const source = prepared.source ?? await readWorkflowSource(prepared.workflowPath, sourceAbort.signal);
     if (runRecordDir !== null && runRecordDir.length > 0) {
       runRecordWriter = await RunRecordWriter.start({
         storeDir: runRecordDir,

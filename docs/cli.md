@@ -325,7 +325,9 @@ through stdout, the sentinel, and the archive when recording is on and the
 archive has started. Script paths are checked before acceptance without
 reading their source. A source read that fails after acceptance is a run
 failure (exit 1); with recording enabled, the sentinel reports the
-unavailable archive. The exit
+unavailable archive. SIGINT and SIGTERM during source loading stop the
+source reader and settle the run with an interrupted envelope and sentinel,
+even if the source has not arrived and the archive has not started. The exit
 code is recorded in the manifest, `result.json`, and the sentinel; an uncaught
 exception that lands while the archive is being sealed is reflected only in
 the sentinel and the process's exit code.

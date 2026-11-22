@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { removeTestDirectory } from "../failure-evidence.js";
-import { ClaudeCliControlPlane, type ClaudeSessionHandle } from "../../src/claude-control-plane.js";
+import { ClaudeCliControlPlane, type ClaudeSessionHandle, type SteerOptions } from "../../src/claude-control-plane.js";
 import { parseTranscriptText } from "../../src/claude-transcript.js";
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
@@ -97,9 +97,12 @@ for (const refuse of [false, true]) {
         process.exit(result.status ?? 1);
       `, { mode: 0o755 });
       class ObservedPlane extends ClaudeCliControlPlane {
-        override async steer(handle: ClaudeSessionHandle, message: string) {
-          const outcome = await super.steer(handle, message);
-          submissions.push({ session: handle.sessionId, message, submitted: outcome.submitted });
+        override async steer(handle: ClaudeSessionHandle, message: string, options?: SteerOptions) {
+          const outcome = await super.steer(handle, message, options);
+          // Record the text the valve typed, which follows from what it closed.
+          const typed = outcome.closedInput !== undefined && options?.onInputClosed !== undefined
+            ? options.onInputClosed(outcome.closedInput) : message;
+          submissions.push({ session: handle.sessionId, message: typed, submitted: outcome.submitted });
           transcriptPath = await this.transcriptPath(handle);
           return outcome;
         }

@@ -22250,7 +22250,12 @@ var ClaudeCliControlPlane = class {
     }
     return null;
   }
-  async steer(handle, message) {
+  async steer(handle, message, options = {}) {
+    const closure = {};
+    const outcome = await this.#steerThroughValve(handle, message, options, closure);
+    return closure.closedInput !== void 0 ? { ...outcome, closedInput: closure.closedInput } : outcome;
+  }
+  async #steerThroughValve(handle, message, options, closure) {
     const signal = this.#operationSignal();
     const status = await this.poll(handle);
     signal?.throwIfAborted();
@@ -22272,7 +22277,6 @@ var ClaudeCliControlPlane = class {
       const payload = path17.join(socketDir, "prompt.txt");
       const editor = path17.join(socketDir, "editor.cjs");
       const copied = path17.join(socketDir, "copied");
-      await writeFile6(payload, message, { mode: 384 });
       await writeFile6(editor, `#!${process.execPath}
         const fs = require("node:fs");
         fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
@@ -22294,7 +22298,8 @@ var ClaudeCliControlPlane = class {
       if (!created.ok) return refused("tmux new-session", created);
       await delay(this.#valveAttachSettleMs, signal);
       const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
-      if (status.waitingFor !== void 0 && (await this.poll(handle)).waitingFor !== void 0) {
+      const awaiting = status.waitingFor !== void 0 ? (await this.poll(handle)).waitingFor : void 0;
+      if (awaiting !== void 0) {
         const cancelled = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Escape"]);
         if (!cancelled.ok) return refused("tmux send-keys (cancel input)", cancelled);
         for (; ; ) {
@@ -22306,7 +22311,10 @@ var ClaudeCliControlPlane = class {
           }
           await delay(50, signal);
         }
+        closure.closedInput = awaiting;
       }
+      const sent = closure.closedInput !== void 0 && options.onInputClosed !== void 0 ? options.onInputClosed(closure.closedInput) : message;
+      await writeFile6(payload, sent, { mode: 384 });
       const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
       if (!opened.ok) return refused("tmux send-keys (editor)", opened);
       for (; ; ) {
@@ -23165,14 +23173,16 @@ var ClaudeEngineInvocation = class {
   async #deliver(handle, submission, observers) {
     if (this.#lost !== null) throw new ClaudeWorkerLostError(this.#lost.reason);
     if (submission.carriesTurn) this.#collectionMark = submission.mark;
-    const outcome = await this.#controlPlane.steer(handle, submission.message);
+    const { onInputClosed } = submission;
+    const outcome = await this.#controlPlane.steer(handle, submission.message, onInputClosed !== void 0 ? { onInputClosed } : {});
+    const sent = outcome.closedInput !== void 0 && onInputClosed !== void 0 ? { ...submission, message: onInputClosed(outcome.closedInput) } : submission;
     if (!outcome.submitted) {
-      this.#refused = submission;
+      this.#refused = sent;
       throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
     }
     this.#refused = null;
-    this.#accept(submission);
-    await this.#requireReceipt(handle, submission, observers);
+    this.#accept(sent);
+    await this.#requireReceipt(handle, sent, observers);
   }
   /**
    * Record that the session accepted a submission, the moment the launch or
@@ -23525,8 +23535,13 @@ var ClaudeEngineInvocation = class {
         }
         this.#nudges += 1;
         const mark = latest.entries.length;
-        const message = this.#blockedNudge(status.waitingFor);
-        await this.#deliver(handle, { message, mark, what: "the blocked-worker nudge", carriesTurn: false }, observers);
+        await this.#deliver(handle, {
+          message: BLOCKED_NUDGE,
+          onInputClosed: closedPromptNudge,
+          mark,
+          what: "the blocked-worker nudge",
+          carriesTurn: false
+        }, observers);
         continue;
       }
       if (sawLife && !awaitingTask && (status.state === "done" || status.status === "idle")) {
@@ -23831,24 +23846,15 @@ var ClaudeEngineInvocation = class {
       this.#acceptedTurnCopy
     ].join("\n");
   }
-  /**
-   * The message that recovers a blocked worker. A worker the roster reports
-   * waiting on a native prompt has that prompt closed by the valve before
-   * this arrives, and Claude Code answers the held tool call as though a
-   * person had refused it; the message says who closed it and why, so the
-   * worker does not report a refusal nobody made.
-   */
-  #blockedNudge(waitingFor) {
-    if (waitingFor === void 0) {
-      return "You appear to be waiting for input. Proceed autonomously without asking \u2014 make a reasonable decision, complete the task, and output your final answer.";
-    }
-    return `Ensemble closed a prompt you were waiting on (Claude Code reported it as waiting for: ${waitingFor}), because nobody is present to answer prompts in this session. Nobody refused the action: a tool result saying the user doesn't want to proceed came from that close, not from a person. Carry on without asking: reach what you need another way where you can, make a reasonable decision where you must, and output your final answer.`;
-  }
   #nextName() {
     dispatchCounter += 1;
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID5().slice(0, 8)}`;
   }
 };
+var BLOCKED_NUDGE = "You appear to be waiting for input. Proceed autonomously without asking \u2014 make a reasonable decision, complete the task, and output your final answer.";
+function closedPromptNudge(closedInput) {
+  return `Ensemble closed a prompt you were waiting on (Claude Code reported it as waiting for: ${closedInput}), because nobody is present to answer prompts in this session. Nobody refused the action: a tool result saying the user doesn't want to proceed came from that close, not from a person. Carry on without asking: reach what you need another way where you can, make a reasonable decision where you must, and output your final answer.`;
+}
 function failedTurnResult(error, evidence, usageEvent) {
   const text = partialWorkerTextOf(error) ?? "";
   const resolvedModel = evidence?.resolvedModel ?? null;

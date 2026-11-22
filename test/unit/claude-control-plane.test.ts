@@ -939,17 +939,20 @@ for (const mode of ["blocked", "blocked-stuck", "empty"] as const) {
         claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir,
         valveAttachSettleMs: 0, valveDeliveryTimeoutMs: 200
       });
-      const result = await control.steer(stub.handle, "old");
+      // The valve types the caller's closed-input text only when it closed
+      // a request itself, and reports the request it closed.
+      const result = await control.steer(stub.handle, "old", { onInputClosed: (closed) => `closed: ${closed}` });
       const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
         .map(line => JSON.parse(line) as { argv: string[] });
       const keys = calls.slice(1).map(call => call.argv.at(-1));
       if (mode !== "blocked-stuck") {
-        assert.deepEqual(result, { submitted: true });
+        assert.deepEqual(result, mode === "blocked" ? { submitted: true, closedInput: "input needed" } : { submitted: true });
         assert.deepEqual(keys, [...(mode === "blocked" ? ["Escape"] : []), "C-g", "Enter", "kill-server"]);
         const rows = (await readFile(stub.transcript, "utf8")).trim().split("\n");
-        assert.equal(JSON.parse(rows.at(-1)!).message.content, "old");
+        assert.equal(JSON.parse(rows.at(-1)!).message.content, mode === "blocked" ? "closed: input needed" : "old");
       } else {
         assert.equal(result.submitted, false);
+        assert.equal(result.closedInput, undefined, "a request that never cleared was not closed");
         if (!result.submitted) assert.match(result.reason, /blocked input did not clear within 200ms; pane showed: Input needed/);
         assert.deepEqual(keys, ["Escape", "ensemble-valve-valve-1-1", "kill-server"]);
         assert.deepEqual(calls.at(-2)?.argv.slice(2), ["capture-pane", "-p", "-t", "ensemble-valve-valve-1-1"]);

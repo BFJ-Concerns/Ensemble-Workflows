@@ -191,6 +191,8 @@ interface Submission {
   what: string;
   /** Whether the message carries the turn's prompt, so that its receipt moves `TurnDelivery`. */
   carriesTurn: boolean;
+  /** The text the valve submits instead when it closes a native input request first (`SteerOptions`). */
+  onInputClosed?: (closedInput: string) => string;
 }
 
 /**
@@ -674,14 +676,21 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #deliver(handle: ClaudeSessionHandle, submission: Submission, observers: AttemptObservers): Promise<void> {
     if (this.#lost !== null) throw new ClaudeWorkerLostError(this.#lost.reason);
     if (submission.carriesTurn) this.#collectionMark = submission.mark;
-    const outcome = await this.#controlPlane.steer(handle, submission.message);
+    const { onInputClosed } = submission;
+    const outcome = await this.#controlPlane.steer(handle, submission.message, onInputClosed !== undefined ? { onInputClosed } : {});
+    // What the valve typed is what the receipt must show. A refusal that had
+    // already closed a request keeps that text for the resend, since the
+    // request it describes is not there to close a second time.
+    const sent = outcome.closedInput !== undefined && onInputClosed !== undefined
+      ? { ...submission, message: onInputClosed(outcome.closedInput) }
+      : submission;
     if (!outcome.submitted) {
-      this.#refused = submission;
+      this.#refused = sent;
       throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
     }
     this.#refused = null;
-    this.#accept(submission);
-    await this.#requireReceipt(handle, submission, observers);
+    this.#accept(sent);
+    await this.#requireReceipt(handle, sent, observers);
   }
 
   /**
@@ -1108,8 +1117,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         }
         this.#nudges += 1;
         const mark = latest.entries.length;
-        const message = this.#blockedNudge(status.waitingFor);
-        await this.#deliver(handle, { message, mark, what: "the blocked-worker nudge", carriesTurn: false }, observers);
+        await this.#deliver(handle, {
+          message: BLOCKED_NUDGE, onInputClosed: closedPromptNudge, mark, what: "the blocked-worker nudge", carriesTurn: false
+        }, observers);
         continue;
       }
 
@@ -1479,30 +1489,33 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     ].join("\n");
   }
 
-  /**
-   * The message that recovers a blocked worker. A worker the roster reports
-   * waiting on a native prompt has that prompt closed by the valve before
-   * this arrives, and Claude Code answers the held tool call as though a
-   * person had refused it; the message says who closed it and why, so the
-   * worker does not report a refusal nobody made.
-   */
-  #blockedNudge(waitingFor: string | undefined): string {
-    if (waitingFor === undefined) {
-      return "You appear to be waiting for input. " +
-        "Proceed autonomously without asking — make a reasonable decision, complete the task, and output your final answer.";
-    }
-    return (
-      `Ensemble closed a prompt you were waiting on (Claude Code reported it as waiting for: ${waitingFor}), ` +
-      "because nobody is present to answer prompts in this session. " +
-      "Nobody refused the action: a tool result saying the user doesn't want to proceed came from that close, not from a person. " +
-      "Carry on without asking: reach what you need another way where you can, make a reasonable decision where you must, and output your final answer."
-    );
-  }
-
   #nextName(): string {
     dispatchCounter += 1;
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID().slice(0, 8)}`;
   }
+}
+
+/**
+ * The nudge to a blocked worker the valve reached without closing anything:
+ * the worker is told only to carry on without asking.
+ */
+const BLOCKED_NUDGE =
+  "You appear to be waiting for input. " +
+  "Proceed autonomously without asking — make a reasonable decision, complete the task, and output your final answer.";
+
+/**
+ * The nudge to a worker whose native prompt the valve closed on its way in.
+ * Claude Code answers a tool call held at a closed prompt as though a person
+ * had refused it, so the nudge says who closed it and why, and that nobody
+ * refused, and the worker does not report a refusal nobody made.
+ */
+function closedPromptNudge(closedInput: string): string {
+  return (
+    `Ensemble closed a prompt you were waiting on (Claude Code reported it as waiting for: ${closedInput}), ` +
+    "because nobody is present to answer prompts in this session. " +
+    "Nobody refused the action: a tool result saying the user doesn't want to proceed came from that close, not from a person. " +
+    "Carry on without asking: reach what you need another way where you can, make a reasonable decision where you must, and output your final answer."
+  );
 }
 
 /**

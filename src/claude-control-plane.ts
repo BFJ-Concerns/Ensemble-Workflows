@@ -86,7 +86,7 @@ export interface ClaudeControlPlane {
    * result says whether the message was submitted, never whether it arrived:
    * see `ValveSubmission`.
    */
-  steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission>;
+  steer(handle: ClaudeSessionHandle, message: string, options?: SteerOptions): Promise<ValveSubmission>;
   /** Tear the session down (stop + remove). Best-effort; never throws. */
   stop(handle: ClaudeSessionHandle): Promise<void>;
   /** Whether the tmux valve is usable; gates in-session correction and blocked recovery. */
@@ -160,8 +160,24 @@ export type ClaudeToolSurfaceProbe = (request: ClaudeToolSurfaceProbeRequest) =>
  *   valve cannot place before that keystroke is reported this way too: a
  *   wrong "not submitted" invites a second copy of a message the session
  *   already holds, while a wrong "submitted" costs one missing receipt.
+ *
+ * On either outcome `closedInput`, when present, names the native input
+ * request the valve closed on its way to the prompt, as the roster named
+ * it: a delivery refused after that point has already closed it.
  */
-export type ValveSubmission = { submitted: true } | { submitted: false; reason: string };
+export type ValveSubmission =
+  | { submitted: true; closedInput?: string }
+  | { submitted: false; reason: string; closedInput?: string };
+
+export interface SteerOptions {
+  /**
+   * The text to submit instead of the message when the valve closes a
+   * native input request on its way to the prompt, given that request as
+   * the roster named it. The text then says what the valve did, which the
+   * caller cannot know when it writes the message.
+   */
+  onInputClosed?: (closedInput: string) => string;
+}
 
 export interface ClaudeDispatchOptions {
   /** The opening text submitted by launch; the engine verifies its receipt. */
@@ -1000,7 +1016,18 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return null;
   }
 
-  async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveSubmission> {
+  async steer(handle: ClaudeSessionHandle, message: string, options: SteerOptions = {}): Promise<ValveSubmission> {
+    const closure: { closedInput?: string } = {};
+    const outcome = await this.#steerThroughValve(handle, message, options, closure);
+    return closure.closedInput !== undefined ? { ...outcome, closedInput: closure.closedInput } : outcome;
+  }
+
+  async #steerThroughValve(
+    handle: ClaudeSessionHandle,
+    message: string,
+    options: SteerOptions,
+    closure: { closedInput?: string }
+  ): Promise<ValveSubmission> {
     const signal = this.#operationSignal();
     const status = await this.poll(handle);
     signal?.throwIfAborted();
@@ -1036,7 +1063,6 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       const payload = path.join(socketDir, "prompt.txt");
       const editor = path.join(socketDir, "editor.cjs");
       const copied = path.join(socketDir, "copied");
-      await writeFile(payload, message, { mode: 0o600 });
       // The helper takes only Claude's editor filename on argv. All payload
       // bytes remain in private files, independent of argv and tmux caps.
       await writeFile(editor, `#!${process.execPath}
@@ -1060,7 +1086,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // A built-in command's panel (`/help`) opened by an earlier message
       // is such a dialog too, though the roster then reports the session
       // `done` rather than `blocked`: the input request is the signal.
-      if (status.waitingFor !== undefined && (await this.poll(handle)).waitingFor !== undefined) {
+      const awaiting = status.waitingFor !== undefined ? (await this.poll(handle)).waitingFor : undefined;
+      if (awaiting !== undefined) {
         const cancelled = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Escape"]);
         if (!cancelled.ok) return refused("tmux send-keys (cancel input)", cancelled);
         for (;;) {
@@ -1074,7 +1101,14 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           }
           await delay(50, signal);
         }
+        closure.closedInput = awaiting;
       }
+      // The payload is written once the valve knows whether it closed a
+      // request, so text that describes the close is true of it.
+      const sent = closure.closedInput !== undefined && options.onInputClosed !== undefined
+        ? options.onInputClosed(closure.closedInput)
+        : message;
+      await writeFile(payload, sent, { mode: 0o600 });
       const opened = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "C-g"]);
       if (!opened.ok) return refused("tmux send-keys (editor)", opened);
       for (;;) {

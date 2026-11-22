@@ -5,17 +5,21 @@
 // value it does not offer and -32000 for a missing sign-in.
 //
 // SCRIPTED_ACP_AGENT holds the script as JSON:
-//   { signedOut?: true, protocolVersion?: number, turns?: Step[][] }
+//   { signedOut?: true, protocolVersion?: number, turns?: Step[][], counter?: path }
 // The nth `session/prompt` plays the nth turn; a turn past the script's end
-// has no steps. A turn ends `end_turn` with usage unless a step ends it.
+// has no steps. With `counter`, the count is kept in that file, so an agent
+// started after another one exited plays on from where it stopped. A turn
+// ends `end_turn` with usage unless a step ends it.
 //   { update: {...} }           send one session/update
 //   { permission: toolCallId }  ask approval, then report the answer received
+//   { echo: true }              send the prompt's text back as a message chunk
 //   { raw: "..." }              write a line as it stands
 //   { stderr: "..." }           write to stderr
 //   { untilCancelled: true }    wait for session/cancel, end the turn `cancelled`
 //   { stop: "refusal" }         end the turn with this stop reason
 //   { error: { code, message } } end the turn with a JSON-RPC error
 //   { exit: code }              exit at once, the turn unanswered
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
 
@@ -28,6 +32,13 @@ const sessions = new Map();
 const awaitingClient = new Map();
 let nextRequestId = 0;
 let turnsPlayed = 0;
+
+function nextTurn() {
+  if (script.counter === undefined) return turns[turnsPlayed++] ?? [];
+  const played = existsSync(script.counter) ? Number(readFileSync(script.counter, "utf8")) : 0;
+  writeFileSync(script.counter, String(played + 1));
+  return turns[played] ?? [];
+}
 
 const frame = (value) => `${JSON.stringify({ jsonrpc: "2.0", ...value })}\n`;
 const send = (value) => process.stdout.write(frame(value));
@@ -59,11 +70,15 @@ function setConfigOption(id, session, { configId, value }) {
   send({ id, result: { configOptions: configOptions(session) } });
 }
 
-async function playTurn(id, sessionId, steps) {
+async function playTurn(id, sessionId, prompt, steps) {
   const session = sessions.get(sessionId);
   let stopReason = "end_turn";
   for (const step of steps) {
     if (step.update !== undefined) process.stdout.write(update(sessionId, step.update));
+    if (step.echo === true) {
+      const text = (prompt ?? []).map((block) => block.text ?? "").join("");
+      process.stdout.write(update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } }));
+    }
     if (step.raw !== undefined) process.stdout.write(`${step.raw}\n`);
     if (step.stderr !== undefined) process.stderr.write(`${step.stderr}\n`);
     if (step.exit !== undefined) process.exit(step.exit);
@@ -114,7 +129,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   const session = sessions.get(params?.sessionId);
   if (method === "session/set_config_option") return setConfigOption(id, session, params);
-  if (method === "session/prompt") return void playTurn(id, params.sessionId, turns[turnsPlayed++] ?? []);
+  if (method === "session/prompt") return void playTurn(id, params.sessionId, params.prompt, nextTurn());
   if (method === "session/cancel") return session?.cancelled?.();
   send({ id, error: { code: -32601, message: `Method not found: ${method}` } });
 });

@@ -1423,7 +1423,7 @@ test("ensemble agent names an invalid --engine value without repeating the flag"
 
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
-  assert.equal(stderr.text(), "No run was started and nothing was recorded. --engine must be codex, claude, or opencode; got nope\n");
+  assert.equal(stderr.text(), "No run was started and nothing was recorded. --engine must be codex, claude, opencode, or agy; got nope\n");
   // The flag name must not be doubled, nor the separator a comma:
   // "--engine engine must be codex, claude, or opencode, got nope".
   assert.doesNotMatch(stderr.text(), /--engine engine must be codex, claude, or opencode, got nope/);
@@ -1441,7 +1441,7 @@ test("CLI renders named value mistakes in the must-be-got register without usage
       // This deliberately reaches parseEngineName: an unknown map key is an
       // engine-name mistake, not an invalid budget value.
       argv: ["--budget=bogus=1", "workflow.js"],
-      stderr: "--budget engine must be codex, claude, or opencode; got bogus\n"
+      stderr: "--budget engine must be codex, claude, opencode, or agy; got bogus\n"
     },
     {
       argv: ["--budget=codex=-1", "workflow.js"],

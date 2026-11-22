@@ -17,3 +17,7 @@ export function defaultClaudeConcurrency(): number {
 export function defaultOpenCodeConcurrency(): number {
   return 2;
 }
+
+export function defaultAgyConcurrency(): number {
+  return 12;
+}

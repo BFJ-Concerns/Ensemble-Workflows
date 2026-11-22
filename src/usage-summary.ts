@@ -99,6 +99,11 @@ export function subtractUsage(total: TokenUsageBreakdown, previous: TokenUsageBr
  *   the upstream fields themselves is judgement, reconciled the same
  *   way); cache
  *   creation is separable only when the stream carried a cache object.
+ * - **agy** reports, on each `session/prompt` reply, `inputTokens`
+ *   *including* the cached share and `thoughtTokens` *beside*
+ *   `outputTokens` (judgement, 2026-11-22: `totalTokens` equalled input
+ *   plus output plus thought on agy 1.5.14, and the cached figures sat
+ *   within the input).
  */
 const ENGINE_INCLUSION_RULES: Record<
   EngineName,
@@ -106,7 +111,8 @@ const ENGINE_INCLUSION_RULES: Record<
 > = {
   codex: { cachedWithinInput: true, reasoningWithinOutput: true },
   claude: { cachedWithinInput: false, reasoningWithinOutput: true },
-  opencode: { cachedWithinInput: false, reasoningWithinOutput: false }
+  opencode: { cachedWithinInput: false, reasoningWithinOutput: false },
+  agy: { cachedWithinInput: true, reasoningWithinOutput: false }
 };
 
 /**

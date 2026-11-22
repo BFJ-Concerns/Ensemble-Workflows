@@ -123,6 +123,14 @@ export function openCodeResources(env: EngineResourceEnvironment): ResourceRequi
   ];
 }
 
+/** agy 1.5.14 keeps its conversations and presence locks under one directory of its home. */
+export function agyResources(env: EngineResourceEnvironment): ResourceRequirement[] {
+  return [{
+    owner: "agy", role: "Antigravity CLI home", access: "create-entries",
+    ...defaultDirectory({ rule: "$HOME/.gemini/antigravity-cli", movedBy: "HOME" }, homeRoot(env.written, env.cwd), ".gemini", "antigravity-cli")
+  }];
+}
+
 /** Shared with the control plane so transcript reads and preflight use the same home. */
 export function claudeConfigDirectory(env: NodeJS.ProcessEnv, cwd: string): string {
   return path.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path.join(homeOf(env), ".claude")).normalize("NFC"));
@@ -149,7 +157,8 @@ function temporaryLocation(env: NodeJS.ProcessEnv, cwd: string, qualifier = "", 
 export const ENGINE_RESOURCE_RESOLVERS: Readonly<Record<EngineName, EngineResourceResolver>> = {
   codex: codexResources,
   claude: claudeResources,
-  opencode: openCodeResources
+  opencode: openCodeResources,
+  agy: agyResources
 };
 
 /** An engine's requirements under the environment its adapter launches it with. */

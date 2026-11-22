@@ -9,7 +9,7 @@ import type { OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode
 export type JsonObject = Record<string, unknown>;
 export type JsonSchema = JsonObject;
 
-export type EngineName = "codex" | "claude" | "opencode";
+export type EngineName = "codex" | "claude" | "opencode" | "agy";
 export type IsolationMode = "worktree";
 export type TokenAccountingMode = "last-delta" | "total-cumulative";
 export type EngineBudgetCeilings = Partial<Record<EngineName, number | null>>;
@@ -296,6 +296,12 @@ export interface RuntimeOptions {
    * seam as `claudeSessionStaleAfterMs`. Defaults to 60 minutes.
    */
   codexSessionStaleAfterMs?: number;
+  /**
+   * Idle gap after which an agy multi-turn worker reads stale — the
+   * five-minute prompt-cache lifetime the operator reports for agy. Same
+   * library-only seam as `claudeSessionStaleAfterMs`. Defaults to 5 minutes.
+   */
+  agySessionStaleAfterMs?: number;
   /**
    * Machine-declared per-engine worker environment (the config file's
    * `worker_environment` section). Injected values override inherited ones

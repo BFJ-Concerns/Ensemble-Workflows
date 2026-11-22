@@ -242,6 +242,25 @@ const OPENCODE_FAILURE_KINDS = new Map<string, FailureClassification>([
 ]);
 
 /**
+ * The agy engine's failure kinds (`src/agy-engine.ts`). A refused start, a
+ * missing sign-in at `session/new` and a session agy would not open are
+ * thrown as `AgySubstrateRefusedError`, a substrate refusal. A prompt error
+ * with any other JSON-RPC code is left `rule: null` beside agy's own
+ * message: what a reached usage limit looks like has not been seen, and is
+ * not guessed.
+ */
+const AGY_FAILURE_KINDS = new Map<string, FailureClassification>([
+  ["AgySubstrateRefusedError", { class: "availability", rule: "agy.substrate-refused" }],
+  // The prompt was refused for want of a sign-in: the session never held it.
+  ["agy-sign-in-required", { class: "availability", rule: "agy.sign-in-required" }],
+  // The worker's process ended mid-turn: the substrate lost it before it answered.
+  ["agy-worker-lost", { class: "availability", rule: "agy.worker-lost" }],
+  // agy ended the turn as a refusal, at a token or request limit, or cancelled it itself.
+  ["agy-stop-reason", { class: "unclassified", rule: "agy.stop-reason" }],
+  ["TurnTimeoutError", { class: "unclassified", rule: "agy.deadline" }]
+]);
+
+/**
  * Classify one failed attempt from the evidence its record carries. Pure
  * and total: every input yields a classification, and only a diagnostic
  * the table does not recognise yields `rule: null`.
@@ -289,6 +308,8 @@ export function classifyAttemptFailure(evidence: AttemptFailureEvidence): Failur
       return classifyClaudeFailure(kind, evidence.diagnostics);
     case "opencode":
       return OPENCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
+    case "agy":
+      return AGY_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
   }
 }
 

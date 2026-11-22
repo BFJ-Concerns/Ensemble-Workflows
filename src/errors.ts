@@ -252,7 +252,7 @@ export function appServerDiagnosticOf(error: unknown): AppServerDiagnostic | nul
  * refused.
  */
 export const CODEX_SCHEMA_REJECTION_REMEDY =
-  "Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude' or 'opencode', which validate the full JSON Schema client-side.";
+  "Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude', 'opencode' or 'agy', which validate the full JSON Schema client-side.";
 
 /**
  * The diagnostic's payload with every string that restates the diagnostic's
@@ -573,13 +573,13 @@ export class BudgetExceededError extends EnsembleError {
 
 export class MissingEngineError extends AgentOptionRejectedError {
   constructor() {
-    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'");
+    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', engine: 'opencode', or engine: 'agy'");
   }
 }
 
 export class UnknownEngineError extends AgentOptionRejectedError {
   constructor(engine: unknown) {
-    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', or 'opencode'`);
+    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', 'opencode', or 'agy'`);
   }
 }
 
@@ -625,6 +625,18 @@ export class ClaudeDispatchError extends SubstrateRefusedError {}
  * whole, and the app-server's exit evidence rides the carrier as it rode the
  * cause.
  */
+/**
+ * agy could not give an attempt a worker: `agy acp` would not start or
+ * initialise, has no sign-in, or opened no session. No prompt was sent, so
+ * the refusal is pre-spawn, and agy's own account of it is kept as the
+ * cause.
+ */
+export class AgySubstrateRefusedError extends SubstrateRefusedError {
+  constructor(message: string, cause?: Error) {
+    super(message, cause === undefined ? undefined : { cause });
+  }
+}
+
 export class CodexSubstrateRefusedError extends SubstrateRefusedError {
   /**
    * `detail` is the cause as the raising site presents it — the diagnosis

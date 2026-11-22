@@ -323,8 +323,8 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
     if (target.engine === "opencode") {
       throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
     }
-    if (target.engine !== "codex" && target.engine !== "claude") {
-      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex" or "claude", got ${JSON.stringify(target.engine)}`);
+    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "agy") {
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude" or "agy", got ${JSON.stringify(target.engine)}`);
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);

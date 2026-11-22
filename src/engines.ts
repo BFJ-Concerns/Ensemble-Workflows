@@ -26,6 +26,7 @@ import {
   partialWorkerTextOf,
   workerExitStatusOf
 } from "./errors.js";
+import { AgyEngineAdapter } from "./agy-engine.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation } from "./opencode-engine.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 import { createOpenCodeModelRegistry, defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
@@ -130,7 +131,11 @@ export interface EngineAttemptFailure {
     | "claude-transcript-error"
     | "claude-collection-error"
     | "claude-worker-diagnostic"
-    | "opencode-run-error";
+    | "opencode-run-error"
+    | "agy-stop-reason"
+    | "agy-sign-in-required"
+    | "agy-prompt-error"
+    | "agy-worker-lost";
   message: string;
 }
 
@@ -1073,6 +1078,7 @@ export interface CreateDefaultEngineRegistryOptions {
   onEvent: (event: RuntimeEvent) => void;
   onClaudeEvent: (event: RuntimeEvent) => void;
   onOpenCodeEvent: (event: RuntimeEvent) => void;
+  onAgyEvent: (event: RuntimeEvent) => void;
 }
 
 export async function createDefaultEngineRegistry(
@@ -1138,14 +1144,23 @@ export async function createDefaultEngineRegistry(
           ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels ?? [], options.openCodeModelSource) }
           : {}),
         onEvent: options.onOpenCodeEvent
+      }),
+      new AgyEngineAdapter({
+        cwd: options.cwd,
+        commands: workerCommands,
+        clientInfo: { name: options.clientName, version: options.clientVersion },
+        requestTimeoutMs: options.requestTimeoutMs,
+        ...(options.workerEnvironment?.agy !== undefined ? { workerEnv: options.workerEnvironment.agy } : {}),
+        ...(options.concurrencyCaps?.agy !== undefined ? { concurrency: options.concurrencyCaps.agy } : {}),
+        onEvent: options.onAgyEvent
       })
     ],
     // Commands before scopes: a command's scope is one of the manager's, and
     // the manager's close would report a survivor by unit alone, where the
     // containment names the command and judges how it was stopped.
     [workerCommands, ...(ownsScopes ? [workerScopes] : [])],
-    // The Codex app-server is shared and starts in the run base; Claude
-    // and opencode launch a process in each invocation's placement.
+    // The Codex app-server is shared and starts in the run base; Claude,
+    // opencode and agy launch a process in each invocation's placement.
     (engine, cwd) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], engine === "codex" ? options.cwd : cwd)
   );
 }
@@ -1204,6 +1219,7 @@ function promptWithFailureFeedback(prompt: string, failure: PreviousAttemptFailu
 }
 
 export {
+  defaultAgyConcurrency,
   defaultClaudeConcurrency,
   defaultCodexConcurrency,
   defaultOpenCodeConcurrency

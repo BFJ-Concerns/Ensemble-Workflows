@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -140,6 +140,40 @@ test("a later opencode dispatch reclaims a killed launcher's lean profile and ke
   } finally {
     if (savedTemp === undefined) delete process.env.TMPDIR;
     else process.env.TMPDIR = savedTemp;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the opencode sweep ignores linked or non-regular owner records and writable profiles", async (t) => {
+  const ticks = await readProcessStartTicks("/proc", process.pid);
+  if (ticks === null) {
+    t.skip("requires process ownership evidence from /proc");
+    return;
+  }
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-sweep-"));
+  try {
+    const owner = JSON.stringify({ pid: process.pid, start_ticks: `${ticks}0`, host: hostname() });
+    const elsewhere = path.join(root, "other-owner.json");
+    await writeFile(elsewhere, owner);
+    const linked = await mkdtemp(path.join(root, "ensemble-opencode-lean-"));
+    await symlink(elsewhere, path.join(linked, "owner.json"));
+    const pipe = await mkdtemp(path.join(root, "ensemble-opencode-lean-"));
+    await promisify(execFile)("mkfifo", [path.join(pipe, "owner.json")]);
+    const writable = await mkdtemp(path.join(root, "ensemble-opencode-lean-"));
+    await writeFile(path.join(writable, "owner.json"), owner);
+    await chmod(writable, 0o777);
+    const ordinary = await mkdtemp(path.join(root, "ensemble-opencode-lean-"));
+    await writeFile(path.join(ordinary, "owner.json"), owner);
+
+    const moduleUrl = new URL("../../src/opencode-launch-config.js", import.meta.url).href;
+    await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", `
+      const { sweepAbandonedOpenCodeProfiles } = await import(process.argv[1]);
+      await sweepAbandonedOpenCodeProfiles();
+    `, moduleUrl], { timeout: 5_000, env: { ...process.env, TMPDIR: root } });
+
+    await assert.rejects(access(ordinary), { code: "ENOENT" });
+    for (const directory of [linked, pipe, writable]) await access(directory);
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

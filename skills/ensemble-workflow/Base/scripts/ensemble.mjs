@@ -423,11 +423,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants6) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants5);
+          this.rhs = optimizeExpr(this.rhs, names, constants6);
         return this;
       }
       get names() {
@@ -444,10 +444,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants6) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants5);
+        this.rhs = optimizeExpr(this.rhs, names, constants6);
         return this;
       }
       get names() {
@@ -508,8 +508,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants5) {
-        this.code = optimizeExpr(this.code, names, constants5);
+      optimizeNames(names, constants6) {
+        this.code = optimizeExpr(this.code, names, constants6);
         return this;
       }
       get names() {
@@ -538,12 +538,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants6) {
         const { nodes } = this;
         let i2 = nodes.length;
         while (i2--) {
           const n = nodes[i2];
-          if (n.optimizeNames(names, constants5))
+          if (n.optimizeNames(names, constants6))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i2, 1);
@@ -596,12 +596,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants6) {
         var _a;
-        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants5);
-        if (!(super.optimizeNames(names, constants5) || this.else))
+        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants6);
+        if (!(super.optimizeNames(names, constants6) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants5);
+        this.condition = optimizeExpr(this.condition, names, constants6);
         return this;
       }
       get names() {
@@ -624,10 +624,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants5) {
-        if (!super.optimizeNames(names, constants5))
+      optimizeNames(names, constants6) {
+        if (!super.optimizeNames(names, constants6))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants5);
+        this.iteration = optimizeExpr(this.iteration, names, constants6);
         return this;
       }
       get names() {
@@ -663,10 +663,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants5) {
-        if (!super.optimizeNames(names, constants5))
+      optimizeNames(names, constants6) {
+        if (!super.optimizeNames(names, constants6))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants5);
+        this.iterable = optimizeExpr(this.iterable, names, constants6);
         return this;
       }
       get names() {
@@ -708,11 +708,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants6) {
         var _a, _b;
-        super.optimizeNames(names, constants5);
-        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants5);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants5);
+        super.optimizeNames(names, constants6);
+        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants6);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants6);
         return this;
       }
       get names() {
@@ -1013,7 +1013,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants5) {
+    function optimizeExpr(expr, names, constants6) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1028,14 +1028,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants5[n.str];
+        const c = constants6[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants5[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants6[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -14178,7 +14178,7 @@ import path22 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile13, stat as stat8 } from "node:fs/promises";
+import { readFile as readFile12, stat as stat9 } from "node:fs/promises";
 import { homedir as homedir5, hostname as hostname5 } from "node:os";
 import path21 from "node:path";
 import { parseArgs } from "node:util";
@@ -23692,9 +23692,9 @@ var ClaudeEngineInvocation = class {
    */
   #noteWaits(outstanding) {
     const now = /* @__PURE__ */ new Date();
-    const open = new Set(outstanding.map((task) => task.id));
+    const open2 = new Set(outstanding.map((task) => task.id));
     for (const wait of this.#waits) {
-      if (wait.endedAt === null && !open.has(wait.taskId)) {
+      if (wait.endedAt === null && !open2.has(wait.taskId)) {
         wait.endedAt = now.toISOString();
       }
     }
@@ -26755,21 +26755,37 @@ var AgyEngineAdapter = class {
 import { randomUUID as randomUUID6 } from "node:crypto";
 
 // src/opencode-launch-config.ts
-import { mkdtemp as mkdtemp4, readFile as readFile10, readdir as readdir8, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
+import { constants as constants3 } from "node:fs";
+import { lstat, mkdtemp as mkdtemp4, open, readdir as readdir8, rm as rm6, stat as stat7, writeFile as writeFile7 } from "node:fs/promises";
 import { hostname as hostname4, tmpdir } from "node:os";
 import path18 from "node:path";
 var LEAN_DIRECTORY_PREFIX = "ensemble-opencode-lean-";
 var OWNER_FILENAME2 = "owner.json";
 var OPENCODE_STRIP_TOOLS = { skills: "skill", agents: "task" };
 async function sweepAbandonedOpenCodeProfiles() {
+  const uid = process.geteuid?.();
+  if (uid === void 0) return;
   const root = tmpdir();
+  const parent = await stat7(root).catch(() => null);
+  if (parent === null || parent.uid !== uid && parent.uid !== 0 || (parent.mode & 18) !== 0 && (parent.mode & 512) === 0) return;
   const host = hostname4();
   const entries = await readdir8(root, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith(LEAN_DIRECTORY_PREFIX)) continue;
     const directory = path18.join(root, entry.name);
     try {
-      const owner = JSON.parse(await readFile10(path18.join(directory, OWNER_FILENAME2), "utf8"));
+      const profile = await lstat(directory);
+      if (!profile.isDirectory() || profile.uid !== uid || (profile.mode & 18) !== 0) continue;
+      const recordPath = path18.join(directory, OWNER_FILENAME2);
+      if (!(await lstat(recordPath)).isFile()) continue;
+      const record = await open(recordPath, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
+      let owner;
+      try {
+        if (!(await record.stat()).isFile()) continue;
+        owner = JSON.parse(await record.readFile("utf8"));
+      } finally {
+        await record.close();
+      }
       if (await judgeOwnerGone(owner, "/proc", host) === "owner-process-gone") {
         await rm6(directory, { recursive: true, force: true });
       }
@@ -28812,8 +28828,8 @@ function parseJsonCandidates(source) {
   const structures = [];
   const regions = indexBalancedJsonRegions(trimmed);
   for (let index = 0; index < trimmed.length; index += 1) {
-    const open = trimmed[index];
-    if (open !== "{" && open !== "[") {
+    const open2 = trimmed[index];
+    if (open2 !== "{" && open2 !== "[") {
       continue;
     }
     const region = regions.byStart.get(index);
@@ -28825,7 +28841,7 @@ function parseJsonCandidates(source) {
     if (parsed.ok) {
       structures.push({
         value: parsed.value,
-        source: open === "{" ? "object-fallback" : "array-fallback",
+        source: open2 === "{" ? "object-fallback" : "array-fallback",
         start: region.start,
         end: region.end
       });
@@ -28898,9 +28914,9 @@ function indexBalancedJsonRegions(source) {
       starts[char][quoteParity].push(index);
       continue;
     }
-    const open = char === "}" ? "{" : char === "]" ? "[" : null;
-    if (open !== null) {
-      const start = starts[open][quoteParity].pop();
+    const open2 = char === "}" ? "{" : char === "]" ? "[" : null;
+    if (open2 !== null) {
+      const start = starts[open2][quoteParity].pop();
       if (start !== void 0) {
         regions.push({ start, end: index, quoteParity, children: [] });
       }
@@ -32464,8 +32480,8 @@ function describeWorkerFailure(error) {
 // src/script-runner.ts
 import vm from "node:vm";
 import { createHash as createHash5 } from "node:crypto";
-import { constants as constants4 } from "node:fs";
-import { access as access4, readFile as readFile12, stat as stat7 } from "node:fs/promises";
+import { constants as constants5 } from "node:fs";
+import { access as access4, readFile as readFile11, stat as stat8 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path20 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
@@ -38164,8 +38180,8 @@ function parseExpressionAt2(input, pos, options) {
 var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 
 // src/workflow-registry.ts
-import { constants as constants3 } from "node:fs";
-import { access as access3, readdir as readdir9, readFile as readFile11 } from "node:fs/promises";
+import { constants as constants4 } from "node:fs";
+import { access as access3, readdir as readdir9, readFile as readFile10 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
 import path19 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
@@ -38191,7 +38207,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   }
   const scriptPath = path19.resolve(options.cwd, nameOrRef.scriptPath);
   try {
-    await access3(scriptPath, constants3.R_OK);
+    await access3(scriptPath, constants4.R_OK);
   } catch (error) {
     throw new WorkflowResolutionError(`workflow({ scriptPath }) could not read ${scriptPath}`, { cause: error });
   }
@@ -38264,7 +38280,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     }
     const scriptPath = path19.join(dir, entry.name);
     try {
-      const source = await readFile11(scriptPath, "utf8");
+      const source = await readFile10(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -38847,15 +38863,15 @@ function acornSyntaxErrorPosition(wrappedSource) {
 }
 async function readWorkflowScript(scriptPath) {
   try {
-    return await readFile12(scriptPath, "utf8");
+    return await readFile11(scriptPath, "utf8");
   } catch (error) {
     throw workflowScriptReadError(scriptPath, error);
   }
 }
 async function checkWorkflowScriptPath(scriptPath) {
   try {
-    await access4(scriptPath, constants4.R_OK);
-    if ((await stat7(scriptPath)).isDirectory()) {
+    await access4(scriptPath, constants5.R_OK);
+    if ((await stat8(scriptPath)).isDirectory()) {
       throw Object.assign(new Error("script path is a directory"), { code: "EISDIR" });
     }
   } catch (error) {
@@ -38940,10 +38956,10 @@ function wrappedFrameCitation(frameLine) {
   return null;
 }
 function citedLocationOf(frameLine) {
-  const open = frameLine.lastIndexOf("(");
-  if (open >= 0) {
-    const close = frameLine.indexOf(")", open);
-    return close > open ? frameLine.slice(open + 1, close) : null;
+  const open2 = frameLine.lastIndexOf("(");
+  if (open2 >= 0) {
+    const close = frameLine.indexOf(")", open2);
+    return close > open2 ? frameLine.slice(open2 + 1, close) : null;
   }
   const bare = /^\s+at\s+(?:async\s+)?(\S+)/.exec(frameLine);
   return bare === null ? null : bare[1];
@@ -40127,7 +40143,7 @@ async function prepareRun(invocation, cwd, program) {
       const requestedCwd = path21.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
-        isDirectory2 = (await stat8(requestedCwd)).isDirectory();
+        isDirectory2 = (await stat9(requestedCwd)).isDirectory();
       } catch {
         isDirectory2 = false;
       }
@@ -40438,7 +40454,7 @@ var WORKFLOW_TUNING_OPTIONS = {
 async function parseWorkflowInvocation(argv, cwd, program) {
   if (argv[0] === "run") {
     try {
-      await stat8(path21.resolve(cwd, "run"));
+      await stat9(path21.resolve(cwd, "run"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       throw new CliUsageError(`${program}: "run" was taken as the script path; there is no run subcommand. Use: ${program} [run options] <script.js> [args...]`);
@@ -40825,7 +40841,7 @@ async function parseJsonValue(value, cwd, flagName) {
     const filePath = path21.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
-      source = await readFile13(filePath, "utf8");
+      source = await readFile12(filePath, "utf8");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new CliUsageError(`${flagName} could not read ${filePath}: ${message}`);

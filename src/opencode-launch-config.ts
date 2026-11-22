@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdtemp, open, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 
@@ -23,14 +24,32 @@ interface ConfigCommandResult {
 
 /** Reclaim private profiles whose launcher is provably gone. */
 export async function sweepAbandonedOpenCodeProfiles(): Promise<void> {
+  const uid = process.geteuid?.();
+  if (uid === undefined) return;
   const root = tmpdir();
+  const parent = await stat(root).catch(() => null);
+  // The root's owner can rename any entry. Other users can do so only
+  // when the root is writable and lacks the sticky bit.
+  if (parent === null || (parent.uid !== uid && parent.uid !== 0) ||
+      ((parent.mode & 0o022) !== 0 && (parent.mode & 0o1000) === 0)) return;
   const host = hostname();
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith(LEAN_DIRECTORY_PREFIX)) continue;
     const directory = path.join(root, entry.name);
     try {
-      const owner: unknown = JSON.parse(await readFile(path.join(directory, OWNER_FILENAME), "utf8"));
+      const profile = await lstat(directory);
+      if (!profile.isDirectory() || profile.uid !== uid || (profile.mode & 0o022) !== 0) continue;
+      const recordPath = path.join(directory, OWNER_FILENAME);
+      if (!(await lstat(recordPath)).isFile()) continue;
+      const record = await open(recordPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let owner: unknown;
+      try {
+        if (!(await record.stat()).isFile()) continue;
+        owner = JSON.parse(await record.readFile("utf8"));
+      } finally {
+        await record.close();
+      }
       if (await judgeOwnerGone(owner, "/proc", host) === "owner-process-gone") {
         await rm(directory, { recursive: true, force: true });
       }

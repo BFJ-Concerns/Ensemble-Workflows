@@ -82,7 +82,8 @@ constrain what a worker does, not what it can do.
 ### `agent()`
 
 `agent(prompt, options)` runs one worker on `options.engine` — `"codex"`,
-`"claude"`, or `"opencode"` — or on the engine a named target binds
+`"claude"`, `"opencode"`, or `"agy"` (Google's Antigravity CLI) — or on the
+engine a named target binds
 (`options.target`, see [Named targets](#named-targets)). There is no default
 engine. The prompt must be a non-empty string.
 
@@ -145,7 +146,7 @@ call's own chain still takes precedence over `fallback: false` in defaults.
   worker spawns. A named entry the configuration does not bind, or one naming
   a `target` beside an `engine` or `model`, throws `NamedTargetRejectedError`;
   in a `defaults` chain, either fails the run before the script body runs.
-  An opencode call may declare a chain of Codex and Claude targets.
+  An opencode call may declare a chain of Codex, Claude and agy targets.
 
 Every step is a dispatch Ensemble makes and records itself. The run record
 shows each attempt's target and which entry answered, and stderr says when a
@@ -308,8 +309,8 @@ else the one the call asked for, else `null`; `family` is the
 
 A model family is the group a model belongs to by the name it commonly goes
 by. It belongs to the model, never to the engine: a Claude model is in the
-`claude` family whether Claude Code, opencode or a gateway behind Codex runs
-it. The dispatch lookup, an identified call's `answeredBy` and the run's
+`claude` family whether Claude Code, agy, opencode or a gateway behind Codex
+runs it. The dispatch lookup, an identified call's `answeredBy` and the run's
 [single-family notice](configuration.md#single_family_notice) all report the
 same family.
 
@@ -399,6 +400,8 @@ ceiling, counts every token class an engine reports, cached input included:
   tokens.
 - **opencode** counts input, cache reads and writes, output and reasoning,
   plus any total a step reports without a breakdown.
+- **agy** counts the `totalTokens` of each turn's `session/prompt` reply:
+  uncached input, cache reads and output, which includes the thought tokens.
 
 Set a Claude ceiling with that in mind. The run record's
 [token usage](run-records.md#token-usage-and-cost) shows each class
@@ -433,7 +436,7 @@ the parsed value of `--json-args` (a JSON `null` arrives as an empty array).
 
 ## `agent()` options
 
-`engine` is required — `"codex"`, `"claude"`, or `"opencode"` — unless
+`engine` is required — `"codex"`, `"claude"`, `"opencode"`, or `"agy"` — unless
 `target` names a binding instead. A call with neither, or with an unknown
 engine, throws before any worker spawns.
 
@@ -469,16 +472,16 @@ lists the accepted type names, and invalid `properties` asks for a JSON object.
 
 ### Per-engine behaviour
 
-| | Codex | Claude | opencode |
-|---|---|---|---|
-| `model` | Optional; without one the engine's default is used and noted on stderr | Optional; without one a warning is printed on stderr | **Required**: a key or route declared in [`opencode_models`](configuration.md#opencode_models) |
-| `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` |
-| `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
-| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess |
-| `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Not supported: throws before the worker spawns |
-| `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Not supported: throws before the worker spawns |
-| `fallback` entry | Yes | Yes | No |
-| `session()` | Yes | Yes | No: throws before the worker spawns |
+| | Codex | Claude | opencode | agy |
+|---|---|---|---|---|
+| `model` | Optional; without one the engine's default is used and noted on stderr | Optional; without one a warning is printed on stderr | **Required**: a key or route declared in [`opencode_models`](configuration.md#opencode_models) | Optional: a base name agy lists (`gemini-4-hydrogen`, not `gemini-4-hydrogen-low`); without one, agy's own default |
+| `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` | Resolved per model against the levels agy lists for it, then set as the session's thought level |
+| `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
+| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess | Cancels the turn; the session stays usable |
+| `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Not supported: throws before the worker spawns | Not supported: throws before the worker spawns |
+| `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Not supported: throws before the worker spawns | Not supported: throws before the worker spawns |
+| `fallback` entry | Yes | Yes | No | Yes |
+| `session()` | Yes | Yes | No: throws before the worker spawns | Yes |
 
 Effort resolves for each dispatch target, including a fallback entry and a
 held session's first turn. Capability discovery passes the engine's resource
@@ -497,15 +500,18 @@ The run record shows what each engine actually served: `resolved_model` and
 `resolved_effort` come from the engine's own report — Codex's answer when the
 thread starts, Claude Code's transcript — and are `null` when it reports none.
 opencode reports no served model, so its `resolved_model` is the configured
-`provider_model`.
+`provider_model`. agy reports the model and thought level its session is set
+to; a model with a single level offers no level setting, and its
+`resolved_effort` is that level where the model's name spells it
+(`gpt-oss-120b-medium`) and `null` otherwise.
 
 Codex supports only a subset of JSON Schema for backend enforcement. A schema
 outside that subset is rejected before generation: the call returns `null`
 after one thread start, without retrying or advancing a fallback chain, and
-the error names `claude` and `opencode` as engines that check the full JSON
-Schema themselves.
+the error names `claude`, `opencode` and `agy` as engines that check the full
+JSON Schema themselves.
 
-On Claude and opencode, the worker is asked for a conforming JSON value and
+On Claude, opencode and agy, the worker is asked for a conforming JSON value and
 may surround it with prose or a Markdown fence. A candidate value is the whole
 reply, any balanced `{…}` or `[…]` region in it, or a line holding nothing but
 one JSON scalar (`null`, `false`, `0`, `""`, fenced or not); a scalar
@@ -517,12 +523,15 @@ the last one that validates is the answer.
 Every worker runs unrestricted: it can read and write anywhere the user
 running Ensemble can, and can reach the network. Codex workers are given this
 full-access mode explicitly on every turn, and Ensemble does not turn off
-Codex's backend web search; Claude and opencode workers run without any
+Codex's backend web search; Claude, opencode and agy workers run without any
 containment from Ensemble.
 
 Ensemble starts opencode with `--auto`, approving permissions that opencode
 would otherwise ask about, including shell access outside the worker's cwd.
 Explicit denies in the operator's opencode configuration still apply.
+
+agy asks its client to approve every tool call, and Ensemble grants each one,
+once where agy offers that, so no turn waits on an approval nobody will give.
 
 `strip` is the one opt-in restriction. It removes a named tool-surface
 capability — `"skills"` (the skill tool) or `"agents"` (subagent and
@@ -581,6 +590,10 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   `permission.skill=deny` and `permission.task=deny`, but the live workers
   timed out before demonstrating that these denies took effect. This is
   historical configuration evidence, not proof about the installed version.
+- **agy** rejects any strip before the worker spawns. Its `session/new`
+  takes a `DisableBuiltInTools` setting, read from agy 1.5.14 and never
+  driven, so no route that withholds its skills or subagent tools has been
+  established.
 
 Each agent record lists the requested strips and how each was enforced.
 
@@ -599,7 +612,7 @@ call cannot lift a run-wide `--lean` by setting `lean: false`.
   authentication, permissions and Ensemble's per-dispatch settings remain
   enabled. This route is measured on Claude Code 2.1.322. Capability strips
   prepare against the same context mode as their worker.
-- **Codex** and **opencode** have no supported route: a lean request refuses
+- **Codex**, **opencode** and **agy** have no supported route: a lean request refuses
   before a worker spawns, naming the engine. Each fallback target is checked
   before the first dispatch too, so a chain cannot silently lose lean mode.
 
@@ -837,6 +850,8 @@ back to the worker. Claude corrects in the same session through the prompt
 editor. If tmux becomes unavailable, a one-shot correction starts a fresh session, whose
 opening delivery also requires tmux.
 Codex and opencode retry with the failure appended to the prompt.
+agy corrects in the same session while its worker lives (see
+[agy workers](#agy-workers)).
 
 An opencode model absent from the machine registry, a missing model, or an
 unsupported registry variant is refused before worker admission: the call
@@ -967,7 +982,9 @@ narrow the work), or the Codex transport's request deadline (where raising
 Once a turn streams whitespace, Ensemble ends the attempt if two minutes
 have passed since the turn began or last produced non-whitespace text, tool
 activity or reasoning. This fixed bound applies to Codex app-server events,
-Claude transcript entries and opencode run events. The attempt spends one
+Claude transcript entries, opencode run events and agy session updates, where
+a tool call, a tool call's update, a thought or a plan is activity. agy ends
+a stuck stream by cancelling the turn, which leaves its session usable. The attempt spends one
 of the call's attempts, retains the text it produced and records an output
 failure. A turn that has emitted nothing does not start a whitespace stream.
 
@@ -1077,6 +1094,43 @@ retried within the attempt bound like other failures. That notification
 carries no diagnostic; Ensemble uses an error notification that follows it
 closely, and otherwise says that none was supplied.
 
+### agy workers
+
+Each agy worker is an `agy acp` process — Antigravity's Agent Client
+Protocol server — holding one session, started in the worker's directory
+inside the run's command containment. The model and thought level are set
+on the session before the first prompt. agy runs on the account it is
+signed in to, and the `agy` binary is found on the worker environment's
+`PATH`.
+
+- **Before any prompt:** a model agy does not list, or a level the model
+  does not offer, throws `InvalidAgentOptionValueError` naming what agy
+  offers. A server that will not start or initialise, a missing sign-in,
+  or a session agy will not open throws `AgySubstrateRefusedError`, a
+  substrate refusal recorded as `agy.substrate-refused` (availability),
+  which advances a remaining chain entry without spending an attempt.
+- **Effort:** to clamp a level, Ensemble reads every model's levels once
+  per run from an agy session it never prompts.
+- **The answer** is the message text after the turn's last tool call; the
+  whole turn's text is kept as the attempt's delta text.
+- **Retries:** a retry corrects in the session that failed while its
+  process lives, naming only the failure. A worker whose process ended is
+  replaced, and the new session's opening prompt says what failed.
+- **The deadline** cancels the turn (`agy.deadline`, unclassified); a turn
+  still running ten seconds after the cancel has its worker stopped.
+- **Failures agy returns:** a prompt refused for want of a sign-in
+  (`agy-sign-in-required`, `agy.sign-in-required`) and a worker process
+  that ended mid-turn (`agy-worker-lost`, `agy.worker-lost`) are
+  availability; a turn agy itself ended other than normally — a refusal, a
+  token or request limit (`agy-stop-reason`, `agy.stop-reason`) — is
+  unclassified. Any other JSON-RPC error on a prompt (`agy-prompt-error`)
+  is recorded with `rule: null`: what a reached usage limit looks like has
+  not been observed. In a held session, a worker that is gone is
+  `session-lost`.
+- **What agy leaves behind:** each session leaves its conversation database
+  under `~/.gemini/antigravity-cli/conversations/` and each process a
+  presence lock, which agy itself never removes.
+
 ### Budgets
 
 A call checks its engine's token ceiling (`--budget`) before it joins the
@@ -1107,9 +1161,9 @@ worker's output. See [How a run ends](cli.md#how-a-run-ends).
 
 ## Multi-turn sessions
 
-`session(options)` creates a persistent worker on `"claude"` or `"codex"` and
-returns a handle whose `send(prompt, { schema? })` runs one turn against the
-same worker each time. A follow-up turn reaches a worker that still holds the
+`session(options)` creates a persistent worker on `"claude"`, `"codex"` or
+`"agy"` and returns a handle whose `send(prompt, { schema? })` runs one turn
+against the same worker each time. A follow-up turn reaches a worker that still holds the
 context of its earlier turns, rather than a fresh worker that has to be
 briefed again.
 
@@ -1158,7 +1212,8 @@ await builder.close();
   figures, which reflect the engine's reported reads and writes.
 - **Staleness:** `handle.stale` becomes `true` once the idle time since the
   last turn reaches the threshold — one idle hour on Claude, 60 idle minutes on
-  Codex — and `handle.idleMs` gives the idle time. It is advisory: a send to a
+  Codex, five idle minutes on agy, the prompt-cache lifetime its operator
+  reports — and `handle.idleMs` gives the idle time. It is advisory: a send to a
   stale session still runs, and the script decides whether to pay for the
   re-read or start a fresh worker. `stalenessMark: false` turns the mark off
   for that session. `handle.stalenessMark` reports whether the mark is enabled,

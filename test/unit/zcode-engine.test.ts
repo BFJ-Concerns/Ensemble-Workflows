@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { EngineRegistry } from "../../src/engines.js";
+import { ChainEngine } from "./chain-engine-fakes.js";
 import {
   AgentPromptRejectedError,
   LeanStartUnsupportedError,
@@ -712,6 +713,35 @@ test("a zcode strip of agents is recorded as enforced, as one of skills is", asy
     await runtime.agent("go", { engine: "zcode", model: "gateway/gpt-6.2-sol", strip: ["agents"] });
     assert.deepEqual(runner.runs[0]?.disallowedTools, ["Agent", "CreateWorkflow"]);
     assert.equal(records.at(-1)?.strip?.enforcement.agents?.route, "config");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a held session's creating turn is refused before it starts when a zcode fallback could not be given its prompt", async () => {
+  /** A Codex stand-in that holds sessions and records whether one was ever created. */
+  class SessionEngine extends ChainEngine {
+    sessions = 0;
+    createSession(): never {
+      this.sessions += 1;
+      throw new Error("the creating turn started");
+    }
+  }
+  const codex = new SessionEngine("codex", []);
+  const runner = new FakeZCodeRunner([]);
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, new ZCodeEngineAdapter({ cwd: "/fake/repo", runner })]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1
+  });
+  try {
+    const session = runtime.createWorkerSession({
+      engine: "codex", model: "gpt-6.2-sol", fallback: [{ engine: "zcode", model: "gateway/claude-haiku-5-5" }]
+    });
+    await assert.rejects(session.send("x".repeat(140_000)), AgentPromptRejectedError);
+    assert.equal(codex.sessions, 0);
+    assert.equal(runner.runs.length, 0);
+    await session.close();
   } finally {
     await runtime.close();
   }

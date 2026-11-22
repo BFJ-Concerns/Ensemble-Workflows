@@ -29106,7 +29106,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
-    assertPromptFits(engine.name, prompt, turn.schema);
+    for (const target of [engine.name, ...state.turnCount === 0 ? state.chain.map((entry) => entry.engine) : []]) {
+      assertPromptFits(target, prompt, turn.schema);
+    }
     let phase = options.phase ?? this.progress.snapshot().currentPhase;
     state.inFlight = true;
     try {

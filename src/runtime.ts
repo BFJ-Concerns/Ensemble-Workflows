@@ -1393,7 +1393,11 @@ export class EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
-    assertPromptFits(engine.name, prompt, turn.schema);
+    // The creating turn may reach any of its chain's targets; a later turn
+    // runs on the engine that answered it.
+    for (const target of [engine.name, ...(state.turnCount === 0 ? state.chain.map((entry) => entry.engine) : [])]) {
+      assertPromptFits(target, prompt, turn.schema);
+    }
     let phase = options.phase ?? this.progress.snapshot().currentPhase;
     state.inFlight = true;
     try {

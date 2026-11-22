@@ -8,6 +8,7 @@ import { EngineRegistry } from "../../src/engines.js";
 import { ChainEngine } from "./chain-engine-fakes.js";
 import {
   AgentPromptRejectedError,
+  EngineShutdownError,
   LeanStartUnsupportedError,
   ZCodeModelRequiredError,
   ZCodeSubstrateRefusedError
@@ -372,6 +373,38 @@ test("zcode's refusals of an unlisted model and of a level it does not hold are 
   assert.deepEqual(classifyAttemptFailure({ ...evidence("x"), failure: { kind: "ZCodeSubstrateRefusedError", message: "x" } }),
     { class: "availability", rule: "zcode.substrate-refused" });
 });
+
+for (const inspecting of ["--help", "models"]) {
+  test(`closing the zcode adapter aborts a shared ${inspecting} inspection`, { timeout: 3_000 }, async (t) => {
+    const runner = new FakeZCodeRunner([]);
+    const started = Promise.withResolvers<void>();
+    const stopped = Promise.withResolvers<void>();
+    const inspect = runner.inspect.bind(runner);
+    t.mock.method(runner, "inspect", async (args: readonly string[], signal: AbortSignal) => {
+      if (args[0] !== inspecting) return inspect(args);
+      signal.addEventListener("abort", () => stopped.resolve(), { once: true });
+      started.resolve();
+      await stopped.promise;
+      return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 1 };
+    });
+    const model = "gateway/gpt-6.2-sol";
+    const adapter = new ZCodeEngineAdapter({ runner });
+    const report = adapter.effortReport(model);
+    const invocation = adapter.createInvocation("never launch", { model });
+    const attempt = assert.rejects(invocation.runAttempt({ attempt: 1 }), EngineShutdownError);
+    try {
+      await started.promise;
+      await adapter.close();
+      await attempt;
+      assert.equal(await report, null);
+      assert.equal(runner.runs.length, 0);
+      assert.deepEqual(runner.inspections, inspecting === "--help" ? [] : [["--help"]]);
+    } finally {
+      stopped.resolve();
+      await adapter.close();
+    }
+  });
+}
 
 test("a ZCode without per-run model selection or a listing is refused before any worker spawns, naming what it lacks", async () => {
   const runner = new FakeZCodeRunner([], { help: UPSTREAM_HELP });

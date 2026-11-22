@@ -27851,7 +27851,7 @@ var ZCodeCliRunner = class {
       watchLine: watchZCodeLine
     });
   }
-  async inspect(args) {
+  async inspect(args, signal) {
     return runStreamedCommand({
       label: `zcode ${args[0] ?? ""}`.trim(),
       file: this.bin,
@@ -27861,7 +27861,7 @@ var ZCodeCliRunner = class {
       commands: this.#commands,
       timeoutMs: 6e4,
       killGraceMs: this.#killGraceMs,
-      signal: void 0
+      signal
     });
   }
 };
@@ -27959,6 +27959,7 @@ var ZCodeEngineAdapter = class {
   #runner;
   #onEvent;
   #abilities = null;
+  #inspectionAbort = new AbortController();
   #active = /* @__PURE__ */ new Set();
   #closed = false;
   constructor(options = {}) {
@@ -28007,8 +28008,10 @@ var ZCodeEngineAdapter = class {
   }
   async close() {
     this.#closed = true;
-    this.#scheduler.close(new EngineShutdownError(this.name));
-    await Promise.allSettled([...this.#active].map(async (worker) => worker.close()));
+    const shutdown = new EngineShutdownError(this.name);
+    this.#scheduler.close(shutdown);
+    this.#inspectionAbort.abort(shutdown);
+    await Promise.allSettled([this.#abilities, ...[...this.#active].map(async (worker) => worker.close())]);
   }
   #turnSettings(options) {
     const selection = parseZCodeModel(options.model);
@@ -28030,23 +28033,27 @@ var ZCodeEngineAdapter = class {
    * a zcode that could not be read is asked again by the next dispatch.
    */
   #readAbilities() {
-    const reading = this.#abilities ??= readZCodeAbilities(this.#runner).catch((error) => {
+    const reading = this.#abilities ??= readZCodeAbilities(this.#runner, this.#inspectionAbort.signal).catch((error) => {
       if (this.#abilities === reading) this.#abilities = null;
       throw error;
     });
     return reading;
   }
 };
-async function readZCodeAbilities(runner) {
+async function readZCodeAbilities(runner, signal) {
+  signal.throwIfAborted();
   const refuse = (detail) => {
     throw new ZCodeSubstrateRefusedError(`zcode at ${runner.bin} cannot serve the zcode engine: ${detail}`);
   };
   let help;
   try {
-    help = await runner.inspect(["--help"]);
+    help = await runner.inspect(["--help"], signal);
   } catch (error) {
-    return refuse(`it could not be run (${error instanceof Error ? error.message : String(error)})`);
+    signal.throwIfAborted();
+    if (!(error instanceof SubstrateRefusedError)) throw error;
+    return refuse(`it could not be run (${error.message})`);
   }
+  signal.throwIfAborted();
   const usage2 = `${help.stdout}
 ${help.stderr}`;
   const lacks = [
@@ -28058,10 +28065,13 @@ ${help.stderr}`;
   }
   let listed;
   try {
-    listed = await runner.inspect(["models"]);
+    listed = await runner.inspect(["models"], signal);
   } catch (error) {
-    return refuse(`its model listing could not be read (${error instanceof Error ? error.message : String(error)})`);
+    signal.throwIfAborted();
+    if (!(error instanceof SubstrateRefusedError)) throw error;
+    return refuse(`its model listing could not be read (${error.message})`);
   }
+  signal.throwIfAborted();
   const listing = parseZCodeListing(listed.stdout);
   if (listing === null) {
     const stderr = listed.stderr.trim();

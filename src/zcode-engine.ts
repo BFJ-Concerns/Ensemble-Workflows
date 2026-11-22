@@ -7,6 +7,7 @@ import { launchEnvironment } from "./engine-environment.js";
 import {
   AgentPromptRejectedError,
   EngineShutdownError,
+  SubstrateRefusedError,
   TurnTimeoutError,
   WhitespaceStreamError,
   ZCodeSubstrateRefusedError,
@@ -74,7 +75,7 @@ export interface ZCodeRunOptions {
 export interface ZCodeRunner {
   run(options: ZCodeRunOptions): Promise<StreamedCommandResult>;
   /** One short command (`--help`, `models`) the adapter reads the installed zcode's abilities from. */
-  inspect(args: readonly string[]): Promise<StreamedCommandResult>;
+  inspect(args: readonly string[], signal: AbortSignal): Promise<StreamedCommandResult>;
   /** How a refusal names the installed zcode. */
   readonly bin: string;
 }
@@ -110,7 +111,7 @@ export class ZCodeCliRunner implements ZCodeRunner {
     });
   }
 
-  async inspect(args: readonly string[]): Promise<StreamedCommandResult> {
+  async inspect(args: readonly string[], signal: AbortSignal): Promise<StreamedCommandResult> {
     return runStreamedCommand({
       label: `zcode ${args[0] ?? ""}`.trim(),
       file: this.bin,
@@ -120,7 +121,7 @@ export class ZCodeCliRunner implements ZCodeRunner {
       commands: this.#commands,
       timeoutMs: 60_000,
       killGraceMs: this.#killGraceMs,
-      signal: undefined
+      signal
     });
   }
 }
@@ -272,6 +273,7 @@ export class ZCodeEngineAdapter implements EngineAdapter {
   #runner: ZCodeRunner;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #abilities: Promise<ZCodeAbilities> | null = null;
+  #inspectionAbort = new AbortController();
   #active = new Set<{ close(): Promise<void> }>();
   #closed = false;
 
@@ -329,8 +331,10 @@ export class ZCodeEngineAdapter implements EngineAdapter {
 
   async close(): Promise<void> {
     this.#closed = true;
-    this.#scheduler.close(new EngineShutdownError(this.name));
-    await Promise.allSettled([...this.#active].map(async (worker) => worker.close()));
+    const shutdown = new EngineShutdownError(this.name);
+    this.#scheduler.close(shutdown);
+    this.#inspectionAbort.abort(shutdown);
+    await Promise.allSettled([this.#abilities, ...[...this.#active].map(async (worker) => worker.close())]);
   }
 
   #turnSettings(options: EngineTurnOptions): ZCodeTurnSettings {
@@ -354,7 +358,7 @@ export class ZCodeEngineAdapter implements EngineAdapter {
    * a zcode that could not be read is asked again by the next dispatch.
    */
   #readAbilities(): Promise<ZCodeAbilities> {
-    const reading = this.#abilities ??= readZCodeAbilities(this.#runner).catch((error: unknown) => {
+    const reading = this.#abilities ??= readZCodeAbilities(this.#runner, this.#inspectionAbort.signal).catch((error: unknown) => {
       if (this.#abilities === reading) this.#abilities = null;
       throw error;
     });
@@ -362,16 +366,20 @@ export class ZCodeEngineAdapter implements EngineAdapter {
   }
 }
 
-async function readZCodeAbilities(runner: ZCodeRunner): Promise<ZCodeAbilities> {
+async function readZCodeAbilities(runner: ZCodeRunner, signal: AbortSignal): Promise<ZCodeAbilities> {
+  signal.throwIfAborted();
   const refuse = (detail: string): never => {
     throw new ZCodeSubstrateRefusedError(`zcode at ${runner.bin} cannot serve the zcode engine: ${detail}`);
   };
   let help: StreamedCommandResult;
   try {
-    help = await runner.inspect(["--help"]);
+    help = await runner.inspect(["--help"], signal);
   } catch (error) {
-    return refuse(`it could not be run (${error instanceof Error ? error.message : String(error)})`);
+    signal.throwIfAborted();
+    if (!(error instanceof SubstrateRefusedError)) throw error;
+    return refuse(`it could not be run (${error.message})`);
   }
+  signal.throwIfAborted();
   const usage = `${help.stdout}\n${help.stderr}`;
   const lacks = [
     ...(/--reasoning-level\b/.test(usage) && /--provider\b/.test(usage) && /--model\b/.test(usage)
@@ -384,10 +392,13 @@ async function readZCodeAbilities(runner: ZCodeRunner): Promise<ZCodeAbilities> 
   }
   let listed: StreamedCommandResult;
   try {
-    listed = await runner.inspect(["models"]);
+    listed = await runner.inspect(["models"], signal);
   } catch (error) {
-    return refuse(`its model listing could not be read (${error instanceof Error ? error.message : String(error)})`);
+    signal.throwIfAborted();
+    if (!(error instanceof SubstrateRefusedError)) throw error;
+    return refuse(`its model listing could not be read (${error.message})`);
   }
+  signal.throwIfAborted();
   const listing = parseZCodeListing(listed.stdout);
   if (listing === null) {
     const stderr = listed.stderr.trim();

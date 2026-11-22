@@ -136,6 +136,11 @@ call's own chain still takes precedence over `fallback: false` in defaults.
   reached. If that verification refuses a strip or lean start, the call
   throws before launching that opencode worker, even if an earlier
   target already ran. An uncaught refusal fails the run.
+- An entry with no `effort` inherits the call's effort. If the call uses a raw
+  opencode variant name, a Codex, Claude or agy entry uses its engine's
+  default.
+  An opencode entry inherits that variant, and Ensemble refuses the chain
+  before any worker spawns if the entry's model does not declare it.
 - `maxAttempts` counts answered attempts across the whole chain; a refusal
   costs none.
 - A step to the same engine keeps its concurrency slot; a step to another
@@ -675,8 +680,11 @@ call cannot lift a run-wide `--lean` by setting `lean: false`.
   that the registered model is still listed and that the isolated
   configuration loads no instructions, skills or MCP servers. A provider
   supplied only by an external plugin may be unavailable to a lean worker.
-- **Codex** and **agy** refuse lean requests before the first dispatch, whether it is
-  the initial target or a fallback entry.
+  Ensemble removes the private profile when the worker ends. A later opencode
+  dispatch also removes profiles in the same temporary directory whose
+  recorded launcher can be proved gone.
+- **Codex** and **agy** refuse lean requests before the first dispatch, whether
+  it is the initial target or a fallback entry.
 
 Each agent record carries `lean` naming the route the dispatching engine
 used, or `null` when no lean start was requested.

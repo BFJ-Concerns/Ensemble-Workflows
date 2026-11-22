@@ -1,11 +1,14 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 
 import type { StrippableCapability } from "./capability-stripping.js";
 import { CapabilityStripUnsupportedError, LeanStartUnsupportedError } from "./errors.js";
+import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import type { JsonObject } from "./types.js";
 
+const LEAN_DIRECTORY_PREFIX = "ensemble-opencode-lean-";
+const OWNER_FILENAME = "owner.json";
 const OPENCODE_STRIP_TOOLS = { skills: "skill", agents: "task" } as const;
 
 interface OpenCodeLaunchConfig {
@@ -16,6 +19,25 @@ interface OpenCodeLaunchConfig {
 interface ConfigCommandResult {
   exitCode: number | null;
   stdout: string;
+}
+
+/** Reclaim private profiles whose launcher is provably gone. */
+export async function sweepAbandonedOpenCodeProfiles(): Promise<void> {
+  const root = tmpdir();
+  const host = hostname();
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(LEAN_DIRECTORY_PREFIX)) continue;
+    const directory = path.join(root, entry.name);
+    try {
+      const owner: unknown = JSON.parse(await readFile(path.join(directory, OWNER_FILENAME), "utf8"));
+      if (await judgeOwnerGone(owner, "/proc", host) === "owner-process-gone") {
+        await rm(directory, { recursive: true, force: true });
+      }
+    } catch {
+      // An unreadable owner may belong to a launcher still writing its record.
+    }
+  }
 }
 
 /** Prepare an opt-in worker before sending the prompt. Config discovery can
@@ -64,9 +86,12 @@ export async function prepareOpenCodeLaunch(options: {
   // Keep provider routes, credentials in the original data home, and
   // permission restrictions. Load the profile from private config paths so
   // opencode's usual discovery cannot add interactive context to it.
-  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-lean-"));
+  const owner = await captureProcessOwner("/proc", hostname());
+  const directory = await mkdtemp(path.join(tmpdir(), LEAN_DIRECTORY_PREFIX));
   const close = () => rm(directory, { recursive: true, force: true });
   try {
+    // Record ownership before any file that can contain credentials.
+    await writeFile(path.join(directory, OWNER_FILENAME), JSON.stringify(owner), { mode: 0o600 });
     const configFile = path.join(directory, "opencode.json");
     const profile = {
       $schema: "https://opencode.ai/config.json",

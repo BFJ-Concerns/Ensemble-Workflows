@@ -319,7 +319,7 @@ export function isWhitespaceStreamFailureKind(kind: string | undefined): boolean
 }
 
 export function isWorkerLossFailureKind(kind: string | undefined): boolean {
-  return kind === "claude-worker-lost" || kind === "session-lost";
+  return kind === "claude-worker-lost" || kind === "opencode-worker-lost" || kind === "session-lost";
 }
 
 const UNOBSERVED_REASON: Record<Exclude<AttemptEnding, "settled" | "refused">, UnobservedSpendReason> = {

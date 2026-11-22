@@ -14,7 +14,7 @@ import {
   partialWorkerTextOf
 } from "./errors.js";
 import { OPENCODE_TRANSCRIPT, transcriptContent } from "./live-transcript.js";
-import { prepareOpenCodeLaunch } from "./opencode-launch-config.js";
+import { prepareOpenCodeLaunch, sweepAbandonedOpenCodeProfiles } from "./opencode-launch-config.js";
 import { subtractUsage } from "./usage-summary.js";
 import { WhitespaceStream } from "./whitespace-stream.js";
 import { openingPrompt } from "./worker-instructions.js";
@@ -131,6 +131,7 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
   #killGraceMs: number;
   #env: NodeJS.ProcessEnv;
   #commands: CommandContainment | undefined;
+  #profileSweep: Promise<void> | undefined;
 
   constructor(bin = "opencode", options: { killGraceMs?: number; workerEnv?: Record<string, string>; commands?: CommandContainment } = {}) {
     this.#bin = bin;
@@ -159,6 +160,9 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
     const signal = options.signal;
     if (signal?.aborted) return stoppedBeforeLaunch();
     try {
+      this.#profileSweep ??= sweepAbandonedOpenCodeProfiles();
+      await this.#profileSweep;
+      if (signal?.aborted) return stoppedBeforeLaunch();
       const launch = await prepareOpenCodeLaunch({
         env: this.#env,
         strip: options.strip ?? [],

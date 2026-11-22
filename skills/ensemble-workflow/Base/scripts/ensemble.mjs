@@ -22304,6 +22304,7 @@ var ClaudeCliControlPlane = class {
       if (awaiting !== void 0) {
         const cancelled = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Escape"]);
         if (!cancelled.ok) return refused("tmux send-keys (cancel input)", cancelled);
+        closure.closedInput = awaiting;
         for (; ; ) {
           const current2 = await this.poll(handle);
           if (!current2.present) return { submitted: false, reason: "the session left the daemon's roster while cancelling input" };
@@ -22313,7 +22314,6 @@ var ClaudeCliControlPlane = class {
           }
           await delay(50, signal);
         }
-        closure.closedInput = awaiting;
       }
       const sent = closure.closedInput !== void 0 && options.onInputClosed !== void 0 ? options.onInputClosed(closure.closedInput) : message;
       await writeFile6(payload, sent, { mode: 384 });

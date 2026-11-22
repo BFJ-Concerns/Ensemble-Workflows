@@ -1228,11 +1228,12 @@ signed in to, and the `agy` binary is found on the worker environment's
   `unestablishedStops`; a retry opens a fresh worker whose opening prompt
   says what failed. A held session's retry corrects in the same session
   while its process lives, naming only the failure.
-- **The deadline** covers the prompt and any automatic follow-up. Ensemble
-  cancels the turn and stops the worker if cancellation receives no prompt
-  reply within ten seconds. The interrupted turn records `agy.deadline`
-  (unclassified). If Ensemble stops a held worker, later turns see the
-  lost session.
+- **The deadline and whitespace bound** apply through the automatic
+  follow-up. When either expires, Ensemble cancels the turn. It waits up
+  to ten seconds for a prompt reply, or, after the original reply, a failed
+  update for the last outstanding background command. If agy does not
+  confirm cancellation, Ensemble stops the worker and any held session
+  is lost. A deadline records `agy.deadline` (unclassified).
 - **Failures agy returns:** a prompt refused for want of a sign-in
   (`agy-sign-in-required`, `agy.sign-in-required`) and a worker process
   that ended mid-turn (`agy-worker-lost`, `agy.worker-lost`) are

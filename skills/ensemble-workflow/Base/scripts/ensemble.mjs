@@ -26156,7 +26156,12 @@ async function runTurn(worker, message, timeoutMs, context) {
       whitespace.observeText(text);
     } else if (update.kind === "tool_call" || update.kind === "tool_call_update") {
       clearTimeout(settleFollowUp);
+      const { toolCallId, status } = update.body;
+      const backgroundCommand = typeof toolCallId === "string" && commands.has(toolCallId);
       trackCommand(commands, update.body);
+      if (waiting && stopping !== null && backgroundCommand && status === "failed" && commands.size === 0) {
+        followUp.resolve(null);
+      }
       turn.finalText = "";
       whitespace.observeActivity();
     } else if (update.kind === "agent_thought_chunk" || update.kind === "plan") {

@@ -37,6 +37,7 @@ export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 const SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 /** Each valve's private tmux socket lives at `<tmux's socket root>/<prefix><random>/tmux.sock`. */
 const VALVE_DIR_PREFIX = "ensemble-claude-valve-";
+const VALVE_PANE_CAPTURE_TIMEOUT_MS = 2_000;
 /** The owner evidence written beside `settings.json`, judged by the next launcher's sweep. */
 const OWNER_FILENAME = "owner.json";
 
@@ -1042,11 +1043,12 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
         fs.writeFileSync(${JSON.stringify(copied)}, "complete", { mode: 0o600 });
       `, { mode: 0o700 });
-      const editorCommand = editor;
+      // Separate command arguments make tmux exec Claude directly. A single
+      // command string runs through the login shell, which may reset the editor.
       const created = await this.#launch(this.#tmuxBin, [
         ...server, "-f", "/dev/null", "new-session", "-d", "-s", valve,
-        `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
-      ], { input: null, env: { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand } });
+        "--", tmuxCommandArgument(this.#claudeBin), "attach", tmuxCommandArgument(handle.id)
+      ], { input: null, env: { ...this.#env, VISUAL: editor, EDITOR: editor } });
       if (!created.ok) return refused("tmux new-session", created);
 
       await delay(this.#valveAttachSettleMs, signal);
@@ -1067,7 +1069,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           // dialog is gone when its specific input request is gone.
           if (current.state !== "unknown" && current.waitingFor === undefined) break;
           if (Date.now() >= copyDeadline) {
-            return { submitted: false, reason: `blocked input did not clear within ${this.#valveDeliveryTimeoutMs}ms` };
+            return await this.#valveTimeout(server, valve, "blocked input did not clear", signal);
           }
           await delay(50, signal);
         }
@@ -1082,7 +1084,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
         if (Date.now() >= copyDeadline) {
-          return { submitted: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
+          return await this.#valveTimeout(server, valve, "prompt editor did not finish copying", signal);
         }
         await delay(50, signal);
       }
@@ -1102,6 +1104,18 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       await this.#run(this.#tmuxBin, [...server, "kill-server"], AbortSignal.timeout(this.#reclaimTimeoutMs));
       await rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
     }
+  }
+
+  async #valveTimeout(server: string[], valve: string, wait: string, signal?: AbortSignal): Promise<ValveSubmission> {
+    const timeout = AbortSignal.timeout(VALVE_PANE_CAPTURE_TIMEOUT_MS);
+    const capture = await this.#run(
+      this.#tmuxBin, [...server, "capture-pane", "-p", "-t", valve],
+      signal === undefined ? timeout : AbortSignal.any([signal, timeout])
+    );
+    const pane = capture.ok
+      ? `pane showed: ${boundedEvidence(capture.stdout) || "(empty)"}`
+      : `pane capture failed: ${boundedEvidence(capture.stderr) || "tmux gave no reason"}`;
+    return { submitted: false, reason: `${wait} within ${this.#valveDeliveryTimeoutMs}ms; ${pane}` };
   }
 
   /**
@@ -1587,6 +1601,11 @@ function launchAccount(result: CommandResult): string {
   return `dispatch exit ${result.exitCode ?? "unknown"}, signal ${result.signal ?? "none"}; ` +
     `stdout: ${boundedEvidence(result.stdout.trim() || "(empty)")}; ` +
     `stderr: ${boundedEvidence(result.stderr.trim() || "(empty)")}`;
+}
+
+/** tmux treats a trailing semicolon on argv as a command separator. */
+function tmuxCommandArgument(value: string): string {
+  return value.endsWith(";") ? value.slice(0, -1) + "\\;" : value;
 }
 
 function shellQuote(value: string): string {

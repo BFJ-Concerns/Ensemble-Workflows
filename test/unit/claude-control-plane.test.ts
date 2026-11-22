@@ -900,8 +900,15 @@ async function installValveStubs(dir: string, mode = "exact") {
     if (command[0] === "new-session") {
       writeFileSync(state, JSON.stringify({ editor: process.env.VISUAL }));
     }
+    if (command[0] === "capture-pane") {
+      if (mode === "editor-missing-pane-gone") {
+        console.error("no server running");
+        process.exit(1);
+      }
+      console.log("Input needed");
+    }
     if (step === "Escape" && mode !== "blocked-stuck") rmSync(${JSON.stringify(dialog)}, { force: true });
-    if (step === "C-g" && mode !== "editor-missing" && !existsSync(${JSON.stringify(dialog)})) {
+    if (step === "C-g" && mode !== "editor-missing-pane-gone" && !existsSync(${JSON.stringify(dialog)})) {
       const { editor } = JSON.parse(readFileSync(state, "utf8"));
       const [file, ...args] = editor.split(" ");
       execFileSync(file, [...args, target]);
@@ -943,15 +950,16 @@ for (const mode of ["blocked", "blocked-stuck", "empty"] as const) {
         assert.equal(JSON.parse(rows.at(-1)!).message.content, "old");
       } else {
         assert.equal(result.submitted, false);
-        if (!result.submitted) assert.match(result.reason, /blocked input did not clear/);
-        assert.deepEqual(keys, ["Escape", "kill-server"]);
+        if (!result.submitted) assert.match(result.reason, /blocked input did not clear within 200ms; pane showed: Input needed/);
+        assert.deepEqual(keys, ["Escape", "ensemble-valve-valve-1-1", "kill-server"]);
+        assert.deepEqual(calls.at(-2)?.argv.slice(2), ["capture-pane", "-p", "-t", "ensemble-valve-valve-1-1"]);
       }
       await assert.rejects(access(path.dirname(calls[0]!.argv[1]!)));
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 }
 
-for (const mode of ["attach", "C-g", "Enter", "editor-missing"] as const) {
+for (const mode of ["attach", "C-g", "Enter", "editor-missing-pane-gone"] as const) {
   test(`reply valve reports ${mode} failure and removes its private files`, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-failure-"));
     try {
@@ -963,7 +971,9 @@ for (const mode of ["attach", "C-g", "Enter", "editor-missing"] as const) {
       const result = await control.steer(stub.handle, "old");
       assert.equal(result.submitted, false);
       if (!result.submitted) {
-        assert.match(result.reason, mode === "editor-missing" ? /editor did not finish/ : /delivery refused/);
+        assert.match(result.reason, mode === "editor-missing-pane-gone"
+          ? /prompt editor did not finish copying within 50ms; pane capture failed: no server running/
+          : /delivery refused/);
       }
       const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
         .map(line => JSON.parse(line) as { argv: string[] });
@@ -1029,38 +1039,64 @@ test("concurrent multi-megabyte follow-ups use private editors, exact receipts a
   } finally { await Promise.all(dirs.map(dir => rm(dir, { recursive: true, force: true }))); }
 });
 
-test("a real private tmux server gives its attach client the editor and declared environment", async (t) => {
+test("a real private tmux server gives Claude its editor despite login shell overrides", async (t) => {
   try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); }
   catch { t.skip("tmux is not installed"); return; }
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-real-"));
   const savedShell = process.env.SHELL;
-  process.env.SHELL = "/bin/sh";
   try {
+    const shell = path.join(dir, "operator-shell");
+    await writeFile(shell, '#!/bin/sh\nexport VISUAL=/bin/false EDITOR=/bin/false\nexec /bin/sh "$@"\n', { mode: 0o755 });
+    process.env.SHELL = shell;
     const stub = await installValveStubs(dir);
-    await writeFile(stub.claude, `#!/usr/bin/env node
-      import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+    const stallEditor = path.join(dir, "stall-editor");
+    const claude = path.join(dir, "claude stub;");
+    await writeFile(claude, `#!/usr/bin/env node
+      import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
       import { execFileSync } from "node:child_process";
       if (process.argv[2] === "agents") {
         console.log(JSON.stringify([${JSON.stringify({ ...stub.handle, status: "idle", state: "working", kind: "background" })}]));
-      } else if (process.argv[2] === "attach") {
-        writeFileSync(${JSON.stringify(path.join(dir, "attach-env"))}, JSON.stringify({ token: process.env.ANTHROPIC_AUTH_TOKEN, sandboxed: process.env.CLAUDE_CODE_SANDBOXED }));
+      } else if (process.argv[2] === "attach" && process.argv[3] === ${JSON.stringify(stub.handle.id)}) {
+        writeFileSync(${JSON.stringify(path.join(dir, "attach-env"))}, JSON.stringify({
+          token: process.env.ANTHROPIC_AUTH_TOKEN, sandboxed: process.env.CLAUDE_CODE_SANDBOXED,
+          visual: process.env.VISUAL, editor: process.env.EDITOR
+        }));
         process.stdin.setRawMode(true);
         process.stdin.on("data", chunk => {
           if (chunk.includes(7)) {
+            if (existsSync(${JSON.stringify(stallEditor)})) {
+              process.stdout.write("\\x1b[31mWaiting for input\\x1b[0m\\nChoose an option\\n");
+              return;
+            }
             const [file, ...args] = process.env.VISUAL.split(" ");
             execFileSync(file, [...args, ${JSON.stringify(path.join(dir, "edited.txt"))}]);
           }
           if (chunk.includes(13)) appendFileSync(${JSON.stringify(stub.transcript)}, JSON.stringify({ type: "user", message: { content: readFileSync(${JSON.stringify(path.join(dir, "edited.txt"))}, "utf8") } }) + "\\n");
         });
       }
-    `);
+    `, { mode: 0o755 });
     const control = new ClaudeCliControlPlane({
-      claudeBin: stub.claude, projectsDir: dir,
-      workerEnv: { ANTHROPIC_AUTH_TOKEN: "declared-token" }, valveAttachSettleMs: 1_500
+      claudeBin: claude, projectsDir: dir,
+      workerEnv: { ANTHROPIC_AUTH_TOKEN: "declared-token" }, valveAttachSettleMs: 1_500, valveDeliveryTimeoutMs: 1_000
     });
-    assert.deepEqual(await control.steer(stub.handle, "é😀\nwhole turn"), { submitted: true });
-    assert.deepEqual(JSON.parse(await readFile(path.join(dir, "attach-env"), "utf8")), { token: "declared-token", sandboxed: "1" });
-    await waitForCondition(async () => (await processesNaming(stub.claude)).length === 0, "private attach client survived cleanup");
+    const message = "é😀\nwhole turn";
+    const result = await control.steer(stub.handle, message);
+    const { token, sandboxed, visual, editor } = JSON.parse(await readFile(path.join(dir, "attach-env"), "utf8"));
+    assert.match(visual, /\/editor\.cjs$/);
+    assert.equal(editor, visual);
+    assert.deepEqual({ token, sandboxed }, { token: "declared-token", sandboxed: "1" });
+    assert.deepEqual(result, { submitted: true });
+    const transcript = await readFile(stub.transcript, "utf8");
+    const rows = transcript.trim().split("\n");
+    assert.equal(JSON.parse(rows.at(-1)!).message.content, message);
+
+    await writeFile(stallEditor, "");
+    assert.deepEqual(await control.steer(stub.handle, "will time out"), {
+      submitted: false,
+      reason: "prompt editor did not finish copying within 1000ms; pane showed: Waiting for input Choose an option"
+    });
+    assert.equal(await readFile(stub.transcript, "utf8"), transcript);
+    await waitForCondition(async () => (await processesNaming(claude)).length === 0, "private attach client survived cleanup");
   } finally {
     restoreEnv("SHELL", savedShell);
     await rm(dir, { recursive: true, force: true });

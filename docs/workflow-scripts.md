@@ -1267,10 +1267,14 @@ await builder.close();
   the opening's collision-free task tags, preserving the caller's text inside
   the message boundary. Redelivery repeats that framed copy. Tasks without
   edge whitespace arrive as ordinary typed text, so a leading `/skill` line
-  expands, including under a `skills` strip. Ensemble overrides `VISUAL` and
-  `EDITOR` only for that delivery client and removes its files and tmux server
-  after delivery. The separate, input-free lifetime attachment remains until
-  the held session closes.
+  expands, including under a `skills` strip. The delivery pane runs
+  `claude attach` directly with `VISUAL` and `EDITOR` set to Ensemble's
+  copy helper, so login shell settings cannot change its editor. If the wait
+  for a native input dialog to close or for the editor to copy the prompt
+  expires, the failure includes a short excerpt of the visible pane or says
+  why it could not be captured. Ensemble removes the delivery files and tmux
+  server when the attempt ends. The separate, input-free lifetime attachment
+  remains until the held session closes.
   It loads no tmux configuration and does not appear among your own sessions.
   Delivery requires a new native user row equal to the message sent (or the
   matching command name and arguments for a slash command). Roster activity

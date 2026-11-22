@@ -21439,6 +21439,7 @@ var controlCommandContext = new AsyncLocalStorage();
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
+var VALVE_PANE_CAPTURE_TIMEOUT_MS = 2e3;
 var OWNER_FILENAME = "owner.json";
 var LEAN_START_FLAGS = ["--safe-mode"];
 var CLAUDE_ROSTER_ABSENCE_BOUND = 3;
@@ -21964,7 +21965,6 @@ var ClaudeCliControlPlane = class {
         fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
         fs.writeFileSync(${JSON.stringify(copied)}, "complete", { mode: 0o600 });
       `, { mode: 448 });
-      const editorCommand = editor;
       const created = await this.#launch(this.#tmuxBin, [
         ...server,
         "-f",
@@ -21973,8 +21973,11 @@ var ClaudeCliControlPlane = class {
         "-d",
         "-s",
         valve,
-        `${shellQuote(this.#claudeBin)} attach ${shellQuote(handle.id)}`
-      ], { input: null, env: { ...this.#env, VISUAL: editorCommand, EDITOR: editorCommand } });
+        "--",
+        tmuxCommandArgument(this.#claudeBin),
+        "attach",
+        tmuxCommandArgument(handle.id)
+      ], { input: null, env: { ...this.#env, VISUAL: editor, EDITOR: editor } });
       if (!created.ok) return refused("tmux new-session", created);
       await delay(this.#valveAttachSettleMs, signal);
       const copyDeadline = Date.now() + this.#valveDeliveryTimeoutMs;
@@ -21986,7 +21989,7 @@ var ClaudeCliControlPlane = class {
           if (!current2.present) return { submitted: false, reason: "the session left the daemon's roster while cancelling input" };
           if (current2.state !== "unknown" && current2.waitingFor === void 0) break;
           if (Date.now() >= copyDeadline) {
-            return { submitted: false, reason: `blocked input did not clear within ${this.#valveDeliveryTimeoutMs}ms` };
+            return await this.#valveTimeout(server, valve, "blocked input did not clear", signal);
           }
           await delay(50, signal);
         }
@@ -22001,7 +22004,7 @@ var ClaudeCliControlPlane = class {
           if (error.code !== "ENOENT") throw error;
         }
         if (Date.now() >= copyDeadline) {
-          return { submitted: false, reason: `prompt editor did not finish copying within ${this.#valveDeliveryTimeoutMs}ms` };
+          return await this.#valveTimeout(server, valve, "prompt editor did not finish copying", signal);
         }
         await delay(50, signal);
       }
@@ -22020,6 +22023,16 @@ var ClaudeCliControlPlane = class {
       await this.#run(this.#tmuxBin, [...server, "kill-server"], AbortSignal.timeout(this.#reclaimTimeoutMs));
       await rm5(socketDir, { recursive: true, force: true }).catch(() => void 0);
     }
+  }
+  async #valveTimeout(server, valve, wait, signal) {
+    const timeout = AbortSignal.timeout(VALVE_PANE_CAPTURE_TIMEOUT_MS);
+    const capture = await this.#run(
+      this.#tmuxBin,
+      [...server, "capture-pane", "-p", "-t", valve],
+      signal === void 0 ? timeout : AbortSignal.any([signal, timeout])
+    );
+    const pane = capture.ok ? `pane showed: ${boundedEvidence(capture.stdout) || "(empty)"}` : `pane capture failed: ${boundedEvidence(capture.stderr) || "tmux gave no reason"}`;
+    return { submitted: false, reason: `${wait} within ${this.#valveDeliveryTimeoutMs}ms; ${pane}` };
   }
   /**
    * Place the session's process and its live descendants in the scope
@@ -22443,6 +22456,9 @@ function refused(step, result) {
 }
 function launchAccount(result) {
   return `dispatch exit ${result.exitCode ?? "unknown"}, signal ${result.signal ?? "none"}; stdout: ${boundedEvidence(result.stdout.trim() || "(empty)")}; stderr: ${boundedEvidence(result.stderr.trim() || "(empty)")}`;
+}
+function tmuxCommandArgument(value) {
+  return value.endsWith(";") ? value.slice(0, -1) + "\\;" : value;
 }
 function shellQuote(value) {
   return "'" + value.replaceAll("'", "'\\''") + "'";

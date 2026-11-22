@@ -162,8 +162,8 @@ export type ClaudeToolSurfaceProbe = (request: ClaudeToolSurfaceProbeRequest) =>
  *   already holds, while a wrong "submitted" costs one missing receipt.
  *
  * On either outcome `closedInput`, when present, names the native input
- * request the valve closed on its way to the prompt, as the roster named
- * it: a delivery refused after that point has already closed it.
+ * request the valve sent Escape to close, as the roster named it. A
+ * refusal can carry this account while the roster still shows the request.
  */
 export type ValveSubmission =
   | { submitted: true; closedInput?: string }
@@ -1090,6 +1090,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       if (awaiting !== undefined) {
         const cancelled = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Escape"]);
         if (!cancelled.ok) return refused("tmux send-keys (cancel input)", cancelled);
+        closure.closedInput = awaiting;
         for (;;) {
           const current = await this.poll(handle);
           if (!current.present) return { submitted: false, reason: "the session left the daemon's roster while cancelling input" };
@@ -1101,7 +1102,6 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           }
           await delay(50, signal);
         }
-        closure.closedInput = awaiting;
       }
       // The payload is written once the valve knows whether it closed a
       // request, so text that describes the close is true of it.

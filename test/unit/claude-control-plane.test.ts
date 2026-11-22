@@ -907,7 +907,7 @@ async function installValveStubs(dir: string, mode = "exact") {
       }
       console.log("Input needed");
     }
-    if (step === "Escape" && mode !== "blocked-stuck") rmSync(${JSON.stringify(dialog)}, { force: true });
+    if ((step === "Escape" && mode !== "blocked-late") || (step === "kill-server" && mode === "blocked-late")) rmSync(${JSON.stringify(dialog)}, { force: true });
     if (step === "C-g" && mode !== "editor-missing-pane-gone" && !existsSync(${JSON.stringify(dialog)})) {
       const { editor } = JSON.parse(readFileSync(state, "utf8"));
       const [file, ...args] = editor.split(" ");
@@ -930,7 +930,7 @@ async function installValveStubs(dir: string, mode = "exact") {
   return { claude, tmux, handle, transcript };
 }
 
-for (const mode of ["blocked", "blocked-stuck", "empty"] as const) {
+for (const mode of ["blocked", "blocked-late", "empty"] as const) {
   test(`reply valve cancels native input before opening the editor: ${mode}`, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-blocked-"));
     try {
@@ -945,14 +945,15 @@ for (const mode of ["blocked", "blocked-stuck", "empty"] as const) {
       const calls = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).trim().split("\n")
         .map(line => JSON.parse(line) as { argv: string[] });
       const keys = calls.slice(1).map(call => call.argv.at(-1));
-      if (mode !== "blocked-stuck") {
+      if (mode !== "blocked-late") {
         assert.deepEqual(result, mode === "blocked" ? { submitted: true, closedInput: "input needed" } : { submitted: true });
         assert.deepEqual(keys, [...(mode === "blocked" ? ["Escape"] : []), "C-g", "Enter", "kill-server"]);
         const rows = (await readFile(stub.transcript, "utf8")).trim().split("\n");
         assert.equal(JSON.parse(rows.at(-1)!).message.content, mode === "blocked" ? "closed: input needed" : "old");
       } else {
         assert.equal(result.submitted, false);
-        assert.equal(result.closedInput, undefined, "a request that never cleared was not closed");
+        assert.equal(result.closedInput, "input needed", "Escape reached the dialog before the roster cleared");
+        await assert.rejects(access(path.join(dir, "dialog-open")), { code: "ENOENT" });
         if (!result.submitted) assert.match(result.reason, /blocked input did not clear within 200ms; pane showed: Input needed/);
         assert.deepEqual(keys, ["Escape", "ensemble-valve-valve-1-1", "kill-server"]);
         assert.deepEqual(calls.at(-2)?.argv.slice(2), ["capture-pane", "-p", "-t", "ensemble-valve-valve-1-1"]);

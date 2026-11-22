@@ -9,6 +9,7 @@ import { readArchiveIntegrity } from "../archive-integrity-reader.js";
 import { assertSalvageEnvelope, findOnlyFile, hermeticEstateEnvironment } from "./estate-process.js";
 
 const deadlinePreload = path.resolve("test/fixtures/codex/release-workflow-timeout.mjs");
+const publicationPreload = path.resolve("test/fixtures/count-manifest-publications.mjs");
 const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 for (const signal of [null, "SIGINT", "SIGTERM"] as const) {
@@ -45,7 +46,10 @@ await Promise.all(Array.from({ length: ${count} }, () => agent("pending", { engi
     let stderr = "";
     let signalSent = false;
     let watchdogFired = false;
-    const child = spawn(process.execPath, ["--import", deadlinePreload, launcher, "--timeout", "25", "--agent-ceiling", "1", script], {
+    const child = spawn(process.execPath, [
+      "--import", deadlinePreload, "--import", publicationPreload,
+      launcher, "--timeout", "25", "--agent-ceiling", "1", script
+    ], {
       env: hermeticEstateEnvironment({
         PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
         HOME: directory, XDG_CONFIG_HOME: config, XDG_DATA_HOME: path.join(directory, "data"),
@@ -78,6 +82,11 @@ await Promise.all(Array.from({ length: ${count} }, () => agent("pending", { engi
       const deadlines = await readFile(control, "utf8");
       assert.match(deadlines, /^armed:workflow:\d+:25$/m);
       assert.match(deadlines, /^ready$/m, "the deadline fired before the backlog formed");
+      const publicationCount = Number(/^manifest-publications:(\d+)$/m.exec(deadlines)?.[1]);
+      // Dispatch and settlement each publish a batch. Leave room for other
+      // archive updates while ruling out a publication per agent record.
+      assert.ok(publicationCount > 0 && publicationCount <= 32,
+        `expected at most 32 manifest publications for ${count} agents, observed ${publicationCount}`);
       assertSalvageEnvelope(stdout, "timed-out", []);
       const manifestPath = await findOnlyFile(records, "manifest.json");
       const manifest = JSON.parse(await readFile(manifestPath, "utf8"));

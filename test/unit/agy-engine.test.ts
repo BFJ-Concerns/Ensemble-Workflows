@@ -596,6 +596,54 @@ test("a held agy turn's deadline still applies after the prompt reply", async (t
   assert.equal((await session.beginTurn("next", {}).runAttempt({ attempt: 1 })).attemptFailure?.kind, "session-lost");
 });
 
+for (const bound of [
+  { name: "deadline", timeoutMs: 500, expiry: 500, error: TurnTimeoutError },
+  { name: "whitespace bound", timeoutMs: 3_600_000, expiry: 120_000, error: WhitespaceStreamError }
+]) {
+  test(`a held agy session survives its ${bound.name} when cancel ends the background commands`, async (t) => {
+    const agent = inProcessAgent(t, { ignoreCancel: true });
+    const adapter = new AgyEngineAdapter({ commands: agent.commands });
+    t.after(() => adapter.close());
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+    const session = adapter.createSession({ cwd: process.cwd(), timeoutMs: bound.timeoutMs }, {
+      onLost: () => assert.fail("the held session was lost")
+    });
+    let settled = false;
+    const pending = session.beginTurn("wait", {}).runAttempt({ attempt: 1 })
+      .catch((error: unknown) => error).finally(() => { settled = true; });
+    await until(() => agent.prompts.length === 1);
+    for (const toolCallId of ["first", "last"]) {
+      agent.update({ sessionUpdate: "tool_call", toolCallId, name: "run_command", status: "in_progress" });
+    }
+    agent.prompts[0]?.answer("end_turn", { totalTokens: 42 });
+    if (bound.error === WhitespaceStreamError) agent.update(say("  ").update);
+    await flush();
+
+    t.mock.timers.tick(bound.expiry);
+    await flush();
+    assert.equal(agent.cancels(), 1);
+    for (const toolCallId of ["unrelated", "first"]) {
+      agent.update({ sessionUpdate: "tool_call_update", toolCallId, status: "failed" });
+      await flush();
+      assert.equal(settled, false, "another command was still running");
+    }
+    agent.update({ sessionUpdate: "tool_call_update", toolCallId: "last", status: "failed" });
+    await flush();
+    assert.equal(settled, true, "cancellation finished without waiting for the stop grace");
+    const failure = await pending;
+    assert.ok(failure instanceof bound.error);
+    assert.equal(failedTurnResultOf(failure)?.tokenUsageEvents[0]?.last.totalTokens, 42);
+    assert.equal(agent.stops(), 0);
+
+    const next = session.beginTurn("next", {}).runAttempt({ attempt: 1 });
+    await until(() => agent.prompts.length === 2);
+    agent.update(say("Still here.").update);
+    agent.prompts[1]?.answer("end_turn");
+    assert.equal((await next).deltaText, "Still here.");
+    assert.equal(agent.started(), 1);
+  });
+}
+
 test("an agy worker that exits during its automatic follow-up keeps partial text and prompt usage", async (t) => {
   const agent = inProcessAgent(t);
   const adapter = new AgyEngineAdapter({ commands: agent.commands });

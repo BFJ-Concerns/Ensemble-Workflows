@@ -19,6 +19,7 @@ import type {
 import { DIGEST_RECIPE, canonicalJson, compareCodeUnits, sha256 } from "./canonical-document.js";
 import { RunRecordStartError } from "./errors.js";
 import { harnessVersion } from "./harness-version.js";
+import { LIVE_TRANSCRIPTS, transcriptLine } from "./live-transcript.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 import {
@@ -289,7 +290,11 @@ export interface LiveAttemptRecord {
   effort_resolution?: EffortResolution;
   attempt: number;
   started_at: string;
-  /** Codex: the archive-relative live file; Claude: the session's own absolute JSONL path; null until readable. */
+  /**
+   * The attempt's live transcript, null until readable: archive-relative
+   * for one the harness captures, the engine's own absolute path for one
+   * the engine holds (`LIVE_TRANSCRIPTS`).
+   */
   transcript: string | null;
   target: { engine: EngineName; model: string | null };
   named_target: string | null;
@@ -844,7 +849,9 @@ export class RunRecordWriter {
   #agentBatch: AgentPublicationBatch | null = null;
   #sealed = false;
   #currentAttempts = new Map<number, LiveAttemptRecord>();
-  #liveTranscripts = new Map<string, string>();
+  /** The archive-held live transcript each attempt wrote, by `<agent>:<attempt>`, kept for the attempt's settlement. */
+  #liveTranscripts = new Map<string, { path: string; source: string }>();
+  /** The running digest of each such file, by path, so an append never re-reads what it has already written. */
   #liveTranscriptHashes = new Map<string, { hash: Hash; size: number }>();
 
   private constructor(archiveDir: string, cwd: string, manifest: Manifest) {
@@ -1214,8 +1221,12 @@ export class RunRecordWriter {
     });
   }
 
-  /** Reference Claude's own readable transcript without copying a growing file. */
-  async recordClaudeTranscript(id: number, attempt: number, transcriptPath: string): Promise<void> {
+  /**
+   * Publish the path of a transcript the engine holds itself as the running
+   * attempt's, without copying a growing file. Rejects where the file is
+   * not there to read. Ignored unless `attempt` is the live attempt.
+   */
+  async referenceEngineTranscript(id: number, attempt: number, transcriptPath: string): Promise<void> {
     await this.#serialise(async () => {
       if (this.#sealed) return;
       const current = this.#currentAttempts.get(id);
@@ -1227,18 +1238,31 @@ export class RunRecordWriter {
   }
 
   /**
-   * Append one event of an engine's live stream (Codex app-server frames,
-   * zcode's stream-json events) to the attempt's transcript, named
-   * `filename` as the settled artefact will be, before publishing its
-   * archive reference.
+   * Append one event to the running attempt's live transcript: a JSONL
+   * file in the archive that grows as the worker's output arrives, for an
+   * engine whose transcript the harness captures (`LIVE_TRANSCRIPTS`). The
+   * line is on disk before the file's path is published as the attempt's
+   * transcript, which the first line does. Returns the archive-relative
+   * path, or null where nothing was written: the archive is sealed,
+   * `attempt` is not the live attempt, or its engine has no such transcript.
+   *
+   * The file takes the name the attempt's settled artefact will have, so
+   * settlement meets it there (`#recordAgent`): an artefact with the same
+   * bytes leaves the file as it is, any other content replaces it, and an
+   * attempt that settles with no artefact of that name keeps the file,
+   * linked as a partial transcript. A writer that dies first leaves the
+   * path on `current_attempt`, from which the next run's sweep links it
+   * (`reconcileAbandonedAgentRecord`).
    */
-  async appendLiveTranscript(id: number, attempt: number, filename: string, event: unknown): Promise<string | null> {
-    const content = `${JSON.stringify(event)}\n`;
+  async appendLiveTranscript(id: number, attempt: number, event: unknown): Promise<string | null> {
+    const content = transcriptLine(event);
     return await this.#serialise(async () => {
       if (this.#sealed) return null;
       const current = this.#currentAttempts.get(id);
       if (current?.attempt !== attempt) return null;
-      const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-${safeName(filename, "jsonl")}`;
+      const transcript = LIVE_TRANSCRIPTS[current.target.engine];
+      if (transcript?.held !== "archive") return null;
+      const relativePath = attemptTranscriptPath(id, attempt, 1, transcript.filename, "jsonl");
       await mkdir(path.dirname(path.join(this.archiveDir, relativePath)), { recursive: true });
       await appendFile(path.join(this.archiveDir, relativePath), content);
       const digest = this.#liveTranscriptHashes.get(relativePath) ?? { hash: createHash("sha256"), size: 0 };
@@ -1248,7 +1272,7 @@ export class RunRecordWriter {
       this.#files.set(relativePath, {
         path: relativePath, size: digest.size, sha256: digest.hash.copy().digest("hex")
       });
-      this.#liveTranscripts.set(`${id}:${attempt}`, relativePath);
+      this.#liveTranscripts.set(`${id}:${attempt}`, { path: relativePath, source: transcript.source });
       if (current.transcript !== relativePath) {
         current.transcript = relativePath;
         await this.#publishCurrentAttempt(id);
@@ -1349,6 +1373,8 @@ export class RunRecordWriter {
 
     for (const attempt of record.attempts) {
       let index = 0;
+      const live = this.#liveTranscripts.get(`${record.id}:${attempt.attempt}`);
+      let liveSettled = false;
       for (const transcript of attempt.transcripts) {
         // A reference is an assertion that a transcript exists. Codex held
         // sessions can honestly have no new transcript on a follow-up turn;
@@ -1358,10 +1384,10 @@ export class RunRecordWriter {
           continue;
         }
         index += 1;
-        const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
-        const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
+        const relativePath = attemptTranscriptPath(record.id, attempt.attempt, index, transcript.filename, transcript.format);
         const liveFile = this.#files.get(relativePath);
-        const liveMatches = this.#liveTranscripts.get(`${record.id}:${attempt.attempt}`) === relativePath &&
+        if (live?.path === relativePath) liveSettled = true;
+        const liveMatches = live?.path === relativePath &&
           liveFile?.sha256 === sha256(transcript.content) &&
           (await stat(path.join(this.archiveDir, relativePath)).catch(() => null))?.size === liveFile.size;
         if (liveMatches) {
@@ -1377,6 +1403,21 @@ export class RunRecordWriter {
           partial: transcript.partial === true,
           thread_id: transcript.threadId ?? null,
           session_id: transcript.sessionId ?? null
+        });
+      }
+      // The attempt ended with no artefact where its live transcript grew:
+      // what the file holds is all that was captured, so it is kept and
+      // linked as it stands, re-measured because nothing vouches for it.
+      if (live !== undefined && !liveSettled && (await stat(path.join(this.archiveDir, live.path)).catch(() => null)) !== null) {
+        await this.#trackFile(live.path);
+        transcriptRefs.push({
+          attempt: attempt.attempt,
+          path: live.path,
+          format: "jsonl",
+          source: live.source,
+          partial: true,
+          thread_id: null,
+          session_id: null
         });
       }
     }
@@ -1953,28 +1994,17 @@ async function resolveAbandonedAgentRecords(
  * - The entry's live transcript, where one exists, is linked in
  *   `transcripts` as `{ attempt, path, format: "jsonl", source, partial:
  *   true, thread_id: null, session_id: null }`, with `source` as the
- *   engine's settled capture names it, and `transcripts_unavailable`
- *   then reads null. A Codex or zcode path is already in the archive: its size and
- *   digest are measured from disk, because a writer killed between an
- *   append and its manifest rewrite leaves the table's entry stale. A
- *   Claude path lies outside the archive: its file is copied in under the
- *   name the settled writer uses (`attempt-NN-1-transcript.claude.jsonl`)
- *   and the copy is linked; an unreadable one is not linked, and nothing
- *   claims a transcript the archive does not hold.
+ *   engine's settled capture names it (`LIVE_TRANSCRIPTS`), and
+ *   `transcripts_unavailable` then reads null. An archive-held path is
+ *   already in the archive: its size and digest are measured from disk,
+ *   because a writer killed between an append and its manifest rewrite
+ *   leaves the table's entry stale. An engine-held path lies outside the
+ *   archive: its file is copied in under the name the settled writer uses
+ *   (`attemptTranscriptPath`) and the copy is linked; an unreadable one is
+ *   not linked, and nothing claims a transcript the archive does not hold.
  * - `usage`, `termination_cause`, `queued_ms` and `execution_ms` stand as
  *   the dead writer left them; nothing is inferred for them.
  */
-/**
- * The engines whose live attempt can name a transcript, each with the
- * `source` its settled capture records. Claude's lies outside the archive
- * and is copied in; the others are appended inside it as events arrive.
- */
-const LIVE_TRANSCRIPT_SOURCES: Partial<Record<EngineName, string>> = {
-  codex: "codex-app-server-events",
-  claude: "claude-session-jsonl",
-  zcode: "zcode --output-format stream-json"
-};
-
 export async function reconcileAbandonedAgentRecord(
   runDir: string,
   record: Record<string, unknown>,
@@ -1989,23 +2019,25 @@ export async function reconcileAbandonedAgentRecord(
     attempts.push({ ...abandoned });
     if (abandoned.resolved_model !== null) reconciled.resolved_model = abandoned.resolved_model;
     if (abandoned.resolved_effort !== null) reconciled.resolved_effort = abandoned.resolved_effort;
-    const engine = live.target.engine;
-    if (live.transcript !== null && Object.hasOwn(LIVE_TRANSCRIPT_SOURCES, engine)) {
-      // Read before linking: absence must never assert a file exists. Claude's
-      // session may have been removed; Codex's append may outdate its digest.
-      const source = engine === "claude" ? live.transcript : path.join(runDir, live.transcript);
+    const transcript = LIVE_TRANSCRIPTS[live.target.engine];
+    if (live.transcript !== null && transcript !== undefined) {
+      const engineHeld = transcript.held === "engine";
+      // Read before linking: absence must never assert a file exists. An
+      // engine's own file may have been removed; an archive-held file's last
+      // append may outdate its digest.
+      const source = engineHeld ? live.transcript : path.join(runDir, live.transcript);
       const content = await readFile(source).catch(() => null);
       if (content !== null) {
-        const relativePath = engine === "claude"
-          ? `agents/${padId(reconciled.id as number)}/attempt-${padAttempt(live.attempt)}-1-transcript.claude.jsonl`
+        const relativePath = engineHeld
+          ? attemptTranscriptPath(reconciled.id as number, live.attempt, 1, transcript.filename, "jsonl")
           : live.transcript;
-        if (engine === "claude") await writeStandaloneText(path.join(runDir, relativePath), content);
+        if (engineHeld) await writeStandaloneText(path.join(runDir, relativePath), content);
         files.push({ path: relativePath, size: content.length, sha256: createHash("sha256").update(content).digest("hex") });
         const transcripts = reconciled.transcripts as Array<Record<string, unknown>>;
         if (!transcripts.some((entry) => entry.attempt === live.attempt && entry.path === relativePath)) {
           transcripts.push({
             attempt: live.attempt, path: relativePath, format: "jsonl",
-            source: LIVE_TRANSCRIPT_SOURCES[engine],
+            source: transcript.source,
             partial: true, thread_id: null, session_id: null
           });
         }
@@ -2288,6 +2320,15 @@ function padId(id: number): string {
 
 function padAttempt(attempt: number): string {
   return String(attempt).padStart(3, "0");
+}
+
+/**
+ * Where an attempt's transcript sits in the archive: `index` counts the
+ * attempt's transcripts from 1. A live transcript is written at index 1
+ * under its settled filename, which is how settlement finds it.
+ */
+function attemptTranscriptPath(id: number, attempt: number, index: number, filename: string, format: "jsonl" | "text"): string {
+  return `agents/${padId(id)}/attempt-${padAttempt(attempt)}-${index}-${safeName(filename, format === "jsonl" ? "jsonl" : "txt")}`;
 }
 
 function safeName(filename: string, suffix: string): string {

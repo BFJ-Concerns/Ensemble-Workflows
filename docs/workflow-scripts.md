@@ -97,13 +97,14 @@ See [Failures](#failures). A Claude call with no `model` is flagged on stderr.
 ### Fallback chains
 
 `fallback` declares an ordered chain of other targets for a call —
-`[{ engine, model, effort? }, …]`, each a Codex, Claude or zcode target, or
+`[{ engine, model, effort? }, …]`, each a Codex, Claude, opencode or zcode target, or
 `{ target, effort? }` naming a [named target](#named-targets). A named entry
 takes its binding's engine and model — never the binding's own chain — and a
 binding without a model takes the script's `defaults` model for that engine,
-else the engine's own default. Ensemble
-moves the call to the next target when the current one fails for
-**availability**: the allowance is exhausted, the provider is overloaded past
+else the engine's own default where it has one. An opencode entry must
+resolve to a registered model, and its effort may name a variant that model
+declares. Ensemble moves the call to the next target on an **availability**
+failure: the allowance is exhausted, the provider is overloaded past
 its own retries, the engine refused the call for want of a valid sign-in,
 the engine's process died or never started, or the launch environment denied
 a resource the engine needs. Output failures (empty, unparseable, or off-schema
@@ -126,8 +127,13 @@ Each declaration supplies the whole chain. Set `fallback: false` on a call or
 in an engine's `defaults` block to stop the search and disable fallback. A
 call's own chain still takes precedence over `fallback: false` in defaults.
 
-- Each step re-dispatches the same prompt, schema, placement, and strip
-  settings on the next target, fresh.
+- Each step re-dispatches the same prompt, schema, placement, strip and
+  lean settings on the next target. Ensemble checks that each target
+  offers the requested strip or lean route before the first dispatch.
+  Opencode verifies its resolved configuration only when its entry is
+  reached. If that verification refuses a strip or lean start, the call
+  throws before launching that opencode worker, even if an earlier
+  target already ran. An uncaught refusal fails the run.
 - `maxAttempts` counts answered attempts across the whole chain; a refusal
   costs none.
 - A step to the same engine keeps its concurrency slot; a step to another
@@ -141,12 +147,13 @@ call's own chain still takes precedence over `fallback: false` in defaults.
   use another engine for recovery from its death.
 - A chain whose every target refuses fails with the last target's own
   failure.
-- An empty or malformed chain, an opencode entry (named or literal), or an
-  engine the run does not have throws `FallbackTargetRejectedError` before any
-  worker spawns. A named entry the configuration does not bind, or one naming
-  a `target` beside an `engine` or `model`, throws `NamedTargetRejectedError`;
-  in a `defaults` chain, either fails the run before the script body runs.
-  An opencode call may declare a chain of Codex, Claude and zcode targets.
+- An empty or malformed chain, or an engine the run does not have, throws
+  `FallbackTargetRejectedError` before any worker spawns. A named entry the
+  configuration does not bind, or one naming a `target` beside an `engine`
+  or `model`, throws `NamedTargetRejectedError`. Static `defaults` chains
+  are checked before the script body runs.
+- An opencode entry can be used in a one-shot call. A held session's chain
+  requires every entry to support `session()`.
 
 Every step is a dispatch Ensemble makes and records itself. The run record
 shows each attempt's target and which entry answered, and stderr says when a
@@ -523,9 +530,9 @@ lists the accepted type names, and invalid `properties` asks for a JSON object.
 | `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` | Resolved per model against the reasoning levels zcode lists for it |
 | `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
 | `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess | Kills the subprocess |
-| `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Not supported: throws before the worker spawns | Enforced by withholding zcode's tools for the run |
-| `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Not supported: throws before the worker spawns | Not supported: throws before the worker spawns |
-| `fallback` entry | Yes | Yes | No | Yes |
+| `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Enforced through permission deny rules | Enforced by withholding zcode's tools for the run |
+| `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Isolated configuration with provider settings and permissions | Not supported: throws before the worker spawns |
+| `fallback` entry | Yes | Yes | Yes, for one-shot calls | Yes |
 | `session()` | Yes | Yes | No: throws before the worker spawns | Yes |
 
 Effort resolves for each dispatch target, including a fallback entry and a
@@ -666,11 +673,11 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   The agent record's enforcement detail names the deny rules and `env`
   variables, the Claude Code version that was probed, and which tools were
   denied or left in place. For `skills`, it also states this follow-up boundary.
-- **opencode** rejects any strip before the worker spawns. Its permission
-  overlay was inspected on opencode 1.18.4: `OPENCODE_CONFIG_CONTENT` merged
-  `permission.skill=deny` and `permission.task=deny`, but the live workers
-  timed out before demonstrating that these denies took effect. This is
-  historical configuration evidence, not proof about the installed version.
+- **opencode** denies `skill` for `skills` and `task` for `agents`.
+  At the opencode target's dispatch, Ensemble checks the resolved global
+  and agent permission rules before launching the worker. The dispatch
+  refuses the strip if a rule overrides a deny or an active external
+  plugin can change the permissions after configuration loads.
 - **zcode** withholds whole tools for the run with `--disallowed-tools`: a
   `skills` strip withholds the `Skill` tool, an `agents` strip the `Agent`
   subagent tool and the `CreateWorkflow` dynamic-workflow tool. A withheld
@@ -695,9 +702,15 @@ call cannot lift a run-wide `--lean` by setting `lean: false`.
   authentication, permissions and Ensemble's per-dispatch settings remain
   enabled. This route is measured on Claude Code 2.1.322. Capability strips
   prepare against the same context mode as their worker.
-- **Codex**, **opencode** and **zcode** have no supported route: a lean request refuses
-  before a worker spawns, naming the engine. Each fallback target is checked
-  before the first dispatch too, so a chain cannot silently lose lean mode.
+- **opencode** uses an isolated configuration with the resolved provider
+  settings and permissions, the original data home and built-in tools.
+  It disables external plugins and skips discovery of project configuration
+  and instructions. At the opencode target's dispatch, Ensemble checks
+  that the registered model is still listed and that the isolated
+  configuration loads no instructions, skills or MCP servers. A provider
+  supplied only by an external plugin may be unavailable to a lean worker.
+- **Codex** and **zcode** refuse lean requests before the first dispatch, whether it is
+  the initial target or a fallback entry.
 
 Each agent record carries `lean` naming the route the dispatching engine
 used, or `null` when no lean start was requested.
@@ -967,11 +980,11 @@ and keep the worker's partial text, exit status, and the engine's diagnostic
 on the attempt record. A call whose deadline should end it outright sets
 `maxAttempts: 1`.
 
-Each opencode run and session-export command, and each zcode run, starts inside its own run-owned
-systemd scope before it can start descendants. Cancellation, an attempt deadline,
-and the command's own exit stop that containment, including shell commands
-that start another session or become reparented. Stop uses SIGTERM, a two-second
-grace, then SIGKILL with three seconds to confirm the scope is empty. Output
+Opencode and zcode commands enter the run's containment before they can
+start descendants. Cancellation, an attempt deadline, and the command's
+own exit stop that command's process tree, including shell commands that
+start another session or become reparented. Stop uses SIGTERM, a two-second
+grace, then SIGKILL with three seconds to confirm the containment is empty. Output
 pipes drain for at most one further second after the stop attempt; a descendant
 holding a pipe cannot indefinitely delay the run's teardown report.
 
@@ -1331,10 +1344,14 @@ await builder.close();
   the opening's collision-free task tags, preserving the caller's text inside
   the message boundary. Redelivery repeats that framed copy. Tasks without
   edge whitespace arrive as ordinary typed text, so a leading `/skill` line
-  expands, including under a `skills` strip. Ensemble overrides `VISUAL` and
-  `EDITOR` only for that delivery client and removes its files and tmux server
-  after delivery. The separate, input-free lifetime attachment remains until
-  the held session closes.
+  expands, including under a `skills` strip. The delivery pane runs
+  `claude attach` directly with `VISUAL` and `EDITOR` set to Ensemble's
+  copy helper, so login shell settings cannot change its editor. If the wait
+  for a native input dialog to close or for the editor to copy the prompt
+  expires, the failure includes a short excerpt of the visible pane or says
+  why it could not be captured. Ensemble removes the delivery files and tmux
+  server when the attempt ends. The separate, input-free lifetime attachment
+  remains until the held session closes.
   It loads no tmux configuration and does not appear among your own sessions.
   Delivery requires a new native user row equal to the message sent (or the
   matching command name and arguments for a slash command). Roster activity

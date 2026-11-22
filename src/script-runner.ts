@@ -1,3 +1,4 @@
+import { withDeclaredModels } from "./named-targets.js";
 import vm from "node:vm";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
@@ -233,7 +234,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   for (const [engine, block] of Object.entries(defaults ?? {})) {
     if (!block?.fallback || options.runtime.settleFallbackChain === undefined) continue;
     try {
-      options.runtime.settleFallbackChain(block.fallback);
+      options.runtime.settleFallbackChain(withDeclaredModels(block.fallback, (name) => defaults?.[name]?.model));
     } catch (error) {
       if (error instanceof AgentOptionRejectedError) {
         throw new WorkflowScriptError(`Workflow defaults.${engine}.fallback: ${error.message}`);

@@ -1,3 +1,4 @@
+import { ZCODE_TRANSCRIPT, transcriptContent } from "./live-transcript.js";
 import { randomUUID } from "node:crypto";
 
 import { unestablishedStopDiagnostics, type CommandContainment, type CommandStop } from "./contained-command.js";
@@ -797,7 +798,7 @@ class ZCodeStream {
     const response = typeof result?.response === "string" ? result.response : null;
     const streamedText = this.#lastTextMessage === null ? "" : this.#messageText.get(this.#lastTextMessage) ?? "";
     const turnError = this.#turnError;
-    const transcriptContent = this.#events.map((event) => `${JSON.stringify(event)}\n`).join("");
+    const content = transcriptContent(this.#events);
     return {
       response,
       streamedText,
@@ -806,11 +807,11 @@ class ZCodeStream {
       resolvedModel: this.#resolvedModel,
       resolvedEffort: this.#resolvedEffort,
       usageEvents: this.#reported === null ? [] : [this.#usageEvent(this.#reported, this.#reported)],
-      transcripts: transcriptContent.length === 0 ? [] : [{
-        filename: "transcript.zcode.jsonl",
+      transcripts: content.length === 0 ? [] : [{
+        filename: ZCODE_TRANSCRIPT.filename,
         format: "jsonl" as const,
-        source: "zcode --output-format stream-json",
-        content: transcriptContent,
+        source: ZCODE_TRANSCRIPT.source,
+        content,
         ...(this.#sessionId !== null ? { sessionId: this.#sessionId } : {})
       }],
       diagnostics: (run: StreamedCommandResult): JsonObject => ({

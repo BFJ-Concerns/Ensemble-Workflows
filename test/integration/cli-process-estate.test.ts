@@ -1625,9 +1625,9 @@ test("ensemble agent gives a supervisor terminal evidence in foreground and redi
       // are the fail-closed diagnostic and the absent agent record below;
       // exit status and stdout only establish the supervisor-facing terminal
       // surfaces for that known rejection.
-      name: "pre-dispatch strip rejection",
+      name: "pre-dispatch lean rejection",
       response: "unused",
-      args: ["agent", "--engine=opencode", "--strip=skills", "must not dispatch"],
+      args: ["agent", "--engine=codex", "--lean", "must not dispatch"],
       exitCode: 1,
       stdout: { reason: "failed" as const },
       outcome: "failed",

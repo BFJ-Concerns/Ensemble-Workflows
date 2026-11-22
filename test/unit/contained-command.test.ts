@@ -15,6 +15,7 @@ import { presentOperationalError } from "../../src/operator-diagnosis.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import {
   NoWorkerScopes,
+  RUN_SCOPE_GROUP,
   SystemdWorkerScopes,
   containingSlice,
   isLive,
@@ -72,6 +73,87 @@ test("a contained command runs in its own scope from its first instruction, and 
     await commands.close().catch(() => undefined);
     await scopes.close().catch(() => undefined);
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("under run grouping a command joins the run's scope in a subgroup of its own, and stopping it ends its whole tree and nothing else in the scope", async () => {
+  const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `test-${process.pid}-shared` });
+  const commands = new CommandContainment(scopes, { grouping: "run" });
+  // A worker another engine placed in the run's scope: a Claude session, the Codex app-server.
+  const peer = spawn("sleep", ["infinity"], { stdio: "ignore" });
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-contained-shared-"));
+  const marker = path.join(dir, "inner.pid");
+  let inner: number | null = null;
+  try {
+    const shared = await scopes.place(RUN_SCOPE_GROUP, [peer.pid!]);
+    assert.ok(shared.kind === "placed", JSON.stringify(shared));
+
+    const first = await commands.contain("first worker", "sh", ["-c", WORKER_WITH_OWN_SESSION_COMMAND, "sh", marker], {
+      stdio: ["ignore", "ignore", "ignore"]
+    });
+    const second = await commands.contain("second worker", "sleep", ["infinity"], { stdio: ["ignore", "ignore", "ignore"] });
+    assert.ok(first.reach.kind === "scope" && second.reach.kind === "scope", JSON.stringify([first.reach, second.reach]));
+    assert.deepEqual([first.reach.unit, second.reach.unit], [shared.unit, shared.unit], "every command of the run is in the run's one scope");
+    assert.ok(first.reach.subgroup !== undefined && second.reach.subgroup !== undefined);
+    assert.notEqual(first.reach.subgroup, second.reach.subgroup);
+
+    await waitFor(async () => (await readFile(marker, "utf8").catch(() => "")).trim().length > 0, "the inner command's pid");
+    const innerPid = Number((await readFile(marker, "utf8")).trim());
+    inner = innerPid;
+    await waitFor(async () => (await sessionOf(innerPid)) === innerPid, "the inner command in a session of its own");
+    assert.ok(
+      (await readFile(`/proc/${innerPid}/cgroup`, "utf8")).trimEnd().endsWith(`/${shared.unit}/${first.reach.subgroup}`),
+      "a process the command starts is born in the command's subgroup of the run's scope"
+    );
+
+    // One attempt's stop: its command and the descendant that left its
+    // session are gone, and the workers beside it never saw a signal.
+    assert.deepEqual(await first.stop(), { outcome: { kind: "stopped" }, attemptAccount: null });
+    assert.equal(await running(innerPid), false, "stopped is an observation: the inner command is gone");
+    assert.equal(await running(second.child.pid!), true, "another attempt's command is not this attempt's to stop");
+    assert.equal(await cgroupUnit(peer.pid!), shared.unit, "the run's other workers stay in its scope, running");
+
+    // The run's close ends the command no attempt stopped; the scope and
+    // the workers other engines placed in it stay the manager's to stop.
+    await commands.close();
+    assert.equal(await running(second.child.pid!), false);
+    assert.equal(isLive(peer.pid!), true);
+  } finally {
+    if (inner !== null && isLive(inner)) process.kill(inner, "SIGKILL");
+    await commands.close().catch(() => undefined);
+    await scopes.close().catch(() => undefined);
+    peer.kill("SIGKILL");
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("under run grouping a command the run's scope gave no subgroup is stopped by its process group, never by stopping the scope", async () => {
+  const direct = new NoWorkerScopes();
+  const stopped: string[] = [];
+  // A manager that reports the run's scope without the process being in it,
+  // so no subgroup of that scope can be entered.
+  const scopes: WorkerScopes = {
+    slice: null,
+    place: async (_group, pids) => ({ kind: "placed", unit: "ensemble-fixture-run.scope", pids }),
+    launch: direct.launch.bind(direct),
+    stop: async (group) => {
+      stopped.push(group);
+      return { kind: "stopped" };
+    },
+    close: direct.close.bind(direct)
+  };
+  const commands = new CommandContainment(scopes, { grouping: "run" });
+  try {
+    const command = await commands.contain("fixture worker", "sleep", ["infinity"], { stdio: ["ignore", "ignore", "ignore"] });
+    assert.ok(command.reach.kind === "process-group", JSON.stringify(command.reach));
+    assert.match(command.reach.reason, /^the run's scope gave the command no subgroup: process \d+ is not in ensemble-fixture-run\.scope/);
+    const stop = await command.stop();
+    assert.deepEqual(stop.outcome, { kind: "stopped" });
+    assert.equal(await running(command.child.pid!), false);
+    await commands.close();
+    assert.deepEqual(stopped, [], "the scope holds the run's other workers");
+  } finally {
+    await commands.close().catch(() => undefined);
   }
 });
 

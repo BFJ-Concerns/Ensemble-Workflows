@@ -8,7 +8,7 @@ import test from "node:test";
 import type { LiveAgentSnapshot } from "../../src/progress.js";
 import type { TurnProgressObserver } from "../../src/app-server.js";
 import { appServerErrorFromPayload } from "../../src/app-server.js";
-import { CodexEngineAdapter, OpenCodeEngineAdapter, EngineRegistry } from "../../src/engines.js";
+import { CodexEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import { createWorkflowHooks, parallel, pipeline } from "../../src/hooks.js";
 import { isRunEnding } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -4027,7 +4027,7 @@ test("with no chain declared, an availability failure is the call's own failure,
   await runtime.close();
 });
 
-test("a malformed or opencode chain entry is rejected before any worker spawns", async () => {
+test("a malformed chain entry is rejected before any worker spawns", async () => {
   const codex = new ChainEngine("codex", []);
   const { runtime } = chainRuntime([codex], 1);
   const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
@@ -4037,7 +4037,7 @@ test("a malformed or opencode chain entry is rejected before any worker spawns",
 
   for (const [chain, expected] of [
     [[], /chain must not be empty/],
-    [[{ engine: "opencode", model: "glm-5.2" }], /entry 0 names the opencode engine/],
+    [[{ engine: "unknown", model: "glm-5.2" }], /entry 0 must name engine/],
     [[{ engine: "claude" }], /entry 0 must name its model/],
     [[{ engine: "claude", model: "opus", effort: "ultra" }], /entry 0 effort must be one of/],
     [[{ engine: "claude", model: "opus", cwd: "/elsewhere" }], /unrecognised key "cwd"/],
@@ -4954,7 +4954,7 @@ for (const structured of [false, true]) {
       recordAgent: async (record: RuntimeAgentRecord) => { snapshots.push(structuredClone(record)); },
       recordAttemptEnd: ignoreAttemptEnd,
       recordAttemptStart: async (id: number, { attempt, startedAt: at }: LiveAttemptStart) => { starts.push({ id, attempt, at }); },
-      appendLiveTranscript: async (id: number, attempt: number, _filename: string, event: unknown) => {
+      appendLiveTranscript: async (id: number, attempt: number, event: unknown) => {
         await new Promise<void>((resolve) => setImmediate(resolve));
         writes.push({ id, attempt, event });
       }
@@ -5070,8 +5070,8 @@ test("fallback targets publish their own transcript and reject callbacks from th
     recordAgent: async () => undefined,
     recordAttemptEnd: ignoreAttemptEnd,
     recordAttemptStart: async (id: number, { attempt }: LiveAttemptStart) => { starts.push([id, attempt]); },
-    appendLiveTranscript: async (id: number, attempt: number, _filename: string, event: unknown) => { writes.push([id, attempt, event]); },
-    recordClaudeTranscript: async (id: number, attempt: number, file: string) => { writes.push([id, attempt, file]); }
+    appendLiveTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); },
+    referenceEngineTranscript: async (id: number, attempt: number, file: string) => { writes.push([id, attempt, file]); }
   } as unknown as RunRecordWriter);
   try {
     assert.equal(await runtime.agent("answer", { engine: "codex", fallback: [{ engine: "claude", model: "test-claude" }] }), "yes");
@@ -5815,25 +5815,16 @@ test("malformed run-wide and session lean options refuse before dispatch", () =>
 });
 
 
-test("shipped Codex and opencode adapters refuse lean before invoking a worker", async () => {
+test("the shipped Codex adapter refuses lean before invoking a worker", async () => {
   const transport = new FakeTransport([]);
-  let opencodeRuns = 0;
   const runtime = new EnsembleRuntime({
-    engines: new EngineRegistry([
-      new CodexEngineAdapter({ transport, concurrency: 1 }),
-      new OpenCodeEngineAdapter({ runner: {
-        run: async () => { opencodeRuns++; throw new Error("unexpected dispatch"); },
-        exportSession: async () => { throw new Error("unexpected export"); }
-      } })
-    ]),
+    engines: new EngineRegistry([new CodexEngineAdapter({ transport, concurrency: 1 })]),
     defaultMaxAttempts: 1
   });
   try {
     await assert.rejects(runtime.agent("go", { engine: "codex", lean: true }), LeanStartUnsupportedError);
-    await assert.rejects(runtime.agent("go", { engine: "opencode", lean: true }), LeanStartUnsupportedError);
     assert.throws(() => runtime.createWorkerSession({ engine: "codex", lean: true }), LeanStartUnsupportedError);
     assert.deepEqual(transport.openedThreads, []);
-    assert.equal(opencodeRuns, 0);
     assert.equal(runtime.lastAgentRecord(), null);
   } finally { await runtime.close(); }
 });

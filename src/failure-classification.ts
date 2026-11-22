@@ -6,8 +6,8 @@ import type { EngineName, JsonObject } from "./types.js";
  *
  * - `availability` — the engine refused or lost the worker before it
  *   answered: allowance exhausted, provider overload past its own retry,
- *   a substrate that is dead or cannot start. The one class that advances a
- *   chain, because the prompt was never judged.
+ *   missing or rejected credentials, or a substrate that is dead or cannot
+ *   start. Only this class advances the chain.
  * - `output` — the worker answered badly: empty text, unparseable JSON, a
  *   schema miss. Retried in place on the same target, never chained: a bad
  *   answer is evidence about the prompt as much as the model.
@@ -85,6 +85,12 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
   if (failure.kind === SESSION_LOST_KIND) {
     return failure;
   }
+  // An opencode tool can report its own missing credentials after dispatch.
+  // That diagnostic does not describe the provider's admission of the turn.
+  if (engine === "opencode" && failure.kind === "opencode-run-error" &&
+      /^opencode run failed: tool \S+ failed:/.test(failure.message)) {
+    return failure;
+  }
   const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
   const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
   // Substrate failures may quote credential errors from recent stderr.
@@ -99,7 +105,7 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
   // An explicit status outranks incidental error words in a gateway message.
   const authentication = status != null ? status === 401 :
     apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" ||
-    /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
+    /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|\bAPI key is missing\b|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
     const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude"
       ? "Run `claude auth login`." : "Run `opencode auth login` for the provider you selected.";
@@ -243,7 +249,10 @@ const OPENCODE_FAILURE_KINDS = new Map<string, FailureClassification>([
 export function classifyAttemptFailure(evidence: AttemptFailureEvidence): FailureClassification {
   if (evidence.failure.kind === "effort-rejected") return { class: "unclassified", rule: "effort.rejected" };
   const { kind } = evidence.failure;
-  if (kind === "authentication-failure" || kind === "model-not-found") {
+  if (kind === "authentication-failure") {
+    return { class: "availability", rule: `${evidence.engine}.authentication-failure` };
+  }
+  if (kind === "model-not-found") {
     return { class: "unclassified", rule: `${evidence.engine}.${kind}` };
   }
   if (OUTPUT_FAILURE_KINDS.has(kind)) {

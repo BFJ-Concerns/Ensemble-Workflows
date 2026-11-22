@@ -106,7 +106,7 @@ export function resolveNamedTarget<T extends object>(targets: NamedTargets | nul
  * stand (the same object, or a merge built from it); the resolution moves
  * to the returned object. Options that named no target return unchanged.
  */
-export function withTargetChain<T extends { fallback?: FallbackTarget[] }>(from: object, to: T): T {
+export function withTargetChain<T extends { fallback?: FallbackTarget[] | false }>(from: object, to: T): T {
   const carried = resolutions.get(from);
   if (carried === undefined) {
     return to;

@@ -2,7 +2,7 @@ import { resolveEffort, isCanonicalEffort, assertEffortSection, effortPolicyKeys
 import type { EffortPolicy, EffortResolution } from "./effort-resolution.js";
 import { randomUUID } from "node:crypto";
 
-import { validateNamedTargetBindings } from "./ambient-settings.js";
+import { validateMachineFallback, validateNamedTargetBindings } from "./ambient-settings.js";
 import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
@@ -12,14 +12,15 @@ import type { DischargedLeanStart } from "./lean-start.js";
 import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } from "./failure-classification.js";
-import { fallbackSourceOf } from "./fallback-source.js";
+import { selectFallback } from "./fallback-source.js";
 import { withOptionOverrides } from "./option-overrides.js";
 import { isNamedTargetBound, namedTargetResolutionOf, resolveNamedTarget, settleChain, withTargetChain } from "./named-targets.js";
-import { modelFamilyOf } from "./model-family.js";
+import { modelFamilyOf, singleFamilyOf } from "./model-family.js";
+import type { FamilyJudgedTarget, ModelFamilyAssignments, SingleFamilyJudgement } from "./model-family.js";
 import type { NamedTargetResolution, NamedTargets, SettledChainEntry } from "./named-targets.js";
 
 import type { DischargedEnforcement, PreparedStrip } from "./capability-stripping.js";
-import type { FallbackSource } from "./fallback-source.js";
+import type { MachineFallback, SelectedFallback } from "./fallback-source.js";
 import { harnessVersion } from "./harness-version.js";
 import {
   assertValidAgentOptions,
@@ -346,32 +347,30 @@ function identifiedResult(
   options: { label?: string },
   output: unknown,
   record: RuntimeAgentRecord,
-  openCodeModels: OpenCodeModelRegistry | undefined
+  familyOf: (target: FamilyJudgedTarget) => string | null
 ): IdentifiedAgentResult {
   return {
     label: options.label ?? null,
     phase: record.phase,
     output,
     failure: record.status === "complete" ? null : settledFailureAccount(record),
-    answeredBy: answeringTarget(record, openCodeModels)
+    answeredBy: answeringTarget(record, familyOf)
   };
 }
 
 /**
  * The target that answered `record`, as an identified envelope names it:
  * the engine, the model it served (else the model the answering attempt
- * requested), and the family judged on the requested model, which is the
- * name an opencode registry entry is declared under. Null when no target
- * answered.
+ * requested), and the family judged on the model requested and the model
+ * served. Null when no target answered.
  */
-function answeringTarget(record: RuntimeAgentRecord, openCodeModels: OpenCodeModelRegistry | undefined): DispatchTarget | null {
+function answeringTarget(record: RuntimeAgentRecord, familyOf: (target: FamilyJudgedTarget) => string | null): DispatchTarget | null {
   if (record.answeredBy === null) {
     return null;
   }
-  const { engine } = record.answeredBy;
+  const { engine, model: served } = record.answeredBy;
   const requested = record.attempts.findLast((attempt) => attempt.status === "complete")?.target.model ?? null;
-  const model = record.answeredBy.model ?? requested;
-  return { engine, model, family: modelFamilyOf(engine, requested ?? model, openCodeModels) };
+  return { engine, model: served ?? requested, family: familyOf({ engine, requested, served }) };
 }
 
 function identifiedFailure(options: { identity?: boolean; label?: string; phase?: string }, error: unknown, phase = options.phase ?? null): unknown {
@@ -401,8 +400,8 @@ interface WorkerSessionState {
   resolvedModel: string | null;
   resolvedEffort: string | null;
   stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null;
-  /** The source of the creating turn's chain, read once at creation. */
-  fallbackSource: FallbackSource;
+  /** The creating turn's chain as declared and its source. */
+  fallback: SelectedFallback;
   /** The named target the session was created through, resolved once at creation; null for a literal engine. */
   namedTarget: NamedTargetResolution | null;
   /** The creating turn's chain, settled once at creation. */
@@ -548,7 +547,12 @@ export class EnsembleRuntime {
   #lean: boolean;
   /** The machine's named targets, or null where the run was given none (every name is then unbound). */
   #namedTargets: NamedTargets | null;
+  #machineFallback: MachineFallback | undefined;
   #effortPolicy: EffortPolicy | null;
+  /** The machine's model family assignments, outranking the harness's grouping of model names. */
+  #modelFamilies: ModelFamilyAssignments;
+  /** Every agent record the run has opened, in dispatch order, for the single-family judgement at its end. */
+  #openedAgentRecords: RuntimeAgentRecord[] = [];
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
@@ -613,7 +617,9 @@ export class EnsembleRuntime {
     strip?: StrippableCapability[];
     lean?: boolean;
     namedTargets?: NamedTargets;
+    machineFallback?: MachineFallback;
     effortPolicy?: EffortPolicy;
+    modelFamilies?: ModelFamilyAssignments;
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     holdsDir?: string;
@@ -636,8 +642,13 @@ export class EnsembleRuntime {
     if (options.namedTargets !== undefined) {
       validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
     }
+    if (options.machineFallback !== undefined) {
+      validateMachineFallback(options.machineFallback.chains, options.namedTargets?.bindings, options.machineFallback.source);
+    }
     this.#namedTargets = options.namedTargets ?? null;
+    this.#machineFallback = options.machineFallback;
     this.#effortPolicy = options.effortPolicy ?? null;
+    this.#modelFamilies = options.modelFamilies ?? {};
     if (this.#effortPolicy !== null) {
       assertEffortSection(this.#effortPolicy.section, (key, detail) => {
         throw new InvalidAgentOptionValueError(`effort.${key}`, null, detail);
@@ -711,6 +722,9 @@ export class EnsembleRuntime {
     if (options.namedTargets !== undefined) {
       validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
     }
+    if (options.machineFallback !== undefined) {
+      validateMachineFallback(options.machineFallback.chains, options.namedTargets?.bindings, options.machineFallback.source);
+    }
     let runtime: EnsembleRuntime | null = null;
     const cwd = options.cwd ?? process.cwd();
     // Judged before any engine substrate is built, and resolved here for
@@ -762,7 +776,9 @@ export class EnsembleRuntime {
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
       ...(options.lean !== undefined ? { lean: options.lean } : {}),
       ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {}),
+      ...(options.machineFallback !== undefined ? { machineFallback: options.machineFallback } : {}),
       ...(options.effortPolicy !== undefined ? { effortPolicy: options.effortPolicy } : {}),
+      ...(options.modelFamilies !== undefined ? { modelFamilies: options.modelFamilies } : {}),
       ...(options.claudeSessionStaleAfterMs !== undefined
         ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs }
         : {}),
@@ -915,9 +931,9 @@ export class EnsembleRuntime {
       passedOptions = options;
       assertValidAgentOptions(options);
     }
-    const fallbackSource = fallbackSourceOf(passedOptions, options);
     const namedTarget = namedTargetResolutionOf(passedOptions);
-    const chain = settleChain(this.#namedTargets, options.fallback, passedOptions);
+    const fallback = selectFallback(passedOptions, options, this.#machineFallback?.chains);
+    const chain = settleChain(this.#namedTargets, fallback.chain, passedOptions);
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.
       assertCompilableSchema(options.schema);
@@ -1001,7 +1017,7 @@ export class EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(
-      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, fallbackSource, namedTarget, stripRoutes, leanRoute
+      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, fallback, namedTarget, stripRoutes, leanRoute
     );
     const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
@@ -1020,7 +1036,7 @@ export class EnsembleRuntime {
         // completed, so a worker's genuine null answer and an exhausted
         // collapse never read alike. The durable record is unchanged — it
         // already carries label and phase as first-class fields.
-        return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
+        return identifiedResult(options, output, agentRecord, (target) => this.modelFamilyOf(target));
       }
       return output;
     } catch (error) {
@@ -1131,9 +1147,11 @@ export class EnsembleRuntime {
     if (name !== null && declared.engine === undefined && declared.model === undefined && !isNamedTargetBound(this.#namedTargets, name)) {
       return { target: name, bound: false, engine: null, model: null, family: null };
     }
-    const resolved = snapshotAgentCwd(applyDefaults(this.resolveNamedTarget(options) as Partial<AgentOptions>));
+    const passed = applyDefaults(this.resolveNamedTarget(options) as Partial<AgentOptions>);
+    const resolved = snapshotAgentCwd(passed);
     assertValidAgentOptions(resolved);
-    const chain = settleChain(this.#namedTargets, resolved.fallback, resolved);
+    const fallback = selectFallback(passed, resolved, this.#machineFallback?.chains);
+    const chain = settleChain(this.#namedTargets, fallback.chain, passed);
     if (resolved.schema !== undefined) {
       assertCompilableSchema(resolved.schema);
     }
@@ -1141,9 +1159,7 @@ export class EnsembleRuntime {
       this.#placement.assertUsableCwdSync(resolved);
     }
     const engine = this.#engineFor(resolved.engine);
-    // The chain in force — the call's, the script's `defaults`, or the
-    // binding's — and the strip and lean start, judged on every target as
-    // the call judges them before admission.
+    // Judge the strip and lean start on every target, as a call does.
     const strip = effectiveStrip(this.#strip, resolved.strip);
     const lean = effectiveLean(this.#lean, resolved.lean);
     const targets = [engine, ...chain.map((entry) => this.#chainEngineFor(entry))];
@@ -1162,7 +1178,51 @@ export class EnsembleRuntime {
       validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
     }
     const model = resolved.model ?? null;
-    return { target: name, bound: true, engine: engine.name, model, family: modelFamilyOf(engine.name, model, this.openCodeModelRegistry) };
+    return { target: name, bound: true, engine: engine.name, model, family: this.modelFamilyOf({ engine: engine.name, requested: model, served: null }) };
+  }
+
+  /**
+   * The model family `target` runs on, judged from its model under this
+   * run's family assignments and opencode registry; see
+   * {@link modelFamilyOf}. Null where the harness cannot tell.
+   */
+  modelFamilyOf(target: FamilyJudgedTarget): string | null {
+    return modelFamilyOf(target, this.#modelFamilies, this.openCodeModelRegistry);
+  }
+
+  /**
+   * Whether every worker this run dispatched resolved onto one model
+   * family, judged at the run's end for its stderr notice and manifest.
+   * A worker is a one-shot call or a multi-turn session, whose turns are
+   * one worker; one that never reached an attempt ran on nothing and is
+   * not counted. Each is judged on the target it resolved to at dispatch —
+   * its first attempt's, whatever a fallback chain later moved it to — with
+   * the model that target served, on any of a session's turns, standing in
+   * where the call named none.
+   * The family and the worker count when every worker shares one family,
+   * null where they span families, where none ran, or where any worker's
+   * family is unknown.
+   */
+  singleFamily(): SingleFamilyJudgement | null {
+    // Each worker's attempts in dispatch order: a session's turns are one
+    // worker, so a later turn can report the model its first dispatch served.
+    const workers = new Map<string, RuntimeAgentAttemptRecord[]>();
+    for (const record of this.#openedAgentRecords) {
+      const key = record.session === null ? `agent:${record.id}` : `session:${record.session.id}`;
+      workers.set(key, [...(workers.get(key) ?? []), ...record.attempts]);
+    }
+    const families: (string | null)[] = [];
+    for (const attempts of workers.values()) {
+      const first = attempts[0];
+      if (first === undefined) {
+        continue;
+      }
+      const { engine, model } = first.target;
+      const served = attempts.find((attempt) =>
+        attempt.target.engine === engine && attempt.target.model === model && attempt.resolvedModel !== null)?.resolvedModel ?? null;
+      families.push(this.modelFamilyOf({ engine, requested: model, served }));
+    }
+    return singleFamilyOf(families);
   }
 
   /**
@@ -1201,9 +1261,9 @@ export class EnsembleRuntime {
       options = withTargetChain(resolved, resolved);
       assertValidWorkerSessionOptions(options);
     }
-    const fallbackSource = fallbackSourceOf(options, options);
     const namedTarget = namedTargetResolutionOf(options);
-    const chain = settleChain(this.#namedTargets, options.fallback, options);
+    const fallback = selectFallback(options, options, this.#machineFallback?.chains);
+    const chain = settleChain(this.#namedTargets, fallback.chain, options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === undefined) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -1242,7 +1302,7 @@ export class EnsembleRuntime {
       resolvedEffort: null,
       stripRoutes,
       leanRoute,
-      fallbackSource,
+      fallback,
       namedTarget,
       chain,
       servingTarget: namedTarget?.name ?? null,
@@ -1333,9 +1393,6 @@ export class EnsembleRuntime {
         engine: engine.name,
         ...(options.model !== undefined ? { model: options.model } : {}),
         ...(options.effort !== undefined ? { effort: options.effort } : {}),
-        // The chain is the creating turn's alone: a later turn's
-        // record declares none, because none applied to it.
-        ...(options.fallback !== undefined && state.turnCount === 0 ? { fallback: options.fallback } : {}),
         ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
         ...(options.isolation !== undefined ? { isolation: options.isolation } : {}),
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
@@ -1349,9 +1406,9 @@ export class EnsembleRuntime {
       // The creating turn records the session's chain and its source; a
       // later turn records none, and says why, so it never reads as a call
       // that declared nothing or switched its chain off.
-      const fallbackSource: FallbackSource = state.turnCount === 0 ? state.fallbackSource : { kind: "later-turn" };
+      const fallback: SelectedFallback = state.turnCount === 0 ? state.fallback : { chain: undefined, source: { kind: "later-turn" } };
       const agentRecord = this.#newAgentRecord(
-        agentId, engine.name, prompt, recordOptions, fallbackSource, state.namedTarget, state.stripRoutes, state.leanRoute
+        agentId, engine.name, prompt, recordOptions, fallback, state.namedTarget, state.stripRoutes, state.leanRoute
       );
       // The engine exposes the served model and effort when its held worker
       // first starts. Every later turn is still on that worker, so carry the
@@ -1393,7 +1450,7 @@ export class EnsembleRuntime {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
           if (options.identity === true) {
-            return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
+            return identifiedResult(options, output, agentRecord, (target) => this.modelFamilyOf(target));
           }
           return output;
         } catch (error) {
@@ -3338,12 +3395,12 @@ export class EnsembleRuntime {
     engine: EngineName,
     prompt: string,
     options: Partial<AgentOptions>,
-    fallbackSource: FallbackSource,
+    fallback: SelectedFallback,
     namedTarget: NamedTargetResolution | null,
     stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null,
     leanRoute: DischargedLeanStart | null = null
   ): RuntimeAgentRecord {
-    return {
+    const record: RuntimeAgentRecord = {
       id,
       engine,
       headerIdentity: "original_request",
@@ -3354,8 +3411,8 @@ export class EnsembleRuntime {
       },
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
-      fallback: options.fallback === undefined ? null : options.fallback.map((target) => ({ ...target })),
-      fallbackSource,
+      fallback: fallback.chain?.map((target) => ({ ...target })) ?? null,
+      fallbackSource: fallback.source,
       namedTarget,
       answeredBy: null,
       resolvedModel: null,
@@ -3386,6 +3443,8 @@ export class EnsembleRuntime {
       executionMs: 0,
       attempts: []
     };
+    this.#openedAgentRecords.push(record);
+    return record;
   }
 }
 

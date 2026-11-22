@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import { AgentCwdRejectedError, CapabilityStripUnsupportedError, InvalidAgentSchemaError, LeanStartUnsupportedError, MissingEngineError, NamedTargetRejectedError, OpenCodeModelRequiredError } from "../../src/errors.js";
 import { createWorkflowHooks } from "../../src/hooks.js";
-import { modelFamilyOf } from "../../src/model-family.js";
+import { groupModelName, modelFamilyOf, singleFamilyOf } from "../../src/model-family.js";
 import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { runWorkflowScript } from "../../src/script-runner.js";
@@ -75,11 +75,13 @@ test("the dispatch lookup answers a named target's engine, model and family with
     });
     // A model-less binding takes the resolved engine's `defaults` model, as the call would.
     assert.deepEqual(hooks.lookupDispatch({ target: "doer", label: "build" }), {
-      target: "doer", bound: true, engine: "codex", model: "gpt-6.1-sol", family: "codex"
+      target: "doer", bound: true, engine: "codex", model: "gpt-6.1-sol", family: "gpt"
     });
-    // With no `defaults` model either, the engine's own default decides, which the harness does not know.
+    // With no `defaults` model either, the engine's own default decides,
+    // which the harness does not know until a worker serves it: its family
+    // is unknown, never the engine's name.
     assert.deepEqual(hooksFor(runtime).lookupDispatch({ target: "doer" }), {
-      target: "doer", bound: true, engine: "codex", model: null, family: "codex"
+      target: "doer", bound: true, engine: "codex", model: null, family: null
     });
     assert.equal(codex.dispatches.length, 0);
     assert.equal(claude.dispatches.length, 0);
@@ -100,7 +102,7 @@ test("the dispatch lookup answers a literal-engine call as the call would dispat
     });
     // A library caller's options stand as given.
     assert.deepEqual(runtime.lookupDispatch({ engine: "codex", model: "gpt-6-luna" }), {
-      target: null, bound: true, engine: "codex", model: "gpt-6-luna", family: "codex"
+      target: null, bound: true, engine: "codex", model: "gpt-6-luna", family: "gpt"
     });
   } finally {
     await runtime.close();
@@ -159,15 +161,68 @@ test("the dispatch lookup judges an opencode route's family from its registry en
   }
 });
 
-test("model families: Codex and Claude by engine, opencode by declaration, null where nothing declares one", () => {
+test("the dispatch lookup judges a family from the model, under the machine's assignments", async () => {
+  const codex = new ChainEngine("codex", []);
+  const claude = new ChainEngine("claude", []);
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    modelFamilies: { "house-model": "glm", "claude-opus-5-5": "house" }
+  });
+  try {
+    // A Claude model's family is Claude's on the Codex engine too.
+    assert.equal(runtime.lookupDispatch({ engine: "codex", model: "claude-sonnet-5-5" }).family, "claude");
+    assert.equal(runtime.lookupDispatch({ engine: "claude", model: "house-model" }).family, "glm");
+    // An assignment outranks the grouping.
+    assert.equal(runtime.lookupDispatch({ engine: "claude", model: "claude-opus-5-5" }).family, "house");
+    assert.equal(runtime.lookupDispatch({ engine: "claude", model: "mystery-1" }).family, null);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("model families: grouped by model name on every engine, assignments first, null where nothing places it", () => {
   const registry = createOpenCodeModelRegistry(OPENCODE_MODELS);
-  assert.equal(modelFamilyOf("codex", null, undefined), "codex");
-  assert.equal(modelFamilyOf("claude", "claude-opus-5-5", registry), "claude");
-  assert.equal(modelFamilyOf("opencode", "glm", registry), "glm");
-  assert.equal(modelFamilyOf("opencode", "provider/glm-5", registry), "glm");
-  assert.equal(modelFamilyOf("opencode", "unlabelled", registry), null);
-  assert.equal(modelFamilyOf("opencode", "unregistered", registry), null);
-  assert.equal(modelFamilyOf("opencode", undefined, registry), null);
+  const judge = (engine: "codex" | "claude" | "opencode", requested: string | null, served: string | null = null, assignments = {}) =>
+    modelFamilyOf({ engine, requested, served }, assignments, registry);
+  for (const [model, family] of [
+    ["claude-opus-5-5", "claude"], ["opus", "claude"], ["sonnet[1m]", "claude"], ["openrouter/anthropic/claude-sonnet-5-5", "claude"],
+    ["gpt-6.2-sol", "gpt"], ["o4-mini", "gpt"], ["codex-mini-latest", "gpt"], ["gpt-oss-120b", "gpt"],
+    ["gemini-4-neon", "gemini"], ["z-ai/GLM-4.6", "glm"], ["moonshotai/kimi-k2", "kimi"], ["Qwen/Qwen3-Coder", "qwen"],
+    ["deepseek-v3.2", "deepseek"], ["mystery-1", null], ["opusculum", null], ["o", null]
+  ] as const) {
+    assert.equal(groupModelName(model), family, model);
+  }
+  // The engine never decides: one model is one family on every engine.
+  assert.equal(judge("codex", "claude-opus-5-5"), "claude");
+  assert.equal(judge("claude", "gpt-6.2-sol"), "gpt");
+  // No model named and none served: unknown, never the engine's name.
+  assert.equal(judge("codex", null), null);
+  // A call naming no model is judged by the model its engine's default served.
+  assert.equal(judge("codex", null, "gpt-6.2-sol"), "gpt");
+  assert.equal(judge("claude", "fast", "claude-haiku-5-5"), "claude");
+  // An assignment outranks the grouping, on the requested name or the served one.
+  assert.equal(judge("claude", "claude-opus-5-5", null, { "claude-opus-5-5": "house" }), "house");
+  assert.equal(judge("claude", "claude-opus-5-5", "gateway-model", { "gateway-model": "glm" }), "glm");
+  // opencode: the entry's declared family first, then its key and route by name.
+  assert.equal(judge("opencode", "glm"), "glm");
+  assert.equal(judge("opencode", "provider/glm-5"), "glm");
+  assert.equal(judge("opencode", "unlabelled"), null);
+  assert.equal(judge("opencode", "unlabelled", null, { unlabelled: "mystery" }), "mystery");
+  assert.equal(judge("opencode", "glm", null, { glm: "other" }), "glm");
+  assert.equal(judge("opencode", "unregistered"), null);
+  assert.equal(judge("opencode", "kimi-k2.5"), "kimi");
+});
+
+test("the single-family judgement names one family only where every worker is placed on it", () => {
+  assert.deepEqual(singleFamilyOf(["claude", "claude", "claude"]), { family: "claude", workers: 3 });
+  assert.deepEqual(singleFamilyOf(["claude"]), { family: "claude", workers: 1 });
+  assert.equal(singleFamilyOf([]), null);
+  assert.equal(singleFamilyOf(["claude", "gpt"]), null);
+  // A worker whose family is unknown leaves the fact unknown.
+  assert.equal(singleFamilyOf(["claude", "claude", null]), null);
+  assert.equal(singleFamilyOf([null, null]), null);
 });
 
 test("an identified call's envelope names the engine, model and family that answered it", async () => {
@@ -187,7 +242,7 @@ test("an identified call's envelope names the engine, model and family that answ
     const fellBack = await hooks.agent("review again", { target: "reviewer", identity: true });
     assert.equal(fellBack.output, "codex 1");
     // The chain entry that answered, under the model it served.
-    assert.deepEqual(fellBack.answeredBy, { engine: "codex", model: "gpt-6.1-sol-2026-09-29", family: "codex" });
+    assert.deepEqual(fellBack.answeredBy, { engine: "codex", model: "gpt-6.1-sol-2026-09-29", family: "gpt" });
   } finally {
     await runtime.close();
   }

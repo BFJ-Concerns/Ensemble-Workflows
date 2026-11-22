@@ -618,6 +618,22 @@ families; their versions are listed in [Schema versions](#schema-versions).
   library caller (`null` for a library run given none), and `bindings`, each name's
   `{ engine, model, fallback }` with `model` and `fallback` `null` where the
   binding names none. A file with no `targets` section records `{}`.
+- `machine_fallback`: the machine fallback policy in force at run start.
+  `source` names the configuration file and `chains` holds every configured
+  `engine:model` or `engine` chain, including chains the run did not select.
+  The CLI records empty `chains` when the file declares no map. A library
+  writer given no policy records `null`. Earlier version-7 manifests may
+  omit this field, which leaves the policy unrecorded.
+- `single_family_notice`: whether the machine's
+  [single-family notice](configuration.md#single_family_notice) was on for
+  the run.
+- `single_family`: `{ family, workers }` when, at the run's end with the
+  notice on, every worker resolved onto one
+  [model family](workflow-scripts.md#model-families) — each worker judged on
+  the target it was dispatched to before any fallback step, a multi-turn
+  session counting once. `null` while the run is open, with the notice off,
+  and where the workers spanned families, none ran, or one's family is
+  unknown.
 - `workflow_invocations`: the root workflow and every child it invoked through
   `workflow()`, in the order they were recorded — call order, except that
   concurrent `workflow()` calls are recorded as each one resolves. Each entry carries an ordinal (0 for the root),
@@ -839,18 +855,20 @@ The fields present throughout a record's lifetime are:
   - `{ "kind": "target", "target": "<name>" }`: the binding of the named
     target the call asked for, which the call and its `defaults` block left
     to supply the chain.
-  - `{ "kind": "none" }`: neither the call nor its `defaults` block declared
-    a chain. A direct library call has no `defaults`, so its chain reads
-    `call` or `none`.
+  - `{ "kind": "map", "key": "<engine:model or engine>" }`: the matching
+    key in the machine fallback map.
+  - `{ "kind": "switched-off", "by": "call" }`: the call set
+    `fallback: false`.
+  - `{ "kind": "switched-off", "by": "defaults", "engine": "<engine>" }`:
+    the script's defaults for the dispatched engine set `fallback: false`.
+  - `{ "kind": "none" }`: the search found no fallback declaration.
   - `{ "kind": "later-turn" }`: the second or later turn of a multi-turn
     session. A session's chain applies to its creating turn alone, so
     `fallback` is `null` here; the creating turn's record (the same
     `session.id`, `turn` 1) carries the session's chain and its source.
 
-  `none` and `later-turn` both pair with a `null` chain and are not
-  interchangeable: one says nothing was declared, the other that the
-  session's chain no longer applies. A reader that meets an unknown `kind`
-  should treat the chain's source as unrecorded. The field joined the agent
+  `none`, `switched-off` and `later-turn` all pair with a `null` chain.
+  Treat an unknown `kind` as an unrecorded source. The field joined the agent
   record within schema version 4, so a version-4 agent record from an older
   Ensemble checkout can lack it; read a missing `fallback_source` as
   unrecorded, never as `none`.
@@ -1091,7 +1109,7 @@ on the same target.
 |---|---|---|
 | `output` | `output` | Empty output, unparseable JSON, an answer that fails its schema, or a stream that exceeded the [whitespace bound](workflow-scripts.md#whitespace-streams). `ClaudeHeldWhitespaceStreamError` *settles* because the worker had to stop |
 | `effort.rejected` | `unclassified` | The provider refused the requested reasoning level; *settles* |
-| `<engine>.authentication-failure` | `unclassified` | The engine's credentials were rejected |
+| `<engine>.authentication-failure` | `availability` | Credentials were missing or rejected |
 | `<engine>.model-not-found` | `unclassified` | The engine does not know the model |
 | `substrate.refused` | `availability` | The launch environment denied a resource the engine needs, before its substrate started |
 | `preflight.resource-denied` | `availability` | The resource preflight found a location the worker needs inaccessible |

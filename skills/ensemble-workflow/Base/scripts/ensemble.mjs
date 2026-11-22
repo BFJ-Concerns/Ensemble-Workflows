@@ -15004,7 +15004,7 @@ function assertValidAgentOptions(options) {
   }
   const fallback = read("fallback", "a valid fallback chain");
   if (fallback !== unreadable) {
-    collect(() => assertValidFallbackChain(fallback));
+    collect(() => assertValidFallbackOption(fallback));
   }
   if (errors.length === 1) {
     throw errors[0];
@@ -15063,7 +15063,7 @@ function assertValidWorkerSessionOptions(options) {
   if (values.strip !== void 0) {
     assertValidStripOption(values.strip);
   }
-  assertValidFallbackChain(values.fallback);
+  assertValidFallbackOption(values.fallback);
 }
 function assertValidTargetName(target) {
   if (target !== void 0 && (typeof target !== "string" || target.trim().length === 0)) {
@@ -15078,6 +15078,9 @@ function assertValidSessionTurnOptions(options) {
       throw new UnrecognisedAgentOptionError(key, SESSION_TURN_OPTION_KEYS);
     }
   }
+}
+function assertValidFallbackOption(value) {
+  if (value !== false) assertValidFallbackChain(value);
 }
 function assertValidFallbackChain(chain) {
   if (chain === void 0) {
@@ -15129,7 +15132,7 @@ function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRe
   return registered;
 }
 function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaultOpenCodeModelRegistry) {
-  assertValidFallbackChain(defaults.fallback);
+  assertValidFallbackOption(defaults.fallback);
   if (defaults.effort === "ultra") assertCanonicalEffortSupported(defaults.effort);
   if (engine !== "opencode") {
     assertCanonicalEffortSupported(defaults.effort);
@@ -15912,7 +15915,10 @@ function resolveAmbientSettings(input) {
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models),
     namedTargets: { bindings: config?.targets ?? {}, source: configFile },
-    effortPolicy: { section: config?.effort ?? {}, source: configFile }
+    machineFallback: { chains: config?.fallback ?? {}, source: configFile },
+    effortPolicy: { section: config?.effort ?? {}, source: configFile },
+    modelFamilies: config?.model_families ?? {},
+    singleFamilyNotice: config?.single_family_notice ?? true
   };
 }
 function machineConfigPath(env) {
@@ -15942,7 +15948,7 @@ function readMachineConfig(configFile) {
   if (!newer) {
     assertKnownKeys(
       parsed,
-      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "effort"],
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "fallback", "effort", "model_families", "single_family_notice"],
       configFile
     );
   }
@@ -15960,7 +15966,12 @@ function readMachineConfig(configFile) {
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
+  validateModelFamilies(parsed, configFile);
+  if (parsed.single_family_notice !== void 0 && typeof parsed.single_family_notice !== "boolean") {
+    throw fileValueError(configFile, "single_family_notice", "must be a boolean");
+  }
   validateNamedTargetBindings(parsed.targets, configFile);
+  validateMachineFallback(parsed.fallback, parsed.targets, configFile);
   if (parsed.effort !== void 0) {
     assertEffortSection(parsed.effort, (key, detail) => {
       throw fileValueError(configFile, `effort${key ? `.${key}` : ""}`, detail);
@@ -16019,6 +16030,23 @@ function validateWorkerEnvironment(root, configFile) {
       if (typeof value !== "string") {
         throw fileValueError(configFile, `${qualified}.${name}`, "must be a string");
       }
+    }
+  }
+}
+function validateModelFamilies(root, configFile) {
+  const section = root.model_families;
+  if (section === void 0) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "model_families", "must be a JSON object of model names to family names");
+  }
+  for (const [model, family] of Object.entries(section)) {
+    if (model.trim().length === 0) {
+      throw fileValueError(configFile, "model_families", "model names must be non-empty");
+    }
+    if (typeof family !== "string" || family.trim().length === 0) {
+      throw fileValueError(configFile, `model_families.${model}`, "must be a non-empty string");
     }
   }
 }
@@ -16095,35 +16123,56 @@ function validateNamedTargetBindings(section, configFile) {
     if (binding.model !== void 0 && (typeof binding.model !== "string" || binding.model.trim().length === 0)) {
       throw fileValueError(configFile, `${qualified}.model`, "must be a non-empty string");
     }
-    try {
-      assertValidFallbackChain(binding.fallback);
-    } catch (error) {
-      if (error instanceof AgentOptionRejectedError) {
-        throw fileValueError(configFile, `${qualified}.fallback`, error.message);
-      }
-      throw error;
+    validateConfiguredChain(binding.fallback, section, configFile, `${qualified}.fallback`);
+  }
+}
+function validateMachineFallback(section, targets, configFile) {
+  if (section === void 0) return;
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "fallback", "must be a JSON object keyed by engine or engine:model");
+  }
+  for (const [key, chain] of Object.entries(section)) {
+    const separator = key.indexOf(":");
+    const engine = separator === -1 ? key : key.slice(0, separator);
+    const qualified = `fallback.${key}`;
+    if (!ENGINES.includes(engine) || separator !== -1 && key.slice(separator + 1).trim().length === 0) {
+      throw fileValueError(configFile, qualified, `key must name an engine or engine:model for one of ${ENGINES.join(" | ")}`);
     }
-    for (const [index, entry] of (binding.fallback ?? []).entries()) {
-      if (entry.target === void 0) continue;
-      const written = entry;
-      if (written.engine !== void 0 || written.model !== void 0) {
-        throw fileValueError(
-          configFile,
-          `${qualified}.fallback`,
-          `entry ${index} names target ${JSON.stringify(entry.target)} beside a literal engine or model; an entry names one or the other`
-        );
-      }
-      const named = Object.hasOwn(section, entry.target) ? section[entry.target] : void 0;
-      if (named === void 0) {
-        throw fileValueError(configFile, `${qualified}.fallback`, `entry ${index} names target ${JSON.stringify(entry.target)}, which this file does not bind`);
-      }
-      if (isObject(named) && named.engine === "opencode") {
-        throw fileValueError(
-          configFile,
-          `${qualified}.fallback`,
-          `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
-        );
-      }
+    if (chain === void 0) {
+      throw fileValueError(configFile, qualified, "must declare a fallback chain");
+    }
+    validateConfiguredChain(chain, targets, configFile, qualified);
+  }
+}
+function validateConfiguredChain(chain, targets, configFile, key) {
+  try {
+    assertValidFallbackChain(chain);
+  } catch (error) {
+    if (error instanceof AgentOptionRejectedError) {
+      throw fileValueError(configFile, key, error.message);
+    }
+    throw error;
+  }
+  for (const [index, entry] of (chain ?? []).entries()) {
+    if (entry.target === void 0) continue;
+    const written = entry;
+    if (written.engine !== void 0 || written.model !== void 0) {
+      throw fileValueError(
+        configFile,
+        key,
+        `entry ${index} names target ${JSON.stringify(entry.target)} beside a literal engine or model; an entry names one or the other`
+      );
+    }
+    const named = isObject(targets) && Object.hasOwn(targets, entry.target) ? targets[entry.target] : void 0;
+    if (named === void 0) {
+      throw fileValueError(configFile, key, `entry ${index} names target ${JSON.stringify(entry.target)}, which this file does not bind`);
+    }
+    if (isObject(named) && named.engine === "opencode") {
+      throw fileValueError(
+        configFile,
+        key,
+        `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
+      );
     }
   }
 }
@@ -16816,7 +16865,10 @@ var RunRecordWriter = class _RunRecordWriter {
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       named_targets: namedTargetsRecord(options.namedTargets),
+      machine_fallback: options.machineFallback === void 0 ? null : structuredClone(options.machineFallback),
       effort: options.effortPolicy ?? null,
+      single_family_notice: options.singleFamilyNotice ?? true,
+      single_family: null,
       git: {
         start: gitStart,
         end: null
@@ -17327,6 +17379,7 @@ var RunRecordWriter = class _RunRecordWriter {
         exit_code: options.exitCode
       };
       this.manifest.error = options.error ?? null;
+      this.manifest.single_family = options.singleFamily ?? null;
       await this.#writeJson("result.json", {
         schema_version: SCHEMA_VERSION,
         kind: "run_result",
@@ -19371,6 +19424,9 @@ function diagnoseAttemptFailure(evidence) {
   if (failure.kind === SESSION_LOST_KIND) {
     return failure;
   }
+  if (engine === "opencode" && failure.kind === "opencode-run-error" && /^opencode run failed: tool \S+ failed:/.test(failure.message)) {
+    return failure;
+  }
   const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
   const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
   if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
@@ -19379,7 +19435,7 @@ function diagnoseAttemptFailure(evidence) {
   if (isProviderEffortRejection(evidence)) {
     return { kind: "effort-rejected", message: failure.message };
   }
-  const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
+  const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|\bAPI key is missing\b|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
     const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude" ? "Run `claude auth login`." : "Run `opencode auth login` for the provider you selected.";
     return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${failure.message}` };
@@ -19475,7 +19531,10 @@ var OPENCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
 function classifyAttemptFailure(evidence) {
   if (evidence.failure.kind === "effort-rejected") return { class: "unclassified", rule: "effort.rejected" };
   const { kind } = evidence.failure;
-  if (kind === "authentication-failure" || kind === "model-not-found") {
+  if (kind === "authentication-failure") {
+    return { class: "availability", rule: `${evidence.engine}.authentication-failure` };
+  }
+  if (kind === "model-not-found") {
     return { class: "unclassified", rule: `${evidence.engine}.${kind}` };
   }
   if (OUTPUT_FAILURE_KINDS.has(kind)) {
@@ -19597,22 +19656,37 @@ function isProviderEffortRejection(evidence) {
 }
 
 // src/fallback-source.ts
+function selectFallback(passed, options, map) {
+  const { fallback, engine, model } = options;
+  if (fallback === false) {
+    return { chain: void 0, source: handedOff.get(passed) ?? { kind: "switched-off", by: "call" } };
+  }
+  if (fallback !== void 0) {
+    return { chain: fallback, source: handedOff.get(passed) ?? { kind: "call" } };
+  }
+  if (map !== void 0 && engine !== void 0) {
+    const modelKey = model === void 0 ? void 0 : `${engine}:${model}`;
+    const key = modelKey !== void 0 && Object.hasOwn(map, modelKey) ? modelKey : engine;
+    if (Object.hasOwn(map, key)) {
+      return { chain: map[key], source: { kind: "map", key } };
+    }
+  }
+  return { chain: void 0, source: { kind: "none" } };
+}
 var handedOff = /* @__PURE__ */ new WeakMap();
 function handOffFallbackSource(options, source) {
   handedOff.set(options, source);
   return options;
 }
-function fallbackSourceOf(passed, validated) {
-  return handedOff.get(passed) ?? (validated.fallback === void 0 ? { kind: "none" } : { kind: "call" });
-}
 function attributeMergedChain(merged, callFallback, engine) {
   if (callFallback !== void 0) {
-    return handOffFallbackSource(merged, { kind: "call" });
+    merged.fallback = callFallback;
+    return handOffFallbackSource(merged, callFallback === false ? { kind: "switched-off", by: "call" } : { kind: "call" });
   }
   if (merged.fallback !== void 0) {
-    return handOffFallbackSource(merged, { kind: "defaults", engine });
+    return handOffFallbackSource(merged, merged.fallback === false ? { kind: "switched-off", by: "defaults", engine } : { kind: "defaults", engine });
   }
-  return handOffFallbackSource(merged, { kind: "none" });
+  return merged;
 }
 
 // src/option-overrides.ts
@@ -19730,14 +19804,49 @@ function bindingFor(targets, name, context = "") {
 }
 
 // src/model-family.ts
-function modelFamilyOf(engine, model, openCodeModels) {
-  if (engine !== "opencode") {
-    return engine;
+var NAME_GROUPS = [
+  [/^(claude|opus|sonnet|haiku|fable)(-|\[|$)/, "claude"],
+  [/^(gpt|chatgpt|codex)(-|$)|^o[1-9](-|$)/, "gpt"],
+  [/^gemini(-|$)/, "gemini"],
+  [/^glm(-|$)/, "glm"],
+  [/^kimi(-|$)/, "kimi"],
+  [/^qwen/, "qwen"],
+  [/^deepseek(-|$)/, "deepseek"],
+  [/^grok(-|$)/, "grok"],
+  [/^llama/, "llama"],
+  [/^(mistral|mixtral|codestral|devstral|magistral|ministral)(-|$)/, "mistral"],
+  [/^minimax(-|$)/, "minimax"]
+];
+function groupModelName(model) {
+  const name = model.slice(model.lastIndexOf("/") + 1).toLowerCase();
+  return NAME_GROUPS.find(([pattern]) => pattern.test(name))?.[1] ?? null;
+}
+function modelFamilyOf(target, assignments, openCodeModels) {
+  const entry = target.engine === "opencode" && target.requested !== null ? openCodeModels?.get(target.requested) : void 0;
+  if (entry?.family !== void 0) {
+    return entry.family;
   }
-  if (model === null || model === void 0) {
-    return null;
+  const names = [
+    ...entry !== void 0 ? [entry.key, entry.providerModel] : target.requested !== null ? [target.requested] : [],
+    ...target.served !== null ? [target.served] : []
+  ];
+  for (const name of names) {
+    if (Object.hasOwn(assignments, name)) {
+      return assignments[name] ?? null;
+    }
   }
-  return openCodeModels?.get(model)?.family ?? null;
+  for (const name of names) {
+    const family = groupModelName(name);
+    if (family !== null) {
+      return family;
+    }
+  }
+  return null;
+}
+function singleFamilyOf(families) {
+  const distinct = new Set(families);
+  const [family] = distinct;
+  return families.length > 0 && distinct.size === 1 && typeof family === "string" ? { family, workers: families.length } : null;
 }
 
 // src/progress.ts
@@ -26761,23 +26870,22 @@ var BODY_RETURNED_LEG = {
   dispatching: "its dispatch record was still landing, so no outcome was observed"
 };
 var BODY_RETURNED = "the script returned without awaiting this worker";
-function identifiedResult(options, output, record, openCodeModels) {
+function identifiedResult(options, output, record, familyOf) {
   return {
     label: options.label ?? null,
     phase: record.phase,
     output,
     failure: record.status === "complete" ? null : settledFailureAccount(record),
-    answeredBy: answeringTarget(record, openCodeModels)
+    answeredBy: answeringTarget(record, familyOf)
   };
 }
-function answeringTarget(record, openCodeModels) {
+function answeringTarget(record, familyOf) {
   if (record.answeredBy === null) {
     return null;
   }
-  const { engine } = record.answeredBy;
+  const { engine, model: served } = record.answeredBy;
   const requested = record.attempts.findLast((attempt) => attempt.status === "complete")?.target.model ?? null;
-  const model = record.answeredBy.model ?? requested;
-  return { engine, model, family: modelFamilyOf(engine, requested ?? model, openCodeModels) };
+  return { engine, model: served ?? requested, family: familyOf({ engine, requested, served }) };
 }
 function identifiedFailure(options, error, phase = options.phase ?? null) {
   if (options.identity !== true) return error;
@@ -26876,7 +26984,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #lean;
   /** The machine's named targets, or null where the run was given none (every name is then unbound). */
   #namedTargets;
+  #machineFallback;
   #effortPolicy;
+  /** The machine's model family assignments, outranking the harness's grouping of model names. */
+  #modelFamilies;
+  /** Every agent record the run has opened, in dispatch order, for the single-family judgement at its end. */
+  #openedAgentRecords = [];
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
   #runRecorder = null;
@@ -26940,8 +27053,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (options.namedTargets !== void 0) {
       validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
     }
+    if (options.machineFallback !== void 0) {
+      validateMachineFallback(options.machineFallback.chains, options.namedTargets?.bindings, options.machineFallback.source);
+    }
     this.#namedTargets = options.namedTargets ?? null;
+    this.#machineFallback = options.machineFallback;
     this.#effortPolicy = options.effortPolicy ?? null;
+    this.#modelFamilies = options.modelFamilies ?? {};
     if (this.#effortPolicy !== null) {
       assertEffortSection(this.#effortPolicy.section, (key, detail) => {
         throw new InvalidAgentOptionValueError(`effort.${key}`, null, detail);
@@ -27006,6 +27124,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (options.namedTargets !== void 0) {
       validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
     }
+    if (options.machineFallback !== void 0) {
+      validateMachineFallback(options.machineFallback.chains, options.namedTargets?.bindings, options.machineFallback.source);
+    }
     let runtime = null;
     const cwd = options.cwd ?? process.cwd();
     rejectBlankHoldScope(options.holdScope);
@@ -27048,7 +27169,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.strip !== void 0 ? { strip: options.strip } : {},
       ...options.lean !== void 0 ? { lean: options.lean } : {},
       ...options.namedTargets !== void 0 ? { namedTargets: options.namedTargets } : {},
+      ...options.machineFallback !== void 0 ? { machineFallback: options.machineFallback } : {},
       ...options.effortPolicy !== void 0 ? { effortPolicy: options.effortPolicy } : {},
+      ...options.modelFamilies !== void 0 ? { modelFamilies: options.modelFamilies } : {},
       ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : {},
       ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {}
     });
@@ -27156,9 +27279,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       passedOptions = options;
       assertValidAgentOptions(options);
     }
-    const fallbackSource = fallbackSourceOf(passedOptions, options);
     const namedTarget = namedTargetResolutionOf(passedOptions);
-    const chain = settleChain(this.#namedTargets, options.fallback, passedOptions);
+    const fallback = selectFallback(passedOptions, options, this.#machineFallback?.chains);
+    const chain = settleChain(this.#namedTargets, fallback.chain, passedOptions);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
     }
@@ -27217,7 +27340,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       engine.name,
       prompt,
       { ...dispatchOptions, ...phase !== null ? { phase } : {} },
-      fallbackSource,
+      fallback,
       namedTarget,
       stripRoutes,
       leanRoute
@@ -27229,7 +27352,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       unsettled.stage = "admitting";
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, chain, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
+        return identifiedResult(options, output, agentRecord, (target) => this.modelFamilyOf(target));
       }
       return output;
     } catch (error) {
@@ -27333,9 +27456,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (name !== null && declared.engine === void 0 && declared.model === void 0 && !isNamedTargetBound(this.#namedTargets, name)) {
       return { target: name, bound: false, engine: null, model: null, family: null };
     }
-    const resolved = snapshotAgentCwd(applyDefaults(this.resolveNamedTarget(options)));
+    const passed = applyDefaults(this.resolveNamedTarget(options));
+    const resolved = snapshotAgentCwd(passed);
     assertValidAgentOptions(resolved);
-    const chain = settleChain(this.#namedTargets, resolved.fallback, resolved);
+    const fallback = selectFallback(passed, resolved, this.#machineFallback?.chains);
+    const chain = settleChain(this.#namedTargets, fallback.chain, passed);
     if (resolved.schema !== void 0) {
       assertCompilableSchema(resolved.schema);
     }
@@ -27361,7 +27486,46 @@ var EnsembleRuntime = class _EnsembleRuntime {
       validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
     }
     const model = resolved.model ?? null;
-    return { target: name, bound: true, engine: engine.name, model, family: modelFamilyOf(engine.name, model, this.openCodeModelRegistry) };
+    return { target: name, bound: true, engine: engine.name, model, family: this.modelFamilyOf({ engine: engine.name, requested: model, served: null }) };
+  }
+  /**
+   * The model family `target` runs on, judged from its model under this
+   * run's family assignments and opencode registry; see
+   * {@link modelFamilyOf}. Null where the harness cannot tell.
+   */
+  modelFamilyOf(target) {
+    return modelFamilyOf(target, this.#modelFamilies, this.openCodeModelRegistry);
+  }
+  /**
+   * Whether every worker this run dispatched resolved onto one model
+   * family, judged at the run's end for its stderr notice and manifest.
+   * A worker is a one-shot call or a multi-turn session, whose turns are
+   * one worker; one that never reached an attempt ran on nothing and is
+   * not counted. Each is judged on the target it resolved to at dispatch —
+   * its first attempt's, whatever a fallback chain later moved it to — with
+   * the model that target served, on any of a session's turns, standing in
+   * where the call named none.
+   * The family and the worker count when every worker shares one family,
+   * null where they span families, where none ran, or where any worker's
+   * family is unknown.
+   */
+  singleFamily() {
+    const workers = /* @__PURE__ */ new Map();
+    for (const record of this.#openedAgentRecords) {
+      const key = record.session === null ? `agent:${record.id}` : `session:${record.session.id}`;
+      workers.set(key, [...workers.get(key) ?? [], ...record.attempts]);
+    }
+    const families = [];
+    for (const attempts of workers.values()) {
+      const first = attempts[0];
+      if (first === void 0) {
+        continue;
+      }
+      const { engine, model } = first.target;
+      const served = attempts.find((attempt) => attempt.target.engine === engine && attempt.target.model === model && attempt.resolvedModel !== null)?.resolvedModel ?? null;
+      families.push(this.modelFamilyOf({ engine, requested: model, served }));
+    }
+    return singleFamilyOf(families);
   }
   /**
    * Judge a declared chain's named entries against this run's bindings
@@ -27384,9 +27548,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       options = withTargetChain(resolved, resolved);
       assertValidWorkerSessionOptions(options);
     }
-    const fallbackSource = fallbackSourceOf(options, options);
     const namedTarget = namedTargetResolutionOf(options);
-    const chain = settleChain(this.#namedTargets, options.fallback, options);
+    const fallback = selectFallback(options, options, this.#machineFallback?.chains);
+    const chain = settleChain(this.#namedTargets, fallback.chain, options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === void 0) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -27418,7 +27582,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       resolvedEffort: null,
       stripRoutes,
       leanRoute,
-      fallbackSource,
+      fallback,
       namedTarget,
       chain,
       servingTarget: namedTarget?.name ?? null,
@@ -27502,9 +27666,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
         engine: engine.name,
         ...options.model !== void 0 ? { model: options.model } : {},
         ...options.effort !== void 0 ? { effort: options.effort } : {},
-        // The chain is the creating turn's alone: a later turn's
-        // record declares none, because none applied to it.
-        ...options.fallback !== void 0 && state.turnCount === 0 ? { fallback: options.fallback } : {},
         ...options.cwd !== void 0 ? { cwd: options.cwd } : {},
         ...options.isolation !== void 0 ? { isolation: options.isolation } : {},
         ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
@@ -27515,13 +27676,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.strip !== void 0 ? { strip: options.strip } : {},
         ...options.lean === true ? { lean: true } : {}
       };
-      const fallbackSource = state.turnCount === 0 ? state.fallbackSource : { kind: "later-turn" };
+      const fallback = state.turnCount === 0 ? state.fallback : { chain: void 0, source: { kind: "later-turn" } };
       const agentRecord = this.#newAgentRecord(
         agentId,
         engine.name,
         prompt,
         recordOptions,
-        fallbackSource,
+        fallback,
         state.namedTarget,
         state.stripRoutes,
         state.leanRoute
@@ -27551,7 +27712,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
           if (options.identity === true) {
-            return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
+            return identifiedResult(options, output, agentRecord, (target) => this.modelFamilyOf(target));
           }
           return output;
         } catch (error) {
@@ -29085,8 +29246,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd
     };
   }
-  #newAgentRecord(id, engine, prompt, options, fallbackSource, namedTarget, stripRoutes = null, leanRoute = null) {
-    return {
+  #newAgentRecord(id, engine, prompt, options, fallback, namedTarget, stripRoutes = null, leanRoute = null) {
+    const record = {
       id,
       engine,
       headerIdentity: "original_request",
@@ -29097,8 +29258,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       },
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
-      fallback: options.fallback === void 0 ? null : options.fallback.map((target) => ({ ...target })),
-      fallbackSource,
+      fallback: fallback.chain?.map((target) => ({ ...target })) ?? null,
+      fallbackSource: fallback.source,
       namedTarget,
       answeredBy: null,
       resolvedModel: null,
@@ -29126,6 +29287,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       executionMs: 0,
       attempts: []
     };
+    this.#openedAgentRecords.push(record);
+    return record;
   }
 };
 async function createRuntime(options = {}) {
@@ -29325,7 +29488,7 @@ function createWorkflowHooks(options) {
       if (lookupDispatch === void 0) {
         throw new PreSpawnAuthorError("this runtime does not support the dispatch lookup");
       }
-      return lookupDispatch.call(options.runtime, lookupOptions, (resolved) => applyAgentDefaults(defaults, resolved));
+      return lookupDispatch.call(options.runtime, lookupOptions, (resolved) => withDeclaredModels(applyAgentDefaults(defaults, resolved), declaredModel));
     },
     tally: (name, value) => {
       const recordTally = options.runtime.recordTally;
@@ -35380,7 +35543,7 @@ async function runWorkflowScript(options) {
     options.runtime.openCodeModelRegistry
   );
   for (const [engine, block] of Object.entries(defaults ?? {})) {
-    if (block?.fallback === void 0 || options.runtime.settleFallbackChain === void 0) continue;
+    if (!block?.fallback || options.runtime.settleFallbackChain === void 0) continue;
     try {
       options.runtime.settleFallbackChain(block.fallback);
     } catch (error) {
@@ -35615,7 +35778,7 @@ function validateWorkflowDefaults(value, openCodeModelRegistry) {
         );
       }
       if (option === "fallback") {
-        assertValidFallbackChain(optionValue);
+        assertValidFallbackOption(optionValue);
         if (optionValue !== void 0) {
           engineDefaults.fallback = optionValue;
         }
@@ -36623,6 +36786,8 @@ async function runEnsembleCli(argv, options = {}) {
       openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
       effortPolicy: ambientSettings.effortPolicy,
       namedTargets: ambientSettings.namedTargets,
+      machineFallback: ambientSettings.machineFallback,
+      modelFamilies: ambientSettings.modelFamilies,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
@@ -36690,7 +36855,9 @@ async function runEnsembleCli(argv, options = {}) {
         workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
         effortPolicy: ambientSettings.effortPolicy,
-        namedTargets: ambientSettings.namedTargets
+        namedTargets: ambientSettings.namedTargets,
+        machineFallback: ambientSettings.machineFallback,
+        singleFamilyNotice: ambientSettings.singleFamilyNotice
       });
       runtime.setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
@@ -36987,6 +37154,7 @@ async function runEnsembleCli(argv, options = {}) {
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError2(error)}
 `);
       }
+      const singleFamily = ambientSettings.singleFamilyNotice ? reportSingleFamily(runtime, stderr) : null;
       progress?.finish();
       if (finalRecord !== null && finalRecord.status !== "complete" && terminalError !== null) {
         const serialised = serialiseResult(partialResult(runtime, finalRecord.status, terminalError));
@@ -37003,7 +37171,8 @@ async function runEnsembleCli(argv, options = {}) {
           await runRecordWriter.finish({
             ...finalRecord ?? { status: "failed", exitCode: 1, result: null },
             ...teardownError !== null ? { status: "failed", exitCode: 1 } : {},
-            error: terminalError ?? teardownError
+            error: terminalError ?? teardownError,
+            singleFamily
           });
         }
       } catch (error) {
@@ -37245,6 +37414,15 @@ function reportLegsUnfinishedAtReturn(runtime, stderr) {
 `);
   }
 }
+function reportSingleFamily(runtime, stderr) {
+  const judgement = runtime?.singleFamily?.() ?? null;
+  if (judgement !== null) {
+    const workers = judgement.workers === 1 ? "1 worker" : `all ${judgement.workers} workers`;
+    stderr.write(`[single-family] ${workers} resolved onto one model family: ${judgement.family}
+`);
+  }
+  return judgement;
+}
 function lateEndingRank(error) {
   return error instanceof WorkflowUncaughtExceptionError ? 2 : error instanceof WorkflowProcessExitError ? 1 : 0;
 }
@@ -37470,7 +37648,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   }
   const fallback = parsed.values.fallback === void 0 ? void 0 : await parseJsonValue(parsed.values.fallback, cwd, "--fallback");
   try {
-    assertValidFallbackChain(fallback);
+    assertValidFallbackOption(fallback);
   } catch (error) {
     throw new CliUsageError(`--fallback: ${error instanceof Error ? error.message : String(error)}`);
   }

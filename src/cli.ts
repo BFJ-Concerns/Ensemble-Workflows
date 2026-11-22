@@ -7,7 +7,7 @@ import { CALLER_IDENTITY_ENV, RUN_RECORD_DIR_ENV, parseWorkerScopeGrouping, reso
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
-import { assertValidFallbackChain, MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
+import { assertValidFallbackOption, MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { describeError, HoldTimeoutError, InvalidAgentSchemaError, PreSpawnAuthorError } from "./errors.js";
 import { answerHold, defaultHoldsDirectory, enumerateHolds, holdListingState, resolveHoldScope } from "./holds.js";
 import { boundedEvidence, presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
@@ -21,6 +21,7 @@ import { declaredDirectory, defaultDirectory, readSetting } from "./resource-loc
 import { judgeResources } from "./resource-preflight.js";
 
 import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
+import type { SingleFamilyJudgement } from "./model-family.js";
 import { defaultWorkflowRegistryDirs, listSavedWorkflows } from "./workflow-registry.js";
 import { harnessVersion } from "./harness-version.js";
 
@@ -399,6 +400,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
       effortPolicy: ambientSettings.effortPolicy,
       namedTargets: ambientSettings.namedTargets,
+      machineFallback: ambientSettings.machineFallback,
+      modelFamilies: ambientSettings.modelFamilies,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     // The CLI `--timeout` flag wins over a programmatically injected one; both
@@ -478,7 +481,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
         effortPolicy: ambientSettings.effortPolicy,
-        namedTargets: ambientSettings.namedTargets
+        namedTargets: ambientSettings.namedTargets,
+        machineFallback: ambientSettings.machineFallback,
+        singleFamilyNotice: ambientSettings.singleFamilyNotice
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
@@ -836,6 +841,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // calls with a stack into the bundle.
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError(error)}\n`);
       }
+      const singleFamily = ambientSettings.singleFamilyNotice ? reportSingleFamily(runtime, stderr) : null;
       progress?.finish();
       if (finalRecord !== null && finalRecord.status !== "complete" && terminalError !== null) {
         // close() has settled the workers, including any answer that
@@ -861,7 +867,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           await runRecordWriter.finish({
             ...(finalRecord ?? { status: "failed" as const, exitCode: 1, result: null }),
             ...(teardownError !== null ? { status: "failed" as const, exitCode: 1 } : {}),
-            error: terminalError ?? teardownError
+            error: terminalError ?? teardownError,
+            singleFamily
           });
         }
       } catch (error) {
@@ -1330,6 +1337,24 @@ function reportLegsUnfinishedAtReturn(runtime: EnsembleRuntime, stderr: Writable
 }
 
 /**
+ * Says on stderr, at the run's end, that every worker resolved onto one
+ * model family, and returns that judgement for the manifest; null, with
+ * nothing said, where the workers spanned families, none ran, or a
+ * worker's family is unknown. A doer and its reviewer on one family have
+ * lost the cross-check the run was written for, and a binding mistake that
+ * puts them there shows nowhere in the launch.
+ */
+function reportSingleFamily(runtime: EnsembleRuntime | null, stderr: Writable): SingleFamilyJudgement | null {
+  // Injected test runtimes may not carry the judgement; read it defensively.
+  const judgement = (runtime as { singleFamily?: () => SingleFamilyJudgement | null } | null)?.singleFamily?.() ?? null;
+  if (judgement !== null) {
+    const workers = judgement.workers === 1 ? "1 worker" : `all ${judgement.workers} workers`;
+    stderr.write(`[single-family] ${workers} resolved onto one model family: ${judgement.family}\n`);
+  }
+  return judgement;
+}
+
+/**
  * Arms the run's endings for the life of the run: SIGINT and SIGTERM, a
  * `process.exit` call from the body, and an exception nothing in the body
  * caught. The first observed declares the run ended; every later one is
@@ -1629,7 +1654,7 @@ async function parseAgentInvocation(
     ? undefined
     : await parseJsonValue(parsed.values.fallback, cwd, "--fallback");
   try {
-    assertValidFallbackChain(fallback);
+    assertValidFallbackOption(fallback);
   } catch (error) {
     throw new CliUsageError(`--fallback: ${error instanceof Error ? error.message : String(error)}`);
   }

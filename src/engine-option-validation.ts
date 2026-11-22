@@ -32,7 +32,7 @@ export function assertCanonicalEffortSupported(effort: unknown): void {
 interface EngineDefaultOptions {
   model?: string;
   effort?: string;
-  fallback?: FallbackTarget[];
+  fallback?: FallbackTarget[] | false;
 }
 
 const AGENT_OPTION_KEYS = Object.keys({
@@ -171,7 +171,7 @@ export function assertValidAgentOptions(options: object): void {
   }
   const fallback = read("fallback", "a valid fallback chain");
   if (fallback !== unreadable) {
-    collect(() => assertValidFallbackChain(fallback));
+    collect(() => assertValidFallbackOption(fallback));
   }
   if (errors.length === 1) {
     throw errors[0];
@@ -243,7 +243,7 @@ export function assertValidWorkerSessionOptions(options: object): void {
   if (values.strip !== undefined) {
     assertValidStripOption(values.strip);
   }
-  assertValidFallbackChain(values.fallback);
+  assertValidFallbackOption(values.fallback);
 }
 
 /**
@@ -268,6 +268,11 @@ export function assertValidSessionTurnOptions(options: object): void {
       throw new UnrecognisedAgentOptionError(key, SESSION_TURN_OPTION_KEYS);
     }
   }
+}
+
+/** A call or an engine defaults block can explicitly disable fallback. */
+export function assertValidFallbackOption(value: unknown): asserts value is FallbackTarget[] | false | undefined {
+  if (value !== false) assertValidFallbackChain(value);
 }
 
 /**
@@ -344,7 +349,7 @@ export function validateEngineDefaults(
   defaults: EngineDefaultOptions,
   openCodeModelRegistry: OpenCodeModelRegistry = defaultOpenCodeModelRegistry
 ): void {
-  assertValidFallbackChain(defaults.fallback);
+  assertValidFallbackOption(defaults.fallback);
   if (defaults.effort === "ultra") assertCanonicalEffortSupported(defaults.effort);
   if (engine !== "opencode") {
     // A bad static declaration fails before the body runs, not at the

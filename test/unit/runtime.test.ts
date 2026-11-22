@@ -334,7 +334,7 @@ test("identity: true resolves the identified envelope; default resolution is unc
   });
   assert.deepEqual(identified, {
     label: "finder", phase: "hunt", output: { answer: "yes" }, failure: null,
-    answeredBy: { engine: "codex", model: null, family: "codex" }
+    answeredBy: { engine: "codex", model: null, family: null }
   });
 
   const bare = await runtime.agent("go", { engine: "codex", schema });
@@ -2323,7 +2323,7 @@ test("a worker inherits the current phase unless its call declares another", asy
   runtime.notePhase("First response");
   assert.deepEqual(await runtime.agent("one", { engine: "codex", identity: true }), {
     label: null, phase: "First response", output: "one", failure: null,
-    answeredBy: { engine: "codex", model: null, family: "codex" }
+    answeredBy: { engine: "codex", model: null, family: null }
   });
   await runtime.agent("two", { engine: "codex" });
   await runtime.agent("override", { engine: "codex", phase: "Review" });

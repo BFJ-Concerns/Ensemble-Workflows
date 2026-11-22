@@ -104,13 +104,26 @@ binding without a model takes the script's `defaults` model for that engine,
 else the engine's own default. Ensemble
 moves the call to the next target when the current one fails for
 **availability**: the allowance is exhausted, the provider is overloaded past
-its own retries, the engine's process died or never started, or the launch
-environment denied a resource the engine needs. Output failures (empty,
-unparseable, or off-schema answers) are retried on the same target and never
-advance the chain, and neither does any other failure. The run-record
-reference lists every
+its own retries, the engine refused the call for want of a valid sign-in,
+the engine's process died or never started, or the launch environment denied
+a resource the engine needs. Output failures (empty, unparseable, or off-schema
+answers) are retried on the same target. Only availability failures advance
+the chain. The run-record reference lists every
 [failure classification rule](run-records.md#failure-classification-rules)
 and its class.
+
+Ensemble uses the first declaration it finds in this order.
+
+1. The call's `fallback`.
+2. The script's `defaults` for the engine the call dispatches on.
+3. The named target's binding, if the call names a target.
+4. The machine's [fallback map](configuration.md#fallback), checking
+   `engine:model` for the resolved dispatch options, then `engine`. A
+   dispatch that leaves the model to the engine checks the engine key.
+
+Each declaration supplies the whole chain. Set `fallback: false` on a call or
+in an engine's `defaults` block to stop the search and disable fallback. A
+call's own chain still takes precedence over `fallback: false` in defaults.
 
 - Each step re-dispatches the same prompt, schema, placement, and strip
   settings on the next target, fresh.
@@ -153,8 +166,8 @@ binding's engine, with the binding's model where it names one; a binding
 without a model takes the script's `defaults` model for that engine, else the
 engine's own default. The `defaults` block for the bound engine supplies
 `effort` and `fallback` where the call leaves them unset, exactly as for a
-call naming that engine. A chain then comes from the first of: the call's own
-`fallback`, the bound engine's `defaults` block, the binding's `fallback`.
+call naming that engine. See [Fallback chains](#fallback-chains) for the
+full order.
 
 These throw `NamedTargetRejectedError` before any worker spawns, naming the
 name and the configuration file:
@@ -194,7 +207,7 @@ It answers `{ target, bound, engine, model, family }`:
 | `bound` | `false` for a `target` the machine does not bind; the other fields are then `null` |
 | `engine` | The engine the call would run on |
 | `model` | The model it would ask for, resolved as the call resolves it (the binding's, else the script's `defaults` model for that engine), or `null` where the engine's own default decides |
-| `family` | The model family: `"codex"` for Codex, `"claude"` for Claude, and for opencode the `family` the model's [`opencode_models`](configuration.md#opencode_models) entry declares; `null` where the entry declares none |
+| `family` | The [model family](#model-families) of `model`, whatever engine runs it; `null` where Ensemble cannot place the model, including where `model` is `null` |
 
 A literal call is answered the same way, so
 `lookupDispatch({ engine: "claude" })` reports the script's `defaults` model
@@ -288,8 +301,47 @@ call that collapses resolves this shape too, never a bare `null`.
 The envelope also carries `answeredBy`: `{ engine, model, family }` for the
 target that answered — the chain entry, after a fallback step — or `null`
 when the worker failed. `model` is the model the engine reported serving,
-else the one the call asked for, else `null`; `family` is judged as the
-[dispatch lookup](#dispatch-lookup) judges it.
+else the one the call asked for, else `null`; `family` is the
+[model family](#model-families) of the model asked for and the model served.
+
+### Model families
+
+A model family is the group a model belongs to by the name it commonly goes
+by. It belongs to the model, never to the engine: a Claude model is in the
+`claude` family whether Claude Code, opencode or a gateway behind Codex runs
+it. The dispatch lookup, an identified call's `answeredBy` and the run's
+[single-family notice](configuration.md#single_family_notice) all report the
+same family.
+
+Ensemble groups a model by the last `/`-separated segment of its name,
+ignoring case, so a provider route groups as the bare name does. The family
+names a script will see are:
+
+| Family | Models whose names begin |
+|---|---|
+| `claude` | `claude`, and Claude Code's aliases `opus`, `sonnet`, `haiku` and `fable` |
+| `gpt` | `gpt`, `chatgpt`, `codex`, and OpenAI's `o1` to `o9` series |
+| `gemini` | `gemini` |
+| `glm` | `glm` |
+| `kimi` | `kimi` |
+| `qwen` | `qwen` |
+| `deepseek` | `deepseek` |
+| `grok` | `grok` |
+| `llama` | `llama` |
+| `mistral` | `mistral`, `mixtral`, `codestral`, `devstral`, `magistral`, `ministral` |
+| `minimax` | `minimax` |
+
+The machine can assign a model its family in
+[`model_families`](configuration.md#model_families), and an opencode entry's
+own [`family`](configuration.md#opencode_models) outranks that; an assignment
+can name any family, including one not in this table. A model neither places
+has the family `null`: unknown.
+
+The model judged is the one the call asked for and, once a worker has served
+it, the model the engine reported serving. A call that names no model is
+judged by the model its engine's default resolved to, which Ensemble learns
+only when a worker reports it, so the dispatch lookup answers `null` for
+such a call.
 
 ### `workflow()` and saved workflows
 
@@ -392,7 +444,7 @@ engine, throws before any worker spawns.
 | `model` | Model to run (see per-engine notes below) |
 | `effort` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `schema` | JSON Schema the answer must satisfy |
-| `fallback` | Ordered chain of `{ engine, model, effort? }` or `{ target, effort? }` targets (see [Fallback chains](#fallback-chains)) |
+| `fallback` | Ordered chain of `{ engine, model, effort? }` or `{ target, effort? }` targets, or `false` to disable fallback (see [Fallback chains](#fallback-chains)) |
 | `cwd` | Worker working directory; must exist. Defaults to the run's working directory |
 | `isolation` | `"worktree"` to run in a fresh git worktree (see [Worktree isolation](#worktree-isolation)) |
 | `timeoutMs` | Per-attempt deadline, a positive integer up to 2147483647. Unbounded when omitted |
@@ -790,17 +842,15 @@ An opencode model absent from the machine registry, a missing model, or an
 unsupported registry variant is refused before worker admission: the call
 throws, leaves no agent record, and adds nothing to the worker tally.
 
-Rejected credentials on a started worker consume an attempt and retry within
-the same bound. A dead or unstartable substrate retains its availability
-classification even when its diagnostic mentions credentials.
-An explicit provider HTTP 401 on a started turn records authentication
-failure even when Codex's retry-promise bound ends the turn.
-The attempt records `authentication-failure`, the engine's
-diagnostic, and a sign-in step: `codex login`, `claude auth login`, or
-`opencode auth login`. These failures are `unclassified`, with a named
-engine-specific authentication rule. Codex `modelNotFound` errors record
-`model-not-found` with a hint to choose an available model, and retain the
-normal attempt bound.
+Missing or rejected credentials advance the chain if an entry remains. With
+no entry left, the usual attempt bound applies. The attempt records
+`authentication-failure`, the engine's diagnostic and a sign-in step
+(`codex login`, `claude auth login` or `opencode auth login`). An explicit
+provider HTTP 401 identifies an authentication failure even when Codex's
+retry-promise bound ends the turn. A dead or unstartable substrate retains its
+own availability rule if its diagnostic merely quotes a credential error.
+Codex `modelNotFound` errors record `model-not-found` with a hint to choose an
+available model and retain the normal attempt bound.
 
 Operational failures — a Claude session that never registered or died, a
 transcript that could not be read, an opencode subprocess killed at its
@@ -936,10 +986,11 @@ engine's own diagnostic:
   retries (`responseTooManyFailedAttempts`) on a 429 or 5xx, or an app-server
   that died or never started; a Claude API refusal carrying a 429, 503, or 529, a dispatch
   Claude Code refused, a dispatch the daemon never registered, or a session
-  that never showed life or left the roster before answering. On any engine,
-  this class also covers a directory the engine needs that
-  the launching process cannot use (`preflight.resource-denied`). Only this
-  class advances a fallback chain.
+  that never showed life, or a one-shot Claude worker that left the roster
+  before answering. On any engine, this includes missing or rejected
+  credentials (`<engine>.authentication-failure`) and a directory the engine
+  needs that the launching process cannot use (`preflight.resource-denied`).
+  Only this class advances a fallback chain.
 - **output** — the worker gave empty, unparseable or off-schema output, or
   streamed only whitespace past the bound.
 - **unclassified** — anything else, including a deadline, a Codex schema

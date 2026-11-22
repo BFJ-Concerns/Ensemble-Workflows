@@ -1240,6 +1240,70 @@ test("built CLI recovers a later answer after prose with an unmatched brace", as
   }
 });
 
+test("built CLI uses the machine fallback map and honours both opt-outs", async (t) => {
+  const fixture = await createProcessFixture("machine-fallback", "backup answered");
+  t.after(() => fixture.cleanup());
+  const directory = path.dirname(fixture.script);
+  const configHome = path.join(directory, "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+  const recordStore = path.join(directory, "records");
+  await mkdir(path.dirname(configFile), { recursive: true });
+  const chain = [{ target: "backup" }];
+  const chains = {
+    "codex:primary": chain,
+    codex: [{ engine: "codex", model: "engine-backup" }]
+  };
+  await writeFile(configFile, JSON.stringify({
+    schema_version: 1,
+    targets: { backup: { engine: "codex", model: "backup" } },
+    fallback: chains
+  }));
+  const refusal = {
+    error: {
+      message: "unexpected status 401 Unauthorized: Missing bearer or basic authentication",
+      codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 401 } }
+    },
+    willRetry: false
+  };
+  const env = { XDG_CONFIG_HOME: configHome, ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE: JSON.stringify([refusal]) };
+  const result = await fixture.runArgsWithEnv(["agent", "--engine=codex", "--model=primary", "--max-attempts=1", "hello"], {
+    ...env,
+    ENSEMBLE_RUN_RECORD: "1",
+    ENSEMBLE_RUN_RECORD_DIR: recordStore
+  });
+  assert.equal(result.code, 0, result.stderr);
+  const manifest = JSON.parse(await readFile(await findOnlyFile(recordStore, "manifest.json"), "utf8"));
+  assert.deepEqual(manifest.machine_fallback, { source: configFile, chains });
+  const agent = JSON.parse(await readFile(await findOnlyFile(recordStore, "agent.json"), "utf8"));
+  assert.deepEqual(agent.fallback_source, { kind: "map", key: "codex:primary" });
+  assert.deepEqual(agent.fallback, chain);
+  assert.deepEqual(agent.attempts.map((attempt: { target: { model: string } }) => attempt.target.model), ["primary", "backup"]);
+  assert.deepEqual(agent.attempts[0].classification, { class: "availability", rule: "codex.authentication-failure" });
+  assert.equal(agent.attempts[0].chain_decision, "advanced");
+
+  const directOptOutStore = path.join(directory, "direct-opt-out-records");
+  const directOptOut = await fixture.runArgsWithEnv(
+    ["agent", "--engine=codex", "--model=primary", "--max-attempts=1", "--fallback=false", "hello"],
+    { ...env, ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: directOptOutStore }
+  );
+  assert.equal(directOptOut.code, 1, directOptOut.stderr);
+  assert.match(directOptOut.stderr, /codex login/);
+  const directRecord = JSON.parse(await readFile(await findOnlyFile(directOptOutStore, "agent.json"), "utf8"));
+  assert.deepEqual(directRecord.fallback_source, { kind: "switched-off", by: "call" });
+  assert.equal(directRecord.fallback, null);
+  assert.equal(directRecord.attempts.length, 1);
+
+  await writeFile(fixture.script, `
+    export const meta = { name: "machine-fallback-opt-out" };
+    export const defaults = { codex: { model: "primary", fallback: false } };
+    return { output: await agent("hello", { engine: "codex", maxAttempts: 1 }) };
+  `);
+  const optedOut = await fixture.runWithEnv(env);
+  assert.equal(optedOut.code, 0, optedOut.stderr);
+  assert.deepEqual(JSON.parse(optedOut.stdout), { output: null });
+  assert.match(optedOut.stderr, /codex login/);
+});
+
 test("built CLI fails loudly for an unparseable machine config before opening a worker", async () => {
   const fixture = await createProcessFixture("unparseable-machine-config");
   const configHome = path.join(path.dirname(fixture.script), "config");
@@ -3228,7 +3292,7 @@ for (const diagnostic of [
       if (diagnostic.name === "retrying-credentials") {
         for (const attempt of agent.attempts) {
           assert.equal(attempt.failure?.kind, "authentication-failure");
-          assert.deepEqual(attempt.classification, { class: "unclassified", rule: "codex.authentication-failure" });
+          assert.deepEqual(attempt.classification, { class: "availability", rule: "codex.authentication-failure" });
           assert.equal(attempt.app_server_diagnostic?.http_status_code, 401);
         }
       }

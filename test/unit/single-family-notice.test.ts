@@ -140,6 +140,23 @@ test("a multi-turn session counts as one worker however many turns it takes", as
   }
 });
 
+test("an unpinned session whose first turn reported no model is judged by the model a later turn served", async () => {
+  // The first turn's empty answer fails with no served model; the second
+  // turn, on the same dispatch target, reports the default it ran on.
+  const codex = new SessionEngine("codex", [answer(""), answer("b", "gpt-6.2-sol"), answer("c")]);
+  const runtime = runtimeOver([codex]);
+  try {
+    const session = hooksFor(runtime).session({ engine: "codex" });
+    assert.equal(await session.send("one"), null);
+    assert.equal(await session.send("two"), "b");
+    await session.close();
+    await hooksFor(runtime).agent("reviewer", { engine: "codex", model: "gpt-6.1-sol" });
+    assert.deepEqual(runtime.singleFamily(), { family: "gpt", workers: 2 });
+  } finally {
+    await runtime.close();
+  }
+});
+
 class CaptureStream extends Writable {
   chunks: string[] = [];
   override _write(chunk: Buffer | string, _encoding: BufferEncoding, callback: () => void): void {

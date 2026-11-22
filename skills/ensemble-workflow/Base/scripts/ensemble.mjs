@@ -27256,24 +27256,26 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * one worker; one that never reached an attempt ran on nothing and is
    * not counted. Each is judged on the target it resolved to at dispatch —
    * its first attempt's, whatever a fallback chain later moved it to — with
-   * the model that target served standing in where the call named none.
+   * the model that target served, on any of a session's turns, standing in
+   * where the call named none.
    * The family and the worker count when every worker shares one family,
    * null where they span families, where none ran, or where any worker's
    * family is unknown.
    */
   singleFamily() {
-    const seen = /* @__PURE__ */ new Set();
-    const families = [];
+    const workers = /* @__PURE__ */ new Map();
     for (const record of this.#openedAgentRecords) {
-      const first = record.attempts[0];
-      if (first === void 0 || record.session !== null && seen.has(record.session.id)) {
+      const key = record.session === null ? `agent:${record.id}` : `session:${record.session.id}`;
+      workers.set(key, [...workers.get(key) ?? [], ...record.attempts]);
+    }
+    const families = [];
+    for (const attempts of workers.values()) {
+      const first = attempts[0];
+      if (first === void 0) {
         continue;
       }
-      if (record.session !== null) {
-        seen.add(record.session.id);
-      }
       const { engine, model } = first.target;
-      const served = record.attempts.find((attempt) => attempt.target.engine === engine && attempt.target.model === model && attempt.resolvedModel !== null)?.resolvedModel ?? null;
+      const served = attempts.find((attempt) => attempt.target.engine === engine && attempt.target.model === model && attempt.resolvedModel !== null)?.resolvedModel ?? null;
       families.push(this.modelFamilyOf({ engine, requested: model, served }));
     }
     return singleFamilyOf(families);

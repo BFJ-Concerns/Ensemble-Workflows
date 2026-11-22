@@ -134,6 +134,10 @@ call's own chain still takes precedence over `fallback: false` in defaults.
   reached. If that verification refuses a strip or lean start, the call
   throws before launching that opencode worker, even if an earlier
   target already ran. An uncaught refusal fails the run.
+- An entry with no `effort` inherits the call's effort. If the call uses a raw
+  opencode variant name, a Codex or Claude entry uses its engine's default.
+  An opencode entry inherits that variant, and Ensemble refuses the chain
+  before any worker spawns if the entry's model does not declare it.
 - `maxAttempts` counts answered attempts across the whole chain; a refusal
   costs none.
 - A step to the same engine keeps its concurrency slot; a step to another

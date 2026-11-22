@@ -1836,28 +1836,92 @@ test("a vanished one-shot Claude worker is archived as lost with its partial ans
   });
 });
 
-for (const held of [false, true]) {
-  test(`Claude stops an unfinished whitespace stream in a ${held ? "held" : "one-shot"} turn`, async (t) => {
-    await withControlPlane([{ assistant: { text: " \t\n", stop: null } }], async (plane) => {
-      t.mock.timers.enable({ apis: ["Date"], now: 20_000 });
+for (const [activity, row] of [
+  ["text", assistantLine({ text: "partial answer", stop: null })],
+  ["tool use", JSON.stringify({
+    type: "assistant", message: { content: [{ type: "tool_use", id: "tool-1", name: "Read", input: {} }], stop_reason: "tool_use" }
+  })],
+  ["reasoning", assistantLine({ stop: null })]
+] as const) {
+  test(`Claude restarts the whitespace bound after ${activity}`, async (t) => {
+    await withControlPlane([{ assistant: { text: " ", stop: null } }], async (plane) => {
+      t.mock.timers.enable({ apis: ["Date"], now: 0 });
       let polls = 0;
       plane.poll = async () => {
         polls += 1;
+        const transcript = await plane.transcriptPath();
+        assert.ok(transcript);
+        switch (polls) {
+          case 1:
+            t.mock.timers.tick(110_000);
+            await appendFile(transcript, row + "\n");
+            break;
+          case 2:
+            await appendFile(transcript, assistantLine({ text: "\t\n", stop: null }) + "\n");
+            break;
+          case 3:
+            t.mock.timers.tick(119_999);
+            break;
+          case 4:
+            t.mock.timers.tick(1);
+            break;
+          default:
+            assert.fail("the reset whitespace deadline should have expired");
+        }
+        return { status: "busy", state: "working", present: true };
+      };
+      const runtime = makeRuntime(plane, { maxAttempts: 1, turnTimeoutMs: 240_000 });
+      try {
+        assert.equal(await runtime.agent("answer", { engine: "claude" }), null);
+        assert.equal(polls, 4);
+        assert.equal(Date.now(), 230_000);
+        const attempt = runtime.lastAgentRecord()?.attempts[0];
+        assert.equal(attempt?.failure?.kind, "WhitespaceStreamError");
+        assert.deepEqual(attempt?.classification, { class: "output", rule: "output" });
+      } finally {
+        t.mock.timers.reset();
+        await runtime.close();
+      }
+    });
+  });
+}
+
+for (const mode of ["one-shot exhausted", "one-shot retry", "held"] as const) {
+  test(`Claude stops an unfinished whitespace stream in a ${mode} turn`, async (t) => {
+    const held = mode === "held";
+    const retries = mode === "one-shot retry";
+    await withControlPlane([
+      { assistant: { text: " \t\n", stop: null } },
+      { assistant: { text: "recovered" } }
+    ], async (plane) => {
+      t.mock.timers.enable({ apis: ["Date"], now: 20_000 });
+      let polls = 0;
+      const nativePoll = plane.poll.bind(plane);
+      plane.poll = async () => {
+        if (plane.dispatchCount > 1) return nativePoll();
+        polls += 1;
+        assert.ok(polls <= 2);
         t.mock.timers.tick(polls === 1 ? 119_999 : 1);
         return { status: "busy", state: "working", present: true };
       };
-      const runtime = makeRuntime(plane, { maxAttempts: held ? 2 : 1, turnTimeoutMs: 240_000 });
+      const runtime = makeRuntime(plane, { maxAttempts: held || retries ? 2 : 1, turnTimeoutMs: 240_000 });
       const session = held ? runtime.createWorkerSession({ engine: "claude" }) : null;
       try {
-        assert.equal(await (session === null ? runtime.agent("answer", { engine: "claude" }) : session.send("answer")), null);
+        const result = await (session === null ? runtime.agent("answer", { engine: "claude" }) : session.send("answer"));
+        assert.equal(result, retries ? "recovered" : null);
         const record = runtime.lastAgentRecord();
         assert.equal(polls, 2);
-        assert.equal(record?.status, "failed");
-        assert.equal(record.attempts.length, 1);
+        assert.equal(record?.status, retries ? "complete" : "failed");
+        assert.deepEqual(record.attempts.map(attempt => attempt.attempt), retries ? [1, 2] : [1]);
         assert.equal(record.attempts[0]?.failure?.kind, held ? "ClaudeHeldWhitespaceStreamError" : "WhitespaceStreamError");
         assert.deepEqual(record.attempts[0]?.classification, { class: "output", rule: "output" });
         assert.equal(record.attempts[0]?.rawOutput, " \t\n");
-        assert.equal(plane.stopCount, 1);
+        assert.equal(plane.stopCount, retries ? 2 : 1);
+        assert.equal(plane.dispatchCount, retries ? 2 : 1);
+        if (retries) {
+          assert.equal(record.attempts[1]?.status, "complete");
+          assert.match(plane.dispatched[1]?.prompt ?? "", /previous attempt failed \(WhitespaceStreamError\)/);
+        }
         if (session !== null) {
           assert.equal(session.lost, true);
           assert.equal(await session.send("another turn"), null);

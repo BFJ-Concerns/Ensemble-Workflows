@@ -3,9 +3,10 @@ import { homedir, hostname } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { CALLER_IDENTITY_ENV, RUN_RECORD_DIR_ENV, parseWorkerScopeGrouping, resolveAmbientSettings } from "./ambient-settings.js";
+import { CALLER_IDENTITY_ENV, DISPATCH_REMAP_ENV, RUN_RECORD_DIR_ENV, parseWorkerScopeGrouping, resolveAmbientSettings } from "./ambient-settings.js";
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
+import { DispatchRemap } from "./dispatch-remap.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
 import { assertValidFallbackOption, MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { describeError, HoldTimeoutError, InvalidAgentSchemaError, PreSpawnAuthorError } from "./errors.js";
@@ -60,6 +61,7 @@ const AGENT_INVOCATION_OPTIONS = {
   timeout: { type: "string" },
   "caller-identity": { type: "string" },
   "hold-scope": { type: "string" },
+  remap: { type: "string", multiple: true },
   "worker-scope": { type: "string" },
   lean: { type: "boolean" }
 } as const;
@@ -290,8 +292,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
   let invocation: ParsedInvocation;
   let ambientSettings: AmbientSettings;
+  let remap: ReturnType<typeof resolveDispatchRemap>;
   try {
     invocation = await parseInvocation(argv, cwd, stdin, program);
+    remap = resolveDispatchRemap(invocation.remap, env);
     ambientSettings = resolveAmbientSettings({
       env,
       cwd,
@@ -401,6 +405,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       effortPolicy: ambientSettings.effortPolicy,
       namedTargets: ambientSettings.namedTargets,
       machineFallback: ambientSettings.machineFallback,
+      ...(remap === undefined ? {} : { dispatchRemap: remap.ledger }),
       modelFamilies: ambientSettings.modelFamilies,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
@@ -479,7 +484,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         ...(callerIdentity !== undefined ? { callerIdentity } : {}),
         concurrency: recordConcurrency(ambientSettings, progress),
         workerScope: ambientSettings.workerScope,
-        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
+        effectiveSettings: {
+          ...recordEffectiveSettings(invocation, options.timeoutMs),
+          ...(remap === undefined ? {} : { dispatchRemap: remap.setting })
+        },
         effortPolicy: ambientSettings.effortPolicy,
         namedTargets: ambientSettings.namedTargets,
         machineFallback: ambientSettings.machineFallback,
@@ -580,6 +588,16 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         const model = typeof event.params.model === "string" ? event.params.model : "unknown";
         const effort = typeof event.params.effort === "string" ? ` (${event.params.effort} effort)` : "";
         stderr.write(`[codex] agent ${agentId}${label} runs unpinned — resolved ambient default: ${model}${effort}\n`);
+        return;
+      }
+      if (event.method === "dispatch/remapped") {
+        const { agentId, label, entry, key, requested, dispatched } = event.params;
+        const role = typeof label === "string" ? ` (${JSON.stringify(label)})` : "";
+        const leg = typeof entry === "number" && entry >= 0 ? ` fallback entry ${entry}` : "";
+        stderr.write(
+          `[remap] agent ${String(agentId)}${role}${leg} matched ${JSON.stringify(key)} ` +
+            `and dispatched to ${remapTargetName(dispatched)} (requested ${remapTargetName(requested)})\n`
+        );
         return;
       }
       if (event.method === "runRecord/writeFailed") {
@@ -841,6 +859,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // calls with a stack into the bundle.
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError(error)}\n`);
       }
+      const unmatched = remap?.ledger.unmatched();
+      for (const rule of unmatched ?? []) {
+        stderr.write(`[remap] rule ${JSON.stringify(rule)} matched no dispatch\n`);
+      }
       const singleFamily = ambientSettings.singleFamilyNotice ? reportSingleFamily(runtime, stderr) : null;
       progress?.finish();
       if (finalRecord !== null && finalRecord.status !== "complete" && terminalError !== null) {
@@ -868,6 +890,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
             ...(finalRecord ?? { status: "failed" as const, exitCode: 1, result: null }),
             ...(teardownError !== null ? { status: "failed" as const, exitCode: 1 } : {}),
             error: terminalError ?? teardownError,
+            ...(unmatched === undefined ? {} : { dispatchRemapUnmatched: unmatched }),
             singleFamily
           });
         }
@@ -1004,6 +1027,7 @@ interface InvocationTuning {
   callerIdentity?: string;
   /** The scope this run's holds publish under; outranks the inherited env variable. */
   holdScope?: string;
+  remap?: string[];
   /** Run-wide lean start: every worker begins without the operator's interactive context. */
   lean?: boolean;
 }
@@ -1125,6 +1149,7 @@ function cliFlags(invocation: ParsedInvocation): {
   timeoutMs?: number;
   strip?: string[];
   lean?: boolean;
+  remap?: string[];
   jsonArgs: boolean;
 } {
   return {
@@ -1135,6 +1160,7 @@ function cliFlags(invocation: ParsedInvocation): {
     ...(invocation.timeoutMs !== undefined ? { timeoutMs: invocation.timeoutMs } : {}),
     ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
     ...(invocation.lean === true ? { lean: true } : {}),
+    ...(invocation.remap === undefined ? {} : { remap: invocation.remap }),
     jsonArgs: invocation.kind === "workflow" && invocation.jsonArgsProvided
   };
 }
@@ -1516,6 +1542,7 @@ const WORKFLOW_TUNING_OPTIONS = {
   strip: { type: "string", multiple: true },
   "caller-identity": { type: "string" },
   "hold-scope": { type: "string" },
+  remap: { type: "string", multiple: true },
   "worker-scope": { type: "string" },
   lean: { type: "boolean" }
 } as const;
@@ -1573,6 +1600,7 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
     ...(callerIdentity !== undefined ? { callerIdentity } : {}),
     ...(workerScope !== undefined ? { workerScope } : {}),
     ...(holdScope !== undefined ? { holdScope } : {}),
+    ...(parsed.values.remap === undefined ? {} : { remap: parsed.values.remap }),
     ...(parsed.values.lean === true ? { lean: true } : {})
   };
 }
@@ -1697,6 +1725,7 @@ async function parseAgentInvocation(
     ...(callerIdentity !== undefined ? { callerIdentity } : {}),
     ...(workerScope !== undefined ? { workerScope } : {}),
     ...(holdScope !== undefined ? { holdScope } : {}),
+    ...(parsed.values.remap === undefined ? {} : { remap: parsed.values.remap }),
     ...(parsed.values.lean === true ? { lean: true } : {})
   };
 }
@@ -1937,7 +1966,7 @@ function optionName(value: string): string | undefined {
 }
 
 function isRepeatableOption(flag: string): boolean {
-  return flag === "--budget" || flag === "--concurrency" || flag === "--strip";
+  return flag === "--budget" || flag === "--concurrency" || flag === "--strip" || flag === "--remap";
 }
 
 function isKnownAgentOption(value: string): boolean {
@@ -1971,7 +2000,8 @@ function isKnownOption(value: string): boolean {
     value === "--strip" ||
     value === "--caller-identity" ||
     value === "--worker-scope" ||
-    value === "--hold-scope"
+    value === "--hold-scope" ||
+    value === "--remap"
   );
 }
 
@@ -2144,6 +2174,24 @@ function parseCallerIdentity(value: string | undefined): string | undefined {
     throw new CliUsageError("--caller-identity must be a non-empty string");
   }
   return value;
+}
+
+function resolveDispatchRemap(flag: string[] | undefined, env: NodeJS.ProcessEnv) {
+  const value = flag ?? (env[DISPATCH_REMAP_ENV] ?? "").split(",").map((rule) => rule.trim()).filter(Boolean);
+  if (value.length === 0) return undefined;
+  const layer = flag === undefined ? "env" : "flag";
+  try {
+    return { ledger: new DispatchRemap(value), setting: { value, layer } as const };
+  } catch (error) {
+    const source = flag === undefined ? DISPATCH_REMAP_ENV : "--remap";
+    throw new CliUsageError(`${source}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function remapTargetName(value: unknown): string {
+  if (typeof value !== "object" || value === null || !("engine" in value)) return "?";
+  const engine = String(value.engine);
+  return "model" in value && typeof value.model === "string" ? `${engine}:${JSON.stringify(value.model)}` : engine;
 }
 
 function parseHoldScope(value: string | undefined): string | undefined {
@@ -2335,6 +2383,7 @@ const RUN_OPTION_SYNOPSES: readonly string[] = [
   "--strip capability",
   "--caller-identity <identity>",
   "--hold-scope <scope>",
+  "--remap key=engine[:model]",
   "--worker-scope worker|run",
   "--lean"
 ];
@@ -2360,6 +2409,7 @@ const AGENT_OPTION_SYNOPSES: readonly string[] = [
   "--timeout ms",
   "--caller-identity <identity>",
   "--hold-scope <scope>",
+  "--remap key=engine[:model]",
   "--worker-scope worker|run",
   "--lean"
 ];

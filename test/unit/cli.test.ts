@@ -5164,3 +5164,63 @@ test("agent fallback and per-agent timeout flag errors are refused before runtim
   assert.match(stdout.text(), /--fallback/);
   assert.match(stdout.text(), /--timeout-ms/);
 });
+
+test("launch remap flags replace the environment list and preserve dispatch evidence in the archive", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-remap-"));
+  try {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const engine = new ChainEngine("claude", [async () => turn("answer")]);
+    const rules = ["label:review*=claude:sonnet", "codex:unused=claude:haiku"];
+    const exit = await runEnsembleCli([
+      "agent", "--engine", "codex", "--model", "gpt-6-sol", "--label", "review-1",
+      "--remap", rules[0]!, `--remap=${rules[1]}`, "work"
+    ], {
+      cwd: directory, stdout, stderr, statusDir: null, runRecordDir: path.join(directory, "records"),
+      env: { XDG_CONFIG_HOME: path.join(directory, "config"), ENSEMBLE_DISPATCH_REMAP: "invalid and overridden" },
+      createRuntime: async (options) => new EnsembleRuntime({ ...options, defaultMaxAttempts: 1, engines: new EngineRegistry([engine]) })
+    });
+    assert.equal(exit, 0, stderr.text());
+    assert.match(stderr.text(), /^\[remap\] agent 1 \("review-1"\) matched "label:review\*" and dispatched to claude:"sonnet" \(requested codex:"gpt-6-sol"\)$/m);
+    assert.match(stderr.text(), /^\[remap\] rule "codex:unused=claude:haiku" matched no dispatch$/m);
+    assert.deepEqual(engine.dispatches.map(({ model }) => model), ["sonnet"]);
+    const archive = announcedRunRecord(stderr.text()).archive_path;
+    const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8"));
+    assert.deepEqual(manifest.dispatch_remap, { value: rules, layer: "flag" });
+    assert.deepEqual(manifest.dispatch_remap_unmatched, [rules[1]]);
+    const agent = JSON.parse(await readFile(path.join(archive, "agents", "000001", "agent.json"), "utf8"));
+    assert.deepEqual(agent.attempts[0].remap, { key: "label:review*", requested: { engine: "codex", model: "gpt-6-sol" } });
+    assert.deepEqual(agent.attempts[0].target, { engine: "claude", model: "sonnet" });
+    assert.deepEqual(agent.remap, agent.attempts[0].remap);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("workflow launches accept environment remaps and refuse a malformed rule before runtime creation", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-workflow-remap-"));
+  try {
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, 'export const meta = { name: "remap" }; return await agent("work", { engine: "codex" });');
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const engine = new ChainEngine("claude", [async () => turn("answer")]);
+    const env = { XDG_CONFIG_HOME: path.join(directory, "config"), ENSEMBLE_DISPATCH_REMAP: "codex=claude:sonnet,phase:unused=codex" };
+    const options = { cwd: directory, stdout, stderr, statusDir: null, runRecordDir: null, env };
+    assert.equal(await runEnsembleCli([script], {
+      ...options,
+      createRuntime: async (runtimeOptions) => new EnsembleRuntime({ ...runtimeOptions, defaultMaxAttempts: 1, engines: new EngineRegistry([engine]) })
+    }), 0, stderr.text());
+    assert.equal(stdout.text(), '"answer"\n');
+    assert.match(stderr.text(), /"phase:unused=codex" matched no dispatch/);
+
+    const invalid = new CaptureStream();
+    assert.equal(await runEnsembleCli(["--remap=codex=typo", script], {
+      ...options, stderr: invalid,
+      createRuntime: async () => assert.fail("a malformed rule must be rejected before runtime creation")
+    }), 2);
+    assert.match(invalid.text(), /--remap: Invalid dispatch remap rule "codex=typo"/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

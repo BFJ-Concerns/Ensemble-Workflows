@@ -1,6 +1,7 @@
 import type { EffortPolicy } from "./effort-resolution.js";
 import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { StrippableCapability } from "./capability-stripping.js";
+import type { DispatchRemap } from "./dispatch-remap.js";
 import type { MachineFallback } from "./fallback-source.js";
 import type { NamedTargets } from "./named-targets.js";
 import type { ModelFamilyAssignments } from "./model-family.js";
@@ -333,6 +334,8 @@ export interface RuntimeOptions {
   namedTargets?: NamedTargets;
   /** Fallback chains for dispatched models or engines, from the machine file. */
   machineFallback?: MachineFallback;
+  /** Launch rules for this run. */
+  dispatchRemap?: DispatchRemap;
   /**
    * The families the machine assigns to models by name (the config file's
    * `model_families` section), outranking the harness's own grouping of

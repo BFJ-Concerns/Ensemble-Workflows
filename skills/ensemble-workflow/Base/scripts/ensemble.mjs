@@ -3275,8 +3275,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path21) {
-      let input = path21;
+    function removeDotSegments(path22) {
+      let input = path22;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3350,11 +3350,11 @@ var require_utils = __commonJS({
       }
       return output.join("");
     }
-    function removeDotSegmentsRelative(path21) {
-      if (path21 === "" || path21[0] === "/") {
-        return removeDotSegments(path21);
+    function removeDotSegmentsRelative(path22) {
+      if (path22 === "" || path22[0] === "/") {
+        return removeDotSegments(path22);
       }
-      const segments = path21.split("/");
+      const segments = path22.split("/");
       const last = segments.length - 1;
       const output = [];
       let trailingDirectory = false;
@@ -3717,8 +3717,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path21 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path21 && path21 !== "/" ? path21 : void 0;
+        const path22 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path22 && path22 !== "/" ? path22 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -14174,13 +14174,13 @@ var require_acorn_globals = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path20 from "node:path";
+import path21 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile11, stat as stat8 } from "node:fs/promises";
+import { readFile as readFile12, stat as stat8 } from "node:fs/promises";
 import { homedir as homedir5, hostname as hostname4 } from "node:os";
-import path19 from "node:path";
+import path20 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/built-in-effort-levels.ts
@@ -18581,8 +18581,12 @@ function resolveLeanStart(engine, support) {
 import { spawn as spawn2 } from "node:child_process";
 import { randomUUID as randomUUID3 } from "node:crypto";
 import { constants as constants2 } from "node:fs";
-import { access, readFile as readFile6, readdir as readdir5, stat as stat5 } from "node:fs/promises";
+import { access, readFile as readFile7, readdir as readdir6, stat as stat5 } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
+import path12 from "node:path";
+
+// src/scope-subgroup.ts
+import { mkdir as mkdir6, readFile as readFile6, readdir as readdir5, rmdir as rmdir2, writeFile as writeFile5 } from "node:fs/promises";
 import path11 from "node:path";
 
 // src/worker-scopes.ts
@@ -19047,6 +19051,96 @@ function unitSafe(text) {
   return text.replace(/[^A-Za-z0-9:_.-]/g, "_").slice(0, 64);
 }
 
+// src/scope-subgroup.ts
+async function enterScopeSubgroup(unit, name, pid, options = {}) {
+  const procDir = options.procDir ?? "/proc";
+  const cgroupRoot = options.cgroupRoot ?? "/sys/fs/cgroup";
+  const scope = await cgroupOf(pid, procDir);
+  if (scope === null || !scope.endsWith(`/${unit}`)) {
+    return { kind: "refused", reason: `process ${pid} is not in ${unit}${scope === null ? "" : `: it is in ${scope}`}` };
+  }
+  const directory = path11.join(cgroupRoot, scope, name);
+  try {
+    await mkdir6(directory);
+  } catch (error) {
+    return { kind: "refused", reason: `${unit} could not be divided: ${messageOf(error)}` };
+  }
+  try {
+    await writeFile5(path11.join(directory, "cgroup.procs"), String(pid));
+  } catch (error) {
+    await rmdir2(directory).catch(() => void 0);
+    return { kind: "refused", reason: `process ${pid} could not be moved into ${name} of ${unit}: ${messageOf(error)}` };
+  }
+  if (await cgroupOf(pid, procDir) !== `${scope}/${name}`) {
+    await rmdir2(directory).catch(() => void 0);
+    return { kind: "refused", reason: `process ${pid} did not stay in ${name} of ${unit}` };
+  }
+  return { kind: "entered", subgroup: new CgroupSubgroup(name, directory) };
+}
+var CgroupSubgroup = class {
+  name;
+  #directory;
+  constructor(name, directory) {
+    this.name = name;
+    this.#directory = directory;
+  }
+  async stop(bounds) {
+    try {
+      const empty2 = () => cgroupEmpty(this.#directory);
+      if (!await empty2()) {
+        await signalMembers(this.#directory, "SIGTERM");
+        if (!await waitUntil(empty2, bounds.stopGraceMs)) {
+          await killMembers(this.#directory);
+          if (!await waitUntil(empty2, bounds.confirmMs)) {
+            const left = await members(this.#directory).catch(() => []);
+            return {
+              kind: "unconfirmed",
+              reason: `${left.length > 0 ? `pids ${left.join(", ")}` : "processes"} in ${this.name} outlived SIGTERM by ${bounds.stopGraceMs}ms and SIGKILL by ${bounds.confirmMs}ms`
+            };
+          }
+        }
+      }
+      await rmdir2(this.#directory).catch(() => void 0);
+      return { kind: "stopped" };
+    } catch (error) {
+      return { kind: "unconfirmed", reason: `could not stop ${this.name}: ${messageOf(error)}` };
+    }
+  }
+};
+async function cgroupOf(pid, procDir) {
+  const file = await readFile6(path11.join(procDir, String(pid), "cgroup"), "utf8").catch(() => "");
+  const line = file.split("\n").find((entry) => entry.startsWith("0::"));
+  return line === void 0 ? null : line.slice("0::".length);
+}
+async function members(directory) {
+  const entries = await readdir5(directory, { withFileTypes: true }).catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (entries === null) return [];
+  const own = (await readFile6(path11.join(directory, "cgroup.procs"), "utf8").catch(() => "")).split(/\s+/).filter((entry) => /^\d+$/.test(entry)).map(Number);
+  const below = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => members(path11.join(directory, entry.name))));
+  return [...own, ...below.flat()];
+}
+async function signalMembers(directory, signal) {
+  for (const pid of await members(directory)) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+    }
+  }
+}
+async function killMembers(directory) {
+  try {
+    await writeFile5(path11.join(directory, "cgroup.kill"), "1");
+  } catch {
+    await signalMembers(directory, "SIGKILL");
+  }
+}
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // src/contained-command.ts
 var UNESTABLISHED_STOPS_DIAGNOSTIC = "unestablishedStops";
 function unestablishedStopDiagnostics(stops) {
@@ -19066,6 +19160,7 @@ function unestablishedStopsOf(diagnostics) {
 var CommandContainment = class {
   #scopes;
   #stopBounds;
+  #grouping;
   /** Distinguishes this run's command groups on a manager another run may share. */
   #label = randomUUID3().slice(0, 8);
   #count = 0;
@@ -19078,6 +19173,7 @@ var CommandContainment = class {
   constructor(scopes, options = {}) {
     this.#scopes = scopes;
     this.#stopBounds = options.stopBounds ?? DEFAULT_STOP_BOUNDS;
+    this.#grouping = options.grouping ?? "worker";
   }
   /**
    * Start a command inside run-owned containment. `name` says what the
@@ -19085,8 +19181,8 @@ var CommandContainment = class {
    * Resolves once the command is running inside its reach. Rejects only when
    * the command cannot start — its executable does not resolve (an error
    * shaped like Node's own spawn failure, `code` ENOENT or EACCES), or the
-   * containment is closed — and then nothing ran. A manager that cannot
-   * give the command a scope still starts it, at `process-group` reach.
+   * containment is closed — and then nothing ran. A command that cannot be
+   * given a cgroup of its own still starts, at `process-group` reach.
    */
   async contain(name, file, args, options) {
     if (this.#closing !== null) {
@@ -19105,41 +19201,66 @@ var CommandContainment = class {
     const gated = await spawnGated(file, args, options);
     const pid = gated.child.pid;
     this.#count += 1;
-    const group = `command-${this.#label}-${this.#count}`;
-    let placement;
+    const own = `command-${this.#label}-${this.#count}`;
+    let held;
     try {
-      placement = await this.#scopes.place(group, [pid]);
+      held = this.#grouping === "run" ? await this.#joinRunScope(own, pid) : await this.#takeOwnScope(own, pid);
     } catch (error) {
       gated.child.kill("SIGKILL");
       throw error;
     }
-    let reach;
-    let stopper;
-    const stopScope = (bounds) => this.#scopes.stop(group, bounds);
-    if (placement.kind === "placed") {
-      reach = { kind: "scope", unit: placement.unit };
-      stopper = { stop: stopScope, stopAgain: stopScope };
-    } else {
-      reach = {
-        kind: "process-group",
-        reason: placement.kind === "unavailable" ? "no systemd user manager is reachable" : `the manager gave the command no scope: ${placement.reason}`
-      };
-      stopper = {
-        stop: async (bounds) => worstOf(await Promise.all([stopProcessGroup(pid, bounds), stopScope(bounds)])),
-        stopAgain: async (bounds) => worstOf(await Promise.all([processGroupEnded(pid, bounds), stopScope(bounds)]))
-      };
-    }
     const command = new Contained(
       name,
       gated.child,
-      reach,
-      stopper,
+      held.reach,
+      held.stopper,
       () => this.#runEnding ? "run-ending" : "attempt",
       (stopped) => this.#owned.delete(stopped)
     );
     this.#owned.add(command);
     gated.open();
     return command;
+  }
+  /** `worker` grouping: a scope the manager creates around the command alone, stopped as a whole. */
+  async #takeOwnScope(group, pid) {
+    const placement = await this.#scopes.place(group, [pid]);
+    const stopScope = (bounds) => this.#scopes.stop(group, bounds);
+    if (placement.kind === "placed") {
+      return { reach: { kind: "scope", unit: placement.unit }, stopper: { stop: stopScope, stopAgain: stopScope } };
+    }
+    return {
+      reach: { kind: "process-group", reason: withoutScope(placement) },
+      stopper: {
+        stop: async (bounds) => worstOf(await Promise.all([stopProcessGroup(pid, bounds), stopScope(bounds)])),
+        stopAgain: async (bounds) => worstOf(await Promise.all([processGroupEnded(pid, bounds), stopScope(bounds)]))
+      }
+    };
+  }
+  /**
+   * `run` grouping: the command joins the scope every worker of the run
+   * shares, then enters a subgroup of its own there, and a stop ends that
+   * subgroup. The scope itself is never stopped for a command — it holds
+   * the run's other workers — so a command left without a subgroup is
+   * stopped by its process group alone; whatever of it stays behind in the
+   * scope ends when the manager closes the scope with the run.
+   */
+  async #joinRunScope(subgroup, pid) {
+    const placement = await this.#scopes.place(RUN_SCOPE_GROUP, [pid]);
+    let reason;
+    if (placement.kind === "placed") {
+      const entry = await enterScopeSubgroup(placement.unit, subgroup, pid);
+      if (entry.kind === "entered") {
+        const stopSubgroup = (bounds) => entry.subgroup.stop(bounds);
+        return { reach: { kind: "scope", unit: placement.unit, subgroup }, stopper: { stop: stopSubgroup, stopAgain: stopSubgroup } };
+      }
+      reason = `the run's scope gave the command no subgroup: ${entry.reason}`;
+    } else {
+      reason = withoutScope(placement);
+    }
+    return {
+      reach: { kind: "process-group", reason },
+      stopper: { stop: (bounds) => stopProcessGroup(pid, bounds), stopAgain: (bounds) => processGroupEnded(pid, bounds) }
+    };
   }
   /**
    * The run has begun to end: every stop that begins from here on is the
@@ -19184,6 +19305,9 @@ var CommandContainment = class {
     }
   }
 };
+function withoutScope(placement) {
+  return placement.kind === "unavailable" ? "no systemd user manager is reachable" : `the manager gave the command no scope: ${placement.reason}`;
+}
 var Contained = class {
   child;
   reach;
@@ -19206,9 +19330,12 @@ var Contained = class {
     this.#occasionNow = occasionNow;
     this.#release = release;
   }
-  /** How the operator finds the command's processes: its scope, or its process group. */
+  /** How the operator finds the command's processes: its scope and any subgroup there, or its process group. */
   get owner() {
-    return `${this.#name} in ${this.reach.kind === "scope" ? this.reach.unit : `process group ${this.child.pid ?? "unknown"}`}`;
+    if (this.reach.kind === "process-group") {
+      return `${this.#name} in process group ${this.child.pid ?? "unknown"}`;
+    }
+    return `${this.#name} in ${this.reach.unit}${this.reach.subgroup === void 0 ? "" : `/${this.reach.subgroup}`}`;
   }
   stop(bounds = DEFAULT_STOP_BOUNDS) {
     this.#stop ??= this.#stopFirst(bounds);
@@ -19298,7 +19425,7 @@ async function spawnGated(file, args, options) {
 async function resolveExecutable(file, args, options) {
   const cwd = options.cwd ?? process.cwd();
   const searchPath = (options.env ?? process.env).PATH ?? "";
-  const candidates = file.includes("/") ? [path11.resolve(cwd, file)] : searchPath.split(":").map((directory) => path11.resolve(cwd, directory.length > 0 ? directory : ".", file));
+  const candidates = file.includes("/") ? [path12.resolve(cwd, file)] : searchPath.split(":").map((directory) => path12.resolve(cwd, directory.length > 0 ? directory : ".", file));
   let code = "ENOENT";
   for (const candidate of candidates) {
     const isFile = await stat5(candidate).then(
@@ -19375,9 +19502,9 @@ function groupExists(pgid) {
 async function groupLive(pgid) {
   if (!groupExists(pgid)) return false;
   let sawMember = false;
-  for (const name of await readdir5("/proc")) {
+  for (const name of await readdir6("/proc")) {
     if (!/^\d+$/.test(name)) continue;
-    const info = await readFile6(`/proc/${name}/stat`, "utf8").catch((error) => {
+    const info = await readFile7(`/proc/${name}/stat`, "utf8").catch((error) => {
       if (error.code === "ENOENT" || error.code === "ESRCH") return null;
       throw error;
     });
@@ -19918,8 +20045,8 @@ var RunProgress = class {
     this.#counters(engine).cap = cap;
     this.#touch();
   }
-  setArchiveDir(path21) {
-    this.#archiveDir = path21;
+  setArchiveDir(path22) {
+    this.#archiveDir = path22;
     this.#touch();
   }
   /** Publishes only observed identity; served values must not echo the request. */
@@ -19929,16 +20056,16 @@ var RunProgress = class {
     Object.assign(record, identity);
     this.#touch();
   }
-  noteAgentTranscript(id, path21) {
+  noteAgentTranscript(id, path22) {
     const record = this.#live.get(id);
     if (record === void 0) return;
-    record.transcript = path21;
+    record.transcript = path22;
     this.#touch();
   }
-  noteAgentWorktree(id, path21) {
+  noteAgentWorktree(id, path22) {
     const record = this.#live.get(id);
     if (record === void 0) return;
-    record.worktree = path21;
+    record.worktree = path22;
     this.#touch();
   }
   /** Cumulative worker tokens across attempts and targets; null means unobserved. */
@@ -20229,21 +20356,21 @@ function rank(state) {
 import { randomBytes } from "node:crypto";
 import { mkdtemp as mkdtemp2, rm as rm4, stat as stat6 } from "node:fs/promises";
 import { createServer } from "node:net";
-import path13 from "node:path";
+import path14 from "node:path";
 
 // src/resource-location.ts
-import path12 from "node:path";
+import path13 from "node:path";
 function readSetting(setting, value, base) {
-  return { setting, value, resolvedAgainst: path12.isAbsolute(value) ? null : base };
+  return { setting, value, resolvedAgainst: path13.isAbsolute(value) ? null : base };
 }
 function declaredDirectory(reading, ...below) {
   return { path: directoryOf(reading, below), location: { kind: "declared", reading } };
 }
 function defaultDirectory(chosen, root, ...below) {
-  return typeof root === "string" ? { path: path12.resolve(root, ...below), location: { kind: "default", ...chosen, from: null } } : { path: directoryOf(root, below), location: { kind: "default", ...chosen, from: root } };
+  return typeof root === "string" ? { path: path13.resolve(root, ...below), location: { kind: "default", ...chosen, from: null } } : { path: directoryOf(root, below), location: { kind: "default", ...chosen, from: root } };
 }
 function fixedDirectory(rule, directory) {
-  return { path: path12.resolve(directory), location: { kind: "fixed", rule } };
+  return { path: path13.resolve(directory), location: { kind: "fixed", rule } };
 }
 function settingToChange(location) {
   switch (location.kind) {
@@ -20257,7 +20384,7 @@ function settingToChange(location) {
 }
 function directoryOf(reading, below) {
   const base = reading.resolvedAgainst === null ? [] : [reading.resolvedAgainst];
-  return path12.resolve(...base, reading.value, ...below);
+  return path13.resolve(...base, reading.value, ...below);
 }
 
 // src/resource-preflight.ts
@@ -20339,7 +20466,7 @@ async function probeResource(requirement) {
 async function probeEntryCreation(requirement, dir) {
   let scratch;
   try {
-    scratch = await mkdtemp2(path13.join(dir, ".ensemble-probe-"));
+    scratch = await mkdtemp2(path14.join(dir, ".ensemble-probe-"));
   } catch (error) {
     return denialOf(requirement, dir, error);
   }
@@ -20347,7 +20474,7 @@ async function probeEntryCreation(requirement, dir) {
   return null;
 }
 async function probeSocketBinding(requirement, dir) {
-  const socketPath = path13.join(dir, `.ep-${randomBytes(4).toString("hex")}`);
+  const socketPath = path14.join(dir, `.ep-${randomBytes(4).toString("hex")}`);
   if (Buffer.byteLength(socketPath) > MAX_SOCKET_PATH_BYTES) {
     return {
       requirement,
@@ -20366,7 +20493,7 @@ async function probeSocketBinding(requirement, dir) {
 }
 var MAX_SOCKET_PATH_BYTES = 107;
 async function nearestExistingDirectory(target) {
-  let current2 = path13.resolve(target);
+  let current2 = path14.resolve(target);
   for (; ; ) {
     try {
       const entry = await stat6(current2);
@@ -20376,9 +20503,9 @@ async function nearestExistingDirectory(target) {
       return { path: current2, code: "ENOTDIR", message: `${current2} exists and is not a directory` };
     } catch (error) {
       const code = errnoOf(error);
-      const parent = path13.dirname(current2);
+      const parent = path14.dirname(current2);
       if (code !== "ENOENT" || parent === current2) {
-        return { path: current2, code, message: messageOf(error) };
+        return { path: current2, code, message: messageOf2(error) };
       }
       current2 = parent;
     }
@@ -20394,13 +20521,13 @@ function listenOnce(socketPath) {
   });
 }
 function denialOf(requirement, probedPath, error) {
-  return { requirement, probedPath, code: errnoOf(error), message: messageOf(error) };
+  return { requirement, probedPath, code: errnoOf(error), message: messageOf2(error) };
 }
 function errnoOf(error) {
   const code = error?.code;
   return typeof code === "string" ? code : "unknown";
 }
-function messageOf(error) {
+function messageOf2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 var EngineResourceGate = class {
@@ -20426,7 +20553,7 @@ var EngineResourceGate = class {
     try {
       denials = await judged;
     } catch (error) {
-      throw new SubstrateRefusedError(`resource preflight for ${engine} could not finish: ${messageOf(error)}`, { cause: error });
+      throw new SubstrateRefusedError(`resource preflight for ${engine} could not finish: ${messageOf2(error)}`, { cause: error });
     }
     if (denials.length > 0) {
       throw new ResourcePreflightRefusedError(denials, diagnoseCallerSandbox(this.#env, denials));
@@ -20438,7 +20565,7 @@ var EngineResourceGate = class {
 import { createHash as createHash4, randomUUID as randomUUID5 } from "node:crypto";
 
 // src/claude-transcript.ts
-import { readFile as readFile7 } from "node:fs/promises";
+import { readFile as readFile8 } from "node:fs/promises";
 function expandedCommand(content) {
   const command = /^<command-message>[^]*?<\/command-message>\n<command-name>(\/[^<\n]+)<\/command-name>(?:\n<command-args>([^]*)<\/command-args>)?$/.exec(content);
   return command === null ? null : { name: command[1] ?? "", args: command[2] ?? "" };
@@ -20514,14 +20641,14 @@ function enteredWorktrees(entries) {
   }
   return worktrees;
 }
-async function readTranscriptFile(path21) {
+async function readTranscriptFile(path22) {
   let text;
   try {
-    text = await readFile7(path21, "utf8");
+    text = await readFile8(path22, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path21}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path22}`, { cause: error });
   }
-  return { path: path21, text, entries: parseTranscriptText(text) };
+  return { path: path22, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -20974,8 +21101,8 @@ function deriveClaudeStrip(inventory, strip, classification = CLAUDE_TOOL_CLASSI
   for (const tool of inventory.tools) {
     classes[classifyClaudeTool(tool.name, classification)].push(tool.name);
   }
-  const members = Object.entries(classification).filter(([, judged]) => judged !== "unrelated" && strip.includes(judged)).map(([name]) => name);
-  const permissionDenyRules = [.../* @__PURE__ */ new Set([...members, ...strip.length > 0 ? classes.unclassified : []])].sort();
+  const members2 = Object.entries(classification).filter(([, judged]) => judged !== "unrelated" && strip.includes(judged)).map(([name]) => name);
+  const permissionDenyRules = [.../* @__PURE__ */ new Set([...members2, ...strip.length > 0 ? classes.unclassified : []])].sort();
   const settingsEnv = Object.assign({}, ...permissionDenyRules.map((name) => CLAUDE_TOOL_REMOVAL_ENV[name] ?? {}));
   return { inventory, strip: [...strip], permissionDenyRules, settingsEnv, classes, classification };
 }
@@ -21073,24 +21200,24 @@ var WhitespaceStream = class {
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID4 } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { access as access2, mkdtemp as mkdtemp3, readFile as readFile8, readdir as readdir6, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
+import { access as access2, mkdtemp as mkdtemp3, readFile as readFile9, readdir as readdir7, rm as rm5, writeFile as writeFile6 } from "node:fs/promises";
 import { hostname as hostname3 } from "node:os";
-import path16 from "node:path";
+import path17 from "node:path";
 
 // src/engine-resources.ts
 import { createHash as createHash3 } from "node:crypto";
 import { homedir as homedir3 } from "node:os";
-import path15 from "node:path";
+import path16 from "node:path";
 
 // src/engine-environment.ts
-import path14 from "node:path";
+import path15 from "node:path";
 var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
 function launchEnvironment(engine, declared, inherited = process.env) {
   const env = writtenEnvironment(engine, declared, inherited);
   if (engine === "claude") {
     env[SANDBOXED_WORKSPACE_VARIABLE] = "1";
     if (env.CLAUDE_CONFIG_DIR) {
-      env.CLAUDE_CONFIG_DIR = path14.resolve(env.CLAUDE_CONFIG_DIR.normalize("NFC"));
+      env.CLAUDE_CONFIG_DIR = path15.resolve(env.CLAUDE_CONFIG_DIR.normalize("NFC"));
     }
   }
   return env;
@@ -21108,8 +21235,8 @@ function codexResources(env) {
 function claudeResources(env) {
   const config = claudeConfigDirectory(env.worker, env.cwd);
   const uid = process.getuid?.() ?? 0;
-  const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path15.join(env.worker.PREFIX, "tmp") : "/tmp";
-  const daemon = path15.join(daemonRoot, `cc-daemon-${uid}`, createHash3("sha256").update(config).digest("hex").slice(0, 8));
+  const daemonRoot = env.worker.TERMUX_VERSION && env.worker.PREFIX ? path16.join(env.worker.PREFIX, "tmp") : "/tmp";
+  const daemon = path16.join(daemonRoot, `cc-daemon-${uid}`, createHash3("sha256").update(config).digest("hex").slice(0, 8));
   const homeLocation = env.written.CLAUDE_CONFIG_DIR ? declaredDirectory(readSetting("CLAUDE_CONFIG_DIR", env.written.CLAUDE_CONFIG_DIR, process.cwd())).location : defaultDirectory({ rule: "$HOME/.claude", movedBy: "CLAUDE_CONFIG_DIR" }, homeRoot(env.written, env.cwd), ".claude").location;
   const home = { path: config, location: homeLocation };
   const global = env.written.CLAUDE_CONFIG_DIR ? home : defaultDirectory({ rule: "$HOME (.claude.json)", movedBy: "CLAUDE_CONFIG_DIR" }, homeRoot(env.written, env.cwd));
@@ -21143,10 +21270,10 @@ function openCodeResources(env) {
   ];
 }
 function claudeConfigDirectory(env, cwd) {
-  return path15.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path15.join(homeOf(env), ".claude")).normalize("NFC"));
+  return path16.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path16.join(homeOf(env), ".claude")).normalize("NFC"));
 }
 function claudeValveDirectory(env) {
-  return path15.resolve(env.TMUX_TMPDIR || "/tmp");
+  return path16.resolve(env.TMUX_TMPDIR || "/tmp");
 }
 function temporaryDirectory(env, cwd) {
   return temporaryLocation(env, cwd);
@@ -21374,7 +21501,7 @@ var ClaudeCliControlPlane = class {
     this.#holdScope = options.holdScope === void 0 ? resolveHoldScope(void 0, process.env) : options.holdScope;
     this.#env = launchEnvironment("claude", this.#workerEnv);
     const configDir = claudeConfigDirectory(this.#env, process.cwd());
-    this.#projectsDir = options.projectsDir ?? path16.join(configDir, "projects");
+    this.#projectsDir = options.projectsDir ?? path17.join(configDir, "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#commandBounds = options.commandBounds ?? DEFAULT_COMMAND_BOUNDS;
     this.#reclaimTimeoutMs = options.reclaimTimeoutMs ?? 3e4;
@@ -21517,7 +21644,7 @@ var ClaudeCliControlPlane = class {
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
     const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.settingsEnv);
-    args.push("--settings", path16.join(settingsDir, "settings.json"));
+    args.push("--settings", path17.join(settingsDir, "settings.json"));
     let registered = null;
     let candidate = null;
     const dispatch = { result: null };
@@ -21634,7 +21761,7 @@ var ClaudeCliControlPlane = class {
       if (error instanceof Error) {
         const logs = registered === null ? null : await this.#run(this.#claudeBin, ["logs", registered.id], cleanup).catch(() => null);
         const file = registered === null ? null : await this.transcriptPath(registered).catch(() => null);
-        const transcript = file === null ? null : await readFile8(file, "utf8").catch(() => null);
+        const transcript = file === null ? null : await readFile9(file, "utf8").catch(() => null);
         const diagnostics = { claudeLaunch: {
           failure: error.message,
           cleanupConfirmed: registered === null,
@@ -21710,10 +21837,10 @@ var ClaudeCliControlPlane = class {
     };
     const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
 `;
-    const dir = await mkdtemp3(path16.join(temporaryDirectory(process.env, process.cwd()).path, `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
+    const dir = await mkdtemp3(path17.join(temporaryDirectory(process.env, process.cwd()).path, `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
-      await writeFile5(path16.join(dir, OWNER_FILENAME), owner, { mode: 384 });
-      await writeFile5(path16.join(dir, "settings.json"), `${JSON.stringify(settings)}
+      await writeFile6(path17.join(dir, OWNER_FILENAME), owner, { mode: 384 });
+      await writeFile6(path17.join(dir, "settings.json"), `${JSON.stringify(settings)}
 `, {
         mode: 384
       });
@@ -21746,15 +21873,15 @@ var ClaudeCliControlPlane = class {
    */
   async #sweepOrphanedSettingsDirs() {
     const root = temporaryDirectory(process.env, process.cwd()).path;
-    const entries = await readdir6(root, { withFileTypes: true }).catch(() => []);
+    const entries = await readdir7(root, { withFileTypes: true }).catch(() => []);
     const host = hostname3();
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name.startsWith(SETTINGS_DIR_PREFIX)) {
         continue;
       }
-      const dir = path16.join(root, entry.name);
+      const dir = path17.join(root, entry.name);
       try {
-        const owner = JSON.parse(await readFile8(path16.join(dir, OWNER_FILENAME), "utf8"));
+        const owner = JSON.parse(await readFile9(path17.join(dir, OWNER_FILENAME), "utf8"));
         if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
           await this.#removeSettingsDir(dir);
         }
@@ -21793,13 +21920,13 @@ var ClaudeCliControlPlane = class {
     const filename = `${handle.sessionId}.jsonl`;
     let projectDirs;
     try {
-      const entries = await readdir6(this.#projectsDir, { withFileTypes: true });
+      const entries = await readdir7(this.#projectsDir, { withFileTypes: true });
       projectDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     } catch {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path16.join(this.#projectsDir, dir, filename);
+      const candidate = path17.join(this.#projectsDir, dir, filename);
       try {
         await access2(candidate);
         return candidate;
@@ -21819,19 +21946,19 @@ var ClaudeCliControlPlane = class {
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
     let socketDir;
     try {
-      socketDir = await mkdtemp3(path16.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+      socketDir = await mkdtemp3(path17.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
       return { submitted: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
     }
-    const server = ["-S", path16.join(socketDir, "tmux.sock")];
+    const server = ["-S", path17.join(socketDir, "tmux.sock")];
     let submitAttempted = false;
     try {
-      const payload = path16.join(socketDir, "prompt.txt");
-      const editor = path16.join(socketDir, "editor.cjs");
-      const copied = path16.join(socketDir, "copied");
-      await writeFile5(payload, message, { mode: 384 });
-      await writeFile5(editor, `#!${process.execPath}
+      const payload = path17.join(socketDir, "prompt.txt");
+      const editor = path17.join(socketDir, "editor.cjs");
+      const copied = path17.join(socketDir, "copied");
+      await writeFile6(payload, message, { mode: 384 });
+      await writeFile6(editor, `#!${process.execPath}
         const fs = require("node:fs");
         fs.copyFileSync(${JSON.stringify(payload)}, process.argv.at(-1));
         fs.writeFileSync(${JSON.stringify(copied)}, "complete", { mode: 0o600 });
@@ -22016,14 +22143,14 @@ var ClaudeCliControlPlane = class {
     let directory = this.#heldAttachments.get(handle.sessionId);
     const name = `ensemble-held-${handle.id}`;
     if (directory !== void 0) {
-      const alive = await this.#run(this.#tmuxBin, ["-S", path16.join(directory, "tmux.sock"), "has-session", "-t", name], signal);
+      const alive = await this.#run(this.#tmuxBin, ["-S", path17.join(directory, "tmux.sock"), "has-session", "-t", name], signal);
       signal?.throwIfAborted();
       if (alive.ok) return;
       await this.#releaseHeldAttachment(handle);
     }
-    directory = await mkdtemp3(path16.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+    directory = await mkdtemp3(path17.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     this.#heldAttachments.set(handle.sessionId, directory);
-    const server = ["-S", path16.join(directory, "tmux.sock")];
+    const server = ["-S", path17.join(directory, "tmux.sock")];
     try {
       const created = await this.#launch(this.#tmuxBin, [
         ...server,
@@ -22048,7 +22175,7 @@ var ClaudeCliControlPlane = class {
     const directory = this.#heldAttachments.get(handle.sessionId);
     if (directory === void 0) return;
     this.#heldAttachments.delete(handle.sessionId);
-    await this.#run(this.#tmuxBin, ["-S", path16.join(directory, "tmux.sock"), "kill-server"], AbortSignal.timeout(this.#reclaimTimeoutMs));
+    await this.#run(this.#tmuxBin, ["-S", path17.join(directory, "tmux.sock"), "kill-server"], AbortSignal.timeout(this.#reclaimTimeoutMs));
     await rm5(directory, { recursive: true, force: true });
   }
   #operationSignal() {
@@ -22193,7 +22320,7 @@ var ClaudeCliControlPlane = class {
     const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
     let entries;
     try {
-      entries = await readdir6(this.#procDir);
+      entries = await readdir7(this.#procDir);
     } catch {
       return [];
     }
@@ -22208,7 +22335,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile8(path16.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile9(path17.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -22249,9 +22376,9 @@ var ClaudeCliControlPlane = class {
     return this.#launch(file, args, { input: null, ...signal !== void 0 ? { signal } : {} });
   }
   async #dispatchExecutable(cwd) {
-    if (this.#claudeBin.includes(path16.sep)) return path16.resolve(cwd, this.#claudeBin);
-    for (const directory of (this.#env.PATH ?? "/usr/bin:/bin").split(path16.delimiter)) {
-      const candidate = path16.resolve(cwd, directory, this.#claudeBin);
+    if (this.#claudeBin.includes(path17.sep)) return path17.resolve(cwd, this.#claudeBin);
+    for (const directory of (this.#env.PATH ?? "/usr/bin:/bin").split(path17.delimiter)) {
+      const candidate = path17.resolve(cwd, directory, this.#claudeBin);
       try {
         await access2(candidate);
         return candidate;
@@ -23181,13 +23308,13 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle, observers) {
-    const path21 = await this.#controlPlane.transcriptPath(handle);
-    if (path21 === null) {
+    const path22 = await this.#controlPlane.transcriptPath(handle);
+    if (path22 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    const transcript = await readTranscriptFile(path21);
+    const transcript = await readTranscriptFile(path22);
     try {
-      observers?.onTranscriptPath?.(path21);
+      observers?.onTranscriptPath?.(path22);
     } catch {
     }
     return transcript;
@@ -25911,14 +26038,14 @@ function describeSchemaErrors(errors) {
 }
 function findLocalReferenceCycle(schema) {
   const seenObjects = /* @__PURE__ */ new Set();
-  const visit = (value, path21) => {
+  const visit = (value, path22) => {
     if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
     seenObjects.add(value);
     const object = value;
     if (typeof object.$ref === "string") {
-      const seenRefs = /* @__PURE__ */ new Set([path21]);
+      const seenRefs = /* @__PURE__ */ new Set([path22]);
       let current2 = object;
-      let currentPath = path21;
+      let currentPath = path22;
       while (typeof current2.$ref === "string") {
         const targetPath = current2.$ref;
         const target = localPointerTarget(schema, targetPath);
@@ -25930,7 +26057,7 @@ function findLocalReferenceCycle(schema) {
       }
     }
     for (const [key, child] of Object.entries(object)) {
-      const cycle = visit(child, `${path21}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      const cycle = visit(child, `${path22}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
       if (cycle !== null) return cycle;
     }
     return null;
@@ -25955,14 +26082,14 @@ function normaliseForCodexOutputSchema(schema) {
 function assertAcyclicSchemaObject(schema) {
   const active = /* @__PURE__ */ new Map();
   const visited = /* @__PURE__ */ new Set();
-  const walk = (value, path21) => {
+  const walk = (value, path22) => {
     if (typeof value !== "object" || value === null) return;
     const firstSeenAt = active.get(value);
-    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path21, firstSeenAt);
+    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path22, firstSeenAt);
     if (visited.has(value)) return;
-    active.set(value, path21);
+    active.set(value, path22);
     for (const [key, child] of Object.entries(value)) {
-      walk(child, `${path21}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      walk(child, `${path22}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
     }
     active.delete(value);
     visited.add(value);
@@ -28333,21 +28460,21 @@ var EnsembleRuntime = class _EnsembleRuntime {
         },
         ...engine === "codex" && recorder !== null ? {
           onTranscriptEvent: (event) => enqueue(async () => {
-            const path21 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
-            if (path21 != null) this.progress.noteAgentTranscript(agentId, path21);
+            const path22 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            if (path22 != null) this.progress.noteAgentTranscript(agentId, path22);
           })
         } : engine === "claude" ? {
-          onTranscriptPath: (path21) => {
-            if (path21 === transcriptPath || !active) return;
-            transcriptPath = path21;
+          onTranscriptPath: (path22) => {
+            if (path22 === transcriptPath || !active) return;
+            transcriptPath = path22;
             if (recorder === null) {
-              this.progress.noteAgentTranscript(agentId, path21);
+              this.progress.noteAgentTranscript(agentId, path22);
               return;
             }
             enqueue(async () => {
               try {
-                await recorder.recordClaudeTranscript(agentId, context.attempt, path21);
-                this.progress.noteAgentTranscript(agentId, path21);
+                await recorder.recordClaudeTranscript(agentId, context.attempt, path22);
+                this.progress.noteAgentTranscript(agentId, path22);
               } catch (error) {
                 transcriptPath = void 0;
                 throw error;
@@ -29601,9 +29728,9 @@ function describeWorkerFailure(error) {
 import vm from "node:vm";
 import { createHash as createHash5 } from "node:crypto";
 import { constants as constants4 } from "node:fs";
-import { access as access4, readFile as readFile10, stat as stat7 } from "node:fs/promises";
+import { access as access4, readFile as readFile11, stat as stat7 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
-import path18 from "node:path";
+import path19 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -35301,9 +35428,9 @@ var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 
 // src/workflow-registry.ts
 import { constants as constants3 } from "node:fs";
-import { access as access3, readdir as readdir7, readFile as readFile9 } from "node:fs/promises";
+import { access as access3, readdir as readdir8, readFile as readFile10 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
-import path17 from "node:path";
+import path18 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
 };
 var NestedWorkflowError = class extends WorkflowResolutionError {
@@ -35312,10 +35439,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path17.join(homedir4(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path18.join(homedir4(), ".local", "share");
   return {
-    project: path17.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path17.join(dataHome2, "ensemble", "workflows")
+    project: path18.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path18.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -35325,7 +35452,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path17.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path18.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access3(scriptPath, constants3.R_OK);
   } catch (error) {
@@ -35382,7 +35509,7 @@ async function resolveWorkflowName(name, options) {
 async function listRegistryDir(dir, scope, readMeta) {
   let directoryEntries;
   try {
-    directoryEntries = await readdir7(dir, { withFileTypes: true });
+    directoryEntries = await readdir8(dir, { withFileTypes: true });
   } catch (error) {
     if (isMissingDirectory(error)) {
       return { entries: [], notes: [] };
@@ -35398,9 +35525,9 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path17.join(dir, entry.name);
+    const scriptPath = path18.join(dir, entry.name);
     try {
-      const source = await readFile9(scriptPath, "utf8");
+      const source = await readFile10(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -35463,14 +35590,14 @@ function assertJsonSerialisable(value, label, pathRoot) {
     throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
   }
 }
-function findUnserialisable(value, path21, ancestors, honourToJson) {
+function findUnserialisable(value, path22, ancestors, honourToJson) {
   switch (typeof value) {
     case "function":
-      return `${path21} is a function`;
+      return `${path22} is a function`;
     case "symbol":
-      return `${path21} is a symbol`;
+      return `${path22} is a symbol`;
     case "bigint":
-      return `${path21} is a BigInt`;
+      return `${path22} is a BigInt`;
     case "object":
       break;
     default:
@@ -35481,16 +35608,16 @@ function findUnserialisable(value, path21, ancestors, honourToJson) {
   }
   const toJson = value.toJSON;
   if (honourToJson && typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path21, ancestors, false);
+    return findUnserialisable(toJson.call(value), path22, ancestors, false);
   }
   if (ancestors.has(value)) {
-    return `${path21} closes a cycle`;
+    return `${path22} closes a cycle`;
   }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path21}[${index}]`, ancestors, true);
+        const offence = findUnserialisable(value[index], `${path22}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -35498,7 +35625,7 @@ function findUnserialisable(value, path21, ancestors, honourToJson) {
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path21}.${key}`, ancestors, true);
+      const offence = findUnserialisable(entry, `${path22}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -35553,8 +35680,8 @@ async function runWorkflowScript(options) {
       throw error;
     }
   }
-  const resolvedFilename = path18.resolve(options.filename);
-  const cwd = options.cwd ?? path18.dirname(resolvedFilename);
+  const resolvedFilename = path19.resolve(options.filename);
+  const cwd = options.cwd ?? path19.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -35983,7 +36110,7 @@ function acornSyntaxErrorPosition(wrappedSource) {
 }
 async function readWorkflowScript(scriptPath) {
   try {
-    return await readFile10(scriptPath, "utf8");
+    return await readFile11(scriptPath, "utf8");
   } catch (error) {
     throw workflowScriptReadError(scriptPath, error);
   }
@@ -36733,9 +36860,9 @@ async function runEnsembleCli(argv, options = {}) {
     return 2;
   }
   const configuredStatus = ambientSettings.statusDir;
-  if (configuredStatus.value !== null && configuredStatus.layer !== "default" && !path19.isAbsolute(configuredStatus.value)) {
+  if (configuredStatus.value !== null && configuredStatus.layer !== "default" && !path20.isAbsolute(configuredStatus.value)) {
     const setting = configuredStatus.layer === "env" ? "ENSEMBLE_STATUS_DIR" : `status.dir in ${JSON.stringify(ambientSettings.configFile)}`;
-    stderr.write(`[status] ${setting}: path ${JSON.stringify(configuredStatus.value)} resolves to ${JSON.stringify(path19.resolve(cwd, configuredStatus.value))} against cwd ${JSON.stringify(cwd)}; use an absolute path to choose a directory independently of cwd
+    stderr.write(`[status] ${setting}: path ${JSON.stringify(configuredStatus.value)} resolves to ${JSON.stringify(path20.resolve(cwd, configuredStatus.value))} against cwd ${JSON.stringify(cwd)}; use an absolute path to choose a directory independently of cwd
 `);
   }
   if (invocation.kind === "workflow" && invocation.scriptArg === void 0) {
@@ -36743,9 +36870,9 @@ async function runEnsembleCli(argv, options = {}) {
     return 2;
   }
   const configuredRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
-  const runRecordDir = configuredRecordDir ? path19.resolve(configuredRecordDir) : configuredRecordDir;
+  const runRecordDir = configuredRecordDir ? path20.resolve(configuredRecordDir) : configuredRecordDir;
   const configuredSentinelDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
-  const sentinelStoreDir = configuredSentinelDir ? path19.resolve(configuredSentinelDir) : configuredSentinelDir;
+  const sentinelStoreDir = configuredSentinelDir ? path20.resolve(configuredSentinelDir) : configuredSentinelDir;
   let prepared;
   try {
     prepared = await prepareRun(invocation, cwd, program);
@@ -36823,7 +36950,7 @@ async function runEnsembleCli(argv, options = {}) {
     if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
         progress,
-        dir: path19.resolve(cwd, statusDir),
+        dir: path20.resolve(cwd, statusDir),
         createDirectory: options.statusDir === void 0 && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
@@ -37236,7 +37363,7 @@ function workflowName(meta) {
 async function prepareRun(invocation, cwd, program) {
   if (invocation.kind === "agent") {
     if (invocation.agentOptions.cwd !== void 0) {
-      const requestedCwd = path19.resolve(cwd, invocation.agentOptions.cwd);
+      const requestedCwd = path20.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
         isDirectory2 = (await stat8(requestedCwd)).isDirectory();
@@ -37248,7 +37375,7 @@ async function prepareRun(invocation, cwd, program) {
       }
     }
     return {
-      workflowPath: path19.join(cwd, "<ensemble-agent>"),
+      workflowPath: path20.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
       runnerArgs: [],
       recordArgs: {
@@ -37260,7 +37387,7 @@ async function prepareRun(invocation, cwd, program) {
   if (invocation.scriptArg === void 0) {
     throw new Error("workflow invocation has no script path");
   }
-  const workflowPath = path19.resolve(cwd, invocation.scriptArg);
+  const workflowPath = path20.resolve(cwd, invocation.scriptArg);
   await checkWorkflowScriptPath(workflowPath);
   return {
     workflowPath,
@@ -37276,7 +37403,7 @@ function launcherResourceRequirements(recordDir, injectedRecordDir, settings, en
   const setting = injectedRecordDir ? "the runRecordDir option" : layer === "config-file" ? `run_record.dir in ${settings.configFile}` : RUN_RECORD_DIR_ENV;
   const directory = !injectedRecordDir && layer === "default" ? defaultDirectory(
     { rule: "$XDG_DATA_HOME/ensemble (else ~/.local/share/ensemble)", movedBy: RUN_RECORD_DIR_ENV },
-    env.XDG_DATA_HOME ? readSetting("XDG_DATA_HOME", env.XDG_DATA_HOME, process.cwd()) : path19.join(homedir5(), ".local", "share"),
+    env.XDG_DATA_HOME ? readSetting("XDG_DATA_HOME", env.XDG_DATA_HOME, process.cwd()) : path20.join(homedir5(), ".local", "share"),
     "ensemble"
   ) : declaredDirectory(readSetting(setting, recordDir, process.cwd()));
   return [{ owner: "launcher", role, access: "create-entries", ...directory }];
@@ -37548,7 +37675,7 @@ var WORKFLOW_TUNING_OPTIONS = {
 async function parseWorkflowInvocation(argv, cwd, program) {
   if (argv[0] === "run") {
     try {
-      await stat8(path19.resolve(cwd, "run"));
+      await stat8(path20.resolve(cwd, "run"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       throw new CliUsageError(`${program}: "run" was taken as the script path; there is no run subcommand. Use: ${program} [run options] <script.js> [args...]`);
@@ -37642,7 +37769,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
       assertCompilableSchema(schema);
     } catch (error) {
       if (!(error instanceof InvalidAgentSchemaError)) throw error;
-      const source = parsed.values.schema.startsWith("@") ? path19.resolve(cwd, parsed.values.schema.slice(1)) : "the inline argument";
+      const source = parsed.values.schema.startsWith("@") ? path20.resolve(cwd, parsed.values.schema.slice(1)) : "the inline argument";
       throw new CliUsageError(`--schema from ${source}: ${error.message}`);
     }
   }
@@ -37930,10 +38057,10 @@ async function parseJsonValue(value, cwd, flagName) {
     if (filename.length === 0) {
       throw new CliUsageError(`${flagName} @file requires a file path`);
     }
-    const filePath = path19.resolve(cwd, filename);
+    const filePath = path20.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
-      source = await readFile11(filePath, "utf8");
+      source = await readFile12(filePath, "utf8");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new CliUsageError(`${flagName} could not read ${filePath}: ${message}`);
@@ -38176,7 +38303,7 @@ function programNameFor(scriptPath) {
   if (scriptPath === void 0 || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
-  const absolutePath = path19.resolve(scriptPath);
+  const absolutePath = path20.resolve(scriptPath);
   const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : quoteShellArgument(absolutePath);
   return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
 }
@@ -38306,7 +38433,7 @@ function isError(error) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path20.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path21.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
 function flushed(stream) {
   return new Promise((resolve) => {
     stream.write("", () => resolve());

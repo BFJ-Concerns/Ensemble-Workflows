@@ -96,7 +96,9 @@ export const DEFAULT_STOP_BOUNDS: StopBounds = { stopGraceMs: 2_000, confirmMs: 
  *
  * A worker's own command — a process the launcher spawns per attempt — is
  * not placed here directly: `CommandContainment` (contained-command.ts)
- * starts it inside a scope of its own before it can start anything.
+ * starts it inside ownership of its own before it can start anything — a
+ * scope of its own, or under `run` grouping a subgroup of the run's scope
+ * (scope-subgroup.ts), which this manager's stop of that scope also ends.
  */
 export interface WorkerScopes {
   /** The slice that holds the launcher's cgroup, as discovered; null where none was found (the manager's default applies). */
@@ -683,8 +685,11 @@ function userManagerAnswers(busctlBin: string, env: NodeJS.ProcessEnv): Promise<
   });
 }
 
-/** Whether a cgroup holds no process: `populated 0` in its events file, or the cgroup gone. */
-async function cgroupEmpty(directory: string): Promise<boolean> {
+/**
+ * Whether a cgroup holds no process, anywhere in its tree: `populated 0` in
+ * its events file, or the cgroup gone.
+ */
+export async function cgroupEmpty(directory: string): Promise<boolean> {
   try {
     return /^populated 0$/m.test(await readFile(path.join(directory, "cgroup.events"), "utf8"));
   } catch (error) {

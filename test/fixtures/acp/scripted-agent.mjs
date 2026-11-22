@@ -5,7 +5,10 @@
 // value it does not offer and -32000 for a missing sign-in.
 //
 // SCRIPTED_ACP_AGENT holds the script as JSON:
-//   { signedOut?: true, protocolVersion?: number, turns?: Step[][], counter?: path }
+//   { signedOut?: true, signInAfterFirstRefusal?: path,
+//     protocolVersion?: number, turns?: Step[][], counter?: path }
+// With signInAfterFirstRefusal, the first session/new across processes
+// records its refusal in that file and subsequent opens succeed.
 // The nth `session/prompt` plays the nth turn; a turn past the script's end
 // has no steps. With `counter`, the count is kept in that file, so an agent
 // started after another one exited plays on from where it stopped. A turn
@@ -123,7 +126,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return send({ id, result: { protocolVersion: script.protocolVersion ?? 1, agentCapabilities: {}, agentInfo: { name: "Scripted ACP agent", version: "0" }, authMethods: [] } });
   }
   if (method === "session/new") {
-    if (script.signedOut === true) return send({ id, error: { code: -32000, message: "Authentication required" } });
+    if (script.signedOut === true || (script.signInAfterFirstRefusal !== undefined && !existsSync(script.signInAfterFirstRefusal))) {
+      if (script.signInAfterFirstRefusal !== undefined) writeFileSync(script.signInAfterFirstRefusal, "");
+      return send({ id, error: { code: -32000, message: "Authentication required" } });
+    }
     const sessionId = `session-${sessions.size + 1}`;
     const session = { model: "tiered-model", level: "high", cancelled: undefined };
     sessions.set(sessionId, session);

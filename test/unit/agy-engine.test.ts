@@ -11,7 +11,7 @@ import { AgyEngineAdapter } from "../../src/agy-engine.js";
 import { CommandContainment, type CommandStop } from "../../src/contained-command.js";
 import { DispatchRemap } from "../../src/dispatch-remap.js";
 import { EngineRegistry, type EngineAttemptResult } from "../../src/engines.js";
-import { AgySubstrateRefusedError, EngineShutdownError, InvalidAgentOptionValueError, TurnTimeoutError, failedTurnResultOf } from "../../src/errors.js";
+import { AgySubstrateRefusedError, EngineShutdownError, InvalidAgentOptionValueError, TurnTimeoutError, WhitespaceStreamError, failedTurnResultOf } from "../../src/errors.js";
 import { assertValidFallbackOption } from "../../src/engine-option-validation.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { summariseUsage } from "../../src/usage-summary.js";
@@ -25,11 +25,12 @@ const scriptedAgent = path.resolve("test/fixtures/acp/scripted-agent.mjs");
 /** What the scripted agent is told to do (`test/fixtures/acp/scripted-agent.mjs` lists the steps). */
 interface AgentScript {
   signedOut?: boolean;
+  signInAfterFirstRefusal?: string;
   turns?: Record<string, unknown>[][];
   counter?: string;
 }
 
-const say = (text: string): Record<string, unknown> => ({ update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } });
+const say = (text: string) => ({ update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } });
 const tool = (toolCallId: string): Record<string, unknown> => ({ update: { sessionUpdate: "tool_call", toolCallId, title: "run", kind: "execute", status: "pending" } });
 const ECHO = { echo: true };
 
@@ -161,6 +162,21 @@ test("agy with no sign-in is a substrate refusal, classed as availability", asyn
   const attempt = runtime.lastAgentRecord()?.attempts[0];
   assert.equal(attempt?.failure?.kind, "AgySubstrateRefusedError");
   assert.deepEqual(attempt?.classification, { class: "availability", rule: "agy.substrate-refused" });
+});
+
+test("an agy session-opening refusal advances to the next fallback entry without spending an attempt", async (t) => {
+  const { dir } = await scriptedAgy(t);
+  const { runtime } = await scriptedRuntime(t, {
+    signInAfterFirstRefusal: path.join(dir, "refused"), turns: [[say("from fallback")]]
+  }, 1);
+  const target = { engine: "agy" as const, model: "single-level-model" };
+  assert.equal(await runtime.agent("go", { engine: "agy", fallback: [target] }), "from fallback");
+  const record = runtime.lastAgentRecord();
+  assert.deepEqual(record?.attempts.map(({ status, target, classification }) => [status, target, classification]), [
+    ["failed", { engine: "agy", model: null }, { class: "availability", rule: "agy.substrate-refused" }],
+    ["complete", target, null]
+  ]);
+  assert.deepEqual(record?.answeredBy, { entry: 0, ...target });
 });
 
 test("a one-shot schema answer that fails the check is retried on a fresh worker told of the failure", async (t) => {
@@ -322,13 +338,14 @@ test("agy refuses a capability strip and a lean start before any worker spawns",
 function inProcessAgent(t: TestContext, options: {
   holdOpen?: boolean;
   ignoreCancel?: boolean;
+  cancelError?: { code: number; message: string };
   holdPipes?: boolean;
   stopAccount?: { owner: string; reason: string };
 } = {}): {
   commands: CommandContainment;
   children: ChildProcess[];
   update: (body: Record<string, unknown>) => void;
-  prompts: { text: string; answer: (stopReason: string) => void }[];
+  prompts: { text: string; answer: (stopReason: string, usage?: { totalTokens: number }) => void; reject: (error: { code: number; message: string }) => void }[];
   cancels: () => number;
   stops: () => number;
   started: () => number;
@@ -336,7 +353,7 @@ function inProcessAgent(t: TestContext, options: {
 } {
   const commands = new CommandContainment(new NoWorkerScopes());
   const children: ChildProcess[] = [];
-  const prompts: { text: string; answer: (stopReason: string) => void }[] = [];
+  const prompts: { text: string; answer: (stopReason: string, usage?: { totalTokens: number }) => void; reject: (error: { code: number; message: string }) => void }[] = [];
   let cancels = 0;
   let stops = 0;
   let started = 0;
@@ -367,11 +384,16 @@ function inProcessAgent(t: TestContext, options: {
           write({ id, result: { sessionId: "held", configOptions: [{ id: "model", category: "model", type: "select", currentValue: "m", options: [{ value: "m" }] }] } });
         }
         if (method === "session/prompt") {
-          prompts.push({ text: params.prompt?.[0]?.text ?? "", answer: (stopReason) => write({ id, result: { stopReason } }) });
+          prompts.push({
+            text: params.prompt?.[0]?.text ?? "",
+            answer: (stopReason, usage) => write({ id, result: { stopReason, usage } }),
+            reject: (error) => write({ id, error })
+          });
         }
         if (method === "session/cancel") {
           cancels += 1;
-          if (!options.ignoreCancel) prompts.at(-1)?.answer("cancelled");
+          if (options.cancelError !== undefined) prompts.at(-1)?.reject(options.cancelError);
+          else if (!options.ignoreCancel) prompts.at(-1)?.answer("cancelled");
         }
       }
     });
@@ -437,6 +459,163 @@ test("ACP releases the child and its pipes when they outlive the drain deadline"
   assert.equal(unref.mock.callCount(), 1);
 });
 
+test("an agy attempt waits for every background command and uses the automatic follow-up as its answer", async (t) => {
+  const agent = inProcessAgent(t);
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const invocation = adapter.createInvocation("run commands", { cwd: process.cwd() });
+  const pending = invocation.runAttempt({ attempt: 1 });
+  await until(() => agent.prompts.length === 1);
+  const start = (id: string): void => agent.update({ sessionUpdate: "tool_call", name: "run_command", toolCallId: id, status: "in_progress" });
+  const finish = (id: string, status = "completed"): void => agent.update({ sessionUpdate: "tool_call_update", toolCallId: id, status });
+  const text = (value: string): void => agent.update(say(value).update);
+  const usage = (): void => agent.update({ sessionUpdate: "usage_update", used: 500, size: 1000 });
+
+  start("short");
+  start("long");
+  text("Command still running. ");
+  agent.prompts[0]?.answer("end_turn", { totalTokens: 42 });
+  // Frames after the reply can arrive in the same read.
+  finish("short");
+  text("Short command done. ");
+  usage();
+  await flush();
+  assert.equal(agent.stops(), 0);
+  t.mock.timers.tick(1_000);
+  await flush();
+  assert.equal(agent.stops(), 0, "the second command is still running");
+
+  finish("long", "failed");
+  usage();
+  await flush();
+  t.mock.timers.tick(1_000);
+  await flush();
+  assert.equal(agent.stops(), 0, "a usage update alone is not a follow-up answer");
+
+  text("Checking results. ");
+  usage();
+  await flush();
+  start("check");
+  await flush();
+  t.mock.timers.tick(1_000);
+  await flush();
+  assert.equal(agent.stops(), 0, "a new tool call supersedes the answer in progress");
+
+  finish("check");
+  text("Final ");
+  text("answer.");
+  usage();
+  await flush();
+  t.mock.timers.tick(1_000);
+  const result = await pending;
+  assert.equal(result.text, "Final answer.");
+  assert.equal(result.deltaText, "Command still running. Short command done. Checking results. Final answer.");
+  assert.equal(result.tokenUsageEvents[0]?.last.totalTokens, 42);
+  const transcript = result.transcripts?.[0]?.content ?? "";
+  assert.ok(transcript.indexOf('"type":"reply"') < transcript.indexOf("Short command done."));
+  assert.match(transcript, /"status":"failed"/);
+  assert.equal(agent.prompts.length, 1, "agy follows up without a new prompt");
+  assert.equal(agent.stops(), 1);
+});
+
+test("a silent background command cancels the agy attempt even without a turn deadline", async (t) => {
+  const agent = inProcessAgent(t, { ignoreCancel: true });
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const invocation = adapter.createInvocation("start command", { cwd: process.cwd() });
+  const pending = invocation.runAttempt({ attempt: 1 });
+  void pending.catch(() => undefined);
+  await until(() => agent.prompts.length === 1);
+  agent.update({ sessionUpdate: "tool_call", toolCallId: "quiet", name: "run_command", status: "in_progress" });
+  agent.update(say("Started.").update);
+  agent.prompts[0]?.answer("end_turn", { totalTokens: 42 });
+  await flush();
+
+  t.mock.timers.tick(15 * 60_000 - 1);
+  assert.equal(agent.cancels(), 0);
+  t.mock.timers.tick(1);
+  assert.equal(agent.cancels(), 1);
+  assert.equal(agent.stops(), 0);
+  t.mock.timers.tick(10_000);
+  const result = await pending;
+  assert.equal(result.attemptFailure?.kind, "agy-background-silence");
+  assert.match(result.attemptFailure?.message ?? "", /quiet/);
+  assert.equal(result.deltaText, "Started.");
+  assert.equal(result.tokenUsageEvents[0]?.last.totalTokens, 42);
+  assert.equal(result.transcripts?.[0]?.partial, true);
+  assert.equal(agent.stops(), 1);
+});
+
+test("command completion resets the silence bound before a missing automatic follow-up", async (t) => {
+  const agent = inProcessAgent(t, { ignoreCancel: true });
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const session = adapter.createSession({ cwd: process.cwd() }, { onLost: () => undefined });
+  const pending = session.beginTurn("start command", {}).runAttempt({ attempt: 1 });
+  void pending.catch(() => undefined);
+  await until(() => agent.prompts.length === 1);
+  agent.update({ sessionUpdate: "tool_call", toolCallId: "quiet", name: "run_command", status: "in_progress" });
+  agent.prompts[0]?.answer("end_turn");
+  await flush();
+
+  t.mock.timers.tick(10 * 60_000);
+  agent.update({ sessionUpdate: "tool_call_update", toolCallId: "quiet", status: "completed" });
+  await flush();
+  t.mock.timers.tick(15 * 60_000 - 1);
+  assert.equal(agent.cancels(), 0);
+  t.mock.timers.tick(1);
+  assert.equal(agent.cancels(), 1);
+  t.mock.timers.tick(10_000);
+  const result = await pending;
+  assert.equal(result.attemptFailure?.kind, "agy-background-silence");
+  assert.match(result.attemptFailure?.message ?? "", /automatic follow-up/);
+  assert.equal((await session.beginTurn("next", {}).runAttempt({ attempt: 1 })).attemptFailure?.kind, "session-lost");
+});
+
+test("a held agy turn's deadline still applies after the prompt reply", async (t) => {
+  const agent = inProcessAgent(t, { ignoreCancel: true });
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const session = adapter.createSession({ cwd: process.cwd(), timeoutMs: 500 }, { onLost: () => undefined });
+  const pending = session.beginTurn("wait", {}).runAttempt({ attempt: 1 }).catch((error: unknown) => error);
+  await until(() => agent.prompts.length === 1);
+  agent.update({ sessionUpdate: "tool_call", toolCallId: "pending", name: "run_command", status: "in_progress" });
+  agent.prompts[0]?.answer("end_turn", { totalTokens: 42 });
+  await flush();
+  t.mock.timers.tick(500);
+  await flush();
+  assert.equal(agent.cancels(), 1);
+  t.mock.timers.tick(10_000);
+  const failure = await pending;
+  assert.ok(failure instanceof TurnTimeoutError);
+  assert.equal(failedTurnResultOf(failure)?.tokenUsageEvents[0]?.last.totalTokens, 42);
+  assert.equal((await session.beginTurn("next", {}).runAttempt({ attempt: 1 })).attemptFailure?.kind, "session-lost");
+});
+
+test("an agy worker that exits during its automatic follow-up keeps partial text and prompt usage", async (t) => {
+  const agent = inProcessAgent(t);
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  const invocation = adapter.createInvocation("wait", { cwd: process.cwd() });
+  const pending = invocation.runAttempt({ attempt: 1 });
+  await until(() => agent.prompts.length === 1);
+  agent.update({ sessionUpdate: "tool_call", toolCallId: "pending", name: "run_command", status: "in_progress" });
+  agent.update(say("Started.").update);
+  agent.prompts[0]?.answer("end_turn", { totalTokens: 42 });
+  agent.children[0]?.emit("exit", 3, null);
+  agent.children[0]?.emit("close", 3, null);
+  const result = await pending;
+  assert.equal(result.attemptFailure?.kind, "agy-worker-lost");
+  assert.deepEqual(result.workerExit, { exitCode: 3, signal: null });
+  assert.equal(result.deltaText, "Started.");
+  assert.equal(result.tokenUsageEvents[0]?.last.totalTokens, 42);
+  assert.equal(result.transcripts?.[0]?.partial, true);
+});
+
 test("an agy worker that ignores cancel is stopped after ten seconds and its attempt accounts for one stop", async (t) => {
   const stopAccount = { owner: "agy acp", reason: "the process group's end could not be established" };
   const agent = inProcessAgent(t, { ignoreCancel: true, stopAccount });
@@ -458,6 +637,57 @@ test("an agy worker that ignores cancel is stopped after ten seconds and its att
   assert.deepEqual(failedTurnResultOf(failure)?.diagnostics?.unestablishedStops, [stopAccount]);
   await invocation.close?.();
   assert.equal(agent.stops(), 1);
+});
+
+for (const bound of [
+  { name: "deadline", timeoutMs: 500, expiry: 500, error: TurnTimeoutError, text: "partial" },
+  { name: "whitespace bound", timeoutMs: 3_600_000, expiry: 120_000, error: WhitespaceStreamError, text: "  " }
+]) {
+  test(`a held agy turn stopped at its ${bound.name} keeps that failure and the stop account, then the session is lost`, async (t) => {
+    const stopAccount = { owner: "agy acp", reason: "the process group's end could not be established" };
+    const agent = inProcessAgent(t, { ignoreCancel: true, stopAccount });
+    const adapter = new AgyEngineAdapter({ commands: agent.commands });
+    t.after(() => adapter.close());
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+    const losses: unknown[] = [];
+    const session = adapter.createSession({ cwd: process.cwd(), timeoutMs: bound.timeoutMs }, { onLost: (loss) => losses.push(loss) });
+    const pending = session.beginTurn("wait", {}).runAttempt({ attempt: 1 }).catch((error: unknown) => error);
+    await until(() => agent.prompts.length === 1);
+    agent.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: bound.text } });
+    await flush();
+    t.mock.timers.tick(bound.expiry);
+    await flush();
+    assert.equal(agent.cancels(), 1);
+    assert.equal(agent.stops(), 0);
+    t.mock.timers.tick(10_000);
+    const failure = await pending;
+    assert.ok(failure instanceof bound.error);
+    assert.equal(failedTurnResultOf(failure)?.deltaText, bound.text);
+    assert.deepEqual(failedTurnResultOf(failure)?.diagnostics?.unestablishedStops, [stopAccount]);
+    assert.equal(losses.length, 1);
+    const later = await session.beginTurn("next", {}).runAttempt({ attempt: 1 });
+    assert.equal(later.attemptFailure?.kind, "session-lost");
+    assert.equal(later.diagnostics, undefined);
+    assert.equal(agent.prompts.length, 1);
+    assert.equal(agent.stops(), 1);
+  });
+}
+
+test("an agy RPC error after deadline cancellation preserves the deadline and keeps the RPC diagnostic", async (t) => {
+  const cancelError = { code: -32603, message: "interrupting the prompt" };
+  const agent = inProcessAgent(t, { cancelError });
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const invocation = adapter.createInvocation("wait", { cwd: process.cwd(), timeoutMs: 500 });
+  const pending = invocation.runAttempt({ attempt: 1 }).catch((error: unknown) => error);
+  await until(() => agent.prompts.length === 1);
+  t.mock.timers.tick(500);
+  const failure = await pending;
+  assert.ok(failure instanceof TurnTimeoutError);
+  assert.deepEqual(failedTurnResultOf(failure)?.diagnostics?.agy, {
+    session_id: "held", stop_reason: null, error: { code: cancelError.code, message: "agy acp: session/prompt failed (-32603): interrupting the prompt" }
+  });
 });
 
 test("agy's whitespace bound is reset by text, tool activity and thought, and a stop spends one attempt and is retried", async (t) => {
@@ -551,7 +781,7 @@ test("a one-shot agy turn cut short by its invocation closing keeps its text, us
   assert.equal(result.transcripts![0]!.partial, true);
 });
 
-test("a held agy turn cut short by its session closing keeps its transcript on the shutdown", async (t) => {
+test("a held agy turn cut short by its session closing keeps the stop account and transcript", async (t) => {
   const { adapter, dir } = await scriptedAdapter(t, { turns: [[say("partial-evidence"), { untilCancelled: true }]] });
   const session = adapter.createSession({ cwd: dir }, { onLost: () => assert.fail("closing a session is not a loss") });
   let seen!: () => void;
@@ -561,7 +791,36 @@ test("a held agy turn cut short by its session closing keeps its transcript on t
   await session.close();
   const failure = await pending;
   assert.ok(failure instanceof EngineShutdownError);
-  assert.match((failedTurnResultOf(failure) as EngineAttemptResult).transcripts![0]!.content, /partial-evidence/);
+  const evidence = failedTurnResultOf(failure);
+  assert.match(evidence?.transcripts?.[0]?.content ?? "", /partial-evidence/);
+  assert.equal((evidence?.diagnostics?.unestablishedStops as unknown[])?.length, 1);
+  assert.match(JSON.stringify(evidence?.diagnostics?.unestablishedStops), /agy acp in process group/);
+});
+
+test("run teardown owns the stop of a held agy worker, and its attempt keeps the partial transcript", async (t) => {
+  const { bin, dir } = await scriptedAgy(t);
+  const commands = new CommandContainment(new NoWorkerScopes());
+  const adapter = new AgyEngineAdapter({
+    bin, cwd: dir, commands,
+    workerEnv: { SCRIPTED_ACP_AGENT: JSON.stringify({ turns: [[say("partial-evidence"), { untilCancelled: true }]] }) }
+  });
+  const runtime = new EnsembleRuntime({ cwd: dir, defaultMaxAttempts: 1, engines: new EngineRegistry([adapter], [commands]) });
+  t.after(() => runtime.close().catch(() => undefined));
+  const session = runtime.createWorkerSession({ engine: "agy" });
+  const output = new Promise<void>((resolve) => {
+    const unsubscribe = runtime.progress.onChange(() => {
+      if (!runtime.progress.snapshot().agents.some((entry) => entry.firstEvidenceAtMs !== null)) return;
+      unsubscribe();
+      resolve();
+    });
+  });
+  const pending = session.send("long task").catch((error: unknown) => error);
+  await output;
+  await assert.rejects(runtime.close(), /agy acp in process group/);
+  assert.ok(await pending instanceof EngineShutdownError);
+  const attempt = runtime.lastAgentRecord()?.attempts[0];
+  assert.equal(attempt?.rawOutput, "partial-evidence");
+  assert.equal(attempt?.diagnostics?.unestablishedStops, undefined);
 });
 
 test("a worker that replaces a dead one accounts its session's usage from zero", async (t) => {

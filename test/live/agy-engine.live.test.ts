@@ -13,7 +13,7 @@ const skip = !isLive ? "ENSEMBLE_LIVE must be 1" : liveAgyModel === undefined ? 
 
 // Every turn here spends the operator's own agy subscription, so the leg is
 // two turns of one held worker at `low`. Assertions read the records, never
-// the wording of a reply beyond the schema's own values.
+// the wording of a reply beyond the word carried across turns.
 test("a held agy worker answers on the named model and level, remembers its first turn, and accounts its usage", { skip, timeout: 300_000 }, async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-agy-live-"));
   let passed = false;
@@ -31,7 +31,7 @@ test("a held agy worker answers on the named model and level, remembers its firs
 
   const schema = {
     type: "object", required: ["word"], additionalProperties: false,
-    properties: { word: { type: "string", enum: ["cobalt"] } }
+    properties: { word: { type: "string" } }
   };
   assert.deepEqual(await session.send("Which word did I ask you to remember? Use no tools.", { schema }), { word: "cobalt" });
   assert.ok(runtime.budget.spent("agy") > 0, "agy's usage reaches the budget");

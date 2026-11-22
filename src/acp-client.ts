@@ -629,15 +629,18 @@ export class AcpSession {
    * says what each means for the attempt. The turn's text, tool calls and
    * thoughts arrive through `onUpdate` before this resolves. There is no
    * deadline: the adapter ends a turn it will not wait for with `cancel()`.
+   * `onReply` runs as the reply is read, before any out-of-turn update.
    */
-  prompt(prompt: string | readonly JsonObject[]): Promise<AcpPromptResult> {
+  prompt(prompt: string | readonly JsonObject[], onReply?: (reply: AcpPromptResult) => void): Promise<AcpPromptResult> {
     const blocks = typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt;
     return this.#channel.request("session/prompt", { prompt: blocks }, (result) => {
       const reply = asObject(result);
       if (reply === null || typeof reply.stopReason !== "string") {
         throw new AcpProtocolError(`${this.#channel.name}: session/prompt answered without a stop reason`);
       }
-      return { stopReason: reply.stopReason, usage: usageOf(reply.usage), reply };
+      const parsed = { stopReason: reply.stopReason, usage: usageOf(reply.usage), reply };
+      onReply?.(parsed);
+      return parsed;
     }, false);
   }
 

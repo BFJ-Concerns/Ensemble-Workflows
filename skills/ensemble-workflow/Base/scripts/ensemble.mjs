@@ -16670,6 +16670,7 @@ var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
 var DEADLINE_FAILURE_KINDS = /* @__PURE__ */ new Set([
   "TurnTimeoutError",
   "AppServerFirstOutputTimeoutError",
+  "agy-background-silence",
   "claude-poll-timeout"
 ]);
 function isTimeoutFailureKind(kind) {
@@ -19896,6 +19897,7 @@ var AGY_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["agy-invalid-prompt-reply", { class: "output", rule: "agy.invalid-prompt-reply" }],
   // agy ended the turn as a refusal, at a token or request limit, or cancelled it itself.
   ["agy-stop-reason", { class: "unclassified", rule: "agy.stop-reason" }],
+  ["agy-background-silence", { class: "unclassified", rule: "agy.background-silence" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "agy.deadline" }]
 ]);
 function classifyAttemptFailure(evidence) {
@@ -25758,15 +25760,18 @@ var AcpSession = class {
    * says what each means for the attempt. The turn's text, tool calls and
    * thoughts arrive through `onUpdate` before this resolves. There is no
    * deadline: the adapter ends a turn it will not wait for with `cancel()`.
+   * `onReply` runs as the reply is read, before any out-of-turn update.
    */
-  prompt(prompt) {
+  prompt(prompt, onReply) {
     const blocks = typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt;
     return this.#channel.request("session/prompt", { prompt: blocks }, (result) => {
       const reply = asObject(result);
       if (reply === null || typeof reply.stopReason !== "string") {
         throw new AcpProtocolError(`${this.#channel.name}: session/prompt answered without a stop reason`);
       }
-      return { stopReason: reply.stopReason, usage: usageOf(reply.usage), reply };
+      const parsed = { stopReason: reply.stopReason, usage: usageOf(reply.usage), reply };
+      onReply?.(parsed);
+      return parsed;
     }, false);
   }
   /**
@@ -25901,6 +25906,8 @@ var Scheduler = class {
 // src/agy-engine.ts
 var AGY_ACP = "agy acp";
 var CANCEL_GRACE_MS = 1e4;
+var FOLLOW_UP_SETTLE_MS = 250;
+var FOLLOW_UP_SILENCE_MS = 15 * 6e4;
 var SOLE_LEVEL_SUFFIX = /-(none|minimal|low|medium|high|xhigh|max)$/;
 var AGY_AUTHENTICATION_REQUIRED = -32e3;
 var AGY_INVALID_PARAMS = -32602;
@@ -25913,6 +25920,7 @@ var AgyWorker = class _AgyWorker {
   /** This worker's session usage: a replacement worker starts its own. */
   account;
   #listener = null;
+  #exitListener;
   #stop = null;
   constructor(client, session, effort, account, route) {
     this.client = client;
@@ -25920,6 +25928,7 @@ var AgyWorker = class _AgyWorker {
     this.effort = effort;
     this.account = account;
     route(this);
+    void client.exited.then((exit) => this.#exitListener?.(exit));
   }
   /**
    * Start the server, open the session and apply the model and level.
@@ -25970,9 +25979,10 @@ var AgyWorker = class _AgyWorker {
   get model() {
     return this.session.model?.current ?? null;
   }
-  /** Receives this worker's updates; one turn listens at a time. */
-  listen(listener) {
+  /** Receives this worker's updates and exit; one turn listens at a time. */
+  listen(listener, onExit) {
     this.#listener = listener;
+    this.#exitListener = onExit;
   }
   /** Stops the process; every call shares the one stop. */
   close() {
@@ -26061,10 +26071,19 @@ async function readCatalogue(launch, cwd) {
     await worker.close();
   }
 }
+function trackCommand(commands, { name, toolCallId, status }) {
+  if (typeof toolCallId !== "string") return;
+  if (status === "completed" || status === "failed") {
+    commands.delete(toolCallId);
+  } else if (name === "run_command" && (status === "pending" || status === "in_progress")) {
+    commands.add(toolCallId);
+  }
+}
 async function runTurn(worker, message, timeoutMs, context) {
   const startedAt = Date.now();
   const turn = {
     ending: { kind: "lost", error: new Error("unsettled") },
+    reply: null,
     finalText: "",
     allText: "",
     startedAt,
@@ -26075,16 +26094,27 @@ async function runTurn(worker, message, timeoutMs, context) {
   };
   let stopping = null;
   let grace;
+  let settleFollowUp;
+  let silence;
   const stop = (reason) => {
     if (stopping !== null) return;
     stopping = reason;
+    clearTimeout(settleFollowUp);
+    clearTimeout(silence);
     worker.session.cancel();
     grace = setTimeout(() => {
       void worker.close();
     }, CANCEL_GRACE_MS);
   };
-  const whitespace = new WhitespaceStream(startedAt, () => stop("whitespace"));
-  const deadline = timeoutMs === void 0 ? void 0 : setTimeout(() => stop("deadline"), timeoutMs);
+  const whitespace = new WhitespaceStream(startedAt, () => stop({ kind: "whitespace" }));
+  const deadline = timeoutMs === void 0 ? void 0 : setTimeout(() => stop({ kind: "deadline" }), timeoutMs);
+  const commands = /* @__PURE__ */ new Set();
+  const resetSilence = () => {
+    clearTimeout(silence);
+    silence = setTimeout(() => stop({ kind: "background-silence", commands: [...commands] }), FOLLOW_UP_SILENCE_MS);
+  };
+  const followUp = Promise.withResolvers();
+  let waiting = false;
   let seen = false;
   worker.listen((update) => {
     turn.transcript.push(JSON.stringify({ type: "update", at: new Date(update.receivedAt).toISOString(), update: update.body }));
@@ -26094,29 +26124,54 @@ async function runTurn(worker, message, timeoutMs, context) {
     }
     const text = update.kind === "agent_message_chunk" ? acpUpdateText(update) : null;
     if (text !== null) {
+      clearTimeout(settleFollowUp);
       turn.firstDeltaAt ??= update.receivedAt;
       turn.allText += text;
       turn.finalText += text;
       whitespace.observeText(text);
     } else if (update.kind === "tool_call" || update.kind === "tool_call_update") {
+      clearTimeout(settleFollowUp);
+      trackCommand(commands, update.body);
       turn.finalText = "";
       whitespace.observeActivity();
     } else if (update.kind === "agent_thought_chunk" || update.kind === "plan") {
+      clearTimeout(settleFollowUp);
       whitespace.observeActivity();
+    } else if (waiting && stopping === null && update.kind === "usage_update" && commands.size === 0 && turn.finalText.trim().length > 0) {
+      clearTimeout(settleFollowUp);
+      settleFollowUp = setTimeout(() => followUp.resolve(null), FOLLOW_UP_SETTLE_MS);
     }
+    if (waiting && stopping === null) resetSilence();
     safely(() => context.onOutput?.());
-  });
+  }, (exit) => followUp.resolve(exit));
   try {
-    const reply = await worker.session.prompt(message);
-    turn.transcript.push(JSON.stringify({ type: "reply", at: (/* @__PURE__ */ new Date()).toISOString(), reply: reply.reply }));
-    turn.ending = stopping === null ? { kind: "replied", reply } : { kind: stopping, reply };
+    const reply = await worker.session.prompt(message, (reply2) => {
+      turn.reply = reply2;
+      turn.transcript.push(JSON.stringify({ type: "reply", at: (/* @__PURE__ */ new Date()).toISOString(), reply: reply2.reply }));
+      if (stopping === null && reply2.stopReason === "end_turn" && commands.size > 0) {
+        turn.finalText = "";
+        waiting = true;
+        resetSilence();
+      }
+    });
+    if (waiting) {
+      const exit = await followUp.promise;
+      if (exit !== null) {
+        const error = new AcpExitedError(describeExit(exit));
+        throw attachWorkerExitStatus(error, { exitCode: exit.exitCode, signal: exit.signal });
+      }
+    }
+    turn.ending = stopping ?? { kind: "replied", reply };
   } catch (error) {
-    if (stopping !== null && error instanceof AcpExitedError) {
-      turn.ending = { kind: stopping, reply: null };
+    if (error instanceof AcpProtocolError) {
+      turn.transcript.push(JSON.stringify({ type: "invalid-reply", at: (/* @__PURE__ */ new Date()).toISOString(), message: error.message }));
+    }
+    if (stopping !== null) {
+      turn.ending = stopping;
+      if (error instanceof AcpRequestError) turn.cancellationError = error;
     } else if (error instanceof AcpRequestError) {
       turn.ending = { kind: "rejected", error };
     } else if (error instanceof AcpProtocolError) {
-      turn.transcript.push(JSON.stringify({ type: "invalid-reply", at: (/* @__PURE__ */ new Date()).toISOString(), message: error.message }));
       turn.ending = { kind: "invalid-reply", error };
     } else {
       turn.ending = { kind: "lost", error: error instanceof Error ? error : new Error(String(error)) };
@@ -26124,6 +26179,8 @@ async function runTurn(worker, message, timeoutMs, context) {
   } finally {
     clearTimeout(deadline);
     clearTimeout(grace);
+    clearTimeout(settleFollowUp);
+    clearTimeout(silence);
     whitespace.clear();
     worker.listen(null);
     turn.endedAt = Date.now();
@@ -26194,8 +26251,9 @@ var AgyAccount = class {
 };
 function turnEvidence(worker, turn, context) {
   const ending = turn.ending;
-  const reply = ending.kind === "replied" || ending.kind === "deadline" || ending.kind === "whitespace" ? ending.reply : null;
+  const reply = turn.reply;
   const usageEvent = worker.account.usage(worker, reply, context);
+  const requestError = ending.kind === "rejected" ? ending.error : turn.cancellationError;
   const transcript = {
     filename: "transcript.agy.jsonl",
     format: "jsonl",
@@ -26220,7 +26278,7 @@ function turnEvidence(worker, turn, context) {
       agy: {
         session_id: worker.session.id,
         stop_reason: reply?.stopReason ?? null,
-        ...ending.kind === "rejected" ? { error: { code: ending.error.code ?? null, message: ending.error.message } } : {}
+        ...requestError !== void 0 ? { error: { code: requestError.code ?? null, message: requestError.message } } : {}
       },
       ...unestablishedStopDiagnostics(turn.stops)
     }
@@ -26240,6 +26298,14 @@ function settleTurn(evidence, turn, sessionId, timeoutMs) {
     }
     case "whitespace":
       throw attachPartialWorkerText(attachFailedTurnResult(new WhitespaceStreamError(), evidence), turn.allText);
+    case "background-silence": {
+      const waitingFor = ending.commands.length > 0 ? `background tool calls ${ending.commands.join(", ")}` : "the automatic follow-up";
+      evidence.attemptFailure = {
+        kind: "agy-background-silence",
+        message: `agy sent no session updates for ${FOLLOW_UP_SILENCE_MS / 6e4} minutes while waiting for ${waitingFor}`
+      };
+      return evidence;
+    }
     case "rejected":
       evidence.attemptFailure = ending.error.code === AGY_AUTHENTICATION_REQUIRED ? { kind: "agy-sign-in-required", message: `agy refused the prompt for want of a sign-in (run \`agy\` and sign in): ${ending.error.message}` } : { kind: "agy-prompt-error", message: ending.error.message };
       return evidence;
@@ -26258,7 +26324,10 @@ function shutdownWithEvidence(turn, evidence) {
   return attachPartialWorkerText(attachFailedTurnResult(new EngineShutdownError("agy"), evidence), turn.allText);
 }
 function delivered(turn) {
-  return turn.ending.kind === "replied" || turn.ending.kind === "invalid-reply" || turn.ending.kind === "deadline" || turn.ending.kind === "whitespace";
+  return turn.ending.kind === "replied" || turn.ending.kind === "invalid-reply" || harnessStopped(turn.ending);
+}
+function harnessStopped(ending) {
+  return ending.kind === "deadline" || ending.kind === "whitespace" || ending.kind === "background-silence";
 }
 var AgyEngineInvocation = class {
   #options;
@@ -26352,7 +26421,10 @@ var AgyWorkerSession = class {
           const exit = await worker.client.exited;
           this.#noteLost(worker, ran.ending.kind === "lost" ? ran.ending.error.message : "it did not end a cancelled turn and was stopped", exit);
           const lost = this.#lostResult();
-          return { ...evidence, attemptFailure: lost.attemptFailure, ...lost.workerExit !== void 0 ? { workerExit: lost.workerExit } : {} };
+          if (lost.workerExit !== void 0) evidence.workerExit = lost.workerExit;
+          if (!harnessStopped(ran.ending)) {
+            return { ...evidence, attemptFailure: lost.attemptFailure };
+          }
         }
         return settleTurn(evidence, ran, worker.session.id, this.#options.options.timeoutMs);
       }

@@ -85,6 +85,10 @@ version 1:
       "model": "claude-opus-5-5",
       "fallback": [{ "engine": "codex", "model": "gpt-6-astra" }]
     }
+  },
+  "fallback": {
+    "codex:gpt-6.1-sol": [{ "target": "reviewer" }],
+    "codex": [{ "engine": "claude", "model": "claude-opus-5-5" }]
   }
 }
 ```
@@ -103,6 +107,7 @@ version 1:
 | `opencode_models` | object | The models opencode workers may use |
 | `effort` | object | Machine bounds and per-model native level maps (see [effort](#effort)); no flag or environment variable |
 | `targets` | object | Your own names for an engine, with or without a model and a fallback chain |
+| `fallback` | object | Fallback chains keyed by `engine:model` or `engine` |
 
 Every numeric value must be an integer of at least 1. The file is strict: an
 unsupported `schema_version`, an unknown key, an invalid value, an unreadable
@@ -311,7 +316,7 @@ Each key is a name; the value is its binding:
 |---|---|---|
 | `engine` | Yes | `codex`, `claude` or `opencode` |
 | `model` | No | The model to dispatch. Without it, the call takes the script's `defaults` model for the bound engine, else the engine's own default, as a call that pins no model does |
-| `fallback` | No | A fallback chain, in the same form as an `agent()` call's `fallback`. An entry may name another target in this section, whose binding it takes but not its chain |
+| `fallback` | No | A fallback chain array. An entry may name another target in this section and takes only its engine and model |
 
 A name may spell an engine's name: names are their own namespace, reached only
 through `target`. A binding to an engine other than `codex`, `claude` or
@@ -325,6 +330,18 @@ The binding's chain applies only where neither the call nor the script's
 `defaults` block for the bound engine declares one. For a session, that chain
 applies only to its first turn; later turns stay on the worker that answered
 the first turn.
+
+### `fallback`
+
+Sets machine defaults for calls and session creation. Each key is an engine
+name or `engine:model` with the model from the resolved dispatch options. Each
+value is a non-empty [fallback chain](workflow-scripts.md#fallback-chains).
+Entries may name bindings in `targets`. Ensemble validates every chain when
+it reads the file, including chains the run never selects.
+
+A model-specific chain takes precedence over the engine's chain. The call,
+script defaults and named-target binding all take precedence over the map.
+Use `fallback: false` in a call or in script defaults to stop inheritance.
 
 ## Environment variables
 
@@ -450,6 +467,7 @@ These options have no flag or environment variable:
 | `openCodeModels` | None | The models opencode workers may name, in the registry entry shape; the library reads no machine configuration, so without this option every opencode call is refused |
 | `effortPolicy` | None | Machine effort policy `{ section, source }`, with the [effort](#effort) section and the file it came from; pass it explicitly because the library reads no machine configuration |
 | `namedTargets` | None | The names calls may give as `target`: `{ bindings, source }`, where `bindings` is the `targets` map and `source` the file it came from, which every refusal names. Without it, every named target is refused as unbound |
+| `machineFallback` | None | `{ chains, source }`, where `chains` has the shape of the machine `fallback` map and `source` names its source in validation errors |
 | `openCodeModelSource` | `{ kind: "caller" }` | Where `openCodeModels` were declared: `{ kind: "machine-config", file }` for models taken from a machine configuration file, `{ kind: "caller" }` otherwise. An opencode refusal draws on it to say where models are declared |
 
 `firstOutputTimeoutMs` is satisfied by any output-bearing turn frame, not only

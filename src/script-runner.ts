@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import * as acorn from "acorn";
 import detectGlobals from "acorn-globals";
 
-import { assertValidFallbackChain, validateEngineDefaults } from "./engine-option-validation.js";
+import { assertValidFallbackOption, validateEngineDefaults } from "./engine-option-validation.js";
 import { AgentOptionRejectedError, EnsembleError, PreSpawnAuthorError, WorkflowScriptReadError } from "./errors.js";
 
 import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
@@ -231,7 +231,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   // static declaration naming an unbound target, or a target beside a
   // literal engine or model, fails before the body runs.
   for (const [engine, block] of Object.entries(defaults ?? {})) {
-    if (block?.fallback === undefined || options.runtime.settleFallbackChain === undefined) continue;
+    if (!block?.fallback || options.runtime.settleFallbackChain === undefined) continue;
     try {
       options.runtime.settleFallbackChain(block.fallback);
     } catch (error) {
@@ -558,7 +558,7 @@ function validateWorkflowDefaults(value: unknown, openCodeModelRegistry?: OpenCo
         // The chain is judged by the same validator every call site uses,
         // so a static declaration fails before the body runs with the
         // same wording a call-site chain would.
-        assertValidFallbackChain(optionValue);
+        assertValidFallbackOption(optionValue);
         if (optionValue !== undefined) {
           engineDefaults.fallback = optionValue;
         }

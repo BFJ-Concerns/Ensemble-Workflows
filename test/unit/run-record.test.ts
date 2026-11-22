@@ -261,6 +261,7 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
   assert.equal(manifest.schema_version, 7);
   assert.equal(manifest.kind, "run_manifest");
   assert.equal(manifest.caller_identity, "session:run-record-test");
+  assert.equal(manifest.machine_fallback, null);
   assert.equal(agent.schema_version, 7);
   assert.equal(agent.kind, "agent_record");
   assert.equal(agent.header_identity, "original_request");

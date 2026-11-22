@@ -15,6 +15,7 @@ import { createRuntime, EnsembleRuntime } from "../../src/runtime.js";
 import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
 import type { EngineAttemptResult, EngineTurnOptions, EngineWorkerSession } from "../../src/engines.js";
+import type { FallbackMap } from "../../src/fallback-source.js";
 import type { WorkflowDefaults } from "../../src/hooks.js";
 import type { NamedTargetBinding, NamedTargets } from "../../src/named-targets.js";
 import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
@@ -29,7 +30,8 @@ function answer(text: string): () => Promise<EngineAttemptResult> {
 /** A runtime over scripted Codex and Claude engines, keeping every record it writes. */
 function recordingRuntime(
   bindings: NamedTargets["bindings"] | null,
-  steps: { codex?: number; claude?: Array<() => Promise<EngineAttemptResult>> } = {}
+  steps: { codex?: number; claude?: Array<() => Promise<EngineAttemptResult>> } = {},
+  fallback?: FallbackMap
 ): { runtime: EnsembleRuntime; codex: ChainEngine; claude: ChainEngine; records: RuntimeAgentRecord[] } {
   const codex = new ChainEngine("codex", Array.from({ length: steps.codex ?? 4 }, (_, index) => answer(`codex ${index + 1}`)));
   const claude = new ChainEngine("claude", steps.claude ?? Array.from({ length: 4 }, (_, index) => answer(`claude ${index + 1}`)));
@@ -38,7 +40,8 @@ function recordingRuntime(
     engines: new EngineRegistry([codex, claude]),
     cwd: "/fake/repo",
     defaultMaxAttempts: 1,
-    ...(bindings !== null ? { namedTargets: { bindings, source: SOURCE } } : {})
+    ...(bindings !== null ? { namedTargets: { bindings, source: SOURCE } } : {}),
+    ...(fallback !== undefined ? { machineFallback: { chains: fallback, source: SOURCE } } : {})
   });
   runtime.setRunRecorder({
     recordAttemptStart: async () => {},
@@ -157,6 +160,62 @@ test("a binding's chain applies only where neither the call nor the resolved eng
   } finally {
     await runtime.close();
   }
+});
+
+test("call, defaults and binding policy take precedence over the machine fallback map", async (t) => {
+  const bindingChain = [{ engine: "codex", model: "binding-backup" }] satisfies FallbackMap[string];
+  const modelChain = [{ target: "backup" }];
+  const engineChain = [{ engine: "codex", model: "engine-backup" }] satisfies FallbackMap[string];
+  const { runtime, records, codex } = recordingRuntime({
+    reviewer: { engine: "claude" },
+    pinned: { engine: "claude", fallback: bindingChain },
+    backup: { engine: "codex", model: "model-backup" }
+  }, { claude: [claudeRefusal(429, "rate_limit_error"), ...Array.from({ length: 6 }, () => answer("primary"))] },
+  { "claude:primary": modelChain, claude: engineChain });
+  t.after(() => runtime.close());
+
+  const hooks = hooksFor(runtime, { claude: { model: "primary" } });
+  assert.equal(await hooks.agent("review", { target: "reviewer", label: "model" }), "codex 1");
+  assert.deepEqual(codex.dispatches.map(({ model }) => model), ["model-backup"]);
+  assert.deepEqual(settled(records, "model").fallback, modelChain);
+  assert.deepEqual(settled(records, "model").fallbackSource, { kind: "map", key: "claude:primary" });
+
+  await runtime.agent("unpinned", { engine: "claude", label: "engine" });
+  assert.deepEqual(settled(records, "engine").fallback, engineChain);
+  assert.deepEqual(settled(records, "engine").fallbackSource, { kind: "map", key: "claude" });
+
+  await hooks.agent("binding", { target: "pinned", label: "binding" });
+  assert.deepEqual(settled(records, "binding").fallback, bindingChain);
+  assert.deepEqual(settled(records, "binding").fallbackSource, { kind: "target", target: "pinned" });
+
+  const withDefaults = hooksFor(runtime, { claude: { model: "primary", fallback: engineChain } });
+  await withDefaults.agent("defaults", { target: "pinned", label: "defaults" });
+  assert.deepEqual(settled(records, "defaults").fallbackSource, { kind: "defaults", engine: "claude" });
+  const optOut = { target: "pinned", label: "call-off" };
+  Object.defineProperty(optOut, "fallback", { value: false });
+  await withDefaults.agent("opt out", optOut);
+  assert.equal(settled(records, "call-off").fallback, null);
+  assert.deepEqual(settled(records, "call-off").fallbackSource, { kind: "switched-off", by: "call" });
+
+  const switchedOff = hooksFor(runtime, { claude: { model: "primary", fallback: false } });
+  await switchedOff.agent("opt out", { target: "pinned", label: "defaults-off" });
+  assert.equal(settled(records, "defaults-off").fallback, null);
+  assert.deepEqual(settled(records, "defaults-off").fallbackSource, { kind: "switched-off", by: "defaults", engine: "claude" });
+  await switchedOff.agent("call wins", { target: "pinned", label: "call", fallback: modelChain });
+  assert.deepEqual(settled(records, "call").fallback, modelChain);
+  assert.deepEqual(settled(records, "call").fallbackSource, { kind: "call" });
+});
+
+test("dispatch lookup checks machine chain entries unless fallback is switched off", async (t) => {
+  const { runtime, codex, claude } = recordingRuntime(null, {}, {
+    "codex:primary": [{ engine: "claude", model: "backup" }]
+  });
+  t.after(() => runtime.close());
+  Object.assign(codex, { capabilities: { skills: { route: "absent", detail: "test engine has no skills" } } });
+  const hooks = hooksFor(runtime, { codex: { model: "primary" } });
+  assert.throws(() => hooks.lookupDispatch({ engine: "codex", strip: ["skills"] }), /claude.*skills|skills.*claude/);
+  assert.equal(hooks.lookupDispatch({ engine: "codex", strip: ["skills"], fallback: false }).model, "primary");
+  assert.equal(codex.dispatches.length + claude.dispatches.length, 0);
 });
 
 test("an attempt on a binding's chain entry names no target; the refused own target names it", async () => {
@@ -314,8 +373,9 @@ class TargetSessionEngine extends ChainEngine {
   }
 }
 
-for (const fallback of [false, true]) {
-  test(`a target session keeps defaults and per-turn target records${fallback ? " after its binding's first-turn fallback" : " without fallback"}`, async () => {
+for (const source of ["binding", "map", "off"] as const) {
+  test(`a target session keeps per-turn records with fallback policy from ${source}`, async () => {
+    const fallback = source !== "off";
     const claude = new TargetSessionEngine("claude", fallback
       ? [claudeRefusal(429, "rate_limit_error")]
       : [answer("first"), claudeRefusal(429, "rate_limit_error"), answer("third")]);
@@ -328,7 +388,11 @@ for (const fallback of [false, true]) {
       engines: new EngineRegistry([claude, codex]),
       cwd: "/fake/repo",
       defaultMaxAttempts: 1,
-      namedTargets: { bindings: { reviewer: { engine: "claude", fallback: chain }, backup: { engine: "codex" } }, source: SOURCE }
+      namedTargets: { bindings: {
+        reviewer: { engine: "claude", ...(source === "binding" ? { fallback: chain } : {}) },
+        backup: { engine: "codex" }
+      }, source: SOURCE },
+      machineFallback: { chains: { "claude:primary-default": chain }, source: SOURCE }
     });
     runtime.setRunRecorder({
       recordAttemptStart: async () => {},
@@ -337,7 +401,7 @@ for (const fallback of [false, true]) {
     } as unknown as RunRecordWriter);
     const declared: WorkerSessionOptions = { target: "reviewer", label: "held" };
     const session = hooksFor(runtime, {
-      claude: { model: "primary-default", effort: "high" },
+      claude: { model: "primary-default", effort: "high", ...(source === "off" ? { fallback: false } : {}) },
       codex: { model: "backup-default" }
     }).session(declared);
     try {
@@ -353,8 +417,11 @@ for (const fallback of [false, true]) {
       assert.deepEqual(turns.map((record) => record.model), fallback
         ? ["primary-default", "backup-default", "backup-default"]
         : ["primary-default", "primary-default", "primary-default"]);
-      assert.deepEqual(turns.map((record) => record.fallback), [chain, null, null]);
-      assert.deepEqual(turns[0]!.fallbackSource, { kind: "target", target: "reviewer" });
+      assert.deepEqual(turns.map((record) => record.fallback), [fallback ? chain : null, null, null]);
+      const firstSource = source === "binding" ? { kind: "target", target: "reviewer" }
+        : source === "map" ? { kind: "map", key: "claude:primary-default" }
+        : { kind: "switched-off", by: "defaults", engine: "claude" };
+      assert.deepEqual(turns.map((record) => record.fallbackSource), [firstSource, { kind: "later-turn" }, { kind: "later-turn" }]);
       assert.deepEqual(turns.map((record) => record.attempts.map((attempt) => attempt.namedTarget)), fallback
         ? [["reviewer", "backup"], ["backup"], ["backup"]]
         : [["reviewer"], ["reviewer"], ["reviewer"]]);
@@ -475,6 +542,35 @@ test("machine and library targets share validation before workers start", async 
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("machine fallback validates all map keys and entries before dispatch", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-machine-fallback-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configFile = path.join(directory, "ensemble", "config.json");
+  await mkdir(path.dirname(configFile));
+  const targets = { backup: { engine: "claude" } };
+  const read = async (fallback: unknown) => {
+    await writeFile(configFile, JSON.stringify({ schema_version: 1, targets, fallback }));
+    return resolveAmbientSettings({ env: { XDG_CONFIG_HOME: directory }, cwd: directory });
+  };
+
+  const chains = { "opencode:provider/model:variant": [{ target: "backup" }], codex: [{ engine: "claude", model: "backup" }] };
+  assert.deepEqual((await read(chains)).machineFallback, { chains, source: configFile });
+  for (const [key, chain, reason] of [
+    ["*", chains.codex, "key must name an engine or engine:model"],
+    ["codex:", chains.codex, "key must name an engine or engine:model"],
+    ["codex", false, "the chain must be an array"],
+    ["codex", [], "the chain must not be empty"],
+    ["codex", [{ target: "missing" }], 'names target "missing", which this file does not bind']
+  ] as const) {
+    await assert.rejects(read({ [key]: chain }), (error) => {
+      assert.ok(error instanceof Error);
+      assert.ok(error.message.includes(`fallback.${key} in ${configFile}`));
+      assert.ok(error.message.includes(reason));
+      return true;
+    });
   }
 });
 

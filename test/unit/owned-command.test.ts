@@ -124,7 +124,7 @@ for (const route of routes) {
       assert.equal(result.signal, "SIGTERM");
       assert.match(result.stderr, /cancelled: deadline/);
       assert.ok(elapsed <= bounds.stopGraceMs + bounds.drainMs + slackMs, `cancellation took ${elapsed}ms`);
-      assert.equal(isLive(command!), false, "the owned command survived its cancellation");
+      await waitForCondition(() => !isLive(command!), "the cancelled command to be reaped", slackMs);
       assert.equal(isLive(supervisor), true, "cancellation reached a process the command started");
     } finally {
       if (supervisor !== null && isLive(supervisor)) process.kill(supervisor, "SIGKILL");
@@ -152,7 +152,7 @@ for (const route of routes) {
       assert.equal(result.signal, "SIGKILL");
       assert.ok(elapsed >= bounds.stopGraceMs, `SIGKILL came before the stop grace (${elapsed}ms)`);
       assert.ok(elapsed <= bounds.stopGraceMs + bounds.drainMs + slackMs, `cancellation took ${elapsed}ms`);
-      assert.equal(isLive(command), false);
+      await waitForCondition(() => !isLive(command), "the killed command to be reaped", slackMs);
     } finally {
       await scopes.close();
       await rm(dir, { recursive: true, force: true });

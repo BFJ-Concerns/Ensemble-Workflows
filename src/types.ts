@@ -10,7 +10,7 @@ import type { OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode
 export type JsonObject = Record<string, unknown>;
 export type JsonSchema = JsonObject;
 
-export type EngineName = "codex" | "claude" | "opencode" | "agy";
+export type EngineName = "codex" | "claude" | "opencode" | "agy" | "zcode";
 export type IsolationMode = "worktree";
 export type TokenAccountingMode = "last-delta" | "total-cumulative";
 export type EngineBudgetCeilings = Partial<Record<EngineName, number | null>>;
@@ -302,6 +302,14 @@ export interface RuntimeOptions {
    * library-only seam as `claudeSessionStaleAfterMs`. Defaults to 5 minutes.
    */
   agySessionStaleAfterMs?: number;
+  /**
+   * Idle gap, per zcode provider, after which a zcode multi-turn worker on
+   * that provider's model reads stale. A provider absent here leaves its
+   * workers unmarked: each provider keeps its own prompt cache, and none
+   * is assumed. The CLI passes the machine configuration's
+   * `zcode_providers` thresholds; a library caller passes its own.
+   */
+  zcodeSessionStaleAfterMs?: Readonly<Record<string, number>>;
   /**
    * Machine-declared per-engine worker environment (the config file's
    * `worker_environment` section). Injected values override inherited ones

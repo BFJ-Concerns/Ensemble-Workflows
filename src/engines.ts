@@ -28,6 +28,7 @@ import {
 } from "./errors.js";
 import { AgyEngineAdapter } from "./agy-engine.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation } from "./opencode-engine.js";
+import { ZCodeCliRunner, ZCodeEngineAdapter } from "./zcode-engine.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 import { createOpenCodeModelRegistry, defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
@@ -138,7 +139,9 @@ export interface EngineAttemptFailure {
     | "agy-sign-in-required"
     | "agy-prompt-error"
     | "agy-invalid-prompt-reply"
-    | "agy-worker-lost";
+    | "agy-worker-lost"
+    | "zcode-run-error"
+    | "zcode-worker-lost";
   message: string;
 }
 
@@ -1045,6 +1048,7 @@ export interface CreateDefaultEngineRegistryOptions {
   cwd: string;
   codexBin: string;
   openCodeBin?: string;
+  zcodeBin?: string;
   requestTimeoutMs: number;
   retryPromiseSilenceTimeoutMs?: number;
   firstOutputTimeoutMs?: number;
@@ -1073,6 +1077,7 @@ export interface CreateDefaultEngineRegistryOptions {
   onClaudeEvent: (event: RuntimeEvent) => void;
   onOpenCodeEvent: (event: RuntimeEvent) => void;
   onAgyEvent: (event: RuntimeEvent) => void;
+  onZCodeEvent: (event: RuntimeEvent) => void;
 }
 
 export async function createDefaultEngineRegistry(
@@ -1147,6 +1152,15 @@ export async function createDefaultEngineRegistry(
         ...(options.workerEnvironment?.agy !== undefined ? { workerEnv: options.workerEnvironment.agy } : {}),
         ...(options.concurrencyCaps?.agy !== undefined ? { concurrency: options.concurrencyCaps.agy } : {}),
         onEvent: options.onAgyEvent
+      }),
+      new ZCodeEngineAdapter({
+        cwd: options.cwd,
+        runner: new ZCodeCliRunner(options.zcodeBin, {
+          commands: workerCommands,
+          ...(options.workerEnvironment?.zcode !== undefined ? { workerEnv: options.workerEnvironment.zcode } : {})
+        }),
+        ...(options.concurrencyCaps?.zcode !== undefined ? { concurrency: options.concurrencyCaps.zcode } : {}),
+        onEvent: options.onZCodeEvent
       })
     ],
     // Commands before scopes: a command's scope is one of the manager's, and
@@ -1154,7 +1168,7 @@ export async function createDefaultEngineRegistry(
     // containment names the command and judges how it was stopped.
     [workerCommands, ...(ownsScopes ? [workerScopes] : [])],
     // The Codex app-server is shared and starts in the run base; Claude,
-    // opencode and agy launch a process in each invocation's placement.
+    // opencode, agy and zcode launch a process in each invocation's placement.
     (engine, cwd) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], engine === "codex" ? options.cwd : cwd)
   );
 }
@@ -1216,5 +1230,6 @@ export {
   defaultAgyConcurrency,
   defaultClaudeConcurrency,
   defaultCodexConcurrency,
-  defaultOpenCodeConcurrency
+  defaultOpenCodeConcurrency,
+  defaultZCodeConcurrency
 } from "./concurrency-defaults.js";

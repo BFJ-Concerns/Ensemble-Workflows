@@ -539,9 +539,9 @@ function validateWorkflowDefaults(value: unknown, openCodeModelRegistry?: OpenCo
   }
   const defaults: WorkflowDefaults = {};
   for (const [engine, engineValue] of Object.entries(value)) {
-    if (engine !== "codex" && engine !== "claude" && engine !== "opencode" && engine !== "agy") {
+    if (engine !== "codex" && engine !== "claude" && engine !== "opencode" && engine !== "agy" && engine !== "zcode") {
       throw new WorkflowScriptError(
-        `Workflow defaults key ${JSON.stringify(engine)} is not an engine; expected codex, claude, opencode, or agy`
+        `Workflow defaults key ${JSON.stringify(engine)} is not an engine; expected codex, claude, opencode, agy, or zcode`
       );
     }
     if (typeof engineValue !== "object" || engineValue === null || Array.isArray(engineValue)) {

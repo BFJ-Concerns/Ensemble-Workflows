@@ -82,8 +82,8 @@ constrain what a worker does, not what it can do.
 ### `agent()`
 
 `agent(prompt, options)` runs one worker on `options.engine` — `"codex"`,
-`"claude"`, `"opencode"`, or `"agy"` (Google's Antigravity CLI) — or on the
-engine a named target binds
+`"claude"`, `"opencode"`, `"agy"` (Google's Antigravity CLI), or `"zcode"` —
+or on the engine a named target binds
 (`options.target`, see [Named targets](#named-targets)). There is no default
 engine. The prompt must be a non-empty string.
 
@@ -99,7 +99,7 @@ See [Failures](#failures). A Claude call with no `model` is flagged on stderr.
 
 `fallback` declares an ordered chain of other targets for a call —
 `[{ engine, model, effort? }, …]`, with each entry naming a Codex, Claude,
-opencode or agy target, or `{ target, effort? }` naming a
+opencode, agy or zcode target, or `{ target, effort? }` naming a
 [named target](#named-targets). A named entry
 takes its binding's engine and model — never the binding's own chain — and a
 binding without a model takes the script's `defaults` model for that engine,
@@ -272,7 +272,7 @@ For a literal call, `lookupDispatch({ engine: "claude" })` reports the
 model a Claude request would dispatch to. A lookup for an unbound `target`
 answers `bound: false`. Any other option the call would refuse before spawning — a
 `target` beside an `engine` or `model`, a missing or unknown engine, an
-opencode call with no model, a fallback entry naming an unbound target, a
+opencode or zcode call with no model, a fallback entry naming an unbound target, a
 `strip` or `lean` a target cannot honour, a schema that cannot compile, or
 a `cwd` that is not an existing directory — throws the same error from the
 lookup, judged on the whole fallback chain in force as well as the first
@@ -366,8 +366,8 @@ else the one the call asked for, else `null`; `family` is the
 
 A model family is the group a model belongs to by the name it commonly goes
 by. It belongs to the model, never to the engine: a Claude model is in the
-`claude` family whether Claude Code, agy, opencode or a gateway behind Codex
-runs it. The dispatch lookup, an identified call's `answeredBy` and the run's
+`claude` family whether Claude Code, agy, opencode, zcode or a gateway behind
+Codex runs it. The dispatch lookup, an identified call's `answeredBy` and the run's
 [single-family notice](configuration.md#single_family_notice) all report the
 same family.
 
@@ -463,6 +463,10 @@ ceiling, counts every token class an engine reports, cached input included:
   plus any total a step reports without a breakdown.
 - **agy** uses the `totalTokens` reported in each turn's
   `session/prompt` reply.
+- **zcode** counts the run's own `totalTokens`: input, which includes cached
+  input, plus output, which includes reasoning. Each model request's usage
+  is counted as the request completes, and the run's closing result settles
+  the attempt's total.
 
 Set a Claude ceiling with that in mind. The run record's
 [token usage](run-records.md#token-usage-and-cost) shows each class
@@ -497,7 +501,7 @@ the parsed value of `--json-args` (a JSON `null` arrives as an empty array).
 
 ## `agent()` options
 
-`engine` is required — `"codex"`, `"claude"`, `"opencode"`, or `"agy"` — unless
+`engine` is required — `"codex"`, `"claude"`, `"opencode"`, `"agy"`, or `"zcode"` — unless
 `target` names a binding instead. A call with neither, or with an unknown
 engine, throws before any worker spawns.
 
@@ -533,16 +537,16 @@ lists the accepted type names, and invalid `properties` asks for a JSON object.
 
 ### Per-engine behaviour
 
-| | Codex | Claude | opencode | agy |
-|---|---|---|---|---|
-| `model` | Optional; without one the engine's default is used and noted on stderr | Optional; without one a warning is printed on stderr | **Required**: a key or route declared in [`opencode_models`](configuration.md#opencode_models) | Optional: a base name agy lists (`gemini-4-hydrogen`, not `gemini-4-hydrogen-low`); without one, agy's own default |
-| `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` | Resolved per model against the levels agy lists for it, then set as the session's thought level |
-| `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
-| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess | Cancels the turn, including any background follow-up. If agy gives no prompt reply within ten seconds, Ensemble stops the worker |
-| `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Enforced through permission deny rules | Not supported: throws before the worker spawns |
-| `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Isolated configuration with provider settings and permissions | Not supported: throws before the worker spawns |
-| `fallback` entry | Yes | Yes | Yes, for one-shot calls | Yes |
-| `session()` | Yes | Yes | No: throws before the worker spawns | Yes |
+| | Codex | Claude | opencode | agy | zcode |
+|---|---|---|---|---|---|
+| `model` | Optional; without one the engine's default is used and noted on stderr | Optional; without one a warning is printed on stderr | **Required**: a key or route declared in [`opencode_models`](configuration.md#opencode_models) | Optional: a base name agy lists (`gemini-4-hydrogen`, not `gemini-4-hydrogen-low`); without one, agy's own default | **Required**: a provider and one of its models as `zcode models` lists them, spelt `provider/model` (see [zcode](#zcode)) |
+| `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` | Resolved per model against the levels agy lists for it, then set as the session's thought level | Resolved per model against the reasoning levels zcode lists for it |
+| `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
+| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess | Cancels the turn, including any background follow-up. If agy gives no prompt reply within ten seconds, Ensemble stops the worker | Kills the subprocess |
+| `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Enforced through permission deny rules | Not supported: throws before the worker spawns | Enforced by withholding zcode's tools for the run |
+| `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Isolated configuration with provider settings and permissions | Not supported: throws before the worker spawns | Not supported: throws before the worker spawns |
+| `fallback` entry | Yes | Yes | Yes, for one-shot calls | Yes | Yes |
+| `session()` | Yes | Yes | No: throws before the worker spawns | Yes | Yes |
 
 Effort resolves for each dispatch target, including a fallback entry and a
 held session's first turn. Capability discovery passes the engine's resource
@@ -564,31 +568,90 @@ opencode reports no served model, so its `resolved_model` is the configured
 `provider_model`. agy reports the model and thought level its session is set
 to; a model with a single level offers no level setting, and its
 `resolved_effort` is that level where the model's name spells it
-(`gpt-oss-120b-medium`) and `null` otherwise.
+(`gpt-oss-120b-medium`) and `null` otherwise. zcode names the provider and
+model each model request went to, recorded as `provider/model`, and its
+`resolved_effort` is the level a request reports as effective, `null` while
+every request reports it as `unknown`.
 
 Codex supports only a subset of JSON Schema for backend enforcement. A schema
 outside that subset is rejected before generation: the call returns `null`
 after one thread start, without retrying or advancing a fallback chain, and
-the error names `claude`, `opencode` and `agy` as engines that check the full
-JSON Schema themselves.
+the error names `claude`, `opencode`, `agy` and `zcode` as engines that check
+the full JSON Schema themselves.
 
-On Claude, opencode and agy, the worker is asked for a conforming JSON value and
+On Claude, opencode, agy and zcode, the worker is asked for a conforming JSON value and
 may surround it with prose or a Markdown fence. A candidate value is the whole
 reply, any balanced `{…}` or `[…]` region in it, or a line holding nothing but
 one JSON scalar (`null`, `false`, `0`, `""`, fenced or not); a scalar
 mentioned mid-sentence is prose. When a reply offers more than one candidate,
 the last one that validates is the answer.
 
+### zcode
+
+The `zcode` engine drives a ZCode that can be told one run's provider, model
+and reasoning level (`--provider`, `--model`, `--reasoning-level`) and that
+prints its model listing (`zcode models`). Upstream ZCode, as of 0.17.1,
+does neither, so the engine needs a ZCode built with both. Before its first dispatch in a run,
+Ensemble reads `zcode --help` and `zcode models`; a ZCode that cannot be run
+or lacks either ability is refused before any worker spawns
+(`ZCodeSubstrateRefusedError`), the error naming what it lacks. The refusal
+is an availability failure, so a remaining fallback entry runs instead.
+
+- `model` names a provider and one of its models as `zcode models` lists
+  them, spelt `provider/model` and split at the first `/`:
+  `gateway/claude-opus-5-5[1m]`, `nanogpt/z-ai/glm-5.3-flash`. zcode, not
+  Ensemble, refuses a name it does not list; a model naming no provider is
+  refused before the worker spawns. Ensemble keeps no list of zcode models.
+- `effort` clamps to the levels zcode lists for the model, keeping only
+  canonical levels (a gateway's `ultra` is left out). The listing outranks
+  Ensemble's built-in table, whose rows describe what other routes serve
+  (Codex serves `none` on `gpt-6-luna`; the gateway, through zcode, does
+  not); only a machine `levels` map for the `zcode:provider/model` key
+  outranks the listing. A call with no
+  `effort` runs at the model's highest canonical listed level, zcode's own
+  choice for a model picked without one; a model listing only `disabled` and
+  `enabled` runs at the last of those. Where the listing lacks the model,
+  because its provider did not answer, the call is sent at `medium`; if the
+  model does not serve that level, zcode refuses before any request, naming
+  the levels it does, and the call runs at zcode's own choice among those
+  without spending an attempt.
+- Each attempt is one headless run, `zcode --prompt=<text> --output-format
+  stream-json`, in the worker's `cwd`. zcode takes a prompt only as that one
+  command-line argument, which Linux bounds at 128 KiB, so a longer prompt
+  (with the worker preamble, any schema and room for a retry's correction,
+  which repeats at most 2000 characters of the failure's message)
+  is refused before the worker spawns (`AgentPromptRejectedError`), the error
+  naming the limit. A held worker's later turns resume
+  the ZCode session its first run created (`--resume`); if zcode no longer
+  finds that session, the session is lost.
+- zcode closes every run it handles with a `result` line, so a run whose
+  process ends without one — killed, or crashed — is a dead worker: an
+  availability failure that advances a remaining fallback entry.
+- zcode prints its listing and exits 1 when one provider's listing fails (a
+  NanoGPT listing that timed out, say); that listing still serves, and serves
+  the rest of the run: Ensemble reads the listing once per run, so a provider
+  that did not answer costs that wait once.
+- A `zcode` or `opencode` command that cannot be started (its executable
+  gone or not executable, or the system refusing the spawn) is refused as
+  its substrate (`SubstrateRefusedError`): an availability failure that
+  spends no attempt and advances a remaining fallback entry.
+- zcode finds its settings, providers and sessions under `.zcode` in
+  `ZCODE_DATA_BASE_DIR`, else the home directory; declare either in the
+  [worker environment](configuration.md#worker_environment) to move them.
+
 ### Permissions and `strip`
 
 Every worker runs unrestricted: it can read and write anywhere the user
 running Ensemble can, and can reach the network. Codex workers are given this
 full-access mode explicitly on every turn, and Ensemble does not turn off
-Codex's backend web search; Claude, opencode and agy workers run without any
-containment from Ensemble.
+Codex's backend web search; Claude, opencode, agy and zcode workers run
+without any containment from Ensemble. zcode runs a headless prompt in its
+own `yolo` permission mode, which approves every tool call.
 
 Ensemble starts opencode with `--auto`, approving permissions that opencode
 would otherwise ask about, including shell access outside the worker's cwd.
+A prompt too long for one command-line argument (128 KiB on Linux) reaches
+opencode on its standard input instead.
 Explicit denies in the operator's opencode configuration still apply.
 
 agy asks its client to approve every tool call, and Ensemble grants each one,
@@ -655,6 +718,12 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   takes a `DisableBuiltInTools` setting, read from agy 1.5.14 and never
   driven, so no route that withholds its skills or subagent tools has been
   established.
+- **zcode** withholds whole tools for the run with `--disallowed-tools`: a
+  `skills` strip withholds the `Skill` tool, an `agents` strip the `Agent`
+  subagent tool and the `CreateWorkflow` dynamic-workflow tool. A withheld
+  tool is not offered to the model; on zcode 0.17.1 a run's offered tool
+  count fell from 47 to 45 with `Skill` and `Agent` withheld. A stripped
+  worker's shell can still run `zcode` itself.
 
 Each agent record lists the requested strips and how each was enforced.
 
@@ -683,8 +752,8 @@ call cannot lift a run-wide `--lean` by setting `lean: false`.
   Ensemble removes the private profile when the worker ends. A later opencode
   dispatch also removes profiles in the same temporary directory whose
   recorded launcher can be proved gone.
-- **Codex** and **agy** refuse lean requests before the first dispatch, whether
-  it is the initial target or a fallback entry.
+- **Codex**, **agy** and **zcode** refuse lean requests before the first dispatch,
+  whether it is the initial target or a fallback entry.
 
 Each agent record carries `lean` naming the route the dispatching engine
 used, or `null` when no lean start was requested.
@@ -755,7 +824,7 @@ cannot pass silently:
 - Errors raised before a worker exists: an invalid option, a placement that
   could not be opened, an engine refusing the dispatch itself
   (`ClaudeDispatchError`, `CodexSubstrateRefusedError`,
-  `AgySubstrateRefusedError`), a strip that cannot
+   `AgySubstrateRefusedError`, `ZCodeSubstrateRefusedError`), a strip that cannot
   be enforced, or a budget refusal (`BudgetExceededError`). A budget refusal
   propagates through `parallel()` and `pipeline()` too, including a refused
   session turn; if uncaught, the run fails and the manifest and completion
@@ -765,8 +834,10 @@ cannot pass silently:
   Codex's `CODEX_HOME` (else `$HOME/.codex`); Claude's `CLAUDE_CONFIG_DIR`
   (else `$HOME/.claude`), global configuration and daemon sockets;
   opencode's data, configuration, state and cache homes under the matching
-  `XDG_*_HOME` variables, plus its temporary directory; and agy's
-  `$HOME/.gemini/antigravity-cli`. Claude's dispatch
+   `XDG_*_HOME` variables, plus its temporary directory; agy's
+   `$HOME/.gemini/antigravity-cli`; and zcode's `.zcode` under
+   `ZCODE_DATA_BASE_DIR` (else `$HOME/.zcode`), plus its temporary
+   directory. Claude's dispatch
   settings scratch files use the launcher's `TMPDIR` (then `TMP`, `TEMP`,
   `/tmp`), and reply valve sockets use its `TMUX_TMPDIR` (else `/tmp`),
   independently of worker overrides. Claude's own scratch files use
@@ -929,9 +1000,10 @@ a fresh session if the worker has stopped or tmux is unavailable for the
 correction. A held worker's turn fails with `ClaudeValveError` if tmux is
 unavailable for the correction. Opening delivery also requires tmux.
 
-Codex, opencode and one-shot agy calls retry with the failure appended to
-the prompt. A held agy session corrects in place while its worker lives
-(see [agy workers](#agy-workers)).
+Codex, opencode and one-shot agy and zcode calls retry with the failure
+appended to the prompt. A held agy session corrects in place while its worker
+lives (see [agy workers](#agy-workers)); a held zcode worker corrects in its
+resumed session.
 
 An opencode model absent from the machine registry, a missing model, or an
 unsupported registry variant is refused before worker admission: the call
@@ -943,30 +1015,34 @@ exhausted, the call throws `AgySubstrateRefusedError`. An uncaught refusal
 fails the run. If agy refuses a prompt for lack of sign-in, it records
 `agy-sign-in-required` and the usual attempt bound applies when the chain
 is exhausted. Both errors carry agy's diagnostic and direct the operator
-to sign in through `agy`. Codex, Claude and opencode record
+to sign in through `agy`. Codex, Claude, opencode and zcode record
 `authentication-failure`, the engine's diagnostic and a sign-in step
-(`codex login`, `claude auth login` or `opencode auth login`). Their credential
-failures follow the usual attempt bound when the chain is exhausted.
+(`codex login`, `claude auth login`, `opencode auth login`, or configuring
+the provider's credentials in ZCode). Their credential failures follow the
+usual attempt bound when the chain is exhausted.
 A malformed agy prompt reply is an output failure and stays on the current
 chain entry. An explicit provider HTTP 401 identifies an authentication
 failure even when Codex's retry-promise bound ends the turn. A dead or unstartable substrate retains its
 own availability rule if its diagnostic merely quotes a credential error.
-Codex `modelNotFound` errors record `model-not-found` with a hint to choose an
-available model and retain the normal attempt bound.
+Codex `modelNotFound` errors, and zcode's refusal of a provider or model its
+listing lacks, record `model-not-found` with a hint to choose an available
+model and retain the normal attempt bound. zcode's refusal of a reasoning
+level it does not hold for the model settles the call like any provider
+refusal of a level.
 
 Operational failures — a Claude session that never registered or died, a
-transcript that could not be read, an opencode subprocess killed at its
-deadline or exiting non-zero, a Codex turn deadline, first-output deadline, or
+transcript that could not be read, an opencode or zcode subprocess killed at
+its deadline or exiting non-zero, a Codex turn deadline, first-output deadline, or
 failed thread — are failed attempts like any other. They consume an attempt
 and keep the worker's partial text, exit status, and the engine's diagnostic
 on the attempt record. A call whose deadline should end it outright sets
 `maxAttempts: 1`.
 
-Opencode commands enter the run's containment before they can start
-descendants. Cancellation, an attempt deadline, and the command's own exit
-stop that command's process tree, including shell commands that start
-another session or become reparented. Stop uses SIGTERM, a two-second grace,
-then SIGKILL with three seconds to confirm the containment is empty. Output
+Opencode and zcode commands enter the run's containment before they can
+start descendants. Cancellation, an attempt deadline, and the command's
+own exit stop that command's process tree, including shell commands that
+start another session or become reparented. Stop uses SIGTERM, a two-second
+grace, then SIGKILL with three seconds to confirm the containment is empty. Output
 pipes drain for at most one further second after the stop attempt; a descendant
 holding a pipe cannot indefinitely delay the run's teardown report.
 
@@ -1081,9 +1157,10 @@ narrow the work), or the Codex transport's request deadline (where raising
 Once a turn streams whitespace, Ensemble ends the attempt if two minutes
 have passed since the turn began or last produced non-whitespace text, tool
 activity or reasoning. This fixed bound applies to Codex app-server events,
-Claude transcript entries, opencode run events and agy session updates, where
-a tool call, a tool call's update, a thought or a plan is activity. agy ends
-a stuck stream by cancelling the turn. If agy replies to the pending
+Claude transcript entries, opencode run events, agy session updates and
+zcode's streamed run events. On agy a tool call, a tool call's update, a
+thought or a plan is activity. On zcode streamed reasoning, a tool event or
+a tool update is activity. agy ends a stuck stream by cancelling the turn. If agy replies to the pending
 prompt within ten seconds, a held session remains usable. Otherwise
 Ensemble stops the worker and marks a held session lost for later turns.
 The interrupted turn records the whitespace failure, spends one attempt
@@ -1276,9 +1353,9 @@ worker's output. See [How a run ends](cli.md#how-a-run-ends).
 
 ## Multi-turn sessions
 
-`session(options)` creates a persistent worker on `"claude"`, `"codex"` or
-`"agy"` and returns a handle whose `send(prompt, { schema? })` runs one turn
-against the same worker each time. A follow-up turn reaches a worker that still holds the
+`session(options)` creates a persistent worker on `"claude"`, `"codex"`,
+`"agy"` or `"zcode"` and returns a handle whose `send(prompt, { schema? })`
+runs one turn against the same worker each time. A follow-up turn reaches a worker that still holds the
 context of its earlier turns, rather than a fresh worker that has to be
 briefed again.
 
@@ -1328,12 +1405,16 @@ await builder.close();
 - **Staleness:** `handle.stale` becomes `true` once the idle time since the
   last turn reaches the threshold — one idle hour on Claude, 60 idle minutes on
   Codex, five idle minutes on agy, the prompt-cache lifetime its operator
-  reports — and `handle.idleMs` gives the idle time. It is advisory: a send to a
+  reports, and on zcode the threshold the machine configuration declares for
+  the model's provider in
+  [`zcode_providers`](configuration.md#zcode_providers), with no mark where
+  it declares none — and `handle.idleMs` gives the idle time. It is advisory: a send to a
   stale session still runs, and the script decides whether to pay for the
   re-read or start a fresh worker. `stalenessMark: false` turns the mark off
   for that session. `handle.stalenessMark` reports whether the mark is enabled,
   including before the first turn. `handle.staleAfterMs` gives the active
-  threshold, or `null` when marking is disabled. A Claude session below this
+  threshold, or `null` when marking is disabled or the engine has no
+  threshold for the session's model. A Claude session below this
   idle threshold may still miss the prompt cache.
 - **Claude idle lifetime:** Ensemble keeps a private, input-free attach
   client for the held worker's lifetime and repairs that attachment if the
@@ -1372,6 +1453,8 @@ await builder.close();
   script is left waiting on nothing live, the run ends failed with
   `WorkflowUnsettledError`; neither a lost session nor `--timeout` keeps it
   alive. The archive is settled and the completion sentinel is written.
+  On zcode, a session is lost when a turn's resume finds it gone (`Session
+  not found`); nothing runs between turns, so loss is observed at a send.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.

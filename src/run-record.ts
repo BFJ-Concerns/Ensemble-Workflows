@@ -23,8 +23,8 @@ import { LIVE_TRANSCRIPTS, transcriptLine } from "./live-transcript.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 import {
-  REFUSED_BEFORE_WORKER_KINDS,
   buildCostRollup,
+  isRefusedBeforeWorkerKind,
   isWorkerLossFailureKind,
   isWhitespaceStreamFailureKind,
   type UnobservedSpendReason,
@@ -1759,7 +1759,7 @@ function agentUsage(
 /** Every recorded attempt was refused before a worker existed. */
 function substratesNeverStarted(record: RuntimeAgentRecord): boolean {
   return record.attempts.length > 0 && record.attempts.every((attempt) =>
-    attempt.failure !== null && REFUSED_BEFORE_WORKER_KINDS.has(attempt.failure.kind)
+    isRefusedBeforeWorkerKind(attempt.failure?.kind)
   );
 }
 
@@ -2132,7 +2132,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isEngineName(value: unknown): value is EngineName {
-  return value === "codex" || value === "claude" || value === "opencode" || value === "agy";
+  return value === "codex" || value === "claude" || value === "opencode" || value === "agy" || value === "zcode";
 }
 
 function isAgentStatus(value: unknown): value is AgentStatus {
@@ -2215,14 +2215,15 @@ async function findHarnessRoot(): Promise<string | null> {
 }
 
 async function toolVersions(archiveDir: string): Promise<Record<string, string | null>> {
-  const [gitVersion, codexVersion, claudeVersion, openCodeVersion, agyVersion] = await Promise.all([
+  const [gitVersion, codexVersion, claudeVersion, openCodeVersion, agyVersion, zcodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
     commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
     queryOpenCodeVersion(archiveDir),
-    commandVersion("agy", ["--version"])
+    commandVersion("agy", ["--version"]),
+    commandVersion("zcode", ["--version"])
   ]);
-  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion, agy: agyVersion };
+  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion, agy: agyVersion, zcode: zcodeVersion };
 }
 
 /**

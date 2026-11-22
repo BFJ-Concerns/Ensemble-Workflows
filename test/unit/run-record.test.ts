@@ -3011,7 +3011,7 @@ test("runtime abandonment during the dispatch write leaves unmeasured archive ti
   }
 });
 
-for (const engine of ["codex", "claude", "opencode"] as const) {
+for (const engine of ["codex", "claude", "opencode", "zcode"] as const) {
   for (const resumedSweep of [false, true]) {
     test(`${engine} abandonment retains served identity and partial transcript${resumedSweep ? " after a sweep dies" : ""}`, async () => {
       const scratch = await mkdtemp(path.join(tmpdir(), "abandoned-record-test-"));

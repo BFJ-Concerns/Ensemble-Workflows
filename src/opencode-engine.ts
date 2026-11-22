@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 
-import { CommandContainment, unestablishedStopDiagnostics, type CommandStop, type ContainedCommand } from "./contained-command.js";
+import { unestablishedStopDiagnostics, type CommandContainment, type CommandStop } from "./contained-command.js";
 import { launchEnvironment } from "./engine-environment.js";
 import {
   EngineShutdownError,
-  SubstrateRefusedError,
   TurnTimeoutError,
   WhitespaceStreamError,
   attachFailedTurnResult,
@@ -16,9 +15,11 @@ import {
 import { OPENCODE_TRANSCRIPT, transcriptContent } from "./live-transcript.js";
 import { prepareOpenCodeLaunch, sweepAbandonedOpenCodeProfiles } from "./opencode-launch-config.js";
 import { subtractUsage } from "./usage-summary.js";
-import { WhitespaceStream } from "./whitespace-stream.js";
+import { fitsOneArgument, runStreamedCommand, type StreamedCommandResult } from "./streamed-command.js";
 import { openingPrompt } from "./worker-instructions.js";
-import { createWorkerScopes, DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
+import { DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
+
+import type { WhitespaceStream } from "./whitespace-stream.js";
 
 import type { StrippableCapability } from "./capability-stripping.js";
 import type {
@@ -63,17 +64,8 @@ export interface OpenCodeRunOptions {
   onCommandStop?: (stop: CommandStop) => void;
 }
 
-export interface OpenCodeRunResult {
-  exitCode: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
-  durationMs: number;
-  /** The runner's per-turn timer expired while the subprocess was still running. */
-  deadlineExpired?: boolean;
-  /** The run was stopped after streaming only whitespace past the bound. */
-  whitespaceLimitReached?: boolean;
-}
+/** What one opencode command left: its exit, its output, and whether a harness bound stopped it. */
+export type OpenCodeRunResult = StreamedCommandResult;
 
 export interface OpenCodeEngineInvocationOptions {
   prompt: string;
@@ -156,7 +148,10 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
     if (options.variant !== undefined) {
       args.push("--variant", options.variant);
     }
-    args.push(options.prompt);
+    // A prompt too long for one argument reaches opencode on stdin, which
+    // `opencode run` reads as the message when no message argument is given.
+    const promptOnStdin = !fitsOneArgument(options.prompt);
+    if (!promptOnStdin) args.push(options.prompt);
     const signal = options.signal;
     if (signal?.aborted) return stoppedBeforeLaunch();
     try {
@@ -168,32 +163,34 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
         strip: options.strip ?? [],
         lean: options.lean === true,
         providerModel: options.providerModel,
-        run: (command, env) => runProcess(
-          this.#bin, command, options.cwd, env, this.#commands, 30_000,
-          this.#killGraceMs, signal, undefined, undefined, options.onCommandStop
-        )
+        run: (command, env) => runStreamedCommand({
+          label: `opencode ${command[0]}`, file: this.#bin, args: command, cwd: options.cwd, env,
+          commands: this.#commands, timeoutMs: 30_000, killGraceMs: this.#killGraceMs,
+          signal, onCommandStop: options.onCommandStop
+        })
       });
       try {
-        return await runProcess(
-          this.#bin, args, options.cwd, launch.env, this.#commands,
-          options.timeoutMs, this.#killGraceMs, signal, options.onFirstData,
-          options.onData, options.onCommandStop
-        );
+        return await runStreamedCommand({
+          label: "opencode run", file: this.#bin, args, ...(promptOnStdin ? { stdin: options.prompt } : {}),
+          cwd: options.cwd, env: launch.env,
+          commands: this.#commands, timeoutMs: options.timeoutMs, killGraceMs: this.#killGraceMs,
+          signal, onFirstData: options.onFirstData, onData: options.onData,
+          onCommandStop: options.onCommandStop, watchLine: watchOpenCodeLine
+        });
       } finally {
         await launch.close?.();
       }
     } catch (error) {
       if (signal?.aborted) return stoppedBeforeLaunch();
-      const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      if (code === "ENOENT" || code === "EACCES") {
-        throw new SubstrateRefusedError(`opencode could not start (${code})`, { cause: error });
-      }
       throw error;
     }
   }
 
   async exportSession(sessionId: string, cwd: string, signal?: AbortSignal, onCommandStop?: (stop: CommandStop) => void): Promise<OpenCodeSessionExportResult> {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, this.#commands, 30_000, this.#killGraceMs, signal, undefined, undefined, onCommandStop);
+    const result = await runStreamedCommand({
+      label: "opencode export", file: this.#bin, args: ["export", sessionId], cwd, env: this.#env,
+      commands: this.#commands, timeoutMs: 30_000, killGraceMs: this.#killGraceMs, signal, onCommandStop
+    });
     if (result.exitCode !== 0) {
       return {
         status: "command-failed",
@@ -569,175 +566,6 @@ function stoppedBeforeLaunch(): OpenCodeRunResult {
   return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
 }
 
-async function runProcess(
-  file: string,
-  args: string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  commands: CommandContainment | undefined,
-  timeoutMs: number | undefined,
-  killGraceMs: number,
-  abortSignal?: AbortSignal,
-  onFirstData?: () => void,
-  onData?: (chunk: string) => void,
-  onCommandStop?: (stop: CommandStop) => void
-): Promise<OpenCodeRunResult> {
-  const startedAt = Date.now();
-  if (abortSignal?.aborted) {
-    return stoppedBeforeLaunch();
-  }
-  // The default registry supplies run-owned containment. A standalone runner
-  // owns the same machinery for this command and closes it before returning.
-  const scopes = commands === undefined ? await createWorkerScopes() : undefined;
-  const containment = commands ?? new CommandContainment(scopes!);
-  try {
-    const command = await containment.contain(`opencode ${args[0]}`, file, args, {
-      cwd, env, stdio: ["ignore", "pipe", "pipe"]
-    });
-    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, args[0] === "run", abortSignal, onFirstData, onData, onCommandStop);
-  } finally {
-    if (scopes !== undefined) {
-      try {
-        await containment.close();
-      } finally {
-        await scopes.close();
-      }
-    }
-  }
-}
-
-/** Stop ownership before waiting for pipes: a descendant may hold them open. */
-function collectProcess(
-  command: ContainedCommand,
-  startedAt: number,
-  timeoutMs: number | undefined,
-  killGraceMs: number,
-  watchWhitespace: boolean,
-  abortSignal?: AbortSignal,
-  onFirstData?: () => void,
-  onData?: (chunk: string) => void,
-  onCommandStop?: (stop: CommandStop) => void
-): Promise<OpenCodeRunResult> {
-  return new Promise((resolve, reject) => {
-    const child = command.child;
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    let settled = false;
-    // Placement is asynchronous. The command may have exited and its pipes
-    // closed before containment handed it back, so events alone are not a
-    // complete lifecycle account.
-    let exited = child.exitCode !== null || child.signalCode !== null;
-    let closed = exited && (child.stdout?.closed ?? true) && (child.stderr?.closed ?? true);
-    let stopped = false;
-    let deadlineExpired = false;
-    let whitespaceLimitReached = false;
-    let stopping: Promise<void> | undefined;
-    let drainTimer: NodeJS.Timeout | undefined;
-    let processError: Error | undefined;
-    let exitCode: number | null = child.exitCode;
-    let exitSignal: NodeJS.Signals | null = child.signalCode;
-
-    let streamBuffer = "";
-    const whitespace = watchWhitespace ? new WhitespaceStream(startedAt, () => {
-      whitespaceLimitReached = true;
-      stop();
-    }) : null;
-
-    const settle = (): void => {
-      if (settled || !stopped || !closed) return;
-      settled = true;
-      clearTimeout(drainTimer);
-      abortSignal?.removeEventListener("abort", terminate);
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      // An unconfirmed stop must not leave the child's handle holding up the
-      // run's diagnostic. The attempt or run accounts for the stop.
-      child.unref();
-      if (processError !== undefined) {
-        reject(processError);
-      } else {
-        resolve({ exitCode, signal: exitSignal, stdout: stdout.join(""), stderr: stderr.join(""),
-          durationMs: Date.now() - startedAt, deadlineExpired, whitespaceLimitReached });
-      }
-    };
-    const stop = (): void => {
-      whitespace?.clear();
-      clearTimeout(timeout);
-      stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then((observation) => {
-        // Delivery precedes settlement, so errors and ordinary results alike
-        // retain the account. The engine passes an attempt-local collector.
-        onCommandStop?.(observation);
-        stopped = true;
-        // Even an unavailable/refused scope or an unconfirmed stop cannot
-        // let an escaped pipe holder block the run's teardown report.
-        if (!closed) {
-          drainTimer = setTimeout(() => { closed = true; settle(); }, 1_000);
-        }
-        settle();
-      });
-    };
-    const terminate = (): void => {
-      if (!settled) stop();
-    };
-    // Exit ends execution time; draining a completed process is not a timeout.
-    const timeout = timeoutMs === undefined || exited ? undefined : setTimeout(() => {
-      if (!settled && !exited) {
-        deadlineExpired = true;
-        stop();
-      }
-    }, timeoutMs);
-
-    let firstDataSeen = false;
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      if (!firstDataSeen) {
-        firstDataSeen = true;
-        try { onFirstData?.(); } catch { /* Observability cannot fail a worker. */ }
-      }
-      try { onData?.(chunk); } catch { /* Live accounting cannot fail a worker. */ }
-      stdout.push(chunk);
-      if (whitespace !== null && stopping === undefined) {
-        streamBuffer += chunk;
-        const lines = streamBuffer.split(/\r?\n/);
-        streamBuffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const event = parseRunEvent(line);
-          const text = runTextPart(event);
-          if (text !== null) {
-            whitespace.observeText(text);
-          } else if (isRecord(event) && (event.type === "tool_use" || event.type === "reasoning")) {
-            whitespace.observeActivity();
-          }
-        }
-      }
-    });
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => stderr.push(chunk));
-    child.on("error", (error) => {
-      processError = error;
-      stop();
-    });
-    child.on("exit", (code, signal) => {
-      exited = true;
-      exitCode = code;
-      exitSignal = signal;
-      // A normally exited engine can leave live shell commands behind too.
-      stop();
-    });
-    child.on("close", (code, signal) => {
-      closed = true;
-      exitCode = code;
-      exitSignal = signal;
-      stop();
-      settle();
-    });
-    abortSignal?.addEventListener("abort", terminate, { once: true });
-    if (exited) stop();
-    // Containment setup is asynchronous; cancellation can race the hand-off.
-    if (abortSignal?.aborted) terminate();
-  });
-}
-
 function parseRunEvents(stdout: string): ParsedRunEvents {
   const events: unknown[] = [];
   let sessionId: string | null = null;
@@ -1073,4 +901,15 @@ function numberValue(value: unknown): number | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The whitespace-stream bound on `opencode run`'s JSON stream: text parts, and tool or reasoning events. */
+function watchOpenCodeLine(line: string, whitespace: WhitespaceStream): void {
+  const event = parseRunEvent(line);
+  const text = runTextPart(event);
+  if (text !== null) {
+    whitespace.observeText(text);
+  } else if (isRecord(event) && (event.type === "tool_use" || event.type === "reasoning")) {
+    whitespace.observeActivity();
+  }
 }

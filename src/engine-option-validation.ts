@@ -11,6 +11,7 @@ import {
 import { assertValidStripOption } from "./capability-stripping.js";
 import { CANONICAL_EFFORT_DOMAIN, isCanonicalEffort } from "./effort-resolution.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
+import { parseZCodeModel } from "./zcode-model.js";
 
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type { AgentOptions, EngineName, FallbackTarget, LiteralWorkerSessionOptions } from "./types.js";
@@ -313,8 +314,8 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
       }
       return;
     }
-    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "opencode" && target.engine !== "agy") {
-      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude", "opencode" or "agy", got ${JSON.stringify(target.engine)}`);
+    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "opencode" && target.engine !== "agy" && target.engine !== "zcode") {
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude", "opencode", "agy" or "zcode", got ${JSON.stringify(target.engine)}`);
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
@@ -354,6 +355,11 @@ export function validateEngineDefaults(
     // A bad static declaration fails before the body runs, not at the
     // first paid dispatch — the same canonical domain agent() enforces.
     assertCanonicalEffortSupported(defaults.effort);
+  }
+  if (engine === "zcode" && defaults.model !== undefined) {
+    // zcode, not Ensemble, judges whether it lists the model; the spelling
+    // that names its provider is Ensemble's to read.
+    parseZCodeModel(defaults.model);
   }
   if (engine === "opencode" && defaults.model !== undefined) {
     const model = requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);

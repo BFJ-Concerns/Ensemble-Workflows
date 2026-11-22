@@ -57,6 +57,12 @@ export const OPENCODE_TRANSCRIPT = {
   source: "opencode run --format json"
 } as const satisfies LiveTranscript;
 
+export const ZCODE_TRANSCRIPT = {
+  held: "archive",
+  filename: "transcript.zcode.jsonl",
+  source: "zcode --output-format stream-json"
+} as const satisfies LiveTranscript;
+
 /**
  * Every engine's live transcript. The runtime reads it to bind an attempt's
  * transcript observer and the run record to name, settle and recover the
@@ -66,7 +72,8 @@ export const OPENCODE_TRANSCRIPT = {
 export const LIVE_TRANSCRIPTS: Partial<Record<EngineName, LiveTranscript>> = {
   codex: CODEX_TRANSCRIPT,
   claude: CLAUDE_TRANSCRIPT,
-  opencode: OPENCODE_TRANSCRIPT
+  opencode: OPENCODE_TRANSCRIPT,
+  zcode: ZCODE_TRANSCRIPT
 };
 
 /** One transcript event as the line an archive-held live transcript gains for it. */

@@ -102,6 +102,25 @@ test("opencode spend is already disjoint: classes pass through and sum", () => {
   });
 });
 
+test("zcode spend maps by subtraction: cached out of input, reasoning out of output", () => {
+  // A run measured on zcode 0.17.1: 32011 input including 15872 cache
+  // reads, 36 output, 32047 total. That run reported no reasoning; 12 of
+  // its output is taken as reasoning here to show the subtraction.
+  const summary = summariseUsage("zcode", [
+    event({ cachedInputTokens: 15872, cacheCreationInputTokens: 0, inputTokens: 32011, outputTokens: 36, reasoningOutputTokens: 12, totalTokens: 32047 })
+  ]);
+  assert.deepEqual(summary, {
+    freshInputTokens: 16139,
+    cachedInputTokens: 15872,
+    cacheReadTokens: 15872,
+    cacheCreationTokens: 0,
+    outputTokens: 24,
+    reasoningOutputTokens: 12,
+    unclassifiedTokens: 0,
+    totalTokens: 32047
+  });
+});
+
 test("a wholly unclassifiable event keeps its reported spend as unclassified, never zero", () => {
   // opencode's total-only steps: the aggregate carries spend only in the
   // engine total. Erasing it into an all-zero summary would make reported

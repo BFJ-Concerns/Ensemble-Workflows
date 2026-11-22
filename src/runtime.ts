@@ -1188,9 +1188,9 @@ export class EnsembleRuntime {
    * not counted. Each is judged on the target it resolved to at dispatch —
    * its first attempt's, whatever a fallback chain later moved it to — with
    * the model that target served standing in where the call named none.
-   * The family and the worker count when two or more workers share one
-   * family, null where they span families, where fewer than two ran, or
-   * where any worker's family is unknown.
+   * The family and the worker count when every worker shares one family,
+   * null where they span families, where none ran, or where any worker's
+   * family is unknown.
    */
   singleFamily(): SingleFamilyJudgement | null {
     const seen = new Set<number>();

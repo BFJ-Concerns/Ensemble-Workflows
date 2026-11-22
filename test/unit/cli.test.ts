@@ -3583,7 +3583,8 @@ test("CLI logs the resolved Codex default and stays quiet when the model is pinn
   assert.equal(unpinnedExit, 0);
   assert.equal(
     withoutLocationAnnouncements(unpinnedStderr.text()),
-    "[codex] agent 1 (loose) runs unpinned — resolved ambient default: gpt-resolved-default (high effort)\n"
+    "[codex] agent 1 (loose) runs unpinned — resolved ambient default: gpt-resolved-default (high effort)\n" +
+      "[single-family] 1 worker resolved onto one model family: gpt\n"
   );
 
   const pinnedStderr = new CaptureStream();
@@ -3913,7 +3914,8 @@ test("an answer from a fallback entry is announced naming the refused declared t
     result.stderr,
     "[claude] agent 1 (scout) answered by fallback entry 1 (claude/opus) — refused targets: " +
       "claude/haiku (claude.rate-limit): claude-worker-diagnostic: API Error: Request rejected (429) slow down; " +
-      "claude/sonnet (claude.overloaded): claude-worker-diagnostic: API Error: Request rejected (529)\n"
+      "claude/sonnet (claude.overloaded): claude-worker-diagnostic: API Error: Request rejected (529)\n" +
+      "[single-family] 1 worker resolved onto one model family: claude\n"
   );
 });
 
@@ -3943,7 +3945,8 @@ test("a declared chain left unconsulted by an unrecognised failure says so once,
     result.stderr,
     "[codex] agent 1 (scout) fallback chain not consulted — attempt 1 on codex/gpt-6-sol failed unclassified " +
       "(AppServerSystemError: turn notification failed (threadFailed): the thread failed); " +
-      "the declared chain (1 entry) advances on availability failures only\n"
+      "the declared chain (1 entry) advances on availability failures only\n" +
+      "[single-family] 1 worker resolved onto one model family: gpt\n"
   );
 });
 
@@ -4060,7 +4063,8 @@ test("an exhausted chain's failure notice names the last target's own failure an
   assert.equal(
     result.stderr,
     "[claude] agent 1 (scout) failed after 1 answered attempt, 1 refused target across 2 chain targets — " +
-      "the last target's failure: claude-worker-diagnostic: API Error: Request rejected (529)\n"
+      "the last target's failure: claude-worker-diagnostic: API Error: Request rejected (529)\n" +
+      "[single-family] 1 worker resolved onto one model family: claude\n"
   );
 });
 

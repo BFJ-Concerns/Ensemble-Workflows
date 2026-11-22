@@ -268,7 +268,8 @@ Logs and diagnostics go to stderr. These lines are written there:
   engine observes it; `during turn <n>` replaces the idle clause when a turn
   was running. See [lost workers](workflow-scripts.md#multi-turn-sessions).
 - `[single-family] all <n> workers resolved onto one model family: <family>`
-  — at the run's end, two or more workers all resolved onto one
+  (`1 worker resolved …` for a run of one) — at the run's end, every worker
+  resolved onto one
   [model family](workflow-scripts.md#model-families), each judged on the
   target it was dispatched to before any fallback step. Nothing is said where
   the workers spanned families or any worker's family is unknown, or where the

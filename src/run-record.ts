@@ -636,11 +636,10 @@ interface Manifest {
   /** Whether the machine's single-family notice was on for this run. */
   single_family_notice: boolean;
   /**
-   * Set at the run's end, with the notice on, when two or more workers all
-   * resolved onto one model family: that family and the worker count. Null
-   * while the run is open, with the notice off, and where the workers
-   * spanned families, numbered fewer than two, or included one whose family
-   * is unknown.
+   * Set at the run's end, with the notice on, when every worker resolved
+   * onto one model family: that family and the worker count. Null while the
+   * run is open, with the notice off, and where the workers spanned
+   * families, none ran, or one's family is unknown.
    */
   single_family: SingleFamilyJudgement | null;
   git: {

@@ -19758,7 +19758,7 @@ function modelFamilyOf(target, assignments, openCodeModels) {
 function singleFamilyOf(families) {
   const distinct = new Set(families);
   const [family] = distinct;
-  return families.length >= 2 && distinct.size === 1 && typeof family === "string" ? { family, workers: families.length } : null;
+  return families.length > 0 && distinct.size === 1 && typeof family === "string" ? { family, workers: families.length } : null;
 }
 
 // src/progress.ts
@@ -27257,9 +27257,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * not counted. Each is judged on the target it resolved to at dispatch —
    * its first attempt's, whatever a fallback chain later moved it to — with
    * the model that target served standing in where the call named none.
-   * The family and the worker count when two or more workers share one
-   * family, null where they span families, where fewer than two ran, or
-   * where any worker's family is unknown.
+   * The family and the worker count when every worker shares one family,
+   * null where they span families, where none ran, or where any worker's
+   * family is unknown.
    */
   singleFamily() {
     const seen = /* @__PURE__ */ new Set();
@@ -37169,7 +37169,8 @@ function reportLegsUnfinishedAtReturn(runtime, stderr) {
 function reportSingleFamily(runtime, stderr) {
   const judgement = runtime?.singleFamily?.() ?? null;
   if (judgement !== null) {
-    stderr.write(`[single-family] all ${judgement.workers} workers resolved onto one model family: ${judgement.family}
+    const workers = judgement.workers === 1 ? "1 worker" : `all ${judgement.workers} workers`;
+    stderr.write(`[single-family] ${workers} resolved onto one model family: ${judgement.family}
 `);
   }
   return judgement;

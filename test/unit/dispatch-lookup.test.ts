@@ -215,9 +215,9 @@ test("model families: grouped by model name on every engine, assignments first, 
   assert.equal(judge("opencode", "kimi-k2.5"), "kimi");
 });
 
-test("the single-family judgement names one family only for two or more workers all placed on it", () => {
+test("the single-family judgement names one family only where every worker is placed on it", () => {
   assert.deepEqual(singleFamilyOf(["claude", "claude", "claude"]), { family: "claude", workers: 3 });
-  assert.equal(singleFamilyOf(["claude"]), null);
+  assert.deepEqual(singleFamilyOf(["claude"]), { family: "claude", workers: 1 });
   assert.equal(singleFamilyOf([]), null);
   assert.equal(singleFamilyOf(["claude", "gpt"]), null);
   // A worker whose family is unknown leaves the fact unknown.

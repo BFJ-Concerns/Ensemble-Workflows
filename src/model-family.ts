@@ -103,12 +103,12 @@ export interface SingleFamilyJudgement {
  * The single-family judgement over a run's workers, given each worker's
  * family as judged on the target it resolved to at dispatch (null where
  * unknown): the one family every worker resolved onto and how many workers
- * that was, or null where fewer than two workers ran, where they spanned
- * families, or where any worker's family is unknown — the fact is then
- * unknown and nothing is said.
+ * that was, or null where no worker ran, where they spanned families, or
+ * where any worker's family is unknown — the fact is then unknown and
+ * nothing is said.
  */
 export function singleFamilyOf(families: readonly (string | null)[]): SingleFamilyJudgement | null {
   const distinct = new Set(families);
   const [family] = distinct;
-  return families.length >= 2 && distinct.size === 1 && typeof family === "string" ? { family, workers: families.length } : null;
+  return families.length > 0 && distinct.size === 1 && typeof family === "string" ? { family, workers: families.length } : null;
 }

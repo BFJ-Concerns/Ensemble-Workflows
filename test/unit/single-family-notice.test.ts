@@ -58,7 +58,7 @@ test("workers on one model family across engines are judged single-family, by mo
   }
 });
 
-test("workers spanning families, or a lone worker, are not judged single-family", async () => {
+test("workers spanning families are not judged single-family, and a lone worker is its own family's", async () => {
   const spanning = runtimeOver([new ChainEngine("codex", [answer("a")]), new ChainEngine("claude", [answer("b")])]);
   const lone = runtimeOver([new ChainEngine("claude", [answer("a")])]);
   try {
@@ -66,7 +66,7 @@ test("workers spanning families, or a lone worker, are not judged single-family"
     await hooksFor(spanning).agent("reviewer", { engine: "claude", model: "claude-opus-5-5" });
     assert.equal(spanning.singleFamily(), null);
     await hooksFor(lone).agent("doer", { engine: "claude", model: "claude-opus-5-5" });
-    assert.equal(lone.singleFamily(), null);
+    assert.deepEqual(lone.singleFamily(), { family: "claude", workers: 1 });
   } finally {
     await spanning.close();
     await lone.close();
@@ -132,7 +132,7 @@ test("a multi-turn session counts as one worker however many turns it takes", as
     await session.send("one");
     await session.send("two");
     await session.close();
-    assert.equal(runtime.singleFamily(), null);
+    assert.deepEqual(runtime.singleFamily(), { family: "claude", workers: 1 });
     await hooksFor(runtime).agent("reviewer", { engine: "claude", model: "claude-sonnet-5-5" });
     assert.deepEqual(runtime.singleFamily(), { family: "claude", workers: 2 });
   } finally {
@@ -217,4 +217,26 @@ test("the machine file turns the single-family notice off", async () => {
   assert.doesNotMatch(run.stderr, /\[single-family\]/);
   assert.equal(run.manifest.single_family_notice, false);
   assert.equal(run.manifest.single_family, null);
+});
+
+test("a single-agent run whose worker's family is known says so too", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-single-family-agent-"));
+  const codex = new ChainEngine("codex", [answer("OK", "gpt-6.1-sol")]);
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  try {
+    const exitCode = await runEnsembleCli(["agent", "--engine=codex", "Reply with OK"], {
+      cwd: directory,
+      env: { XDG_CONFIG_HOME: path.join(directory, "missing-config"), ENSEMBLE_STATUS: "off" },
+      stdout,
+      stderr,
+      runRecordDir: null,
+      createRuntime: async (options) => new EnsembleRuntime({ ...options, engines: new EngineRegistry([codex]), defaultMaxAttempts: 1 })
+    });
+    assert.equal(exitCode, 0, stderr.text());
+    const notices = stderr.text().split("\n").filter((line) => line.startsWith("[single-family] "));
+    assert.deepEqual(notices, ["[single-family] 1 worker resolved onto one model family: gpt"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

@@ -622,12 +622,12 @@ families; their versions are listed in [Schema versions](#schema-versions).
   [single-family notice](configuration.md#single_family_notice) was on for
   the run.
 - `single_family`: `{ family, workers }` when, at the run's end with the
-  notice on, two or more workers all resolved onto one
+  notice on, every worker resolved onto one
   [model family](workflow-scripts.md#model-families) — each worker judged on
   the target it was dispatched to before any fallback step, a multi-turn
   session counting once. `null` while the run is open, with the notice off,
-  and where the workers spanned families, numbered fewer than two, or
-  included one whose family is unknown.
+  and where the workers spanned families, none ran, or one's family is
+  unknown.
 - `workflow_invocations`: the root workflow and every child it invoked through
   `workflow()`, in the order they were recorded — call order, except that
   concurrent `workflow()` calls are recorded as each one resolves. Each entry carries an ordinal (0 for the root),

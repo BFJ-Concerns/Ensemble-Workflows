@@ -1337,8 +1337,8 @@ function reportLegsUnfinishedAtReturn(runtime: EnsembleRuntime, stderr: Writable
 /**
  * Says on stderr, at the run's end, that every worker resolved onto one
  * model family, and returns that judgement for the manifest; null, with
- * nothing said, where the workers spanned families, fewer than two ran, or
- * a worker's family is unknown. A doer and its reviewer on one family have
+ * nothing said, where the workers spanned families, none ran, or a
+ * worker's family is unknown. A doer and its reviewer on one family have
  * lost the cross-check the run was written for, and a binding mistake that
  * puts them there shows nowhere in the launch.
  */
@@ -1346,7 +1346,8 @@ function reportSingleFamily(runtime: EnsembleRuntime | null, stderr: Writable): 
   // Injected test runtimes may not carry the judgement; read it defensively.
   const judgement = (runtime as { singleFamily?: () => SingleFamilyJudgement | null } | null)?.singleFamily?.() ?? null;
   if (judgement !== null) {
-    stderr.write(`[single-family] all ${judgement.workers} workers resolved onto one model family: ${judgement.family}\n`);
+    const workers = judgement.workers === 1 ? "1 worker" : `all ${judgement.workers} workers`;
+    stderr.write(`[single-family] ${workers} resolved onto one model family: ${judgement.family}\n`);
   }
   return judgement;
 }

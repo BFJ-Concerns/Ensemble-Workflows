@@ -348,8 +348,8 @@ caller passes the same map as `modelFamilies`.
 
 ### `single_family_notice`
 
-With two or more workers in a run all resolved onto one model family, the
-run says so at its end: a `[single-family]` line on stderr (see
+When every worker in a run resolved onto one model family, the run says so
+at its end: a `[single-family]` line on stderr (see
 [CLI output](cli.md#output)) and `single_family` in the run record's
 manifest (see [Run records](run-records.md#manifest)). Named targets put a
 doer and its reviewer on one family a single binding edit away, and nothing

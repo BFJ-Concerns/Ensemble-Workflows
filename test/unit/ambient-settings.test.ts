@@ -20,10 +20,12 @@ test("caller identity has a named environment route without widening ambient set
       "concurrencyCaps",
       "configFile",
       "effortPolicy",
+      "modelFamilies",
       "namedTargets",
       "openCodeModels",
       "runRecordDir",
       "runRecordStoreDir",
+      "singleFamilyNotice",
       "statusDir",
       "workerEnvironment",
       "workerScope"
@@ -344,6 +346,47 @@ test("opencode_models fails loud on malformed declarations", async () => {
 
   for (const entry of cases) {
     const fixture = await configFixture({ schema_version: 1, opencode_models: entry.models });
+    try {
+      assert.throws(
+        () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }),
+        entry.pattern
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test("model_families and single_family_notice resolve from the file, defaulting to no assignments and the notice on", async () => {
+  const empty = await configFixture({ schema_version: 1 });
+  const declared = await configFixture({
+    schema_version: 1,
+    model_families: { "house-model": "glm", "claude-opus-5-5": "house" },
+    single_family_notice: false
+  });
+  try {
+    const defaults = resolveAmbientSettings({ env: { XDG_CONFIG_HOME: empty.configHome }, cwd: empty.cwd });
+    assert.deepEqual(defaults.modelFamilies, {});
+    assert.equal(defaults.singleFamilyNotice, true);
+    const settings = resolveAmbientSettings({ env: { XDG_CONFIG_HOME: declared.configHome }, cwd: declared.cwd });
+    assert.deepEqual(settings.modelFamilies, { "house-model": "glm", "claude-opus-5-5": "house" });
+    assert.equal(settings.singleFamilyNotice, false);
+  } finally {
+    await empty.cleanup();
+    await declared.cleanup();
+  }
+});
+
+test("model_families and single_family_notice fail loud on malformed values", async () => {
+  const cases: Array<{ config: Record<string, unknown>; pattern: RegExp }> = [
+    { config: { model_families: [] }, pattern: /model_families.*JSON object of model names to family names/ },
+    { config: { model_families: { " ": "glm" } }, pattern: /model_families.*model names must be non-empty/ },
+    { config: { model_families: { m: "" } }, pattern: /model_families\.m .*non-empty string/ },
+    { config: { model_families: { m: 1 } }, pattern: /model_families\.m .*non-empty string/ },
+    { config: { single_family_notice: "off" }, pattern: /single_family_notice.*must be a boolean/ }
+  ];
+  for (const entry of cases) {
+    const fixture = await configFixture({ schema_version: 1, ...entry.config });
     try {
       assert.throws(
         () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }),

@@ -267,6 +267,13 @@ Logs and diagnostics go to stderr. These lines are written there:
   — a session's engine found its worker gone for good, reported when the
   engine observes it; `during turn <n>` replaces the idle clause when a turn
   was running. See [lost workers](workflow-scripts.md#multi-turn-sessions).
+- `[single-family] all <n> workers resolved onto one model family: <family>`
+  — at the run's end, two or more workers all resolved onto one
+  [model family](workflow-scripts.md#model-families), each judged on the
+  target it was dispatched to before any fallback step. Nothing is said where
+  the workers spanned families or any worker's family is unknown, or where the
+  machine turns the notice off with
+  [`single_family_notice`](configuration.md#single_family_notice).
 - `[teardown] stopping workers and their commands` — emitted before waiting
   for teardown when workers are still active or queued, including after a
   script throw, a whole-run timeout, or an early return.

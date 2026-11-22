@@ -36,6 +36,7 @@ import type { DischargedEnforcement, StrippableCapability } from "./capability-s
 import type { AppServerDiagnostic } from "./errors.js";
 import type { FailureClassification } from "./failure-classification.js";
 import type { FallbackSource } from "./fallback-source.js";
+import type { SingleFamilyJudgement } from "./model-family.js";
 import type { NamedTargetResolution, NamedTargets } from "./named-targets.js";
 import type { UsageSummary } from "./usage-summary.js";
 import type { WorktreeState } from "./worktree-isolation.js";
@@ -97,6 +98,8 @@ export interface RunRecordStartOptions {
   /** The named targets in force, for the manifest's `named_targets`; omitted, the run had none. */
   namedTargets?: NamedTargets;
   effortPolicy?: EffortPolicy;
+  /** Whether the machine's single-family notice is on for this run, for the manifest's `single_family_notice`; omitted, it is on. */
+  singleFamilyNotice?: boolean;
   /** Opaque identity supplied by the process that invoked this run, if any. */
   callerIdentity?: string;
   startedAt?: string;
@@ -493,6 +496,8 @@ export interface RunRecordFinishOptions {
    * where the launcher never saw an error — never an inferred cause.
    */
   error?: TerminalErrorRecord | null;
+  /** The run's single-family judgement, for the manifest's `single_family`; omitted or null where the run says nothing. */
+  singleFamily?: SingleFamilyJudgement | null;
   endedAt?: string;
 }
 
@@ -628,6 +633,16 @@ interface Manifest {
    */
   named_targets: NamedTargetsRecord;
   effort: EffortPolicy | null;
+  /** Whether the machine's single-family notice was on for this run. */
+  single_family_notice: boolean;
+  /**
+   * Set at the run's end, with the notice on, when two or more workers all
+   * resolved onto one model family: that family and the worker count. Null
+   * while the run is open, with the notice off, and where the workers
+   * spanned families, numbered fewer than two, or included one whose family
+   * is unknown.
+   */
+  single_family: SingleFamilyJudgement | null;
   git: {
     start: GitState;
     end: GitState | null;
@@ -893,6 +908,8 @@ export class RunRecordWriter {
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       named_targets: namedTargetsRecord(options.namedTargets),
       effort: options.effortPolicy ?? null,
+      single_family_notice: options.singleFamilyNotice ?? true,
+      single_family: null,
       git: {
         start: gitStart,
         end: null
@@ -1471,6 +1488,7 @@ export class RunRecordWriter {
       // the manifest and one that reads only the result envelope must each
       // be able to say why the run ended, without the other file.
       this.manifest.error = options.error ?? null;
+      this.manifest.single_family = options.singleFamily ?? null;
       await this.#writeJson("result.json", {
         schema_version: SCHEMA_VERSION,
         kind: "run_result",

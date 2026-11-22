@@ -194,7 +194,7 @@ It answers `{ target, bound, engine, model, family }`:
 | `bound` | `false` for a `target` the machine does not bind; the other fields are then `null` |
 | `engine` | The engine the call would run on |
 | `model` | The model it would ask for, resolved as the call resolves it (the binding's, else the script's `defaults` model for that engine), or `null` where the engine's own default decides |
-| `family` | The model family: `"codex"` for Codex, `"claude"` for Claude, and for opencode the `family` the model's [`opencode_models`](configuration.md#opencode_models) entry declares; `null` where the entry declares none |
+| `family` | The [model family](#model-families) of `model`, whatever engine runs it; `null` where Ensemble cannot place the model, including where `model` is `null` |
 
 A literal call is answered the same way, so
 `lookupDispatch({ engine: "claude" })` reports the script's `defaults` model
@@ -288,8 +288,47 @@ call that collapses resolves this shape too, never a bare `null`.
 The envelope also carries `answeredBy`: `{ engine, model, family }` for the
 target that answered — the chain entry, after a fallback step — or `null`
 when the worker failed. `model` is the model the engine reported serving,
-else the one the call asked for, else `null`; `family` is judged as the
-[dispatch lookup](#dispatch-lookup) judges it.
+else the one the call asked for, else `null`; `family` is the
+[model family](#model-families) of the model asked for and the model served.
+
+### Model families
+
+A model family is the group a model belongs to by the name it commonly goes
+by. It belongs to the model, never to the engine: a Claude model is in the
+`claude` family whether Claude Code, opencode or a gateway behind Codex runs
+it. The dispatch lookup, an identified call's `answeredBy` and the run's
+[single-family notice](configuration.md#single_family_notice) all report the
+same family.
+
+Ensemble groups a model by the last `/`-separated segment of its name,
+ignoring case, so a provider route groups as the bare name does. The family
+names a script will see are:
+
+| Family | Models whose names begin |
+|---|---|
+| `claude` | `claude`, and Claude Code's aliases `opus`, `sonnet`, `haiku` and `fable` |
+| `gpt` | `gpt`, `chatgpt`, `codex`, and OpenAI's `o1` to `o9` series |
+| `gemini` | `gemini` |
+| `glm` | `glm` |
+| `kimi` | `kimi` |
+| `qwen` | `qwen` |
+| `deepseek` | `deepseek` |
+| `grok` | `grok` |
+| `llama` | `llama` |
+| `mistral` | `mistral`, `mixtral`, `codestral`, `devstral`, `magistral`, `ministral` |
+| `minimax` | `minimax` |
+
+The machine can assign a model its family in
+[`model_families`](configuration.md#model_families), and an opencode entry's
+own [`family`](configuration.md#opencode_models) outranks that; an assignment
+can name any family, including one not in this table. A model neither places
+has the family `null`: unknown.
+
+The model judged is the one the call asked for and, once a worker has served
+it, the model the engine reported serving. A call that names no model is
+judged by the model its engine's default resolved to, which Ensemble learns
+only when a worker reports it, so the dispatch lookup answers `null` for
+such a call.
 
 ### `workflow()` and saved workflows
 

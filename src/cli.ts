@@ -21,6 +21,7 @@ import { declaredDirectory, defaultDirectory, readSetting } from "./resource-loc
 import { judgeResources } from "./resource-preflight.js";
 
 import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
+import type { SingleFamilyJudgement } from "./model-family.js";
 import { defaultWorkflowRegistryDirs, listSavedWorkflows } from "./workflow-registry.js";
 import { harnessVersion } from "./harness-version.js";
 
@@ -399,6 +400,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
       effortPolicy: ambientSettings.effortPolicy,
       namedTargets: ambientSettings.namedTargets,
+      modelFamilies: ambientSettings.modelFamilies,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     // The CLI `--timeout` flag wins over a programmatically injected one; both
@@ -478,7 +480,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
         effortPolicy: ambientSettings.effortPolicy,
-        namedTargets: ambientSettings.namedTargets
+        namedTargets: ambientSettings.namedTargets,
+        singleFamilyNotice: ambientSettings.singleFamilyNotice
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
@@ -836,6 +839,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // calls with a stack into the bundle.
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError(error)}\n`);
       }
+      const singleFamily = ambientSettings.singleFamilyNotice ? reportSingleFamily(runtime, stderr) : null;
       progress?.finish();
       if (finalRecord !== null && finalRecord.status !== "complete" && terminalError !== null) {
         // close() has settled the workers, including any answer that
@@ -861,7 +865,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           await runRecordWriter.finish({
             ...(finalRecord ?? { status: "failed" as const, exitCode: 1, result: null }),
             ...(teardownError !== null ? { status: "failed" as const, exitCode: 1 } : {}),
-            error: terminalError ?? teardownError
+            error: terminalError ?? teardownError,
+            singleFamily
           });
         }
       } catch (error) {
@@ -1327,6 +1332,23 @@ function reportLegsUnfinishedAtReturn(runtime: EnsembleRuntime, stderr: Writable
     const fate = leg.disposition === "cut-short" ? "cut short" : "abandoned before its dispatch record landed";
     stderr.write(`[teardown] the script returned without awaiting agent ${leg.id}${label}: ${fate}, its answer lost — await the call to keep it\n`);
   }
+}
+
+/**
+ * Says on stderr, at the run's end, that every worker resolved onto one
+ * model family, and returns that judgement for the manifest; null, with
+ * nothing said, where the workers spanned families, fewer than two ran, or
+ * a worker's family is unknown. A doer and its reviewer on one family have
+ * lost the cross-check the run was written for, and a binding mistake that
+ * puts them there shows nowhere in the launch.
+ */
+function reportSingleFamily(runtime: EnsembleRuntime | null, stderr: Writable): SingleFamilyJudgement | null {
+  // Injected test runtimes may not carry the judgement; read it defensively.
+  const judgement = (runtime as { singleFamily?: () => SingleFamilyJudgement | null } | null)?.singleFamily?.() ?? null;
+  if (judgement !== null) {
+    stderr.write(`[single-family] all ${judgement.workers} workers resolved onto one model family: ${judgement.family}\n`);
+  }
+  return judgement;
 }
 
 /**

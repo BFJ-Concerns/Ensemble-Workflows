@@ -258,7 +258,7 @@ test("the hooks agent surface presents the canonical overload set", async () => 
   const { TokenBudget } = await import("../../src/budget.js");
 
   const calls: Array<Partial<AgentOptions>> = [];
-  const CODEX = { engine: "codex" as const, model: null, family: "codex" };
+  const CODEX = { engine: "codex" as const, model: null, family: null };
   // A conforming fake: the same overload restatement the hook wrapper
   // uses, so the test exercises the surface a script consumer sees.
   function fakeAgent(prompt: string, agentOptions: AgentRequest & { identity: true }): Promise<IdentifiedAgentResult>;

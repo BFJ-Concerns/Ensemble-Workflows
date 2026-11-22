@@ -15903,7 +15903,9 @@ function resolveAmbientSettings(input) {
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models),
     namedTargets: { bindings: config?.targets ?? {}, source: configFile },
-    effortPolicy: { section: config?.effort ?? {}, source: configFile }
+    effortPolicy: { section: config?.effort ?? {}, source: configFile },
+    modelFamilies: config?.model_families ?? {},
+    singleFamilyNotice: config?.single_family_notice ?? true
   };
 }
 function machineConfigPath(env) {
@@ -15933,7 +15935,7 @@ function readMachineConfig(configFile) {
   if (!newer) {
     assertKnownKeys(
       parsed,
-      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "effort"],
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "effort", "model_families", "single_family_notice"],
       configFile
     );
   }
@@ -15951,6 +15953,10 @@ function readMachineConfig(configFile) {
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
+  validateModelFamilies(parsed, configFile);
+  if (parsed.single_family_notice !== void 0 && typeof parsed.single_family_notice !== "boolean") {
+    throw fileValueError(configFile, "single_family_notice", "must be a boolean");
+  }
   validateNamedTargetBindings(parsed.targets, configFile);
   if (parsed.effort !== void 0) {
     assertEffortSection(parsed.effort, (key, detail) => {
@@ -16010,6 +16016,23 @@ function validateWorkerEnvironment(root, configFile) {
       if (typeof value !== "string") {
         throw fileValueError(configFile, `${qualified}.${name}`, "must be a string");
       }
+    }
+  }
+}
+function validateModelFamilies(root, configFile) {
+  const section = root.model_families;
+  if (section === void 0) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "model_families", "must be a JSON object of model names to family names");
+  }
+  for (const [model, family] of Object.entries(section)) {
+    if (model.trim().length === 0) {
+      throw fileValueError(configFile, "model_families", "model names must be non-empty");
+    }
+    if (typeof family !== "string" || family.trim().length === 0) {
+      throw fileValueError(configFile, `model_families.${model}`, "must be a non-empty string");
     }
   }
 }
@@ -16792,6 +16815,8 @@ var RunRecordWriter = class _RunRecordWriter {
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       named_targets: namedTargetsRecord(options.namedTargets),
       effort: options.effortPolicy ?? null,
+      single_family_notice: options.singleFamilyNotice ?? true,
+      single_family: null,
       git: {
         start: gitStart,
         end: null
@@ -17302,6 +17327,7 @@ var RunRecordWriter = class _RunRecordWriter {
         exit_code: options.exitCode
       };
       this.manifest.error = options.error ?? null;
+      this.manifest.single_family = options.singleFamily ?? null;
       await this.#writeJson("result.json", {
         schema_version: SCHEMA_VERSION,
         kind: "run_result",
@@ -19690,14 +19716,49 @@ function bindingFor(targets, name, context = "") {
 }
 
 // src/model-family.ts
-function modelFamilyOf(engine, model, openCodeModels) {
-  if (engine !== "opencode") {
-    return engine;
+var NAME_GROUPS = [
+  [/^(claude|opus|sonnet|haiku|fable)(-|\[|$)/, "claude"],
+  [/^(gpt|chatgpt|codex)(-|$)|^o[1-9](-|$)/, "gpt"],
+  [/^gemini(-|$)/, "gemini"],
+  [/^glm(-|$)/, "glm"],
+  [/^kimi(-|$)/, "kimi"],
+  [/^qwen/, "qwen"],
+  [/^deepseek(-|$)/, "deepseek"],
+  [/^grok(-|$)/, "grok"],
+  [/^llama/, "llama"],
+  [/^(mistral|mixtral|codestral|devstral|magistral|ministral)(-|$)/, "mistral"],
+  [/^minimax(-|$)/, "minimax"]
+];
+function groupModelName(model) {
+  const name = model.slice(model.lastIndexOf("/") + 1).toLowerCase();
+  return NAME_GROUPS.find(([pattern]) => pattern.test(name))?.[1] ?? null;
+}
+function modelFamilyOf(target, assignments, openCodeModels) {
+  const entry = target.engine === "opencode" && target.requested !== null ? openCodeModels?.get(target.requested) : void 0;
+  if (entry?.family !== void 0) {
+    return entry.family;
   }
-  if (model === null || model === void 0) {
-    return null;
+  const names = [
+    ...entry !== void 0 ? [entry.key, entry.providerModel] : target.requested !== null ? [target.requested] : [],
+    ...target.served !== null ? [target.served] : []
+  ];
+  for (const name of names) {
+    if (Object.hasOwn(assignments, name)) {
+      return assignments[name] ?? null;
+    }
   }
-  return openCodeModels?.get(model)?.family ?? null;
+  for (const name of names) {
+    const family = groupModelName(name);
+    if (family !== null) {
+      return family;
+    }
+  }
+  return null;
+}
+function singleFamilyOf(families) {
+  const distinct = new Set(families);
+  const [family] = distinct;
+  return families.length >= 2 && distinct.size === 1 && typeof family === "string" ? { family, workers: families.length } : null;
 }
 
 // src/progress.ts
@@ -26573,23 +26634,22 @@ var BODY_RETURNED_LEG = {
   dispatching: "its dispatch record was still landing, so no outcome was observed"
 };
 var BODY_RETURNED = "the script returned without awaiting this worker";
-function identifiedResult(options, output, record, openCodeModels) {
+function identifiedResult(options, output, record, familyOf) {
   return {
     label: options.label ?? null,
     phase: record.phase,
     output,
     failure: record.status === "complete" ? null : settledFailureAccount(record),
-    answeredBy: answeringTarget(record, openCodeModels)
+    answeredBy: answeringTarget(record, familyOf)
   };
 }
-function answeringTarget(record, openCodeModels) {
+function answeringTarget(record, familyOf) {
   if (record.answeredBy === null) {
     return null;
   }
-  const { engine } = record.answeredBy;
+  const { engine, model: served } = record.answeredBy;
   const requested = record.attempts.findLast((attempt) => attempt.status === "complete")?.target.model ?? null;
-  const model = record.answeredBy.model ?? requested;
-  return { engine, model, family: modelFamilyOf(engine, requested ?? model, openCodeModels) };
+  return { engine, model: served ?? requested, family: familyOf({ engine, requested, served }) };
 }
 function identifiedFailure(options, error, phase = options.phase ?? null) {
   if (options.identity !== true) return error;
@@ -26689,6 +26749,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /** The machine's named targets, or null where the run was given none (every name is then unbound). */
   #namedTargets;
   #effortPolicy;
+  /** The machine's model family assignments, outranking the harness's grouping of model names. */
+  #modelFamilies;
+  /** Every agent record the run has opened, in dispatch order, for the single-family judgement at its end. */
+  #openedAgentRecords = [];
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
   #runRecorder = null;
@@ -26754,6 +26818,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     this.#namedTargets = options.namedTargets ?? null;
     this.#effortPolicy = options.effortPolicy ?? null;
+    this.#modelFamilies = options.modelFamilies ?? {};
     if (this.#effortPolicy !== null) {
       assertEffortSection(this.#effortPolicy.section, (key, detail) => {
         throw new InvalidAgentOptionValueError(`effort.${key}`, null, detail);
@@ -26861,6 +26926,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.lean !== void 0 ? { lean: options.lean } : {},
       ...options.namedTargets !== void 0 ? { namedTargets: options.namedTargets } : {},
       ...options.effortPolicy !== void 0 ? { effortPolicy: options.effortPolicy } : {},
+      ...options.modelFamilies !== void 0 ? { modelFamilies: options.modelFamilies } : {},
       ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : {},
       ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {}
     });
@@ -27041,7 +27107,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       unsettled.stage = "admitting";
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, chain, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
+        return identifiedResult(options, output, agentRecord, (target) => this.modelFamilyOf(target));
       }
       return output;
     } catch (error) {
@@ -27173,7 +27239,44 @@ var EnsembleRuntime = class _EnsembleRuntime {
       validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
     }
     const model = resolved.model ?? null;
-    return { target: name, bound: true, engine: engine.name, model, family: modelFamilyOf(engine.name, model, this.openCodeModelRegistry) };
+    return { target: name, bound: true, engine: engine.name, model, family: this.modelFamilyOf({ engine: engine.name, requested: model, served: null }) };
+  }
+  /**
+   * The model family `target` runs on, judged from its model under this
+   * run's family assignments and opencode registry; see
+   * {@link modelFamilyOf}. Null where the harness cannot tell.
+   */
+  modelFamilyOf(target) {
+    return modelFamilyOf(target, this.#modelFamilies, this.openCodeModelRegistry);
+  }
+  /**
+   * Whether every worker this run dispatched resolved onto one model
+   * family, judged at the run's end for its stderr notice and manifest.
+   * A worker is a one-shot call or a multi-turn session, whose turns are
+   * one worker; one that never reached an attempt ran on nothing and is
+   * not counted. Each is judged on the target it resolved to at dispatch —
+   * its first attempt's, whatever a fallback chain later moved it to — with
+   * the model that target served standing in where the call named none.
+   * The family and the worker count when two or more workers share one
+   * family, null where they span families, where fewer than two ran, or
+   * where any worker's family is unknown.
+   */
+  singleFamily() {
+    const seen = /* @__PURE__ */ new Set();
+    const families = [];
+    for (const record of this.#openedAgentRecords) {
+      const first = record.attempts[0];
+      if (first === void 0 || record.session !== null && seen.has(record.session.id)) {
+        continue;
+      }
+      if (record.session !== null) {
+        seen.add(record.session.id);
+      }
+      const { engine, model } = first.target;
+      const served = record.attempts.find((attempt) => attempt.target.engine === engine && attempt.target.model === model && attempt.resolvedModel !== null)?.resolvedModel ?? null;
+      families.push(this.modelFamilyOf({ engine, requested: model, served }));
+    }
+    return singleFamilyOf(families);
   }
   /**
    * Judge a declared chain's named entries against this run's bindings
@@ -27363,7 +27466,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
           if (options.identity === true) {
-            return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
+            return identifiedResult(options, output, agentRecord, (target) => this.modelFamilyOf(target));
           }
           return output;
         } catch (error) {
@@ -28898,7 +29001,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     };
   }
   #newAgentRecord(id, engine, prompt, options, fallbackSource, namedTarget, stripRoutes = null, leanRoute = null) {
-    return {
+    const record = {
       id,
       engine,
       headerIdentity: "original_request",
@@ -28938,6 +29041,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       executionMs: 0,
       attempts: []
     };
+    this.#openedAgentRecords.push(record);
+    return record;
   }
 };
 async function createRuntime(options = {}) {
@@ -36435,6 +36540,7 @@ async function runEnsembleCli(argv, options = {}) {
       openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
       effortPolicy: ambientSettings.effortPolicy,
       namedTargets: ambientSettings.namedTargets,
+      modelFamilies: ambientSettings.modelFamilies,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
@@ -36502,7 +36608,8 @@ async function runEnsembleCli(argv, options = {}) {
         workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
         effortPolicy: ambientSettings.effortPolicy,
-        namedTargets: ambientSettings.namedTargets
+        namedTargets: ambientSettings.namedTargets,
+        singleFamilyNotice: ambientSettings.singleFamilyNotice
       });
       runtime.setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
@@ -36799,6 +36906,7 @@ async function runEnsembleCli(argv, options = {}) {
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError2(error)}
 `);
       }
+      const singleFamily = ambientSettings.singleFamilyNotice ? reportSingleFamily(runtime, stderr) : null;
       progress?.finish();
       if (finalRecord !== null && finalRecord.status !== "complete" && terminalError !== null) {
         const serialised = serialiseResult(partialResult(runtime, finalRecord.status, terminalError));
@@ -36815,7 +36923,8 @@ async function runEnsembleCli(argv, options = {}) {
           await runRecordWriter.finish({
             ...finalRecord ?? { status: "failed", exitCode: 1, result: null },
             ...teardownError !== null ? { status: "failed", exitCode: 1 } : {},
-            error: terminalError ?? teardownError
+            error: terminalError ?? teardownError,
+            singleFamily
           });
         }
       } catch (error) {
@@ -37056,6 +37165,14 @@ function reportLegsUnfinishedAtReturn(runtime, stderr) {
     stderr.write(`[teardown] the script returned without awaiting agent ${leg.id}${label}: ${fate}, its answer lost \u2014 await the call to keep it
 `);
   }
+}
+function reportSingleFamily(runtime, stderr) {
+  const judgement = runtime?.singleFamily?.() ?? null;
+  if (judgement !== null) {
+    stderr.write(`[single-family] all ${judgement.workers} workers resolved onto one model family: ${judgement.family}
+`);
+  }
+  return judgement;
 }
 function lateEndingRank(error) {
   return error instanceof WorkflowUncaughtExceptionError ? 2 : error instanceof WorkflowProcessExitError ? 1 : 0;

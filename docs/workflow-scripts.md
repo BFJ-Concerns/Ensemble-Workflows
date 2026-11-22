@@ -535,7 +535,11 @@ is an availability failure, so a remaining fallback entry runs instead.
   Ensemble, refuses a name it does not list; a model naming no provider is
   refused before the worker spawns. Ensemble keeps no list of zcode models.
 - `effort` clamps to the levels zcode lists for the model, keeping only
-  canonical levels (a gateway's `ultra` is left out). A call with no
+  canonical levels (a gateway's `ultra` is left out). The listing outranks
+  Ensemble's built-in table, whose rows describe what other routes serve
+  (Codex serves `none` on `gpt-6-luna`; the gateway, through zcode, does
+  not); only a machine `levels` map for the `zcode:provider/model` key
+  outranks the listing. A call with no
   `effort` runs at the model's highest canonical listed level, zcode's own
   choice for a model picked without one; a model listing only `disabled` and
   `enabled` runs at the last of those.

@@ -51,6 +51,7 @@ const UPSTREAM_HELP = [
 const LISTING = {
   models: [
     { provider: "gateway", model: "gpt-6.2-sol", reasoningLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+    { provider: "gateway", model: "gpt-6-luna", reasoningLevels: ["low", "medium", "high", "xhigh", "max"] },
     { provider: "gateway", model: "claude-opus-5-5[1m]", reasoningLevels: ["low", "medium", "high", "xhigh", "max"] },
     { provider: "nanogpt", model: "z-ai/glm-5.3-flash", reasoningLevels: ["disabled", "enabled"] }
   ],
@@ -243,6 +244,23 @@ test("a requested effort clamps to the levels zcode lists for the model", async 
     await runtime.agent("go", { engine: "zcode", model: "gateway/claude-opus-5-5[1m]", effort: "minimal" });
     assert.equal(runner.runs[0]?.reasoningLevel, "low");
     assert.equal(records.at(-1)?.effortResolution?.served?.source, "engine-report");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("zcode's listing, not the built-in table, decides the levels a zcode model serves", async () => {
+  // The built-in table gives gpt-6-luna `none` (its Codex route); the
+  // gateway lists low..max for it, and zcode refuses `none`.
+  const runner = new FakeZCodeRunner([finishedRun("sess_a", "ok", "gpt-6-luna"), finishedRun("sess_b", "ok", "gpt-6-luna")]);
+  const { runtime, records } = runtimeWith(runner);
+  try {
+    await runtime.agent("go", { engine: "zcode", model: "gateway/gpt-6-luna", effort: "minimal" });
+    await runtime.agent("go", { engine: "zcode", model: "gateway/gpt-6-luna", effort: "none" });
+    assert.deepEqual(runner.runs.map((run) => run.reasoningLevel), ["low", "low"]);
+    assert.deepEqual(records.filter((record) => record.status === "complete").map((record) => record.effortResolution?.served), [
+      { source: "engine-report", level: "low" }, { source: "engine-report", level: "low" }
+    ]);
   } finally {
     await runtime.close();
   }

@@ -26072,13 +26072,12 @@ var ZCodeEngineAdapter = class {
   schedule(task) {
     return this.#scheduler.schedule(task);
   }
-  modelIdentity(model) {
-    try {
-      return parseZCodeModel(model).model.split("/").at(-1);
-    } catch {
-      return void 0;
-    }
-  }
+  // No `modelIdentity`, and a report naming no identity: a zcode model's
+  // served levels are the ones zcode lists for it on that provider, so the
+  // built-in table, whose rows describe the levels other routes serve (the
+  // Codex route's `none` on gpt-6-luna, which the gateway refuses through
+  // zcode), never stands in for the listing. The machine's own `levels`
+  // map for a `zcode:provider/model` key still outranks it.
   async effortReport(model) {
     if (model === void 0) return null;
     let selection;
@@ -26092,7 +26091,7 @@ var ZCodeEngineAdapter = class {
     const listed = abilities.listing.levels(selection);
     if (listed === void 0) return null;
     const levels2 = Object.fromEntries(listed.filter(isCanonicalEffort).map((level) => [level, level]));
-    return { identity: this.modelIdentity(model) ?? null, levels: Object.keys(levels2).length === 0 ? null : levels2 };
+    return { identity: null, levels: Object.keys(levels2).length === 0 ? null : levels2 };
   }
   createInvocation(prompt, options) {
     if (this.#closed) throw new EngineShutdownError(this.name);

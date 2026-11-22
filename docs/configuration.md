@@ -590,7 +590,9 @@ model identity (including a routed model's identity), then the engine's
 per-model report. The table outranks a listing that omits a served level:
 `gpt-6-luna` accepts `none` with no configuration. Codex reads `model/list`,
 including hidden models and subsequent pages; Claude reports its CLI's
-native levels. If no source knows the model, the bounded canonical level
+native levels. On zcode the built-in table is never consulted: zcode's
+listing of the model on its provider is what the gateway serves, so it
+alone stands after the machine map. If no source knows the model, the bounded canonical level
 passes through for the engine to judge. With no model pin, discovery uses
 the engine's default model where it can identify it.
 

@@ -484,6 +484,7 @@ own environment.
 | `strip` | `--strip` | None | Capabilities stripped from every worker, added to each call's own `strip` |
 | `lean` | `--lean` | `false` | Start every worker without the operator's interactive context; per-call `lean: false` cannot lift it |
 | `holdScope` | `--hold-scope` | `ENSEMBLE_HOLD_SCOPE`, else the shared scope | Hold scope for the runtime's runs |
+| `dispatchRemap` | `--remap` | None | A fresh `DispatchRemap` instance for this run, constructed with an array of rule strings |
 | `workerScope` | `--worker-scope` | `worker` | Systemd scope grouping (`worker` or `run`); the library uses the explicit option or its default |
 
 These options have no flag or environment variable:
@@ -500,7 +501,6 @@ These options have no flag or environment variable:
 | `effortPolicy` | None | Machine effort policy `{ section, source }`, with the [effort](#effort) section and the file it came from; pass it explicitly because the library reads no machine configuration |
 | `modelFamilies` | None | The [`model_families`](#model_families) map, outranking Ensemble's grouping of model names wherever a family is judged |
 | `namedTargets` | None | The names calls may give as `target`: `{ bindings, source }`, where `bindings` is the `targets` map and `source` the file it came from, which every refusal names. Without it, every named target is refused as unbound |
-| `dispatchRemap` | `--remap` | A fresh `DispatchRemap` instance for this run, constructed with an array of rule strings |
 | `machineFallback` | None | `{ chains, source }`, where `chains` has the shape of the machine `fallback` map and `source` names its source in validation errors |
 | `openCodeModelSource` | `{ kind: "caller" }` | Where `openCodeModels` were declared: `{ kind: "machine-config", file }` for models taken from a machine configuration file, `{ kind: "caller" }` otherwise. An opencode refusal draws on it to say where models are declared |
 

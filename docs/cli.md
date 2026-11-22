@@ -52,8 +52,8 @@ Run options (before the script path):
 Agent options (after agent, before the prompt):
   --model <model>  --effort <effort>  --label <label>  --phase <phase>
   --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'
-  --fallback '<json>|@file'  --timeout-ms ms
-  --max-attempts N  --task <identity>  --strip capability  --budget engine=N
+  --fallback '<json>|@file'  --timeout-ms ms  --max-attempts N
+  --task <identity>  --strip capability  --budget engine=N
   --agent-ceiling N|null  --concurrency engine=N  --timeout ms
   --caller-identity <identity>  --hold-scope <scope>  --remap key=engine[:model]
   --worker-scope worker|run  --lean
@@ -92,8 +92,8 @@ a script argument spelled like a run option, put `--` before the script path:
 | `--remap key=engine[:model]` | Repeatable [dispatch remap](workflow-scripts.md#dispatch-remap) rule. The flag list overrides `ENSEMBLE_DISPATCH_REMAP` |
 | `--lean` | Start every worker in the run without the operator's interactive context; an engine that cannot arrange it refuses the dispatch before the worker spawns (see [Lean workers](workflow-scripts.md#lean-workers)) |
 
-Only `--budget`, `--concurrency`, and `--strip` may be repeated; every other
-option may appear once. `--worker-scope`, `--concurrency` and `--agent-ceiling` sit on top of the
+`--budget`, `--concurrency`, `--strip` and `--remap` may be repeated.
+Every other option may appear once. `--worker-scope`, `--concurrency` and `--agent-ceiling` sit on top of the
 environment and configuration-file layers described in
 [Configuration](configuration.md).
 

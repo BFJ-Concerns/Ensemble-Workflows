@@ -8,6 +8,7 @@ import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
 import { effectiveLean, resolveLeanStart } from "./lean-start.js";
+import { LIVE_TRANSCRIPTS } from "./live-transcript.js";
 import type { DischargedLeanStart } from "./lean-start.js";
 import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
@@ -2191,6 +2192,7 @@ export class EnsembleRuntime {
     let observedEffort: string | null = null;
     let result: EngineAttemptResult | undefined;
     let active = true;
+    const liveTranscript = LIVE_TRANSCRIPTS[engine];
     let transcriptPath: string | undefined;
     const pending = new Set<Promise<void>>();
     const enqueue = (write: () => Promise<void>): void => {
@@ -2239,12 +2241,14 @@ export class EnsembleRuntime {
           attemptSpend += event.last.totalTokens;
           this.progress.noteAgentSpend(agentId, previousSpend + attemptSpend);
         },
-        ...(engine === "codex" && recorder !== null ? {
+        // The engine's row in LIVE_TRANSCRIPTS says which observer it is
+        // handed; an engine with no row has no live transcript.
+        ...(liveTranscript?.held === "archive" && recorder !== null ? {
           onTranscriptEvent: (event: unknown) => enqueue(async () => {
-            const path = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            const path = await recorder.appendLiveTranscript(agentId, context.attempt, event);
             if (path != null) this.progress.noteAgentTranscript(agentId, path);
           })
-        } : engine === "claude" ? {
+        } : liveTranscript?.held === "engine" ? {
           onTranscriptPath: (path: string) => {
             if (path === transcriptPath || !active) return;
             transcriptPath = path;
@@ -2254,7 +2258,7 @@ export class EnsembleRuntime {
             }
             enqueue(async () => {
               try {
-                await recorder.recordClaudeTranscript(agentId, context.attempt, path);
+                await recorder.referenceEngineTranscript(agentId, context.attempt, path);
                 this.progress.noteAgentTranscript(agentId, path);
               } catch (error) {
                 transcriptPath = undefined;

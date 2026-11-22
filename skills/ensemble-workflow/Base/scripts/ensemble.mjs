@@ -16487,6 +16487,29 @@ function harnessVersion(fromUrl = import.meta.url) {
   return typeof version2 === "string" && version2.trim().length > 0 ? version2.trim() : "0.0.0";
 }
 
+// src/live-transcript.ts
+var CODEX_TRANSCRIPT = {
+  held: "archive",
+  filename: "transcript.codex.jsonl",
+  source: "codex-app-server-events"
+};
+var CLAUDE_TRANSCRIPT = {
+  held: "engine",
+  filename: "transcript.claude.jsonl",
+  source: "claude-session-jsonl"
+};
+var LIVE_TRANSCRIPTS = {
+  codex: CODEX_TRANSCRIPT,
+  claude: CLAUDE_TRANSCRIPT
+};
+function transcriptLine(event) {
+  return `${JSON.stringify(event)}
+`;
+}
+function transcriptContent(events) {
+  return events.map(transcriptLine).join("");
+}
+
 // src/usage-summary.ts
 function subtractUsage(total, previous) {
   const before = previous ?? {
@@ -16794,8 +16817,10 @@ var RunRecordWriter = class _RunRecordWriter {
   #agentBatch = null;
   #sealed = false;
   #currentAttempts = /* @__PURE__ */ new Map();
-  #liveCodex = /* @__PURE__ */ new Map();
-  #liveCodexHashes = /* @__PURE__ */ new Map();
+  /** The archive-held live transcript each attempt wrote, by `<agent>:<attempt>`, kept for the attempt's settlement. */
+  #liveTranscripts = /* @__PURE__ */ new Map();
+  /** The running digest of each such file, by path, so an append never re-reads what it has already written. */
+  #liveTranscriptHashes = /* @__PURE__ */ new Map();
   constructor(archiveDir, cwd, manifest) {
     this.archiveDir = archiveDir;
     this.#cwd = cwd;
@@ -17123,8 +17148,12 @@ var RunRecordWriter = class _RunRecordWriter {
       await this.#publishCurrentAttempt(id);
     });
   }
-  /** Reference Claude's own readable transcript without copying a growing file. */
-  async recordClaudeTranscript(id, attempt, transcriptPath) {
+  /**
+   * Publish the path of a transcript the engine holds itself as the running
+   * attempt's, without copying a growing file. Rejects where the file is
+   * not there to read. Ignored unless `attempt` is the live attempt.
+   */
+  async referenceEngineTranscript(id, attempt, transcriptPath) {
     await this.#serialise(async () => {
       if (this.#sealed) return;
       const current2 = this.#currentAttempts.get(id);
@@ -17134,27 +17163,44 @@ var RunRecordWriter = class _RunRecordWriter {
       await this.#publishCurrentAttempt(id);
     });
   }
-  /** Append an event before publishing its archive reference. */
-  async appendCodexTranscript(id, attempt, event) {
-    const content = `${JSON.stringify(event)}
-`;
+  /**
+   * Append one event to the running attempt's live transcript: a JSONL
+   * file in the archive that grows as the worker's output arrives, for an
+   * engine whose transcript the harness captures (`LIVE_TRANSCRIPTS`). The
+   * line is on disk before the file's path is published as the attempt's
+   * transcript, which the first line does. Returns the archive-relative
+   * path, or null where nothing was written: the archive is sealed,
+   * `attempt` is not the live attempt, or its engine has no such transcript.
+   *
+   * The file takes the name the attempt's settled artefact will have, so
+   * settlement meets it there (`#recordAgent`): an artefact with the same
+   * bytes leaves the file as it is, any other content replaces it, and an
+   * attempt that settles with no artefact of that name keeps the file,
+   * linked as a partial transcript. A writer that dies first leaves the
+   * path on `current_attempt`, from which the next run's sweep links it
+   * (`reconcileAbandonedAgentRecord`).
+   */
+  async appendLiveTranscript(id, attempt, event) {
+    const content = transcriptLine(event);
     return await this.#serialise(async () => {
       if (this.#sealed) return null;
       const current2 = this.#currentAttempts.get(id);
       if (current2?.attempt !== attempt) return null;
-      const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-transcript.codex.jsonl`;
+      const transcript = LIVE_TRANSCRIPTS[current2.target.engine];
+      if (transcript?.held !== "archive") return null;
+      const relativePath = attemptTranscriptPath(id, attempt, 1, transcript.filename, "jsonl");
       await mkdir3(path6.dirname(path6.join(this.archiveDir, relativePath)), { recursive: true });
       await appendFile(path6.join(this.archiveDir, relativePath), content);
-      const digest = this.#liveCodexHashes.get(relativePath) ?? { hash: createHash2("sha256"), size: 0 };
+      const digest = this.#liveTranscriptHashes.get(relativePath) ?? { hash: createHash2("sha256"), size: 0 };
       digest.hash.update(content);
       digest.size += Buffer.byteLength(content);
-      this.#liveCodexHashes.set(relativePath, digest);
+      this.#liveTranscriptHashes.set(relativePath, digest);
       this.#files.set(relativePath, {
         path: relativePath,
         size: digest.size,
         sha256: digest.hash.copy().digest("hex")
       });
-      this.#liveCodex.set(`${id}:${attempt}`, relativePath);
+      this.#liveTranscripts.set(`${id}:${attempt}`, { path: relativePath, source: transcript.source });
       if (current2.transcript !== relativePath) {
         current2.transcript = relativePath;
         await this.#publishCurrentAttempt(id);
@@ -17240,15 +17286,17 @@ var RunRecordWriter = class _RunRecordWriter {
     const transcriptRefs = [];
     for (const attempt of record.attempts) {
       let index = 0;
+      const live = this.#liveTranscripts.get(`${record.id}:${attempt.attempt}`);
+      let liveSettled = false;
       for (const transcript of attempt.transcripts) {
         if (transcript.content.length === 0) {
           continue;
         }
         index += 1;
-        const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
-        const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
+        const relativePath = attemptTranscriptPath(record.id, attempt.attempt, index, transcript.filename, transcript.format);
         const liveFile = this.#files.get(relativePath);
-        const liveMatches = this.#liveCodex.get(`${record.id}:${attempt.attempt}`) === relativePath && liveFile?.sha256 === sha256(transcript.content) && (await stat2(path6.join(this.archiveDir, relativePath)).catch(() => null))?.size === liveFile.size;
+        if (live?.path === relativePath) liveSettled = true;
+        const liveMatches = live?.path === relativePath && liveFile?.sha256 === sha256(transcript.content) && (await stat2(path6.join(this.archiveDir, relativePath)).catch(() => null))?.size === liveFile.size;
         if (liveMatches) {
           await this.#trackFile(relativePath);
         } else {
@@ -17262,6 +17310,18 @@ var RunRecordWriter = class _RunRecordWriter {
           partial: transcript.partial === true,
           thread_id: transcript.threadId ?? null,
           session_id: transcript.sessionId ?? null
+        });
+      }
+      if (live !== void 0 && !liveSettled && await stat2(path6.join(this.archiveDir, live.path)).catch(() => null) !== null) {
+        await this.#trackFile(live.path);
+        transcriptRefs.push({
+          attempt: attempt.attempt,
+          path: live.path,
+          format: "jsonl",
+          source: live.source,
+          partial: true,
+          thread_id: null,
+          session_id: null
         });
       }
     }
@@ -17635,13 +17695,14 @@ async function reconcileAbandonedAgentRecord(runDir, record, abandonment) {
     attempts.push({ ...abandoned });
     if (abandoned.resolved_model !== null) reconciled.resolved_model = abandoned.resolved_model;
     if (abandoned.resolved_effort !== null) reconciled.resolved_effort = abandoned.resolved_effort;
-    if (live.transcript !== null && (live.target.engine === "codex" || live.target.engine === "claude")) {
-      const engine = live.target.engine;
-      const source = engine === "claude" ? live.transcript : path6.join(runDir, live.transcript);
+    const transcript = LIVE_TRANSCRIPTS[live.target.engine];
+    if (live.transcript !== null && transcript !== void 0) {
+      const engineHeld = transcript.held === "engine";
+      const source = engineHeld ? live.transcript : path6.join(runDir, live.transcript);
       const content = await readFile4(source).catch(() => null);
       if (content !== null) {
-        const relativePath = engine === "claude" ? `agents/${padId(reconciled.id)}/attempt-${padAttempt(live.attempt)}-1-transcript.claude.jsonl` : live.transcript;
-        if (engine === "claude") await writeStandaloneText(path6.join(runDir, relativePath), content);
+        const relativePath = engineHeld ? attemptTranscriptPath(reconciled.id, live.attempt, 1, transcript.filename, "jsonl") : live.transcript;
+        if (engineHeld) await writeStandaloneText(path6.join(runDir, relativePath), content);
         files.push({ path: relativePath, size: content.length, sha256: createHash2("sha256").update(content).digest("hex") });
         const transcripts = reconciled.transcripts;
         if (!transcripts.some((entry) => entry.attempt === live.attempt && entry.path === relativePath)) {
@@ -17649,7 +17710,7 @@ async function reconcileAbandonedAgentRecord(runDir, record, abandonment) {
             attempt: live.attempt,
             path: relativePath,
             format: "jsonl",
-            source: engine === "claude" ? "claude-session-jsonl" : "codex-app-server-events",
+            source: transcript.source,
             partial: true,
             thread_id: null,
             session_id: null
@@ -17872,6 +17933,9 @@ function padId(id) {
 }
 function padAttempt(attempt) {
   return String(attempt).padStart(3, "0");
+}
+function attemptTranscriptPath(id, attempt, index, filename, format) {
+  return `agents/${padId(id)}/attempt-${padAttempt(attempt)}-${index}-${safeName(filename, format === "jsonl" ? "jsonl" : "txt")}`;
 }
 function safeName(filename, suffix) {
   const cleaned = filename.replace(/[^a-zA-Z0-9._-]/g, "-");
@@ -21789,9 +21853,9 @@ var ClaudeCliControlPlane = class {
           tokenUsageEvents: [],
           diagnostics,
           ...transcript === null ? {} : { transcripts: [{
-            filename: "transcript.claude.jsonl",
+            filename: CLAUDE_TRANSCRIPT.filename,
             format: "jsonl",
-            source: "claude-session-jsonl",
+            source: CLAUDE_TRANSCRIPT.source,
             sessionId: registered.sessionId,
             content: transcript,
             partial: true
@@ -23298,9 +23362,9 @@ var ClaudeEngineInvocation = class {
       diagnostics: { ...handle.launchFailure?.diagnostics, worktrees: enteredWorktrees(entries) },
       transcripts: [
         {
-          filename: "transcript.claude.jsonl",
+          filename: CLAUDE_TRANSCRIPT.filename,
           format: "jsonl",
-          source: "claude-session-jsonl",
+          source: CLAUDE_TRANSCRIPT.source,
           sessionId: handle.sessionId,
           content: transcript.text
         }
@@ -23340,7 +23404,7 @@ var ClaudeEngineInvocation = class {
     let handle = this.#handle;
     let transcript;
     if (this.#handle === null) {
-      const retained = failedTurnResultOf(error)?.transcripts?.find((item) => item.source === "claude-session-jsonl");
+      const retained = failedTurnResultOf(error)?.transcripts?.find((item) => item.source === CLAUDE_TRANSCRIPT.source);
       if (retained?.sessionId === void 0) return null;
       handle = { sessionId: retained.sessionId };
       transcript = { text: retained.content, entries: parseTranscriptText(retained.content) };
@@ -23569,9 +23633,9 @@ function failedTurnResult(error, evidence, usageEvent) {
     ...evidence === null ? {} : {
       transcripts: [
         {
-          filename: "transcript.claude.jsonl",
+          filename: CLAUDE_TRANSCRIPT.filename,
           format: "jsonl",
-          source: "claude-session-jsonl",
+          source: CLAUDE_TRANSCRIPT.source,
           sessionId: evidence.handle.sessionId,
           content: evidence.transcript.text,
           partial: !evidence.completed
@@ -24645,9 +24709,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     const transcript = this.#transcripts.get(threadId);
     if (transcript !== void 0 && transcript.events.length > 0) {
       attachPartialTranscript(error, {
-        filename: "transcript.codex.jsonl",
+        filename: CODEX_TRANSCRIPT.filename,
         format: "jsonl",
-        source: "codex-app-server-events",
+        source: CODEX_TRANSCRIPT.source,
         threadId,
         content: this.#transcriptText(threadId),
         partial: turn.completedAt === null
@@ -24691,9 +24755,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       transcriptCapture: transcript === void 0 ? "lost" : "retained",
       transcripts: [
         {
-          filename: "transcript.codex.jsonl",
+          filename: CODEX_TRANSCRIPT.filename,
           format: "jsonl",
-          source: "codex-app-server-events",
+          source: CODEX_TRANSCRIPT.source,
           threadId,
           content: this.#transcriptText(threadId)
         }
@@ -24727,8 +24791,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (transcript === void 0) {
       return "";
     }
-    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}
-`;
+    return transcriptContent(transcript.events);
   }
   #createTurnState(threadId, timeoutMs, onFirstOutput) {
     let resolveTurn = () => void 0;
@@ -25356,7 +25419,7 @@ var OpenCodeEngineInvocation = class {
           filename: "transcript.opencode.jsonl",
           format: "jsonl",
           source: "opencode run --format json",
-          content: transcriptContent(stdout, exportData),
+          content: transcriptContent2(stdout, exportData),
           ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
         }
       ]
@@ -25788,7 +25851,7 @@ function aggregateOpenCodeUsage(tokenSnapshots) {
     totalTokens
   };
 }
-function transcriptContent(stdout, exportData) {
+function transcriptContent2(stdout, exportData) {
   const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
   if (exportData !== null) {
     lines.push(JSON.stringify({ type: "session/export", data: exportData }));
@@ -28410,6 +28473,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let observedEffort = null;
     let result;
     let active = true;
+    const liveTranscript = LIVE_TRANSCRIPTS[engine];
     let transcriptPath;
     const pending = /* @__PURE__ */ new Set();
     const enqueue = (write) => {
@@ -28458,12 +28522,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
           attemptSpend += event.last.totalTokens;
           this.progress.noteAgentSpend(agentId, previousSpend + attemptSpend);
         },
-        ...engine === "codex" && recorder !== null ? {
+        // The engine's row in LIVE_TRANSCRIPTS says which observer it is
+        // handed; an engine with no row has no live transcript.
+        ...liveTranscript?.held === "archive" && recorder !== null ? {
           onTranscriptEvent: (event) => enqueue(async () => {
-            const path22 = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            const path22 = await recorder.appendLiveTranscript(agentId, context.attempt, event);
             if (path22 != null) this.progress.noteAgentTranscript(agentId, path22);
           })
-        } : engine === "claude" ? {
+        } : liveTranscript?.held === "engine" ? {
           onTranscriptPath: (path22) => {
             if (path22 === transcriptPath || !active) return;
             transcriptPath = path22;
@@ -28473,7 +28539,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
             }
             enqueue(async () => {
               try {
-                await recorder.recordClaudeTranscript(agentId, context.attempt, path22);
+                await recorder.referenceEngineTranscript(agentId, context.attempt, path22);
                 this.progress.noteAgentTranscript(agentId, path22);
               } catch (error) {
                 transcriptPath = void 0;

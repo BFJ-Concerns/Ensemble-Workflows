@@ -785,7 +785,9 @@ attempt. Each captured app-server event is appended as it arrives. The
 same path appears in `transcripts` at settlement, with its final size and
 digest in the manifest's files table. A failed live write is reported as
 `runRecord/writeFailed`; settlement repairs an incomplete Codex file from
-the engine's captured transcript when that capture is available.
+the engine's captured transcript when that capture is available. An attempt
+that settles without a captured transcript keeps the live file as it stands:
+it is linked in `transcripts` with `partial: true`.
 
 Readers should reopen the atomically replaced `agent.json` as they poll.
 Live transcripts grow independently of the record and can end with a
@@ -1080,8 +1082,9 @@ The fields present throughout a record's lifetime are:
   run's own ending.
 - `transcripts`: array; each entry has `attempt`, `path`, `format`, `source`,
   `session_id`, `thread_id`, and `partial` (`true` when the turn ended before
-  completion, and always on an abandoned attempt's transcript). Empty when
-  none were archived.
+  completion, always on an abandoned attempt's transcript, and on a live
+  file kept because the attempt settled without a captured transcript).
+  Empty when none were archived.
 - `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise
   why it is empty: `"record-unsettled"`, `"no-attempt-ran"`,
   `"worker-interrupted"`, `"worker-timed-out"`, `"substrate-never-started"`

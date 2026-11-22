@@ -2730,12 +2730,12 @@ test("live attempts publish readable references, append in order and settle with
     }, "execution start must be readable before transcript discovery");
     const external = path.join(store, "claude.jsonl");
     await writeFile(external, "{}\n");
-    await writer.recordClaudeTranscript(1, 1, external);
+    await writer.referenceEngineTranscript(1, 1, external);
     assert.equal(await readFile((await readAgent()).current_attempt.transcript, "utf8"), "{}\n");
     const event = { message: "first" };
-    const first = writer.appendCodexTranscript(1, 1, event);
+    const first = writer.appendLiveTranscript(1, 1, event);
     event.message = "mutated";
-    const publishedPaths = await Promise.all([first, writer.appendCodexTranscript(1, 1, { message: "second" })]);
+    const publishedPaths = await Promise.all([first, writer.appendLiveTranscript(1, 1, { message: "second" })]);
     const relativePath = (await readAgent()).current_attempt.transcript;
     assert.deepEqual(publishedPaths, [relativePath, relativePath], "status producers receive the exact published archive reference");
     const transcriptPath = path.join(writer.archiveDir, relativePath);
@@ -2750,7 +2750,7 @@ test("live attempts publish readable references, append in order and settle with
     assert.equal(final.current_attempt, undefined);
     assert.equal(final.transcripts[0].path, relativePath);
     assert.equal(await readFile(transcriptPath, "utf8"), content);
-    assert.equal(await writer.appendCodexTranscript(1, 1, { late: true }), null);
+    assert.equal(await writer.appendLiveTranscript(1, 1, { late: true }), null);
     assert.equal(await readFile(transcriptPath, "utf8"), content);
     assert.equal(writer.manifest.files.find((file) => file.path === relativePath)?.sha256, sha256(Buffer.from(content)));
     const comparison = agentRecord(2, "codex", null, 3);
@@ -2760,8 +2760,8 @@ test("live attempts publish readable references, append in order and settle with
     await writer.finish({ status: "complete", exitCode: 0, result: true });
     const before = await readFile(agentPath, "utf8");
     await writer.recordAttemptStart(1, liveStart(2, "late"));
-    await writer.recordClaudeTranscript(1, 1, external);
-    await writer.appendCodexTranscript(1, 1, { sealed: true });
+    await writer.referenceEngineTranscript(1, 1, external);
+    await writer.appendLiveTranscript(1, 1, { sealed: true });
     assert.equal(await readFile(agentPath, "utf8"), before);
     assert.equal(await readFile(transcriptPath, "utf8"), content);
   } finally {
@@ -2799,10 +2799,10 @@ test("live Codex appends avoid transcript rereads and settled artefact rewrites"
     syncBuiltinESMExports();
     let agentBefore;
     try {
-      await writer.appendCodexTranscript(1, 2, { text: "£😀" });
+      await writer.appendLiveTranscript(1, 2, { text: "£😀" });
       agentBefore = await stat(path.join(writer.archiveDir, "agents/000001/agent.json"), { bigint: true });
       await Promise.all(Array.from({ length: 8 }, (_, index) =>
-        writer.appendCodexTranscript(1, 2, { index })));
+        writer.appendLiveTranscript(1, 2, { index })));
       assert.equal(reads.includes(transcriptPath), false);
       assert.equal(reads.includes(previousPath), false, "live appends must not reread settled artefacts");
     } finally {
@@ -2853,13 +2853,13 @@ test("ending an attempt clears live metadata and rejects stale transcript update
     const agentPath = path.join(writer.archiveDir, "agents/000001/agent.json");
     const readAgent = async () => JSON.parse(await readFile(agentPath, "utf8"));
     await writer.recordAttemptStart(1, liveStart(1, "2026-11-05T12:00:00Z"));
-    await writer.appendCodexTranscript(1, 1, { first: true });
+    await writer.appendLiveTranscript(1, 1, { first: true });
     const transcript = path.join(writer.archiveDir, (await readAgent()).current_attempt.transcript);
     await writer.recordAttemptEnd(1, 2);
     assert.equal((await readAgent()).current_attempt.attempt, 1);
     await writer.recordAttemptEnd(1, 1);
     assert.equal((await readAgent()).current_attempt, undefined, "ending the active attempt must clear live metadata");
-    await writer.appendCodexTranscript(1, 1, { stale: true });
+    await writer.appendLiveTranscript(1, 1, { stale: true });
     assert.equal(await readFile(transcript, "utf8"), '{"first":true}\n');
     await writer.recordAttemptStart(1, liveStart(2, "2026-11-05T12:00:01Z"));
     await writer.recordAttemptEnd(1, 1);
@@ -2893,12 +2893,12 @@ test("settlement restores complete Codex capture after a failed live append", as
     const spy = t.mock.method(fsPromises, "appendFile", async () => { throw new Error("disk full"); });
     syncBuiltinESMExports();
     try {
-      await assert.rejects(writer.appendCodexTranscript(1, 1, { first: true }), /disk full/);
+      await assert.rejects(writer.appendLiveTranscript(1, 1, { first: true }), /disk full/);
     } finally {
       spy.mock.restore();
       syncBuiltinESMExports();
     }
-    await writer.appendCodexTranscript(1, 1, { second: true });
+    await writer.appendLiveTranscript(1, 1, { second: true });
     const content = '{"first":true}\n{"second":true}\n';
     record.attempts[0]!.transcripts = [{ filename: "transcript.codex.jsonl", format: "jsonl", source: "codex-app-server-events", content }];
     await writer.recordAgent(record);
@@ -2908,6 +2908,56 @@ test("settlement restores complete Codex capture after a failed live append", as
     assert.equal(await readFile(path.join(writer.archiveDir, transcript), "utf8"), content,
       "settlement must repair the event lost by the failed live append");
     assert.equal(writer.manifest.files.find((file) => file.path === transcript)?.sha256, sha256(Buffer.from(content)));
+  } finally { await rm(store, { recursive: true, force: true }); }
+});
+
+test("an attempt that settles with no transcript of its own keeps its live transcript, linked as partial", async () => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-live-kept-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store, cwd: process.cwd(), runUuid: "live-kept", workflowPath: path.join(store, "workflow.js"),
+    workflowSource: "return true;", args: [], cliFlags: { jsonArgs: false }
+  });
+  try {
+    const record = agentRecord(1, "codex", null, 3);
+    const running = structuredClone(record);
+    running.status = "in-progress";
+    running.attempts = [];
+    await writer.recordAgent(running);
+    await writer.recordAttemptStart(1, liveStart(1, "2026-11-05T12:00:00Z"));
+    const transcript = await writer.appendLiveTranscript(1, 1, { first: true });
+    assert.equal(transcript, "agents/000001/attempt-001-1-transcript.codex.jsonl");
+    // The worker was cancelled before its engine assembled a transcript.
+    record.status = "interrupted";
+    record.attempts[0]!.transcripts = [];
+    await writer.recordAgent(record);
+    const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+    assert.deepEqual(agent.transcripts, [{
+      attempt: 1, path: transcript, format: "jsonl", source: "codex-app-server-events",
+      partial: true, thread_id: null, session_id: null
+    }]);
+    assert.equal(agent.transcripts_unavailable, null);
+    const content = '{"first":true}\n';
+    assert.equal(await readFile(path.join(writer.archiveDir, transcript), "utf8"), content);
+    assert.equal(writer.manifest.files.find((file) => file.path === transcript)?.sha256, sha256(Buffer.from(content)));
+  } finally { await rm(store, { recursive: true, force: true }); }
+});
+
+test("an engine that holds its own transcript has no live file written for it", async () => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-live-engine-held-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store, cwd: process.cwd(), runUuid: "live-engine-held", workflowPath: path.join(store, "workflow.js"),
+    workflowSource: "return true;", args: [], cliFlags: { jsonArgs: false }
+  });
+  try {
+    const running = agentRecord(1, "claude", null, 3);
+    running.status = "in-progress";
+    running.attempts = [];
+    await writer.recordAgent(running);
+    await writer.recordAttemptStart(1, { ...liveStart(1, "2026-11-05T12:00:00Z"), target: { engine: "claude", model: null } });
+    assert.equal(await writer.appendLiveTranscript(1, 1, { ignored: true }), null);
+    const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+    assert.equal(agent.current_attempt.transcript, null);
+    assert.deepEqual(writer.manifest.files.filter((file) => file.path.includes("transcript")), []);
   } finally { await rm(store, { recursive: true, force: true }); }
 });
 
@@ -2993,7 +3043,7 @@ for (const engine of ["codex", "claude"] as const) {
         assert.deepEqual(liveLeaf.unobserved, [{ agent: 2, attempt: 1, reason: "record-unsettled", measured: "none" }]);
         let expected: Buffer;
         if (engine === "codex") {
-          const relative = await writer.appendCodexTranscript(2, 1, { method: "turn/started" });
+          const relative = await writer.appendLiveTranscript(2, 1, { method: "turn/started" });
           assert.ok(relative);
           const file = path.join(writer.archiveDir, relative);
           expected = Buffer.from('{"method":"turn/started"}\n{"delta":"late append"}\n');
@@ -3005,7 +3055,7 @@ for (const engine of ["codex", "claude"] as const) {
           // Preserve bytes even when death cut a UTF-8 character short.
           expected = Buffer.concat([Buffer.from('{"type":"assistant"}\n'), Buffer.from([0xe2, 0x82])]);
           await writeFile(external, expected);
-          await writer.recordClaudeTranscript(2, 1, external);
+          await writer.referenceEngineTranscript(2, 1, external);
         }
         const manifestPath = path.join(writer.archiveDir, "manifest.json");
         const manifest = await readManifest();

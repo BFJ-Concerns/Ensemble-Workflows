@@ -10,10 +10,12 @@ import test from "node:test";
 import { CommandContainment, type CommandStop } from "../../src/contained-command.js";
 import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
 import { NoWorkerScopes } from "../../src/worker-scopes.js";
+import { waitForRunListeners } from "../fixtures/opencode/runner.js";
 
 for (const ending of ["abort", "deadline", "exit", "export"] as const) {
   test(`opencode ${ending} stops containment before settling, even when close arrives first`, async (t) => {
     const child = new ChildProcess();
+    const started = waitForRunListeners(child);
     Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
     const commands = new CommandContainment(new NoWorkerScopes());
     let stopped!: () => void;
@@ -28,7 +30,7 @@ for (const ending of ["abort", "deadline", "exit", "export"] as const) {
     const pending = ending === "export"
       ? runner.exportSession("fixture-session", process.cwd(), abort.signal, (stop) => observed.push(stop))
       : runner.run({ prompt: "fixture", cwd: process.cwd(), providerModel: "fixture/model", timeoutMs: 100, signal: abort.signal, onCommandStop: (stop) => observed.push(stop) });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await started;
     child.stdout!.emit("data", "partial output");
     child.stderr!.emit("data", "engine diagnostic");
     if (ending === "abort" || ending === "export") abort.abort();
@@ -56,6 +58,7 @@ for (const ending of ["abort", "deadline", "exit", "export"] as const) {
 
 test("opencode bounds pipe drainage after an unconfirmed stop without losing collected output", async (t) => {
   const child = new ChildProcess();
+  const started = waitForRunListeners(child);
   Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
   const commands = new CommandContainment(new NoWorkerScopes());
   const stop = t.mock.fn(async (): Promise<CommandStop> => ({ outcome: { kind: "unconfirmed", reason: "controlled refusal" }, attemptAccount: { owner: "fixture worker", reason: "controlled refusal" } }));
@@ -63,7 +66,7 @@ test("opencode bounds pipe drainage after an unconfirmed stop without losing col
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const abort = new AbortController();
   const pending = new OpenCodeCliRunner(undefined, { commands }).run({ prompt: "fixture", cwd: process.cwd(), providerModel: "fixture/model", signal: abort.signal });
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await started;
   child.stdout!.emit("data", "retained");
   abort.abort();
   await new Promise<void>((resolve) => setImmediate(resolve));

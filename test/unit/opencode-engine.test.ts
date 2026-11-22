@@ -13,6 +13,7 @@ import { createWorkerScopes, NoWorkerScopes, waitUntil } from "../../src/worker-
 import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
 import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
 import { testOpenCodeModelRegistry, testOpenCodeModels } from "../fixtures/opencode/models.js";
+import { waitForRunListeners } from "../fixtures/opencode/runner.js";
 
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
@@ -422,18 +423,6 @@ test("an opencode subprocess stopped by its turn deadline records a timeout", as
     await rm(directory, { recursive: true, force: true });
   }
 });
-
-/** Wait for the runner to observe process events before driving a fake child. */
-function waitForRunListeners(child: ChildProcess): Promise<void> {
-  return new Promise((resolve) => {
-    const observe = (event: string | symbol): void => {
-      if (event !== "close") return;
-      child.off("newListener", observe);
-      resolve();
-    };
-    child.on("newListener", observe);
-  });
-}
 
 for (const signal of ["SIGTERM", "SIGKILL"] as const) {
   test(`an opencode turn deadline retains ${signal} after contained stop settles`, async (t) => {

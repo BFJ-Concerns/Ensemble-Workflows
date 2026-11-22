@@ -25,6 +25,7 @@ const scriptedAgent = path.resolve("test/fixtures/acp/scripted-agent.mjs");
 /** What the scripted agent is told to do (`test/fixtures/acp/scripted-agent.mjs` lists the steps). */
 interface AgentScript {
   signedOut?: boolean;
+  signInAfterFirstRefusal?: string;
   turns?: Record<string, unknown>[][];
   counter?: string;
 }
@@ -161,6 +162,21 @@ test("agy with no sign-in is a substrate refusal, classed as availability", asyn
   const attempt = runtime.lastAgentRecord()?.attempts[0];
   assert.equal(attempt?.failure?.kind, "AgySubstrateRefusedError");
   assert.deepEqual(attempt?.classification, { class: "availability", rule: "agy.substrate-refused" });
+});
+
+test("an agy session-opening refusal advances to the next fallback entry without spending an attempt", async (t) => {
+  const { dir } = await scriptedAgy(t);
+  const { runtime } = await scriptedRuntime(t, {
+    signInAfterFirstRefusal: path.join(dir, "refused"), turns: [[say("from fallback")]]
+  }, 1);
+  const target = { engine: "agy" as const, model: "single-level-model" };
+  assert.equal(await runtime.agent("go", { engine: "agy", fallback: [target] }), "from fallback");
+  const record = runtime.lastAgentRecord();
+  assert.deepEqual(record?.attempts.map(({ status, target, classification }) => [status, target, classification]), [
+    ["failed", { engine: "agy", model: null }, { class: "availability", rule: "agy.substrate-refused" }],
+    ["complete", target, null]
+  ]);
+  assert.deepEqual(record?.answeredBy, { entry: 0, ...target });
 });
 
 test("a one-shot schema answer that fails the check is retried on a fresh worker told of the failure", async (t) => {

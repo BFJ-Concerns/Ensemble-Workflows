@@ -1277,10 +1277,14 @@ for (const refusal of [
 const GENERIC_NUDGE = "You appear to be waiting for input. " +
   "Proceed autonomously without asking — make a reasonable decision, complete the task, and output your final answer.";
 
-function closedPromptNudgeText(closedInput: string): string {
+function closedPromptAccountText(closedInput: string): string {
   return `Ensemble closed a prompt you were waiting on (Claude Code reported it as waiting for: ${closedInput}), ` +
     "because nobody is present to answer prompts in this session. " +
-    "Nobody refused the action: a tool result saying the user doesn't want to proceed came from that close, not from a person. " +
+    "Nobody refused the action: a tool result saying the user doesn't want to proceed came from that close, not from a person.";
+}
+
+function closedPromptNudgeText(closedInput: string): string {
+  return `${closedPromptAccountText(closedInput)} ` +
     "Carry on without asking: reach what you need another way where you can, make a reasonable decision where you must, and output your final answer.";
 }
 
@@ -1362,6 +1366,35 @@ test("a nudge refused after its valve closed a prompt is resent saying so, with 
         assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
         assert.equal(controlPlane.dispatchCount, 1, "refusing a nudge must not restart the task");
         assert.equal(controlPlane.steered[0], closedPromptNudgeText("input needed"));
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
+test("a follow-up the valve reaches by closing a prompt goes behind an account of the close; a command follow-up goes as written", async () => {
+  await withControlPlane(
+    [{ assistant: { text: "first answer" } }, { assistant: { text: "second answer" } }],
+    async (controlPlane) => {
+      const steer = controlPlane.steer.bind(controlPlane);
+      const seen: Array<{ message: string; offered: boolean }> = [];
+      (controlPlane as ClaudeControlPlane).steer = async (handle: ClaudeSessionHandle, message: string, options?: SteerOptions) => {
+        seen.push({ message, offered: options?.onInputClosed !== undefined });
+        if (options?.onInputClosed === undefined) return { submitted: false, reason: "fake valve refused", closedInput: "dialog open" };
+        return { ...(await steer(handle, options.onInputClosed("dialog open"))), closedInput: "dialog open" };
+      };
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+      try {
+        const session = runtime.createWorkerSession({ engine: "claude" });
+        assert.equal(await session.send("first"), "first answer");
+        assert.equal(await session.send("Reply OK again"), "second answer");
+        assert.equal(seen[0]?.message, "Reply OK again");
+        assert.equal(controlPlane.steered[0], `${closedPromptAccountText("dialog open")}\n\nReply OK again`);
+        // An account in front of a leading command would stop it being one.
+        assert.equal(await session.send("/review now"), null);
+        assert.deepEqual(seen[1], { message: "/review now", offered: false });
+        await session.close();
       } finally {
         await runtime.close();
       }

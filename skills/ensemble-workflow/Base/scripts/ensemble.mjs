@@ -23173,15 +23173,17 @@ var ClaudeEngineInvocation = class {
   async #deliver(handle, submission, observers) {
     if (this.#lost !== null) throw new ClaudeWorkerLostError(this.#lost.reason);
     if (submission.carriesTurn) this.#collectionMark = submission.mark;
-    const { onInputClosed } = submission;
-    const outcome = await this.#controlPlane.steer(handle, submission.message, onInputClosed !== void 0 ? { onInputClosed } : {});
-    const sent = outcome.closedInput !== void 0 && onInputClosed !== void 0 ? { ...submission, message: onInputClosed(outcome.closedInput) } : submission;
+    const onInputClosed = submission.onInputClosed ?? (openingCommand(submission.message) === null ? (closed) => closedPromptPreface(closed, submission.message) : void 0);
+    const textFor = (closed) => closed !== void 0 && onInputClosed !== void 0 ? onInputClosed(closed) : submission.message;
+    const outcome = await this.#controlPlane.steer(handle, textFor(submission.closedInput), onInputClosed !== void 0 ? { onInputClosed } : {});
+    const closedInput = outcome.closedInput ?? submission.closedInput;
     if (!outcome.submitted) {
-      this.#refused = sent;
+      this.#refused = closedInput !== void 0 ? { ...submission, closedInput } : submission;
       throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
     }
     this.#refused = null;
-    this.#accept(sent);
+    const sent = { ...submission, message: textFor(closedInput) };
+    this.#accept(sent, submission.message);
     await this.#requireReceipt(handle, sent, observers);
   }
   /**
@@ -23190,11 +23192,11 @@ var ClaudeEngineInvocation = class {
    * may be running a turn on it, and nothing else is sent until its receipt
    * has been judged.
    */
-  #accept(submission) {
+  #accept(submission, turnCopy = submission.message) {
     this.#pending = { ...submission, answersTurn: true };
     if (submission.carriesTurn) {
       if (this.#turn === "unsent") {
-        this.#acceptedTurnCopy = submission.message;
+        this.#acceptedTurnCopy = turnCopy;
       }
       this.#turn = "accepted";
       this.#deliveryFailure = null;
@@ -23852,8 +23854,16 @@ var ClaudeEngineInvocation = class {
   }
 };
 var BLOCKED_NUDGE = "You appear to be waiting for input. Proceed autonomously without asking \u2014 make a reasonable decision, complete the task, and output your final answer.";
+function closedPromptAccount(closedInput) {
+  return `Ensemble closed a prompt you were waiting on (Claude Code reported it as waiting for: ${closedInput}), because nobody is present to answer prompts in this session. Nobody refused the action: a tool result saying the user doesn't want to proceed came from that close, not from a person.`;
+}
 function closedPromptNudge(closedInput) {
-  return `Ensemble closed a prompt you were waiting on (Claude Code reported it as waiting for: ${closedInput}), because nobody is present to answer prompts in this session. Nobody refused the action: a tool result saying the user doesn't want to proceed came from that close, not from a person. Carry on without asking: reach what you need another way where you can, make a reasonable decision where you must, and output your final answer.`;
+  return `${closedPromptAccount(closedInput)} Carry on without asking: reach what you need another way where you can, make a reasonable decision where you must, and output your final answer.`;
+}
+function closedPromptPreface(closedInput, message) {
+  return `${closedPromptAccount(closedInput)}
+
+${message}`;
 }
 function failedTurnResult(error, evidence, usageEvent) {
   const text = partialWorkerTextOf(error) ?? "";

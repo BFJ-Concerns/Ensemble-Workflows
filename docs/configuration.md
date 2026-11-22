@@ -1,6 +1,6 @@
 # Configuration
 
-Ensemble needs no configuration to run Codex, Claude and zcode workers.
+Ensemble needs no configuration to run Codex, Claude, agy and zcode workers.
 opencode workers need the models they may use declared in the machine
 configuration file.
 
@@ -25,7 +25,7 @@ concurrency caps with the layer that supplied each (`flag`, `env`,
 
 | Setting | Default |
 |---|---|
-| Concurrency cap | `codex` 12, `claude` 12, `opencode` 2, `zcode` 12 workers at once |
+| Concurrency cap | `codex` 12, `claude` 12, `opencode` 2, `agy` 12, `zcode` 12 workers at once |
 | Worker scope grouping | `worker` |
 | Agent ceiling (all engines together) | Unbounded |
 | Durable run record | On, stored under `$XDG_DATA_HOME/ensemble/` (normally `~/.local/share/ensemble/`) |
@@ -169,7 +169,7 @@ the run's own `ENSEMBLE_` settings (`ENSEMBLE_RUN_RECORD`,
 `ENSEMBLE_AGENT_CEILING`, `ENSEMBLE_CONCURRENCY_*`, `ENSEMBLE_HOLD_SCOPE`, and
 `ENSEMBLE_CALLER_IDENTITY`, `ENSEMBLE_WORKER_SCOPE`) are withheld from every `claude` process Ensemble
 launches; a `worker_environment` declaration of one of those names is still
-injected. Codex, opencode and zcode workers end with the run and inherit those
+injected. Codex, opencode, agy and zcode workers end with the run and inherit those
 variables normally. A nested `ensemble` invocation inside a Claude worker
 therefore resolves those settings from the machine configuration and the
 defaults. The hold scope is the exception: it is passed to the worker session
@@ -257,11 +257,11 @@ before a move in the original cgroup. Run teardown stops the scopes Ensemble own
 Claude control-command scopes and the shared supervisor are outside that
 ownership.
 
-Under `worker`, each opencode command takes its own scope. Under `run`,
-each command takes a subgroup of the shared scope. Descendants inherit
-the command's placement, so an attempt can stop its commands while other
-workers continue. If the manager cannot provide a scope or subgroup,
-opencode uses a process group. A stop
+Under `worker`, each opencode command and agy ACP worker takes its own
+scope. Under `run`, each takes a subgroup of the shared scope. Descendants
+inherit that placement, so an attempt can stop its commands while other
+workers continue. If the manager cannot provide a scope or subgroup, the
+command uses a process group. A stop
 an attempt makes before the run ends discloses unconfirmed reach on the attempt
 record and stderr, without changing the attempt's or run's outcome. A command
 the run's own ending cuts short there produces a teardown failure because
@@ -325,13 +325,13 @@ Each key is a name; the value is its binding:
 
 | Field | Required | Description |
 |---|---|---|
-| `engine` | Yes | `codex`, `claude`, `opencode` or `zcode` |
+| `engine` | Yes | `codex`, `claude`, `opencode`, `agy` or `zcode` |
 | `model` | No | The model to dispatch. Without it, the call takes the script's `defaults` model for the bound engine, else the engine's own default, as a call that pins no model does |
 | `fallback` | No | A fallback chain array. An entry may name another target in this section and takes only its engine and model |
 
 A name may spell an engine's name: names are their own namespace, reached only
 through `target`. A binding to an engine other than `codex`, `claude`,
-`opencode` or `zcode`, a blank model, a malformed chain, or an unknown field stops every
+`opencode`, `agy` or `zcode`, a blank model, a malformed chain, or an unknown field stops every
 run before any worker starts, naming the key and the file, as does a chain
 entry naming a target this section does not bind. An opencode
 binding's model is checked against `opencode_models` when a call dispatches on
@@ -406,6 +406,7 @@ as off and the run says nothing.
 | `ENSEMBLE_CONCURRENCY_CODEX` | Codex concurrency cap |
 | `ENSEMBLE_CONCURRENCY_CLAUDE` | Claude concurrency cap |
 | `ENSEMBLE_CONCURRENCY_OPENCODE` | opencode concurrency cap |
+| `ENSEMBLE_CONCURRENCY_AGY` | agy concurrency cap |
 | `ENSEMBLE_CONCURRENCY_ZCODE` | zcode concurrency cap |
 | `ENSEMBLE_RUN_RECORD` | Turns the durable run record on or off |
 | `ENSEMBLE_RUN_RECORD_DIR` | The record store's data home |
@@ -503,8 +504,8 @@ own environment.
 
 | Option | CLI flag | Default | Description |
 |---|---|---|---|
-| `budgetCeilings` | `--budget` | Unbounded | Per-engine token budgets, `{ codex?, claude?, opencode?, zcode? }` |
-| `concurrencyCaps` | `--concurrency` | As in [Defaults](#defaults) | Per-engine concurrency caps, `{ codex?, claude?, opencode?, zcode? }` |
+| `budgetCeilings` | `--budget` | Unbounded | Per-engine token budgets, `{ codex?, claude?, opencode?, agy?, zcode? }` |
+| `concurrencyCaps` | `--concurrency` | As in [Defaults](#defaults) | Per-engine concurrency caps, `{ codex?, claude?, opencode?, agy?, zcode? }` |
 | `agentCeiling` | `--agent-ceiling` | Unbounded | Run-wide agent ceiling; `null` leaves it unbounded |
 | `strip` | `--strip` | None | Capabilities stripped from every worker, added to each call's own `strip` |
 | `lean` | `--lean` | `false` | Start every worker without the operator's interactive context; per-call `lean: false` cannot lift it |
@@ -524,9 +525,10 @@ These options have no flag or environment variable:
 |---|---|---|
 | `retryPromiseSilenceTimeoutMs` | 15 minutes | Codex only. How long a turn may stay silent after the app-server promises to retry before the turn is ended |
 | `firstOutputTimeoutMs` | 15 minutes | Codex only. How long a started turn may wait for its first output-bearing frame |
-| `requestTimeoutMs` | 30 seconds | Codex app-server transport request timeout |
+| `requestTimeoutMs` | 30 seconds | Codex app-server transport request timeout, and the bound on every agy request but a prompt |
 | `claudeSessionStaleAfterMs` | 60 minutes | When a held Claude session is marked stale (see [Sessions](workflow-scripts.md#multi-turn-sessions)) |
 | `codexSessionStaleAfterMs` | 60 minutes | When a held Codex session is marked stale |
+| `agySessionStaleAfterMs` | 5 minutes | When a held agy session is marked stale |
 | `zcodeSessionStaleAfterMs` | None | When a held zcode session is marked stale, in milliseconds keyed by the model's provider; a provider absent from it leaves its sessions unmarked. Pass the resolved [`zcode_providers`](#zcode_providers) thresholds explicitly |
 | `workerEnvironment` | None | Per-engine variables injected above inherited values; pass the resolved `worker_environment` map explicitly |
 | `openCodeModels` | None | The models opencode workers may name, in the registry entry shape; the library reads no machine configuration, so without this option every opencode call is refused |

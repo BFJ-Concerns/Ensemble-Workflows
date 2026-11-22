@@ -16,6 +16,7 @@ import { OPENCODE_TRANSCRIPT, transcriptContent } from "./live-transcript.js";
 import { prepareOpenCodeLaunch } from "./opencode-launch-config.js";
 import { subtractUsage } from "./usage-summary.js";
 import { fitsOneArgument, runStreamedCommand, type StreamedCommandResult } from "./streamed-command.js";
+import { openingPrompt } from "./worker-instructions.js";
 import { DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
 
 import type { WhitespaceStream } from "./whitespace-stream.js";
@@ -549,21 +550,11 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
   }
 
   #buildPrompt(previousFailure: PreviousAttemptFailure | undefined): string {
-    const lines: string[] = [
-      "You are an automated worker dispatched by the Ensemble orchestration harness.",
-      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions - make a reasonable decision and finish the task."
-    ];
-    if (this.#options.schema !== undefined) {
-      lines.push(
-        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#options.schema)
-      );
-    }
-    if (previousFailure !== undefined) {
-      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
-    }
-    lines.push("", "Task:", this.#prompt);
-    return lines.join("\n");
+    return openingPrompt({
+      task: this.#prompt,
+      ...(this.#options.schema !== undefined ? { schema: this.#options.schema } : {}),
+      ...(previousFailure !== undefined ? { previousFailure } : {})
+    });
   }
 }
 

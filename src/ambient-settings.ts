@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import {
+  defaultAgyConcurrency,
   defaultClaudeConcurrency,
   defaultCodexConcurrency,
   defaultOpenCodeConcurrency,
@@ -195,7 +196,7 @@ interface OpenCodeModelDeclaration {
 const OPENCODE_MODEL_DECLARATION_KEYS = ["provider_model", "display_name", "family", "vision", "billing", "variants"];
 const OPENCODE_BILLING_MODES: readonly OpenCodeBillingMode[] = ["pay-as-you-go", "self-hosted"];
 
-const ENGINES = ["codex", "claude", "opencode", "zcode"] as const satisfies readonly EngineName[];
+const ENGINES = ["codex", "claude", "opencode", "agy", "zcode"] as const satisfies readonly EngineName[];
 
 export function isConfiguredEngine(value: unknown): value is EngineName {
   return (ENGINES as readonly unknown[]).includes(value);
@@ -214,6 +215,7 @@ export function resolveAmbientSettings(input: {
     codex: defaultCodexConcurrency(),
     claude: defaultClaudeConcurrency(),
     opencode: defaultOpenCodeConcurrency(),
+    agy: defaultAgyConcurrency(),
     zcode: defaultZCodeConcurrency()
   };
 

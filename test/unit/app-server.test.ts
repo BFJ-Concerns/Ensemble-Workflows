@@ -38,7 +38,7 @@ test("default engine registry performs no Codex I/O at construction or unused cl
   const codexBin = path.join(tmpdir(), "ensemble-no-such-codex-bin-lazy");
   const registry = await createDefaultEngineRegistry(defaultRegistryOptions(codexBin));
 
-  assert.deepEqual(registry.names(), ["codex", "claude", "opencode", "zcode"]);
+  assert.deepEqual(registry.names(), ["codex", "claude", "opencode", "agy", "zcode"]);
   let losses = 0;
   registry.get("codex")!.createSession!({}, { onLost: () => { losses++; } });
   await registry.close();
@@ -2466,6 +2466,7 @@ function defaultRegistryOptions(codexBin: string) {
     onEvent: () => undefined,
     onClaudeEvent: () => undefined,
     onOpenCodeEvent: () => undefined,
+    onAgyEvent: () => undefined,
     onZCodeEvent: () => undefined
   };
 }

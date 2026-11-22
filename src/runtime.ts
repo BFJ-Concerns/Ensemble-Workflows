@@ -625,6 +625,7 @@ export class EnsembleRuntime {
   #holdsCwd: string;
   #claudeSessionStaleAfterMs: number;
   #codexSessionStaleAfterMs: number;
+  #agySessionStaleAfterMs: number;
   #zcodeSessionStaleAfterMs: Readonly<Record<string, number>>;
 
   constructor(options: {
@@ -645,6 +646,7 @@ export class EnsembleRuntime {
     modelFamilies?: ModelFamilyAssignments;
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
+    agySessionStaleAfterMs?: number;
     zcodeSessionStaleAfterMs?: Readonly<Record<string, number>>;
     holdsDir?: string;
     holdScope?: string;
@@ -687,6 +689,7 @@ export class EnsembleRuntime {
     // equal, semantically distinct knobs.
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 3_600_000;
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
+    this.#agySessionStaleAfterMs = options.agySessionStaleAfterMs ?? 300_000;
     this.#zcodeSessionStaleAfterMs = options.zcodeSessionStaleAfterMs ?? {};
     this.#now = options.now ?? (() => Date.now());
     this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
@@ -786,6 +789,9 @@ export class EnsembleRuntime {
       onOpenCodeEvent: (event) => {
         runtime?.handleEngineEvent("opencode", event);
       },
+      onAgyEvent: (event) => {
+        runtime?.handleEngineEvent("agy", event);
+      },
       onZCodeEvent: (event) => {
         runtime?.handleEngineEvent("zcode", event);
       },
@@ -814,6 +820,9 @@ export class EnsembleRuntime {
         : {}),
       ...(options.codexSessionStaleAfterMs !== undefined
         ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs }
+        : {}),
+      ...(options.agySessionStaleAfterMs !== undefined
+        ? { agySessionStaleAfterMs: options.agySessionStaleAfterMs }
         : {}),
       ...(options.zcodeSessionStaleAfterMs !== undefined
         ? { zcodeSessionStaleAfterMs: options.zcodeSessionStaleAfterMs }
@@ -3238,14 +3247,18 @@ export class EnsembleRuntime {
   /**
    * The idle gap at which a held worker on this engine and model reads
    * stale, or null where none applies. Claude's is the cliff at its
-   * subscription cache TTL and Codex's the measured coin-flip idle point;
-   * opencode holds no sessions; zcode's is the threshold declared for the
-   * model's provider, and a provider with none leaves its workers unmarked.
+   * subscription cache TTL, Codex's the measured coin-flip idle point,
+   * agy's the five-minute cache lifetime its operator reports — each
+   * overridable as a library-level runtime option; opencode holds no
+   * sessions; zcode's is the threshold declared for the model's provider,
+   * and a provider with none leaves its workers unmarked.
    */
   #sessionStaleAfterMs(engine: EngineName, model: string | undefined): number | null {
     switch (engine) {
       case "claude":
         return this.#claudeSessionStaleAfterMs;
+      case "agy":
+        return this.#agySessionStaleAfterMs;
       case "codex":
       case "opencode":
         return this.#codexSessionStaleAfterMs;

@@ -83,8 +83,9 @@ Per-engine spend is never summed: the engines count tokens under different
 rules, and a token on one engine does not cost the same as on another.
 Spend advances when usage evidence arrives, including while a worker is
 running: Codex emits usage notifications, Claude is measured by transcript
-polls, opencode is measured from its streamed step events, and zcode from
-each completed model request in its event stream. These are
+polls, opencode is measured from its streamed step events, agy from each
+turn's reply, and zcode from each completed model request in its event
+stream. These are
 usage updates, not a token-by-token meter. Engines start at `spent: 0`, and a
 worker's `spent` stays `null` until its own usage is observed. On opencode,
 engine spend advances during execution while worker spend appears at
@@ -137,12 +138,12 @@ Each status file contains one JSON object with these fields:
   or `null` when the run has none, and numeric `active`, the workers holding a
   slot under it.
 - `engines`: object keyed by registered engine name (`codex`, `claude`,
-  `opencode`, and `zcode`). Each entry has numeric `active`, `queued`, `done`, `failed`,
+  `opencode`, `agy`, and `zcode`). Each entry has numeric `active`, `queued`, `done`, `failed`,
   `cutShort`, `unsettled`, and `spent`; `cap`, `ceiling`, and `remaining` are
   numbers or `null`. Spend and ceilings are per-engine and are never summed.
 - `agents`: array of every worker: running first, then queued (oldest
   first within each), then finished (newest registered first). Each object has
-  `id`, `attempt`, `engine` (codex, claude, opencode or zcode), `state` (queued,
+  `id`, `attempt`, `engine` (codex, claude, opencode, agy or zcode), `state` (queued,
   running, done, failed, cut-short or unsettled), nullable strings `label`,
   `phase`, `requestedModel`, `requestedEffort`, `resolvedModel`,
   `resolvedEffort`, `transcript`, and `worktree`; nullable numeric `spent`, `startedAtMs`, `firstEvidenceAtMs`,
@@ -167,8 +168,8 @@ archives a copy of the native transcript; the status entry retains its
 live path. Evidence timestamps advance when output is observed, which each
 engine allows at a different grain. Codex reports each notification of the
 running turn after it starts — streamed text, tool work, usage — as
-evidence, opencode each decoded step, text or tool event, and zcode each
-event line its run streams. Claude is read from its transcript, which Claude Code writes one
+evidence, opencode each decoded step, text or tool event, agy each session
+update, and zcode each event line its run streams. Claude is read from its transcript, which Claude Code writes one
 completed message part at a time — a block of text or thinking, or a tool
 call — not as tokens stream. Its evidence advances when a transcript poll
 finds a new or changed assistant row for the current turn, so a Claude
@@ -680,7 +681,7 @@ families; their versions are listed in [Schema versions](#schema-versions).
   outside a git repository. These inspections disable git's optional locks,
   so recording a run does not refresh or lock the repository's index.
 - `environment`: OS architecture, platform and release, Node version, and the
-  versions of `claude`, `codex`, `git`, `opencode`, and `zcode` where available.
+  versions of `agy`, `claude`, `codex`, `git`, `opencode`, and `zcode` where available.
   The opencode version query uses temporary XDG and scratch directories in
   the run archive and removes them after the query; it does not initialise
   opencode's configured homes.
@@ -774,6 +775,7 @@ While an attempt executes, on any engine, the record also has
 - `effort_resolution`: dispatch provenance, present when the runtime resolved
   a canonical effort; the shape matches a settled attempt below.
 - `transcript`: a path once a readable file exists, otherwise `null`.
+  agy archives the transcript at settlement, so this value stays `null` while it runs.
 - `resolved_model` and `resolved_effort`: the served identity the engine has
   reported for this attempt so far, written as it is reported, and `null`
   until then. A held session's attempts start with the identity its worker
@@ -1132,8 +1134,11 @@ notification still links its captured request with `partial: true`. Claude
 transcripts are copied from the background session's JSONL before the session
 is removed. opencode
 transcripts keep the `opencode run --format json` event stream plus the
-session export when available. zcode transcripts keep the run's
-`--output-format stream-json` event lines, its closing `result` line
+session export when available. agy transcripts (`transcript.agy.jsonl`) hold,
+for each attempt, the prompt sent, every `session/update` the turn produced
+and the `session/prompt` reply, one JSON value per line; a turn that did not
+end on its own reply is marked `partial: true`. zcode transcripts keep the
+run's `--output-format stream-json` event lines, its closing `result` line
 included; a held session's transcripts are per turn, each naming the zcode
 session id it resumed.
 
@@ -1203,6 +1208,12 @@ on the same target.
 | `zcode.run-error` | `unclassified` | The run failed for any other reason zcode gave |
 | `zcode.deadline` | `unclassified` | The call's `timeoutMs` ended the run |
 | `opencode.deadline` | `unclassified` | The call's `timeoutMs` ended the run |
+| `agy.substrate-refused` | `availability` | `agy acp` would not start or initialise, was not signed in, or opened no session; no prompt was sent |
+| `agy.sign-in-required` | `availability` | agy refused a prompt for want of a sign-in |
+| `agy.invalid-prompt-reply` | `output` | agy returned a malformed prompt result |
+| `agy.worker-lost` | `availability` | A one-shot agy worker's process ended before its turn did |
+| `agy.stop-reason` | `unclassified` | agy ended the turn other than normally: a refusal, a token or request limit, or a cancel it made itself |
+| `agy.deadline` | `unclassified` | The call's `timeoutMs` cancelled the turn |
 | `null` | `unclassified` | No rule recognised the failure |
 
 The record holds run and audit data only. It does not score outputs, infer
@@ -1225,9 +1236,11 @@ Usage summaries — an agent record's `usage` and each `cost_rollup` bucket's
 
 Each engine's native fields are mapped under one rule. Codex reports cached
 tokens within input and reasoning within output, so both are subtracted out.
-Claude and opencode report them separately; Claude's reasoning is not
-separable, so its `reasoningOutputTokens` is `null` and the whole generation is
-in `outputTokens`. On Claude, usage is read from the session transcript once
+Claude, opencode and agy report cached tokens separately from input, and
+opencode reports reasoning separately from output too. agy reports its
+thought tokens within output, so they are subtracted out. Claude's reasoning
+is not separable, so its `reasoningOutputTokens` is `null` and the whole
+generation is in `outputTokens`. On Claude, usage is read from the session transcript once
 per API call: Claude Code writes one call's reply across several rows that
 repeat the call's usage, so rows sharing a message id are counted once, and
 every figure is summed across the turn's calls. A held session's later turn
@@ -1248,6 +1261,7 @@ the disjoint summary vocabulary above.
 | Codex | `last` is the usage increment reported by the notification; `total` is cumulative across the thread, including earlier turns of a held session. There can be several notifications in one attempt. | The `thread/tokenUsage/updated` parameters: `{ threadId, turnId, tokenUsage: { last, total, … }, … }`. Breakdown names match the fields above; input includes cached input, and output includes reasoning when reported. |
 | Claude | A settled attempt normally has one derived event with `last` equal to `total`: usage across that attempt's API calls, excluding usage already accounted for by earlier attempts or held-session turns. If only live observations survive a failed attempt, there can instead be several incremental `last` values with attempt-cumulative `total`. | `{ threadId, turnId, tokenUsage: { last, total } }`. `threadId` is the Claude session id; `turnId` is synthetic (`<session-id>:claude-<counter>`). The transcript's `input_tokens` and `output_tokens` become `inputTokens` and `outputTokens`; `cache_read_input_tokens + cache_creation_input_tokens` becomes `cachedInputTokens`, with creation also in `cacheCreationInputTokens`. `totalTokens` sums input, combined cache and output. No reasoning split is reported. |
 | opencode | At most one derived event, with `last` equal to `total`, aggregated for that attempt. These are attempt totals, not cumulative session totals. | `{ threadId, turnId, model, providerModel, tokenUsage: { last, total }, cost }`. `model` is the configured registry key; `providerModel` is its provider route; `cost` is the reported figure or `null`. `threadId` is the session id (a synthetic id if missing); `turnId` is synthetic (`<session-id>:opencode-<counter>`). Native `input`, `output`, `reasoning` and `cache.read`/`cache.write` map to the corresponding breakdown fields, with cache reads and writes combined. Input, cache, output and reasoning are disjoint. |
+| agy | One event per turn: `last` is that turn's usage, as the `session/prompt` reply gave it; `total` is cumulative across the worker's session, including earlier attempts and earlier turns of a held session. | `{ threadId, turnId, model, tokenUsage: { last, total }, usage }`. `threadId` is the agy session id; `turnId` is synthetic (`<session-id>:agy-<counter>`); `model` is the model the session ran on; `usage` is agy's own counts. `inputTokens` and `outputTokens` map across, `thoughtTokens` becomes `reasoningOutputTokens` (within output), `cachedReadTokens + cachedWriteTokens` becomes `cachedInputTokens` (beside input), with the writes also in `cacheCreationInputTokens`; `totalTokens` is agy's own. |
 | zcode | One derived event per attempt, with `last` equal to `total`: the run's own usage from its closing result, or the sum of its completed model requests where the run ended without one. | `{ threadId, turnId, model, tokenUsage: { last, total } }`. `model` is the dispatched `provider/model`; `threadId` is the zcode session id (`zcode-no-session` if none was reported); `turnId` is synthetic (`<session-id>:zcode-<attempt>-<counter>`). Native `inputTokens` (which includes cached input), `outputTokens` (which includes reasoning), `reasoningTokens` and `totalTokens` keep their names; `cacheReadTokens + cacheWriteTokens` becomes `cachedInputTokens`, with writes also in `cacheCreationInputTokens`. |
 
 To reproduce an attempt's summary, sum its events' `last` breakdowns and

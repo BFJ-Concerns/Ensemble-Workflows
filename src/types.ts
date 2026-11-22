@@ -10,7 +10,7 @@ import type { OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode
 export type JsonObject = Record<string, unknown>;
 export type JsonSchema = JsonObject;
 
-export type EngineName = "codex" | "claude" | "opencode" | "zcode";
+export type EngineName = "codex" | "claude" | "opencode" | "agy" | "zcode";
 export type IsolationMode = "worktree";
 export type TokenAccountingMode = "last-delta" | "total-cumulative";
 export type EngineBudgetCeilings = Partial<Record<EngineName, number | null>>;
@@ -296,6 +296,12 @@ export interface RuntimeOptions {
    * seam as `claudeSessionStaleAfterMs`. Defaults to 60 minutes.
    */
   codexSessionStaleAfterMs?: number;
+  /**
+   * Idle gap after which an agy multi-turn worker reads stale — the
+   * five-minute prompt-cache lifetime the operator reports for agy. Same
+   * library-only seam as `claudeSessionStaleAfterMs`. Defaults to 5 minutes.
+   */
+  agySessionStaleAfterMs?: number;
   /**
    * Idle gap, per zcode provider, after which a zcode multi-turn worker on
    * that provider's model reads stale. A provider absent here leaves its

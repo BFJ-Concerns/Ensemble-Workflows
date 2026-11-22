@@ -157,8 +157,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     stdout.write(usage(program));
     stdout.write(
       "\nDispatches one worker on the named engine\n" +
-        "(--engine codex|claude|opencode|zcode), or on the engine and model a named\n" +
-        "target binds (--target <name>), and\n" +
+        "(--engine codex|claude|opencode|agy|zcode), or on the engine and model a\n" +
+        "named target binds (--target <name>), and\n" +
         "prints its result as JSON on stdout. The prompt is the single positional\n" +
         "argument, or stdin when omitted; put flags before the prompt. --schema\n" +
         "validates the reply against a JSON Schema; --identity wraps the result as\n" +
@@ -1172,7 +1172,7 @@ function runtimeConcurrencyOptions(settings: AmbientSettings): {
   concurrencyCaps?: EngineConcurrencyCaps;
 } {
   const concurrencyCaps: EngineConcurrencyCaps = {};
-  for (const engine of ["codex", "claude", "opencode", "zcode"] as const) {
+  for (const engine of ["codex", "claude", "opencode", "agy", "zcode"] as const) {
     const resolved = settings.concurrencyCaps[engine];
     if (resolved.layer !== "default") {
       concurrencyCaps[engine] = resolved.value;
@@ -1196,7 +1196,7 @@ function recordConcurrency(
     return { agentCeiling: settings.agentCeiling, engines: settings.concurrencyCaps };
   }
   const engines: Partial<AmbientSettings["concurrencyCaps"]> = {};
-  for (const engine of ["codex", "claude", "opencode", "zcode"] as const) {
+  for (const engine of ["codex", "claude", "opencode", "agy", "zcode"] as const) {
     const cap = snapshot.engines[engine]?.cap;
     if (cap !== null && cap !== undefined) {
       engines[engine] = { value: cap, layer: settings.concurrencyCaps[engine].layer };
@@ -1218,7 +1218,7 @@ function recordEffectiveSettings(
   injectedTimeoutMs: number | undefined
 ): EffectiveRunSettingsRecord {
   const budgetCeilings: EffectiveRunSettingsRecord["budgetCeilings"] = {};
-  for (const engine of ["codex", "claude", "opencode", "zcode"] as const) {
+  for (const engine of ["codex", "claude", "opencode", "agy", "zcode"] as const) {
     const flagged = invocation.budgetCeilings?.[engine];
     budgetCeilings[engine] =
       flagged !== undefined ? { value: flagged, layer: "flag" } : { value: null, layer: "default" };
@@ -2100,13 +2100,13 @@ function parseEngineMap<T>(
 }
 
 function parseEngineName(value: string, flagName: string): EngineName {
-  if (value === "codex" || value === "claude" || value === "opencode" || value === "zcode") {
+  if (value === "codex" || value === "claude" || value === "opencode" || value === "agy" || value === "zcode") {
     return value;
   }
   if (flagName === "--engine") {
-    throw new CliUsageError(`${flagName} must be codex, claude, opencode, or zcode; got ${value}`);
+    throw new CliUsageError(`${flagName} must be codex, claude, opencode, agy, or zcode; got ${value}`);
   }
-  throw new CliUsageError(`${flagName} engine must be codex, claude, opencode, or zcode; got ${value}`);
+  throw new CliUsageError(`${flagName} engine must be codex, claude, opencode, agy, or zcode; got ${value}`);
 }
 
 function parseBudgetCeiling(value: string): number {

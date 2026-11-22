@@ -385,7 +385,7 @@ test("engine routing rejects missing and unknown engines through the real CLI", 
   assertSalvageEnvelope(missingStdout, "failed");
   assert.match(
     missingStderr,
-    /agent\(\) requires an engine field: use engine: 'codex', engine: 'claude', engine: 'opencode', or engine: 'zcode'/
+    /agent\(\) requires an engine field: use engine: 'codex', engine: 'claude', engine: 'opencode', engine: 'agy', or engine: 'zcode'/
   );
 
   const { exitCode: unknownExitCode, stdout: unknownStdout, stderr: unknownStderr } = await runScriptWithEngines(
@@ -399,7 +399,7 @@ test("engine routing rejects missing and unknown engines through the real CLI", 
 
   assert.equal(unknownExitCode, 1);
   assertSalvageEnvelope(unknownStdout, "failed");
-  assert.match(unknownStderr, /Unknown agent engine "gemini"; expected 'codex', 'claude', 'opencode', or 'zcode'/);
+  assert.match(unknownStderr, /Unknown agent engine "gemini"; expected 'codex', 'claude', 'opencode', 'agy', or 'zcode'/);
 });
 
 test("registry routes each engine and keeps per-engine concurrency caps independent", async () => {
@@ -1010,7 +1010,7 @@ test("Codex schema-subset rejection is distinct from ordinary schema validation 
   const unsupportedDiagnostic = withoutLocationAnnouncements(unsupported.stderr);
   assert.match(unsupportedDiagnostic, /\[codex\] agent 1 failed after 1 attempt — Codex rejected outputSchema before generation/);
   assert.match(unsupportedDiagnostic, /Codex rejected outputSchema before generation/);
-  assert.match(unsupportedDiagnostic, /Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude', 'opencode' or 'zcode'/);
+  assert.match(unsupportedDiagnostic, /Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude', 'opencode', 'agy' or 'zcode'/);
   assert.doesNotMatch(unsupportedDiagnostic, /verdict/);
 
   const ordinaryValidation = await runScriptWithCliEngines(

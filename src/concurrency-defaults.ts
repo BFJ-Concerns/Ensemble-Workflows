@@ -18,6 +18,10 @@ export function defaultOpenCodeConcurrency(): number {
   return 2;
 }
 
+export function defaultAgyConcurrency(): number {
+  return 12;
+}
+
 export function defaultZCodeConcurrency(): number {
   return 12;
 }

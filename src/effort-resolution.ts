@@ -81,7 +81,7 @@ export function effortPolicyKeys(engine: EngineName, model: string | undefined):
   return [...(model !== undefined ? [`${engine}:${model}`] : []), engine, "*"];
 }
 
-const ENGINE_NAMES = ["codex", "claude", "opencode", "zcode"] as const satisfies readonly EngineName[];
+const ENGINE_NAMES = ["codex", "claude", "opencode", "agy", "zcode"] as const satisfies readonly EngineName[];
 const EFFORT_TARGET_POLICY_FIELDS = ["ceiling", "floor", "levels"];
 
 /**

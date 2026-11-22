@@ -22,6 +22,7 @@ export class TokenBudget implements Budget {
       codex: ceilings.codex ?? null,
       claude: ceilings.claude ?? null,
       opencode: ceilings.opencode ?? null,
+      agy: ceilings.agy ?? null,
       zcode: ceilings.zcode ?? null,
       ...ceilings
     };

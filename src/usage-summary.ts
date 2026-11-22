@@ -99,6 +99,13 @@ export function subtractUsage(total: TokenUsageBreakdown, previous: TokenUsageBr
  *   the upstream fields themselves is judgement, reconciled the same
  *   way); cache
  *   creation is separable only when the stream carried a cache object.
+ * - **agy** reports, on each `session/prompt` reply, `inputTokens`
+ *   *excluding* the cached share and `outputTokens` *including*
+ *   `thoughtTokens` (measured 2026-11-22 on agy 1.5.14, gemini-4-hydrogen
+ *   at low: `totalTokens` was input plus cached reads plus output, 9380 +
+ *   0 + 29 = 9409 and 2217 + 7331 + 74 = 9622, beside 24 and 59 thought
+ *   tokens). Cache writes were reported as 0 in both turns, so whether
+ *   they sit beside the reads is judgement.
  * - **zcode** reports `inputTokens` *including* the cached share and a
  *   total of input plus output (measured 2026-11-22 on zcode 0.17.1:
  *   32011 input with 15872 cache reads, 36 output, 32047 total), and
@@ -112,6 +119,7 @@ const ENGINE_INCLUSION_RULES: Record<
   codex: { cachedWithinInput: true, reasoningWithinOutput: true },
   claude: { cachedWithinInput: false, reasoningWithinOutput: true },
   opencode: { cachedWithinInput: false, reasoningWithinOutput: false },
+  agy: { cachedWithinInput: false, reasoningWithinOutput: true },
   zcode: { cachedWithinInput: true, reasoningWithinOutput: true }
 };
 

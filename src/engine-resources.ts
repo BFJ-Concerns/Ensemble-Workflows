@@ -123,6 +123,14 @@ export function openCodeResources(env: EngineResourceEnvironment): ResourceRequi
   ];
 }
 
+/** agy 1.5.14 keeps its conversations and presence locks under one directory of its home. */
+export function agyResources(env: EngineResourceEnvironment): ResourceRequirement[] {
+  return [{
+    owner: "agy", role: "Antigravity CLI home", access: "create-entries",
+    ...defaultDirectory({ rule: "$HOME/.gemini/antigravity-cli", movedBy: "HOME" }, homeRoot(env.written, env.cwd), ".gemini", "antigravity-cli")
+  }];
+}
+
 /**
  * ZCode 0.17.1 keeps its settings, provider configuration and sessions
  * under `.zcode` in `ZCODE_DATA_BASE_DIR`, else the account's home
@@ -166,6 +174,7 @@ export const ENGINE_RESOURCE_RESOLVERS: Readonly<Record<EngineName, EngineResour
   codex: codexResources,
   claude: claudeResources,
   opencode: openCodeResources,
+  agy: agyResources,
   zcode: zcodeResources
 };
 

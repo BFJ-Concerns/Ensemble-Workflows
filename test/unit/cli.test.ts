@@ -1423,7 +1423,7 @@ test("ensemble agent names an invalid --engine value without repeating the flag"
 
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
-  assert.equal(stderr.text(), "No run was started and nothing was recorded. --engine must be codex, claude, opencode, or zcode; got nope\n");
+  assert.equal(stderr.text(), "No run was started and nothing was recorded. --engine must be codex, claude, opencode, agy, or zcode; got nope\n");
   // The flag name must not be doubled, nor the separator a comma:
   // "--engine engine must be codex, claude, opencode, or zcode, got nope".
   assert.doesNotMatch(stderr.text(), /--engine engine must be codex, claude, opencode, or zcode, got nope/);
@@ -1441,7 +1441,7 @@ test("CLI renders named value mistakes in the must-be-got register without usage
       // This deliberately reaches parseEngineName: an unknown map key is an
       // engine-name mistake, not an invalid budget value.
       argv: ["--budget=bogus=1", "workflow.js"],
-      stderr: "--budget engine must be codex, claude, opencode, or zcode; got bogus\n"
+      stderr: "--budget engine must be codex, claude, opencode, agy, or zcode; got bogus\n"
     },
     {
       argv: ["--budget=codex=-1", "workflow.js"],
@@ -2932,6 +2932,7 @@ test("the help answers carry orientation beyond the bare usage grammar", async (
   assert.equal(await runEnsembleCli(["agent", "--help"], { stdout: agentHelp, stderr: new CaptureStream() }), 0);
   assert.match(agentHelp.text(), /prompt is the single positional\s+argument, or stdin when omitted/);
   assert.match(agentHelp.text(), /--identity wraps the result/);
+  assert.match(agentHelp.text(), /--engine [^ )]*\bagy\b/);
 });
 
 test("an agent flag placed after the prompt is rejected as a misplacement", async () => {

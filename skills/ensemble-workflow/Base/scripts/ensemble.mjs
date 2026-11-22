@@ -24950,6 +24950,150 @@ var ClaudeStripPreparer = class {
 
 // src/opencode-engine.ts
 import { randomUUID as randomUUID6 } from "node:crypto";
+
+// src/streamed-command.ts
+async function runStreamedCommand(options) {
+  const startedAt = Date.now();
+  if (options.signal?.aborted) {
+    return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
+  }
+  const scopes = options.commands === void 0 ? await createWorkerScopes() : void 0;
+  const containment = options.commands ?? new CommandContainment(scopes);
+  try {
+    const command = await containment.contain(options.label, options.file, options.args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    return await collectProcess(command, startedAt, { ...options, abortSignal: options.signal });
+  } finally {
+    if (scopes !== void 0) {
+      try {
+        await containment.close();
+      } finally {
+        await scopes.close();
+      }
+    }
+  }
+}
+function collectProcess(command, startedAt, options) {
+  const { timeoutMs, killGraceMs, watchLine, abortSignal, onFirstData, onData, onCommandStop } = options;
+  return new Promise((resolve, reject) => {
+    const child = command.child;
+    const stdout = [];
+    const stderr = [];
+    let settled = false;
+    let exited = child.exitCode !== null || child.signalCode !== null;
+    let closed = exited && (child.stdout?.closed ?? true) && (child.stderr?.closed ?? true);
+    let stopped = false;
+    let deadlineExpired = false;
+    let whitespaceLimitReached = false;
+    let stopping;
+    let drainTimer;
+    let processError;
+    let exitCode = child.exitCode;
+    let exitSignal = child.signalCode;
+    let streamBuffer = "";
+    const whitespace = watchLine !== void 0 ? new WhitespaceStream(startedAt, () => {
+      whitespaceLimitReached = true;
+      stop();
+    }) : null;
+    const settle = () => {
+      if (settled || !stopped || !closed) return;
+      settled = true;
+      clearTimeout(drainTimer);
+      abortSignal?.removeEventListener("abort", terminate);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref();
+      if (processError !== void 0) {
+        reject(processError);
+      } else {
+        resolve({
+          exitCode,
+          signal: exitSignal,
+          stdout: stdout.join(""),
+          stderr: stderr.join(""),
+          durationMs: Date.now() - startedAt,
+          deadlineExpired,
+          whitespaceLimitReached
+        });
+      }
+    };
+    const stop = () => {
+      whitespace?.clear();
+      clearTimeout(timeout);
+      stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then((observation) => {
+        onCommandStop?.(observation);
+        stopped = true;
+        if (!closed) {
+          drainTimer = setTimeout(() => {
+            closed = true;
+            settle();
+          }, 1e3);
+        }
+        settle();
+      });
+    };
+    const terminate = () => {
+      if (!settled) stop();
+    };
+    const timeout = timeoutMs === void 0 || exited ? void 0 : setTimeout(() => {
+      if (!settled && !exited) {
+        deadlineExpired = true;
+        stop();
+      }
+    }, timeoutMs);
+    let firstDataSeen = false;
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      if (!firstDataSeen) {
+        firstDataSeen = true;
+        try {
+          onFirstData?.();
+        } catch {
+        }
+      }
+      try {
+        onData?.(chunk);
+      } catch {
+      }
+      stdout.push(chunk);
+      if (whitespace !== null && stopping === void 0) {
+        streamBuffer += chunk;
+        const lines = streamBuffer.split(/\r?\n/);
+        streamBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          watchLine?.(line, whitespace);
+        }
+      }
+    });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", (error) => {
+      processError = error;
+      stop();
+    });
+    child.on("exit", (code, signal) => {
+      exited = true;
+      exitCode = code;
+      exitSignal = signal;
+      stop();
+    });
+    child.on("close", (code, signal) => {
+      closed = true;
+      exitCode = code;
+      exitSignal = signal;
+      stop();
+      settle();
+    });
+    abortSignal?.addEventListener("abort", terminate, { once: true });
+    if (exited) stop();
+    if (abortSignal?.aborted) terminate();
+  });
+}
+
+// src/opencode-engine.ts
 var OpenCodeCliRunner = class {
   #bin;
   #killGraceMs;
@@ -24978,22 +25122,35 @@ var OpenCodeCliRunner = class {
       args.push("--variant", options.variant);
     }
     args.push(options.prompt);
-    return runProcess(
-      this.#bin,
+    return runStreamedCommand({
+      label: "opencode run",
+      file: this.#bin,
       args,
-      options.cwd,
-      this.#env,
-      this.#commands,
-      options.timeoutMs,
-      this.#killGraceMs,
-      options.signal,
-      options.onFirstData,
-      options.onData,
-      options.onCommandStop
-    );
+      cwd: options.cwd,
+      env: this.#env,
+      commands: this.#commands,
+      timeoutMs: options.timeoutMs,
+      killGraceMs: this.#killGraceMs,
+      signal: options.signal,
+      onFirstData: options.onFirstData,
+      onData: options.onData,
+      onCommandStop: options.onCommandStop,
+      watchLine: watchOpenCodeLine
+    });
   }
   async exportSession(sessionId, cwd, signal, onCommandStop) {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, this.#commands, 3e4, this.#killGraceMs, signal, void 0, void 0, onCommandStop);
+    const result = await runStreamedCommand({
+      label: "opencode export",
+      file: this.#bin,
+      args: ["export", sessionId],
+      cwd,
+      env: this.#env,
+      commands: this.#commands,
+      timeoutMs: 3e4,
+      killGraceMs: this.#killGraceMs,
+      signal,
+      onCommandStop
+    });
     if (result.exitCode !== 0) {
       return {
         status: "command-failed",
@@ -25310,151 +25467,6 @@ var OpenCodeEngineInvocation = class {
     return lines.join("\n");
   }
 };
-async function runProcess(file, args, cwd, env, commands, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop) {
-  const startedAt = Date.now();
-  if (abortSignal?.aborted) {
-    return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
-  }
-  const scopes = commands === void 0 ? await createWorkerScopes() : void 0;
-  const containment = commands ?? new CommandContainment(scopes);
-  try {
-    const command = await containment.contain(`opencode ${args[0]}`, file, args, {
-      cwd,
-      env,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, args[0] === "run", abortSignal, onFirstData, onData, onCommandStop);
-  } finally {
-    if (scopes !== void 0) {
-      try {
-        await containment.close();
-      } finally {
-        await scopes.close();
-      }
-    }
-  }
-}
-function collectProcess(command, startedAt, timeoutMs, killGraceMs, watchWhitespace, abortSignal, onFirstData, onData, onCommandStop) {
-  return new Promise((resolve, reject) => {
-    const child = command.child;
-    const stdout = [];
-    const stderr = [];
-    let settled = false;
-    let exited = child.exitCode !== null || child.signalCode !== null;
-    let closed = exited && (child.stdout?.closed ?? true) && (child.stderr?.closed ?? true);
-    let stopped = false;
-    let deadlineExpired = false;
-    let whitespaceLimitReached = false;
-    let stopping;
-    let drainTimer;
-    let processError;
-    let exitCode = child.exitCode;
-    let exitSignal = child.signalCode;
-    let streamBuffer = "";
-    const whitespace = watchWhitespace ? new WhitespaceStream(startedAt, () => {
-      whitespaceLimitReached = true;
-      stop();
-    }) : null;
-    const settle = () => {
-      if (settled || !stopped || !closed) return;
-      settled = true;
-      clearTimeout(drainTimer);
-      abortSignal?.removeEventListener("abort", terminate);
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      child.unref();
-      if (processError !== void 0) {
-        reject(processError);
-      } else {
-        resolve({
-          exitCode,
-          signal: exitSignal,
-          stdout: stdout.join(""),
-          stderr: stderr.join(""),
-          durationMs: Date.now() - startedAt,
-          deadlineExpired,
-          whitespaceLimitReached
-        });
-      }
-    };
-    const stop = () => {
-      whitespace?.clear();
-      clearTimeout(timeout);
-      stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then((observation) => {
-        onCommandStop?.(observation);
-        stopped = true;
-        if (!closed) {
-          drainTimer = setTimeout(() => {
-            closed = true;
-            settle();
-          }, 1e3);
-        }
-        settle();
-      });
-    };
-    const terminate = () => {
-      if (!settled) stop();
-    };
-    const timeout = timeoutMs === void 0 || exited ? void 0 : setTimeout(() => {
-      if (!settled && !exited) {
-        deadlineExpired = true;
-        stop();
-      }
-    }, timeoutMs);
-    let firstDataSeen = false;
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => {
-      if (!firstDataSeen) {
-        firstDataSeen = true;
-        try {
-          onFirstData?.();
-        } catch {
-        }
-      }
-      try {
-        onData?.(chunk);
-      } catch {
-      }
-      stdout.push(chunk);
-      if (whitespace !== null && stopping === void 0) {
-        streamBuffer += chunk;
-        const lines = streamBuffer.split(/\r?\n/);
-        streamBuffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const event = parseRunEvent(line);
-          const text = runTextPart(event);
-          if (text !== null) {
-            whitespace.observeText(text);
-          } else if (isRecord(event) && (event.type === "tool_use" || event.type === "reasoning")) {
-            whitespace.observeActivity();
-          }
-        }
-      }
-    });
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", (error) => {
-      processError = error;
-      stop();
-    });
-    child.on("exit", (code, signal) => {
-      exited = true;
-      exitCode = code;
-      exitSignal = signal;
-      stop();
-    });
-    child.on("close", (code, signal) => {
-      closed = true;
-      exitCode = code;
-      exitSignal = signal;
-      stop();
-      settle();
-    });
-    abortSignal?.addEventListener("abort", terminate, { once: true });
-    if (exited) stop();
-    if (abortSignal?.aborted) terminate();
-  });
-}
 function parseRunEvents(stdout) {
   const events = [];
   let sessionId = null;
@@ -25735,6 +25747,15 @@ function numberValue(value) {
 }
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function watchOpenCodeLine(line, whitespace) {
+  const event = parseRunEvent(line);
+  const text = runTextPart(event);
+  if (text !== null) {
+    whitespace.observeText(text);
+  } else if (isRecord(event) && (event.type === "tool_use" || event.type === "reasoning")) {
+    whitespace.observeActivity();
+  }
 }
 
 // src/scheduler.ts

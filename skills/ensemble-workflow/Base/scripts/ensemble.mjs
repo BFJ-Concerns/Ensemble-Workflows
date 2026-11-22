@@ -25716,7 +25716,7 @@ async function runTurn(worker, message, timeoutMs, context) {
     stopping = reason;
     worker.session.cancel();
     grace = setTimeout(() => {
-      void worker.close().then((made) => turn.stops.push(made));
+      void worker.close();
     }, CANCEL_GRACE_MS);
   };
   const whitespace = new WhitespaceStream(startedAt, () => stop("whitespace"));
@@ -25980,8 +25980,10 @@ var AgyWorkerSession = class {
           this.#opened = true;
         }
         if (this.#closed) throw attachPartialWorkerText(new EngineShutdownError("agy"), ran.allText);
+        const gone = ran.ending.kind === "lost" || worker.closed;
+        if (gone) ran.stops.push(await worker.close());
         const evidence = turnEvidence(worker, ran, this.#account, context);
-        if (ran.ending.kind === "lost" || worker.closed) {
+        if (gone) {
           const exit = await worker.client.exited;
           this.#noteLost(worker, ran.ending.kind === "lost" ? ran.ending.error.message : "it did not end a cancelled turn and was stopped", exit);
           const lost = this.#lostResult();

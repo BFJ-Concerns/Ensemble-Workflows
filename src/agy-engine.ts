@@ -300,7 +300,7 @@ interface AgyTurn {
   endedAt: number;
   /** The turn as it was exchanged, one JSON value per line. */
   transcript: string[];
-  /** Stops the turn made of its worker, for the attempt's account. */
+  /** Stops of the turn's worker, for the attempt's account: the caller adds the stop of a worker that is gone or was stopped. */
   stops: CommandStop[];
 }
 
@@ -323,7 +323,8 @@ async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | u
     if (stopping !== null) return;
     stopping = reason;
     worker.session.cancel();
-    grace = setTimeout(() => { void worker.close().then((made) => turn.stops.push(made)); }, CANCEL_GRACE_MS);
+    // The stop is the caller's to account: it finds the worker closed.
+    grace = setTimeout(() => { void worker.close(); }, CANCEL_GRACE_MS);
   };
   const whitespace = new WhitespaceStream(startedAt, () => stop("whitespace"));
   const deadline = timeoutMs === undefined ? undefined : setTimeout(() => stop("deadline"), timeoutMs);
@@ -648,8 +649,10 @@ class AgyWorkerSession implements EngineWorkerSession {
           this.#opened = true;
         }
         if (this.#closed) throw attachPartialWorkerText(new EngineShutdownError("agy"), ran.allText);
+        const gone = ran.ending.kind === "lost" || worker.closed;
+        if (gone) ran.stops.push(await worker.close());
         const evidence = turnEvidence(worker, ran, this.#account, context);
-        if (ran.ending.kind === "lost" || worker.closed) {
+        if (gone) {
           // The worker went with the turn, or would not end it and was
           // stopped: the session is gone, and the turn's evidence rides the loss.
           const exit = await worker.client.exited;

@@ -1,3 +1,4 @@
+import { DispatchRemap } from "../../src/dispatch-remap.js";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5950,3 +5951,125 @@ for (const held of [false, true]) {
     }
   });
 }
+
+test("lookup and dispatch use the same remap precedence, resolved pair and destination defaults", async () => {
+  const remap = new DispatchRemap([
+    "codex=claude:engine",
+    "codex:original=claude:pair",
+    "phase:Review*=claude:phase",
+    "label:sc?n.[*]=claude",
+    "label:scan.*=claude:later",
+    "label:absent=claude:unused"
+  ]);
+  const claude = new ChainEngine("claude", [answers("answer")]);
+  const runtime = new EnsembleRuntime({
+    dispatchRemap: remap,
+    defaultMaxAttempts: 1,
+    engines: new EngineRegistry([claude]),
+    namedTargets: { source: "test", bindings: { reviewer: { engine: "codex", model: "original" } } }
+  });
+  const hooks = createWorkflowHooks({
+    runtime, args: [], log: () => {}, workflow: async () => null,
+    defaults: { codex: { effort: "low" }, claude: { model: "claude-sonnet-5", effort: "high" } }
+  });
+  try {
+    assert.equal(hooks.lookupDispatch({ engine: "codex" }).model, "engine");
+    assert.equal(hooks.lookupDispatch({ target: "reviewer" }).model, "pair");
+    hooks.phase("Review pass");
+    assert.equal(hooks.lookupDispatch({ target: "reviewer" }).model, "phase");
+    const options = { target: "reviewer", label: "scan.[1]" };
+    assert.deepEqual(hooks.lookupDispatch(options), {
+      target: "reviewer", bound: true, engine: "claude", model: "claude-sonnet-5", family: "claude"
+    });
+    assert.equal(claude.dispatches.length, 0);
+    assert.equal(remap.unmatched().length, 6);
+
+    assert.equal(await hooks.agent("work", options), "answer");
+    assert.deepEqual(claude.dispatches, [{ model: "claude-sonnet-5", effort: "low", prompt: "work" }]);
+    assert.deepEqual(remap.unmatched(), ["label:absent=claude:unused"]);
+    assert.deepEqual(runtime.lastAgentRecord()?.attempts[0]?.remap, {
+      key: "label:sc?n.[*]", requested: { engine: "codex", model: "original" }
+    });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("fallback selection after a move preserves call, destination defaults, binding and map precedence", async () => {
+  for (const source of ["call", "disabled", "defaults", "defaults off", "target", "map"] as const) {
+    const claude = new ChainEngine("claude", [claudeRefusal(429, null)]);
+    const codex = new ChainEngine("codex", [answers("fallback")]);
+    const remap = new DispatchRemap(["codex:requested=claude", "codex:map=codex:remapped-fallback", "codex:unvisited=claude:unused"]);
+    const target = (model: string) => ({ engine: "codex" as const, model });
+    const runtime = new EnsembleRuntime({
+      dispatchRemap: remap,
+      engines: new EngineRegistry([codex, claude]),
+      defaultMaxAttempts: 1,
+      namedTargets: { source: "test", bindings: { role: {
+        engine: "codex", model: "requested",
+        ...(source === "map" ? {} : { fallback: [target("target")] })
+      } } },
+      machineFallback: { source: "test", chains: {
+        "codex:requested": [target("original-map")],
+        "claude:destination": [target("map"), target("unvisited")],
+        claude: [target("engine-map")]
+      } }
+    });
+    const hooks = createWorkflowHooks({
+      runtime, args: [], log: () => {}, workflow: async () => null,
+      defaults: {
+        codex: { fallback: [target("original-defaults")] },
+        claude: {
+          model: "destination",
+          ...(["call", "defaults"].includes(source) ? { fallback: [target("defaults")] } : {}),
+          ...(source === "defaults off" ? { fallback: false as const } : {})
+        }
+      }
+    });
+    try {
+      const call = source === "call" ? { fallback: [target("call")] } :
+        source === "disabled" ? { fallback: false as const } : {};
+      const disabled = source === "disabled" || source === "defaults off";
+      assert.equal(await hooks.agent("work", { target: "role", ...call }), disabled ? null : "fallback", source);
+      const record = runtime.lastAgentRecord()!;
+      assert.equal(record.fallbackSource.kind, disabled ? "switched-off" : source);
+      if (source === "defaults off") {
+        assert.deepEqual(record.fallbackSource, { kind: "switched-off", by: "defaults", engine: "claude" });
+      }
+      assert.deepEqual(codex.dispatches.map(({ model }) => model),
+        disabled ? [] : [source === "map" ? "remapped-fallback" : source]);
+      if (source === "map") {
+        assert.deepEqual(record.fallbackSource, { kind: "map", key: "claude:destination" });
+        assert.deepEqual(record.fallback, [target("map"), target("unvisited")]);
+        assert.deepEqual(record.attempts[1]?.remap, {
+          key: "codex:map", requested: { engine: "codex", model: "map" }
+        });
+        assert.deepEqual(remap.unmatched(), ["codex:unvisited=claude:unused"]);
+      }
+    } finally {
+      await runtime.close();
+    }
+  }
+});
+
+test("a held worker uses the creation phase's remap and keeps its target across turns", async () => {
+  const remap = new DispatchRemap(["phase:Creation=claude:session-model", "phase:Later=codex:other-model"]);
+  const codex = new SessionChainEngine("codex", []);
+  const claude = new SessionChainEngine("claude", [answers("first"), answers("second")]);
+  const runtime = new EnsembleRuntime({ dispatchRemap: remap, defaultMaxAttempts: 1, engines: new EngineRegistry([codex, claude]) });
+  try {
+    runtime.notePhase("Creation");
+    const session = runtime.createWorkerSession({ engine: "codex", model: "original" });
+    assert.equal(remap.unmatched().length, 2);
+    runtime.notePhase("Later");
+    assert.equal(await session.send("one"), "first");
+    assert.equal(runtime.lastAgentRecord()?.attempts[0]?.remap?.key, "phase:Creation");
+    assert.equal(await session.send("two"), "second");
+    assert.equal(runtime.lastAgentRecord()?.attempts[0]?.remap, undefined);
+    assert.deepEqual(claude.dispatches.map(({ model }) => model), ["session-model", "session-model"]);
+    assert.deepEqual(remap.unmatched(), ["phase:Later=codex:other-model"]);
+    assert.equal(codex.dispatches.length, 0);
+  } finally {
+    await runtime.close();
+  }
+});

@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import { CommandContainment } from "../../src/contained-command.js";
+import { DispatchRemap } from "../../src/dispatch-remap.js";
 import { createWorkerScopes, NoWorkerScopes, waitUntil } from "../../src/worker-scopes.js";
 import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
 import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
@@ -508,7 +509,7 @@ test("an opencode deadline keeps the engine diagnostic in the failure record", a
   }
 });
 
-test("opencode bounds whitespace across chunks and resets on content, tool use and reasoning", async (t) => {
+test("opencode resets the whitespace bound on activity and retries a one-shot stop", async (t) => {
   const child = new ChildProcess();
   const stdout = new PassThrough();
   Object.assign(child, { stdout, stderr: new PassThrough() });
@@ -519,7 +520,25 @@ test("opencode bounds whitespace across chunks and resets on content, tool use a
     child.emit("close", null, "SIGTERM");
     return { outcome: { kind: "stopped" as const }, attemptAccount: null };
   });
-  t.mock.method(commands, "contain", async () => ({ child, reach: { kind: "scope", unit: "fixture.scope" }, stop }));
+  const retryChild = new ChildProcess();
+  const retryOutput = new PassThrough();
+  Object.assign(retryChild, { stdout: retryOutput, stderr: new PassThrough() });
+  const reach = { kind: "scope" as const, unit: "fixture.scope" };
+  const launches: Array<readonly string[]> = [];
+  t.mock.method(commands, "contain", async (_name: string, _file: string, args: readonly string[]) => {
+    launches.push(args);
+    if (launches.length === 1) return { child, reach, stop };
+    assert.equal(launches.length, 2, "only the retry should launch after the stop");
+    setImmediate(() => {
+      retryOutput.write(JSON.stringify({ type: "text", part: { type: "text", text: "recovered" } }) + "\n");
+      retryChild.emit("exit", 0, null);
+      retryChild.emit("close", 0, null);
+    });
+    return {
+      child: retryChild, reach,
+      stop: async () => ({ outcome: { kind: "stopped" as const }, attemptAccount: null })
+    };
+  });
   const runtime = new EnsembleRuntime({
     defaultMaxAttempts: 1,
     engines: new EngineRegistry([new OpenCodeEngineAdapter({
@@ -533,7 +552,7 @@ test("opencode bounds whitespace across chunks and resets on content, tool use a
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
   try {
     const pending = runtime.agent("answer", {
-      engine: "opencode", model: "glm-5.2", timeoutMs: 600_000, maxAttempts: 1
+      engine: "opencode", model: "glm-5.2", timeoutMs: 600_000, maxAttempts: 2
     });
     await new Promise<void>((resolve) => setImmediate(resolve));
     for (const [type, part] of [
@@ -551,11 +570,14 @@ test("opencode bounds whitespace across chunks and resets on content, tool use a
     t.mock.timers.tick(119_999);
     assert.equal(stop.mock.callCount(), 0);
     t.mock.timers.tick(1);
-    assert.equal(await pending, null);
-    assert.equal(stop.mock.callCount(), 1, "the whitespace bound stops the run without exporting");
+    assert.equal(await pending, "recovered");
+    assert.equal(stop.mock.callCount(), 1, "the whitespace bound stops the first run without exporting");
+    assert.equal(launches.length, 2);
+    assert.match(launches[1]?.join(" ") ?? "", /previous attempt failed \(WhitespaceStreamError\)/);
     const record = runtime.lastAgentRecord();
-    assert.equal(record?.status, "failed");
-    assert.equal(record.attempts.length, 1);
+    assert.equal(record?.status, "complete");
+    assert.deepEqual(record.attempts.map(attempt => attempt.attempt), [1, 2]);
+    assert.equal(record.attempts[1]?.status, "complete");
     assert.equal(record.attempts[0]?.failure?.kind, "WhitespaceStreamError");
     assert.deepEqual(record.attempts[0]?.classification, { class: "output", rule: "output" });
     assert.equal(record.attempts[0]?.rawOutput, " partial answer  \t\n");
@@ -984,6 +1006,36 @@ test("opencode accepts literal and named fallback targets with registered models
     assert.equal(completed.result, "final answer");
     assert.equal(runtime.lastAgentRecord()?.attempts[1]?.namedTarget, "backup");
     assert.deepEqual(runner.runs.map((run) => run.variant), ["fixture-variant", "fixture-variant"]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a defaults fallback is checked against the model it dispatches after remapping", async () => {
+  const claude = new ChainEngine("claude", [claudeRefusal(429, null), claudeRefusal(429, null)]);
+  const runner = new FakeOpenCodeRunner();
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([claude, new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry })]),
+    dispatchRemap: new DispatchRemap(["opencode:unregistered=opencode:glm-5.2", "codex:legacy=opencode:glm-5.2"]),
+    defaultMaxAttempts: 1
+  });
+  try {
+    for (const target of [{ engine: "opencode", model: "unregistered" }, { engine: "codex", model: "legacy" }]) {
+      const completed = await runWorkflowScript({
+        filename: "remapped-opencode-chain.js",
+        runtime,
+        log: () => undefined,
+        source: `
+          export const meta = { name: "remapped-opencode-chain" };
+          export const defaults = { claude: { fallback: [${JSON.stringify(target)}] } };
+          lookupDispatch({ engine: "claude" });
+          return await agent("work", { engine: "claude" });
+        `
+      });
+      assert.equal(completed.result, "final answer");
+      assert.deepEqual(runtime.lastAgentRecord()?.attempts[1]?.target, { engine: "opencode", model: "glm-5.2" });
+    }
+    assert.equal(runner.runs.length, 2);
   } finally {
     await runtime.close();
   }

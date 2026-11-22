@@ -1,5 +1,6 @@
 import { assertValidAgentOptions } from "./engine-option-validation.js";
-import { attributeMergedChain } from "./fallback-source.js";
+import { withRemapFallback } from "./dispatch-remap.js";
+import { attributeMergedChain, selectFallback } from "./fallback-source.js";
 import { withDeclaredModels, withTargetChain } from "./named-targets.js";
 import { BudgetExceededError, PreSpawnAuthorError, agentIdentityOf, describeError, isRunEnding } from "./errors.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
@@ -355,6 +356,10 @@ function mergeAgentDefaults(
  * unsaid. The dispatch lookup applies it alone, after judging the target.
  */
 function applyAgentDefaults(defaults: WorkflowDefaults, declared: Partial<AgentOptions>): Partial<AgentOptions> {
+  return withFallbackDefaults(defaults, declared, mergeResolvedAgentDefaults(defaults, declared));
+}
+
+function mergeResolvedAgentDefaults(defaults: WorkflowDefaults, declared: Partial<AgentOptions>): Partial<AgentOptions> {
   const engine = declared.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : undefined;
   if (engine === undefined || engineDefaults === undefined) {
@@ -383,6 +388,10 @@ function mergeSessionDefaults(
   resolveTarget: <T extends object>(declared: T) => T
 ): LiteralWorkerSessionOptions {
   const declared = resolveTarget(sessionOptions as LiteralWorkerSessionOptions);
+  return withFallbackDefaults(defaults, declared, mergeResolvedSessionDefaults(defaults, declared));
+}
+
+function mergeResolvedSessionDefaults(defaults: WorkflowDefaults, declared: LiteralWorkerSessionOptions): LiteralWorkerSessionOptions {
   const engineDefaults = typeof declared.engine === "string" ? defaults[declared.engine] : undefined;
   if (engineDefaults === undefined) {
     return withTargetChain(declared, declared);
@@ -394,6 +403,21 @@ function mergeSessionDefaults(
     }
   }
   return withTargetChain(declared, attributeMergedChain(merged as unknown as LiteralWorkerSessionOptions, declared.fallback, declared.engine));
+}
+
+/** Carry call, destination defaults and binding precedence into a remapped dispatch. */
+function withFallbackDefaults<T extends object>(
+  defaults: WorkflowDefaults,
+  declared: Pick<Partial<AgentOptions>, "fallback">,
+  merged: T
+): T {
+  return withRemapFallback(merged, (engine) => {
+    const fallback = defaults[engine]?.fallback;
+    const options = withTargetChain(declared, attributeMergedChain(
+      fallback === undefined ? {} : { fallback }, declared.fallback, engine
+    ));
+    return selectFallback(options, options, undefined);
+  });
 }
 
 /**

@@ -39,6 +39,7 @@ import type { OwnerGoneReason, ProcessOwnerRecord } from "./process-owner-eviden
 import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
 import type { AppServerDiagnostic } from "./errors.js";
 import type { FailureClassification } from "./failure-classification.js";
+import type { DispatchRemapEvidence } from "./dispatch-remap.js";
 import type { FallbackSource, MachineFallback } from "./fallback-source.js";
 import type { SingleFamilyJudgement } from "./model-family.js";
 import type { NamedTargetResolution, NamedTargets } from "./named-targets.js";
@@ -85,6 +86,7 @@ export interface CliFlagsRecord {
   timeoutMs?: number;
   strip?: string[];
   lean?: boolean;
+  remap?: string[];
   jsonArgs: boolean;
 }
 
@@ -129,6 +131,7 @@ export interface EffectiveConcurrencyRecord {
 export interface EffectiveRunSettingsRecord {
   budgetCeilings: Partial<Record<EngineName, Resolved<number | null>>>;
   runTimeoutMs: Resolved<number | null>;
+  dispatchRemap?: Resolved<string[]>;
 }
 
 /** The manifest's view of the named targets in force. */
@@ -181,6 +184,7 @@ export interface RuntimeAgentAttemptRecord {
   target: { engine: EngineName; model: string | null };
   /** The named target this attempt's target was asked for through, or null where it was named literally (a chain entry, or a call naming its engine). */
   namedTarget: string | null;
+  remap?: DispatchRemapEvidence;
   effortResolution?: EffortResolution | null;
   failure: { kind: string; message: string } | null;
   /**
@@ -264,6 +268,7 @@ export interface LiveAttemptStart {
   target: { engine: EngineName; model: string | null };
   /** As the settled attempt's `namedTarget`. */
   namedTarget: string | null;
+  remap?: DispatchRemapEvidence;
   /**
    * The served identity the attempt starts with: null on both halves for a
    * fresh thread or session (a first attempt, a retry, a fallback step),
@@ -293,6 +298,7 @@ export interface LiveAttemptRecord {
   transcript: string | null;
   target: { engine: EngineName; model: string | null };
   named_target: string | null;
+  remap?: DispatchRemapEvidence;
   resolved_model: string | null;
   resolved_effort: string | null;
 }
@@ -312,6 +318,7 @@ export interface AbandonedAttemptEntry {
   status: "abandoned";
   target: { engine: EngineName; model: string | null };
   named_target: string | null;
+  remap?: DispatchRemapEvidence;
   failure: null;
   classification: null;
   chain_decision: null;
@@ -338,6 +345,7 @@ export function abandonedAttemptEntry(live: LiveAttemptRecord): AbandonedAttempt
     target: { engine: live.target.engine, model: live.target.model },
     // A live entry written before attempts named their target has none.
     named_target: live.named_target ?? null,
+    ...(live.remap === undefined ? {} : { remap: live.remap }),
     effort_resolution: live.effort_resolution ?? null,
     failure: null,
     classification: null,
@@ -395,6 +403,8 @@ export interface RuntimeAgentRecord {
    * named its engine literally.
    */
   namedTarget: NamedTargetResolution | null;
+  /** Launch remap applied to the call or creating turn's first target. */
+  remap?: DispatchRemapEvidence;
   /**
    * Which target answered: `entry` is -1 for the call's own target and
    * the chain index thereafter, beside that target's engine and model. Null
@@ -507,6 +517,7 @@ export interface RunRecordFinishOptions {
   error?: TerminalErrorRecord | null;
   /** The run's single-family judgement, for the manifest's `single_family`; omitted or null where the run says nothing. */
   singleFamily?: SingleFamilyJudgement | null;
+  dispatchRemapUnmatched?: string[];
   endedAt?: string;
 }
 
@@ -635,6 +646,8 @@ interface Manifest {
   /** See {@link EffectiveRunSettingsRecord}: values with their winning layers. */
   budget_ceilings: Partial<Record<EngineName, Resolved<number | null>>>;
   run_timeout_ms: Resolved<number | null>;
+  dispatch_remap?: Resolved<string[]>;
+  dispatch_remap_unmatched?: string[];
   /**
    * The named targets in force when the run started: the file they were read
    * from (null where the run had none) and each name's binding, its model
@@ -917,6 +930,7 @@ export class RunRecordWriter {
       },
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
+      ...(options.effectiveSettings?.dispatchRemap === undefined ? {} : { dispatch_remap: options.effectiveSettings.dispatchRemap }),
       named_targets: namedTargetsRecord(options.namedTargets),
       machine_fallback: options.machineFallback === undefined ? null : structuredClone(options.machineFallback),
       effort: options.effortPolicy ?? null,
@@ -1166,6 +1180,7 @@ export class RunRecordWriter {
         transcript: null,
         target: { engine: start.target.engine, model: start.target.model },
         named_target: start.namedTarget,
+        ...(start.remap === undefined ? {} : { remap: start.remap }),
         ...(start.effortResolution === undefined ? {} : { effort_resolution: start.effortResolution }),
         resolved_model: start.identity.resolvedModel,
         resolved_effort: start.identity.resolvedEffort
@@ -1426,6 +1441,7 @@ export class RunRecordWriter {
       fallback: record.fallback,
       fallback_source: { ...record.fallbackSource },
       named_target: record.namedTarget === null ? null : { ...record.namedTarget },
+      ...(record.remap === undefined ? {} : { remap: record.remap }),
       effort_resolution: record.effortResolution ?? null,
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
@@ -1477,6 +1493,7 @@ export class RunRecordWriter {
         status: attempt.status,
         target: attempt.target,
         named_target: attempt.namedTarget,
+        ...(attempt.remap === undefined ? {} : { remap: attempt.remap }),
         effort_resolution: attempt.effortResolution ?? null,
         failure: attempt.failure,
         classification: attempt.classification,
@@ -1540,6 +1557,9 @@ export class RunRecordWriter {
       // be able to say why the run ended, without the other file.
       this.manifest.error = options.error ?? null;
       this.manifest.single_family = options.singleFamily ?? null;
+      if (options.dispatchRemapUnmatched !== undefined) {
+        this.manifest.dispatch_remap_unmatched = [...options.dispatchRemapUnmatched];
+      }
       await this.#writeJson("result.json", {
         schema_version: SCHEMA_VERSION,
         kind: "run_result",

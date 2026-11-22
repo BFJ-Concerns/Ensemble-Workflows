@@ -3159,15 +3159,23 @@ test("a replacement live attempt clears identity and rejects an earlier attempt'
     await writer.recordAgent(running);
     await writer.recordAttemptStart(1, liveStart(1, "2026-11-10T12:00:00Z"));
     await writer.recordAttemptIdentity(1, 1, { resolvedModel: "first-model", resolvedEffort: "high" });
-    await writer.recordAttemptStart(1, { ...liveStart(2, "2026-11-10T12:01:00Z"), target: { engine: "claude", model: "requested" } });
+    const remap = { key: "codex:primary", requested: { engine: "codex" as const, model: "primary" } };
+    await writer.recordAttemptStart(1, {
+      ...liveStart(2, "2026-11-10T12:01:00Z"), target: { engine: "claude", model: "requested" }, remap
+    });
     await writer.recordAttemptIdentity(1, 1, { resolvedModel: "late-model", resolvedEffort: "low" });
     const read = async () => JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
     assert.deepEqual((await read()).current_attempt, {
       attempt: 2, started_at: "2026-11-10T12:01:00Z", transcript: null,
-      target: { engine: "claude", model: "requested" }, named_target: null, resolved_model: null, resolved_effort: null
+      target: { engine: "claude", model: "requested" }, named_target: null, remap, resolved_model: null, resolved_effort: null
     });
     await writer.recordAttemptIdentity(1, 2, { resolvedModel: "second-model", resolvedEffort: "medium" });
-    assert.equal((await read()).current_attempt.resolved_model, "second-model");
+    const record = await read();
+    assert.equal(record.current_attempt.resolved_model, "second-model");
+    const abandoned = await reconcileAbandonedAgentRecord(writer.archiveDir, record, {
+      observed_at: "2026-11-10T12:02:00Z", reason: "owner-process-gone", observed_by: { pid: process.pid, run_uuid: "sweep" }
+    });
+    assert.deepEqual((abandoned.record.attempts as Array<{ remap?: unknown }>)[0]?.remap, remap);
     assert.equal(writer.manifest.cost_rollup.codex, undefined);
     assert.equal(writer.manifest.cost_rollup.claude?.["second-model"]?.complete, false);
   } finally { await rm(scratch, { recursive: true, force: true }); }

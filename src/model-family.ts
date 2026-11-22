@@ -11,17 +11,15 @@ export type ModelFamilyAssignments = Readonly<Record<string, string>>;
 
 /**
  * The families the harness can place a model in by its name alone, each
- * matched against the name's last `/`-separated segment, lowercased, so a
- * provider route (`openrouter/anthropic/claude-sonnet-5-5`) groups as the
- * bare name does. Claude Code's own aliases (`opus`, `sonnet`, `haiku`,
- * `fable`, with or without a context suffix such as `[1m]`) are Claude, and
- * OpenAI's `o`-series and `codex-` models are GPT.
+ * matched against the bare model name. Claude Code's own aliases (`opus`,
+ * `sonnet`, `haiku`, `fable`) are Claude, and OpenAI's `o`-series and
+ * `codex-` models are GPT.
  */
 const NAME_GROUPS: readonly (readonly [RegExp, string])[] = [
   [/^(claude|opus|sonnet|haiku|fable)(-|\[|$)/, "claude"],
   [/^(gpt|chatgpt|codex)(-|$)|^o[1-9](-|$)/, "gpt"],
   [/^gemini(-|$)/, "gemini"],
-  [/^glm(-|$)/, "glm"],
+  [/^glm(?:\d+(?:\.\d+)*)?(-|$)/, "glm"],
   [/^kimi(-|$)/, "kimi"],
   [/^qwen/, "qwen"],
   [/^deepseek(-|$)/, "deepseek"],
@@ -32,12 +30,17 @@ const NAME_GROUPS: readonly (readonly [RegExp, string])[] = [
 ];
 
 /**
- * The family the harness groups a model name into, or null where the name
- * matches none of its families.
+ * Match the final route segment without its tag, ignoring case. If the
+ * bare match fails, allow one dotted vendor prefix such as `anthropic.`.
  */
 export function groupModelName(model: string): string | null {
-  const name = model.slice(model.lastIndexOf("/") + 1).toLowerCase();
-  return NAME_GROUPS.find(([pattern]) => pattern.test(name))?.[1] ?? null;
+  const [name = ""] = model.slice(model.lastIndexOf("/") + 1).toLowerCase().split(":", 1);
+  const bare = NAME_GROUPS.find(([pattern]) => pattern.test(name));
+  if (bare !== undefined) return bare[1];
+
+  const vendorModel = /^[a-z0-9-]+\.(.+)$/.exec(name)?.[1];
+  if (vendorModel === undefined) return null;
+  return NAME_GROUPS.find(([pattern]) => pattern.test(vendorModel))?.[1] ?? null;
 }
 
 /**

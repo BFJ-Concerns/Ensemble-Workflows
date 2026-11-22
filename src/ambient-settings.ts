@@ -28,6 +28,7 @@ export const CONFIG_SCHEMA_VERSION = 1;
 export const AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
 export const RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
 export const RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
+export const DISPATCH_REMAP_ENV = "ENSEMBLE_DISPATCH_REMAP";
 /**
  * The invoking session's opaque identity. This is deliberately not an ambient
  * setting: it belongs to the run record only, rather than the closed set of
@@ -53,6 +54,7 @@ const RUN_SCOPED_ENVIRONMENT_VARIABLES: ReadonlySet<string> = new Set([
   RUN_RECORD_ENV,
   RUN_RECORD_DIR_ENV,
   CALLER_IDENTITY_ENV,
+  DISPATCH_REMAP_ENV,
   "ENSEMBLE_STATUS",
   "ENSEMBLE_STATUS_DIR",
   HOLD_SCOPE_ENV
@@ -181,6 +183,10 @@ const OPENCODE_MODEL_DECLARATION_KEYS = ["provider_model", "display_name", "fami
 const OPENCODE_BILLING_MODES: readonly OpenCodeBillingMode[] = ["pay-as-you-go", "self-hosted"];
 
 const ENGINES = ["codex", "claude", "opencode"] as const satisfies readonly EngineName[];
+
+export function isConfiguredEngine(value: unknown): value is EngineName {
+  return (ENGINES as readonly unknown[]).includes(value);
+}
 const DISABLED_VALUES = new Set(["0", "off", "false", "no"]);
 const ENABLED_VALUES = new Set(["1", "on", "true", "yes"]);
 

@@ -313,11 +313,15 @@ it. The dispatch lookup, an identified call's `answeredBy` and the run's
 [single-family notice](configuration.md#single_family_notice) all report the
 same family.
 
-Ensemble groups a model by the last `/`-separated segment of its name,
-ignoring case, so a provider route groups as the bare name does. The family
-names a script will see are:
+Ensemble takes the last `/`-separated segment of the model name, ignores
+case and discards any tag starting with `:`. It tries the bare name first,
+then tries again after removing a single dotted vendor prefix, such as
+`anthropic.` in `anthropic.claude-sonnet-5-5`. A listed name matches on its
+own or before a hyphen. Qwen and Llama match by prefix, GLM also accepts
+version digits immediately after `glm` (as in `glm4:9b`), and Claude names
+and aliases also accept a bracketed context suffix such as `[1m]`.
 
-| Family | Models whose names begin |
+| Family | Recognised names |
 |---|---|
 | `claude` | `claude`, and Claude Code's aliases `opus`, `sonnet`, `haiku` and `fable` |
 | `gpt` | `gpt`, `chatgpt`, `codex`, and OpenAI's `o1` to `o9` series |

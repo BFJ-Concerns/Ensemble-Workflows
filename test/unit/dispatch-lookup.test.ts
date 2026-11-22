@@ -190,12 +190,17 @@ test("model families: grouped by model name on every engine, assignments first, 
     ["claude-opus-5-5", "claude"], ["opus", "claude"], ["sonnet[1m]", "claude"], ["openrouter/anthropic/claude-sonnet-5-5", "claude"],
     ["gpt-6.2-sol", "gpt"], ["o4-mini", "gpt"], ["codex-mini-latest", "gpt"], ["gpt-oss-120b", "gpt"],
     ["gemini-4-neon", "gemini"], ["z-ai/GLM-4.6", "glm"], ["moonshotai/kimi-k2", "kimi"], ["Qwen/Qwen3-Coder", "qwen"],
-    ["deepseek-v3.2", "deepseek"], ["mystery-1", null], ["opusculum", null], ["o", null]
+    ["deepseek-v3.2", "deepseek"], ["mistral:latest", "mistral"], ["glm4:9b", "glm"],
+    ["anthropic.claude-sonnet-5-5", "claude"], ["gateway/Anthropic.Claude-sonnet-5-5:0", "claude"],
+    ["gpt-6.claude-sonnet-5-5", "gpt"], ["mystery:anthropic.claude-sonnet-5-5", null],
+    ["vendor.glm4other:latest", null], ["mystery-1", null], ["opusculum", null], ["o", null]
   ] as const) {
     assert.equal(groupModelName(model), family, model);
   }
   // The engine never decides: one model is one family on every engine.
   assert.equal(judge("codex", "claude-opus-5-5"), "claude");
+  assert.equal(judge("codex", "anthropic.claude-sonnet-5-5", null, { "anthropic.claude-sonnet-5-5": "house" }), "house");
+  assert.equal(judge("claude", null, "mistral:latest"), "mistral");
   assert.equal(judge("claude", "gpt-6.2-sol"), "gpt");
   // No model named and none served: unknown, never the engine's name.
   assert.equal(judge("codex", null), null);

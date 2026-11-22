@@ -19808,7 +19808,7 @@ var NAME_GROUPS = [
   [/^(claude|opus|sonnet|haiku|fable)(-|\[|$)/, "claude"],
   [/^(gpt|chatgpt|codex)(-|$)|^o[1-9](-|$)/, "gpt"],
   [/^gemini(-|$)/, "gemini"],
-  [/^glm(-|$)/, "glm"],
+  [/^glm(?:\d+(?:\.\d+)*)?(-|$)/, "glm"],
   [/^kimi(-|$)/, "kimi"],
   [/^qwen/, "qwen"],
   [/^deepseek(-|$)/, "deepseek"],
@@ -19818,8 +19818,12 @@ var NAME_GROUPS = [
   [/^minimax(-|$)/, "minimax"]
 ];
 function groupModelName(model) {
-  const name = model.slice(model.lastIndexOf("/") + 1).toLowerCase();
-  return NAME_GROUPS.find(([pattern]) => pattern.test(name))?.[1] ?? null;
+  const [name = ""] = model.slice(model.lastIndexOf("/") + 1).toLowerCase().split(":", 1);
+  const bare = NAME_GROUPS.find(([pattern]) => pattern.test(name));
+  if (bare !== void 0) return bare[1];
+  const vendorModel = /^[a-z0-9-]+\.(.+)$/.exec(name)?.[1];
+  if (vendorModel === void 0) return null;
+  return NAME_GROUPS.find(([pattern]) => pattern.test(vendorModel))?.[1] ?? null;
 }
 function modelFamilyOf(target, assignments, openCodeModels) {
   const entry = target.engine === "opencode" && target.requested !== null ? openCodeModels?.get(target.requested) : void 0;

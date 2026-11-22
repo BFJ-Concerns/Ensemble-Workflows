@@ -585,8 +585,8 @@ the last one that validates is the answer.
 
 The `zcode` engine drives a ZCode that can be told one run's provider, model
 and reasoning level (`--provider`, `--model`, `--reasoning-level`) and that
-prints its model listing (`zcode models`), as the owner's fork of ZCode does
-from 0.17.1; upstream ZCode does neither. Before its first dispatch in a run,
+prints its model listing (`zcode models`). Upstream ZCode, as of 0.17.1,
+does neither, so the engine needs a ZCode built with both. Before its first dispatch in a run,
 Ensemble reads `zcode --help` and `zcode models`; a ZCode that cannot be run
 or lacks either ability is refused before any worker spawns
 (`ZCodeSubstrateRefusedError`), the error naming what it lacks. The refusal
@@ -613,7 +613,8 @@ is an availability failure, so a remaining fallback entry runs instead.
 - Each attempt is one headless run, `zcode --prompt=<text> --output-format
   stream-json`, in the worker's `cwd`. zcode takes a prompt only as that one
   command-line argument, which Linux bounds at 128 KiB, so a longer prompt
-  (with the worker preamble, any schema and room for a retry's correction)
+  (with the worker preamble, any schema and room for a retry's correction,
+  which repeats at most 2000 characters of the failure's message)
   is refused before the worker spawns (`AgentPromptRejectedError`), the error
   naming the limit. A held worker's later turns resume
   the ZCode session its first run created (`--resume`); if zcode no longer
@@ -814,7 +815,8 @@ cannot pass silently:
 
 - Errors raised before a worker exists: an invalid option, a placement that
   could not be opened, an engine refusing the dispatch itself
-  (`ClaudeDispatchError`, `CodexSubstrateRefusedError`), a strip that cannot
+  (`ClaudeDispatchError`, `CodexSubstrateRefusedError`,
+  `ZCodeSubstrateRefusedError`), a strip that cannot
   be enforced, or a budget refusal (`BudgetExceededError`). A budget refusal
   propagates through `parallel()` and `pipeline()` too, including a refused
   session turn; if uncaught, the run fails and the manifest and completion
@@ -822,9 +824,11 @@ cannot pass silently:
   run, the runtime also checks that it can use the directories that engine
   needs, resolved from the environment that engine is launched with:
   Codex's `CODEX_HOME` (else `$HOME/.codex`); Claude's `CLAUDE_CONFIG_DIR`
-  (else `$HOME/.claude`), global configuration and daemon sockets; and
+  (else `$HOME/.claude`), global configuration and daemon sockets;
   opencode's data, configuration, state and cache homes under the matching
-  `XDG_*_HOME` variables, plus its temporary directory. Claude's dispatch
+  `XDG_*_HOME` variables, plus its temporary directory; and zcode's `.zcode`
+  under `ZCODE_DATA_BASE_DIR` (else `$HOME/.zcode`), plus its temporary
+  directory. Claude's dispatch
   settings scratch files use the launcher's `TMPDIR` (then `TMP`, `TEMP`,
   `/tmp`), and reply valve sockets use its `TMUX_TMPDIR` (else `/tmp`),
   independently of worker overrides. Claude's own scratch files use
@@ -1129,8 +1133,10 @@ narrow the work), or the Codex transport's request deadline (where raising
 Once a turn streams whitespace, Ensemble ends the attempt if two minutes
 have passed since the turn began or last produced non-whitespace text, tool
 activity or reasoning. This fixed bound applies to Codex app-server events,
-Claude transcript entries, opencode run events and agy session updates, where
-a tool call, a tool call's update, a thought or a plan is activity. agy ends
+Claude transcript entries, opencode run events, agy session updates and
+zcode's streamed run events. On agy a tool call, a tool call's update, a
+thought or a plan is activity; on zcode streamed reasoning, a tool event or
+a tool update is. agy ends
 a stuck stream by cancelling the turn. If agy answers within ten seconds,
 a held session remains usable. Otherwise Ensemble stops the worker and
 records a held session as lost. A whitespace failure spends one attempt

@@ -162,7 +162,8 @@ unobserved, not zero. Identity and paths are producer-supplied evidence, never
 inferred. Requested identity describes the original call and is present from
 the first snapshot listing the worker; resolved identity names what was
 served. Transcript paths match the running agent record's current attempt:
-archive-relative for Codex and opencode, absolute native paths for Claude.
+archive-relative for Codex, opencode and zcode, absolute native paths for
+Claude. An agy worker has no transcript path while it runs.
 Resolve relative paths against `archiveDir`. A settled Claude record
 archives a copy of the native transcript; the status entry retains its
 live path. Evidence timestamps advance when output is observed, which each
@@ -791,8 +792,9 @@ lists settled attempts only. The running attempt is `current_attempt`.
 
 Claude's live path is absolute and points to the session's own JSONL file
 under `~/.claude/projects/`. A held session uses that same file across its
-turns, so the live file includes the conversation. Codex and opencode
-write live JSONL files relative to the archive directory, one per attempt.
+turns, so the live file includes the conversation. Codex, opencode and
+zcode write live JSONL files relative to the archive directory, one per
+attempt. agy has no live file: its transcript is archived at settlement.
 Ensemble appends each event as it arrives. For opencode it also appends the
 session export when available. The same path appears in `transcripts`
 at settlement, with its final size and digest in the manifest's files table.
@@ -1234,8 +1236,9 @@ Usage summaries — an agent record's `usage` and each `cost_rollup` bucket's
 | `reasoningOutputTokens` | Reasoning output, or `null` when the engine does not separate reasoning (not zero) |
 | `unclassifiedTokens` | Spend the engine's total covers but no other class does — for example opencode steps that report only a total |
 
-Each engine's native fields are mapped under one rule. Codex reports cached
-tokens within input and reasoning within output, so both are subtracted out.
+Each engine's native fields are mapped under one rule. Codex and zcode
+report cached tokens within input and reasoning within output, so both are
+subtracted out.
 Claude, opencode and agy report cached tokens separately from input, and
 opencode reports reasoning separately from output too. agy reports its
 thought tokens within output, so they are subtracted out. Claude's reasoning

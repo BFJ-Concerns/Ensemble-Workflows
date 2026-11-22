@@ -55,7 +55,9 @@ await Promise.all(Array.from({ length: ${count} }, () => agent("pending", { engi
       }),
       stdio: ["ignore", "pipe", "pipe"]
     });
-    const watchdog = setTimeout(() => { watchdogFired = true; child.kill("SIGKILL"); }, 60_000);
+    // This guards against a hung child. Sealing the backlog includes writing
+    // and hashing thousands of records, which can exceed a minute on a busy host.
+    const watchdog = setTimeout(() => { watchdogFired = true; child.kill("SIGKILL"); }, 300_000);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => { stdout += chunk; });

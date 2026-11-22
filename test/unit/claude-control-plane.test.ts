@@ -1039,6 +1039,23 @@ test("concurrent multi-megabyte follow-ups use private editors, exact receipts a
   } finally { await Promise.all(dirs.map(dir => rm(dir, { recursive: true, force: true }))); }
 });
 
+test("the prompt valve passes the Claude attach command as separate tmux arguments", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-valve-attach-argv-"));
+  try {
+    const stub = await installValveStubs(dir);
+    const control = new ClaudeCliControlPlane({
+      claudeBin: stub.claude, tmuxBin: stub.tmux, projectsDir: dir, valveAttachSettleMs: 0
+    });
+    assert.deepEqual(await control.steer(stub.handle, "fixture prompt"), { submitted: true });
+    const [first] = (await readFile(path.join(dir, "calls.jsonl"), "utf8")).split("\n");
+    const { argv } = JSON.parse(first!) as { argv: string[] };
+    assert.equal(argv[4], "new-session");
+    assert.deepEqual(argv.slice(8), ["--", stub.claude, "attach", stub.handle.id]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a real private tmux server gives Claude its editor despite login shell overrides", async (t) => {
   try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); }
   catch { t.skip("tmux is not installed"); return; }

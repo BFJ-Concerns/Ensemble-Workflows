@@ -887,9 +887,10 @@ to the worker. These failures settle the call immediately:
 - A Claude task opens with a command that runs no skill (`claude-command-not-skill`).
 
 Claude corrects in the same session through the prompt editor while the
-session and tmux are available. If a one-shot worker has stopped or tmux
-is unavailable for an in-session correction, Ensemble dispatches a fresh
-session. Opening delivery also requires tmux.
+session and tmux are available. For a one-shot worker, Ensemble dispatches
+a fresh session if the worker has stopped or tmux is unavailable for the
+correction. A held worker's turn fails with `ClaudeValveError` if tmux is
+unavailable for the correction. Opening delivery also requires tmux.
 Codex and opencode retry with the failure appended to the prompt.
 
 An opencode model absent from the machine registry, a missing model, or an

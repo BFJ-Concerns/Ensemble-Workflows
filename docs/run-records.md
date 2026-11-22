@@ -598,7 +598,8 @@ families; their versions are listed in [Schema versions](#schema-versions).
   hash of the envelope.
 - `meta`: `{ raw, task }` — the workflow's `meta` export and its `task`,
   copied verbatim; each is `null` when absent.
-- `cli_flags`: parsed run-tuning flags.
+- `cli_flags`: parsed run-tuning flags. `remap` holds any explicit `--remap`
+  rules in flag order.
 - `worker_scope`: effective systemd grouping as `{ value, layer }`, where value is
   `worker` or `run` and layer is `flag`, `env`, `config-file` or `default`.
   `cli_flags.workerScope` records an explicitly supplied grouping flag. Earlier
@@ -612,6 +613,11 @@ families; their versions are listed in [Schema versions](#schema-versions).
 - `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
   ceilings and whole-run timeout, each as `{ value, layer }`. Both are set by
   flag only, so their layers are `flag` or `default`.
+- `dispatch_remap` records the run's effective rule list as
+  `{ value, layer }` when launch rules are supplied. `value` preserves rule
+  order and `layer` is `flag` or `env`.
+- `dispatch_remap_unmatched` lists rules that matched no dispatch. A sealed
+  run with a remap records `[]` when every rule matched.
 - `effort`: the machine effort policy `{ section, source }`, or `null` when
   the runtime received none; `section` contains the bounds and native-level
   maps in force, and `source` names the machine configuration file.
@@ -762,6 +768,8 @@ While an attempt executes, on any engine, the record also has
   attempt.
 - `named_target`: the named target this attempt was asked for through, as on
   a settled attempt.
+- `remap` carries the winning key and requested pair for a remapped attempt,
+  as on a settled attempt.
 - `effort_resolution`: dispatch provenance, present when the runtime resolved
   a canonical effort; the shape matches a settled attempt below.
 - `transcript`: a path once a readable file exists, otherwise `null`.
@@ -801,23 +809,28 @@ The fields present throughout a record's lifetime are:
 - `schema_version`: the durable run record version in [Schema versions](#schema-versions).
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, and `concurrency_group` (the engine group of the
-  last target admitted: initially the requested engine, and the answering
-  engine's group when a fallback answers).
+  last target admitted. This starts with the first dispatch's engine and
+  moves to the answering engine's group when a fallback answers).
 - `header_identity`: `"original_request"`, stating that the top-level
-  `engine`, `model`, and `effort` fields describe the request. The field
+  `engine`, `model`, and `effort` fields describe the first dispatch of the
+  call or turn, including any launch remap. The field
   joined the record within schema version 4, so a version-4 agent record
   from an older Ensemble checkout can lack it; read a missing
   `header_identity` as `"original_request"`, because those fields describe
   the request in such records too.
-- `engine`, `model`, `effort`: what was asked for (`effort` as the canonical
-  level). For a call naming a target, these are what the name resolved to,
-  with the script's `defaults` applied.
+- `engine`, `model`, `effort`: the engine and requested model for the first
+  dispatch, with named targets, script defaults and any remap applied, and
+  the requested effort.
+- `remap` is present when the launch remap selected the call's first
+  target. It holds the winning `key` and the `requested` pair
+  `{ engine, model }`. The header's `engine` and `model` give the selected
+  destination, while each attempt carries the remap for its own target.
 - `named_target`: the named target the call asked for, or `null` for a call
   that named its engine directly. Otherwise `{ name, source, engine, model }`:
   the name, the binding's configuration source, and the binding's engine and
   model, `model` being `null` where the binding names none. The top-level
-  `model` records the call or turn's requested model, with `defaults` applied,
-  or `null` for the engine's own default. Every turn of a session keeps the
+  `model` records the model requested from the selected engine, or `null`
+  for the engine's own default. Every turn of a session keeps the
   target the session was created through in `named_target`; later turns'
   top-level `model` uses the target that answered the first turn, even when
   that was a fallback.
@@ -966,7 +979,8 @@ The fields present throughout a record's lifetime are:
   - `status`: `"complete"`, `"failed"`, or `"abandoned"`. An abandoned entry
     is one whose outcome was never observed. It keeps the evidence persisted
     while it ran: `attempt`, `target`, `named_target`, `started_at`, `resolved_model`,
-    `resolved_effort` and `effort_resolution`. Every outcome field — `ended_at`,
+    `resolved_effort`, `effort_resolution` and `remap` when present. Every outcome
+    field — `ended_at`,
     `duration_ms`,
     `first_delta_ms`, `raw_output`, `validated_output`, `failure`,
     `classification`, `chain_decision`, `observed_failure`, `worker_exit`,
@@ -978,6 +992,9 @@ The fields present throughout a record's lifetime are:
   - `target` (`{ engine, model }`: the engine and requested model this
     attempt was dispatched to — the call's own until a fallback chain
     advances).
+  - `remap` is present on a remapped attempt. It contains the winning rule's
+    `key` and the `requested` pair `{ engine, model }` before remapping.
+    The attempt's `target` holds the dispatched pair.
   - `named_target`: the name this attempt's target was asked for through —
     the call's named target on the call's own target, the entry's on a named
     fallback entry, and `null` on a literal entry or for a call that named
@@ -1051,14 +1068,16 @@ The fields present throughout a record's lifetime are:
     `{ task_id, description, observed_at, ended_at }`
     (`ended_at` is `null` where the attempt ended before the task woke the
     session); empty for engines without background tasks.
-- `classification` on a failed attempt: `{ class, rule }`. `class` is
-  `"availability"` (the engine refused or lost the worker before it answered:
-  allowance exhausted, provider overload past its own retry, an engine process
-  that died or never started — the one class that advances a fallback chain,
-  consuming no attempt when it does), `"output"` (the worker answered badly: empty,
-  unparseable, off-schema — retried in place), or `"unclassified"` (including
-  rejected credentials and a Codex rejection of the authored schema before
-  generation). Codex provider request rejections forwarded as `other` with
+- `classification` on a failed attempt holds `{ class, rule }`. The
+  `"availability"` class includes missing or rejected credentials, an
+  exhausted allowance, provider overload past its own retry, and an engine
+  process that died or never started. Only this class advances a fallback
+  chain, consuming no attempt when it does. The `"output"` class covers
+  empty, unparseable or off-schema answers and streams stopped by the
+  whitespace bound. Output failures retry in place except when the bound
+  stops a held Claude worker. The `"unclassified"` class includes a Codex
+  rejection of the authored schema before generation. Codex provider
+  request rejections forwarded as `other` with
   a JSON `invalid_request_error` cause use rule
   `codex.provider-request-rejected`: recognised, retried in place, and never
   an availability failure. A recognised schema rejection retains

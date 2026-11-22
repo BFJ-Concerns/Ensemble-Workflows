@@ -826,9 +826,9 @@ test("per-turn timeout is not deferred by ongoing MCP tool progress", { timeout:
   }
 });
 
-for (const activity of ["foreign", "current"] as const) {
+for (const activity of ["foreign", "text", "tool", "reasoning"] as const) {
   test(`a Codex whitespace stream uses the bound for ${activity} turn activity`, { timeout: 5_000 }, async (t) => {
-    const codexBin = await fakeCodexFailingTurnServer(activity === "foreign" ? "whitespace-stream" : "whitespace-with-reasoning");
+    const codexBin = await fakeCodexFailingTurnServer(activity === "foreign" ? "whitespace-stream" : `whitespace-with-${activity}`);
     const streamed = Promise.withResolvers<void>();
     const transport = await CodexAppServerTransport.start({
       ...defaultTransportOptions(codexBin),
@@ -851,7 +851,7 @@ for (const activity of ["foreign", "current"] as const) {
       t.mock.timers.tick(1);
       await assert.rejects(turn, (error: unknown) => {
         assert.ok(error instanceof WhitespaceStreamError);
-        assert.equal(partialWorkerTextOf(error), " \t\n");
+        assert.equal(partialWorkerTextOf(error), activity === "text" ? " \tpartial answer\n" : " \t\n");
         return true;
       });
     } finally {
@@ -860,6 +860,32 @@ for (const activity of ["foreign", "current"] as const) {
     }
   });
 }
+
+test("a one-shot Codex whitespace stop spends an output failure before retrying", { timeout: 5_000 }, async (t) => {
+  const codexBin = await fakeCodexFailingTurnServer("whitespace-stream");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    onEvent: (event) => {
+      if (event.method === "test/streamed") t.mock.timers.tick(120_000);
+    }
+  });
+  const runtime = new EnsembleRuntime({ transport, cwd: process.cwd(), defaultMaxAttempts: 1 });
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  try {
+    assert.equal(await runtime.agent("answer", { engine: "codex", maxAttempts: 2, timeoutMs: 240_000 }), "recovered");
+    const record = runtime.lastAgentRecord();
+    assert.equal(record?.status, "complete");
+    assert.deepEqual(record.attempts.map(attempt => attempt.attempt), [1, 2]);
+    const [stopped, answered] = record.attempts;
+    assert.equal(stopped?.failure?.kind, "WhitespaceStreamError");
+    assert.deepEqual(stopped?.classification, { class: "output", rule: "output" });
+    assert.equal(stopped?.rawOutput, " \t\n");
+    assert.equal(answered?.status, "complete");
+  } finally {
+    t.mock.timers.reset();
+    await runtime.close();
+  }
+});
 
 test("transport close carries each live turn's own partial text", async () => {
   const codexBin = await fakeCodexFailingTurnServer("hang-after-delta");
@@ -2078,6 +2104,8 @@ async function fakeCodexFailingTurnServer(
     | "held-loss-after-notification"
     | "hang-after-delta"
     | "whitespace-stream"
+    | "whitespace-with-text"
+    | "whitespace-with-tool"
     | "whitespace-with-reasoning"
     | "no-turn-start-ack"
     | "garbage-line"
@@ -2224,12 +2252,23 @@ reader.on("line", (line) => {
       }
       return;
     }
-    if (mode === "whitespace-stream" || mode === "whitespace-with-reasoning") {
+    if (mode.startsWith("whitespace-")) {
+      if (turnCounter === 2) {
+        send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "recovered" } } });
+        send({ method: "turn/completed", params: { threadId } });
+        return;
+      }
       send({ method: "turn/started", params: { threadId, turn: { id: "turn-1" } } });
       send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: " \\t" } });
-      if (mode === "whitespace-with-reasoning") {
+      if (mode !== "whitespace-stream") {
         send({ method: "test/clock", params: { threadId } });
-        send({ method: "item/reasoning/textDelta", params: { threadId, turnId: "turn-1", delta: "current turn" } });
+        if (mode === "whitespace-with-text") {
+          send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "partial answer" } });
+        } else if (mode === "whitespace-with-tool") {
+          send({ method: "item/mcpToolCall/progress", params: { threadId, turnId: "turn-1", itemId: "tool-1", message: "working" } });
+        } else {
+          send({ method: "item/reasoning/textDelta", params: { threadId, turnId: "turn-1", delta: "current turn" } });
+        }
       }
       send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "\\n" } });
       send({ method: "item/reasoning/textDelta", params: { threadId, turnId: "turn-0", delta: "old turn" } });

@@ -33,6 +33,7 @@ export async function closeDefaultRuntime(): Promise<void> {
 }
 
 export { EnsembleRuntime, defaultConcurrency } from "./runtime.js";
+export { DispatchRemap } from "./dispatch-remap.js";
 export { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 export { EngineRegistry, CodexEngineAdapter, ClaudeEngineAdapter, OpenCodeEngineAdapter } from "./engines.js";
 export { createOpenCodeModelRegistry, defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";

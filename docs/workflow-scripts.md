@@ -1031,6 +1031,18 @@ the daemon to clear its input request.
 This exposes the normal prompt so Claude Code's external editor can load the
 nudge. An ordinary empty prompt needs no cancellation. If the input request
 does not clear, the valve refuses the message without submitting it.
+Claude Code answers a tool call held at a cancelled dialog as though the user
+had refused it. So when the valve itself cancelled a dialog on its way to
+the prompt, the nudge it types says that Ensemble closed the prompt because
+nobody is present to answer it, names what the daemon reported it waiting
+for, and says that nobody refused the action, before telling the worker to
+carry on without asking. When the valve cancelled nothing, the worker is
+told only to proceed without asking. Any other message the valve delivers by
+cancelling a dialog, such as a follow-up turn, a correction or a
+redelivery, goes behind the same account of the close, except a message
+that opens with a command, which goes as written so that it stays a
+command. A delivery refused after its dialog was cancelled is resent with
+the account.
 
 In a `session()`, a turn the worker took on altered text runs to its end
 before the attempt fails, with its text kept on the attempt record, so the

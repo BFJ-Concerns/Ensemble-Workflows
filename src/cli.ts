@@ -7,7 +7,7 @@ import { CALLER_IDENTITY_ENV, RUN_RECORD_DIR_ENV, parseWorkerScopeGrouping, reso
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
-import { assertValidFallbackChain, MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
+import { assertValidFallbackOption, MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { describeError, HoldTimeoutError, InvalidAgentSchemaError, PreSpawnAuthorError } from "./errors.js";
 import { answerHold, defaultHoldsDirectory, enumerateHolds, holdListingState, resolveHoldScope } from "./holds.js";
 import { boundedEvidence, presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
@@ -400,6 +400,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
       effortPolicy: ambientSettings.effortPolicy,
       namedTargets: ambientSettings.namedTargets,
+      machineFallback: ambientSettings.machineFallback,
       modelFamilies: ambientSettings.modelFamilies,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
@@ -481,6 +482,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
         effortPolicy: ambientSettings.effortPolicy,
         namedTargets: ambientSettings.namedTargets,
+        machineFallback: ambientSettings.machineFallback,
         singleFamilyNotice: ambientSettings.singleFamilyNotice
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
@@ -1652,7 +1654,7 @@ async function parseAgentInvocation(
     ? undefined
     : await parseJsonValue(parsed.values.fallback, cwd, "--fallback");
   try {
-    assertValidFallbackChain(fallback);
+    assertValidFallbackOption(fallback);
   } catch (error) {
     throw new CliUsageError(`--fallback: ${error instanceof Error ? error.message : String(error)}`);
   }

@@ -21,6 +21,7 @@
     "hold_events",
     "integrity",
     "kind",
+    "machine_fallback",
     "meta",
     "named_targets",
     "namespace",

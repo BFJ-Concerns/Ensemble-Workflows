@@ -15,6 +15,7 @@ import { AgentOptionRejectedError } from "./errors.js";
 import { HOLD_SCOPE_ENV } from "./holds.js";
 import { createOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
+import type { FallbackMap, MachineFallback } from "./fallback-source.js";
 import type { ModelFamilyAssignments } from "./model-family.js";
 import type { NamedTargetBinding, NamedTargets } from "./named-targets.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
@@ -113,6 +114,7 @@ export interface AmbientSettings {
    * `workerEnvironment`; with no section, no name is bound.
    */
   namedTargets: NamedTargets;
+  machineFallback: MachineFallback;
   effortPolicy: EffortPolicy;
   /**
    * The families this machine assigns to models by name (the config file's
@@ -158,6 +160,7 @@ interface MachineConfig {
   worker_environment?: Partial<Record<EngineName, Record<string, string>>>;
   opencode_models?: Record<string, OpenCodeModelDeclaration>;
   targets?: Record<string, NamedTargetBinding>;
+  fallback?: FallbackMap;
   effort?: EffortSection;
   model_families?: Record<string, string>;
   single_family_notice?: boolean;
@@ -229,6 +232,7 @@ export function resolveAmbientSettings(input: {
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models),
     namedTargets: { bindings: config?.targets ?? {}, source: configFile },
+    machineFallback: { chains: config?.fallback ?? {}, source: configFile },
     effortPolicy: { section: config?.effort ?? {}, source: configFile },
     modelFamilies: config?.model_families ?? {},
     singleFamilyNotice: config?.single_family_notice ?? true
@@ -278,7 +282,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   if (!newer) {
     assertKnownKeys(
       parsed,
-      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "effort", "model_families", "single_family_notice"],
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "fallback", "effort", "model_families", "single_family_notice"],
       configFile
     );
   }
@@ -302,6 +306,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
     throw fileValueError(configFile, "single_family_notice", "must be a boolean");
   }
   validateNamedTargetBindings(parsed.targets, configFile);
+  validateMachineFallback(parsed.fallback, parsed.targets, configFile);
   if (parsed.effort !== undefined) {
     assertEffortSection(parsed.effort, (key, detail) => {
       throw fileValueError(configFile, `effort${key ? `.${key}` : ""}`, detail);
@@ -502,38 +507,53 @@ export function validateNamedTargetBindings(section: unknown, configFile: string
     if (binding.model !== undefined && (typeof binding.model !== "string" || binding.model.trim().length === 0)) {
       throw fileValueError(configFile, `${qualified}.model`, "must be a non-empty string");
     }
-    try {
-      assertValidFallbackChain(binding.fallback);
-    } catch (error) {
-      if (error instanceof AgentOptionRejectedError) {
-        throw fileValueError(configFile, `${qualified}.fallback`, error.message);
-      }
-      throw error;
+    validateConfiguredChain(binding.fallback, section, configFile, `${qualified}.fallback`);
+  }
+}
+
+export function validateMachineFallback(section: unknown, targets: unknown, configFile: string): void {
+  if (section === undefined) return;
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "fallback", "must be a JSON object keyed by engine or engine:model");
+  }
+  for (const [key, chain] of Object.entries(section)) {
+    const separator = key.indexOf(":");
+    const engine = separator === -1 ? key : key.slice(0, separator);
+    const qualified = `fallback.${key}`;
+    if (!(ENGINES as readonly string[]).includes(engine) ||
+        (separator !== -1 && key.slice(separator + 1).trim().length === 0)) {
+      throw fileValueError(configFile, qualified, `key must name an engine or engine:model for one of ${ENGINES.join(" | ")}`);
     }
-    // A chain entry naming a target must resolve to a bound engine that
-    // can participate in fallback. The binding's own chain does not nest.
-    for (const [index, entry] of (binding.fallback ?? []).entries()) {
-      if (entry.target === undefined) continue;
-      // The type forbids the pair; the file's JSON does not.
-      const written = entry as { target: string; engine?: unknown; model?: unknown };
-      if (written.engine !== undefined || written.model !== undefined) {
-        throw fileValueError(
-          configFile,
-          `${qualified}.fallback`,
-          `entry ${index} names target ${JSON.stringify(entry.target)} beside a literal engine or model; an entry names one or the other`
-        );
-      }
-      const named = Object.hasOwn(section, entry.target) ? (section as Record<string, unknown>)[entry.target] : undefined;
-      if (named === undefined) {
-        throw fileValueError(configFile, `${qualified}.fallback`, `entry ${index} names target ${JSON.stringify(entry.target)}, which this file does not bind`);
-      }
-      if (isObject(named) && named.engine === "opencode") {
-        throw fileValueError(
-          configFile,
-          `${qualified}.fallback`,
-          `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
-        );
-      }
+    if (chain === undefined) {
+      throw fileValueError(configFile, qualified, "must declare a fallback chain");
+    }
+    validateConfiguredChain(chain, targets, configFile, qualified);
+  }
+}
+
+function validateConfiguredChain(chain: unknown, targets: unknown, configFile: string, key: string): void {
+  try {
+    assertValidFallbackChain(chain);
+  } catch (error) {
+    if (error instanceof AgentOptionRejectedError) {
+      throw fileValueError(configFile, key, error.message);
+    }
+    throw error;
+  }
+  for (const [index, entry] of (chain ?? []).entries()) {
+    if (entry.target === undefined) continue;
+    const written = entry as { target: string; engine?: unknown; model?: unknown };
+    if (written.engine !== undefined || written.model !== undefined) {
+      throw fileValueError(configFile, key,
+        `entry ${index} names target ${JSON.stringify(entry.target)} beside a literal engine or model; an entry names one or the other`);
+    }
+    const named = isObject(targets) && Object.hasOwn(targets, entry.target) ? targets[entry.target] : undefined;
+    if (named === undefined) {
+      throw fileValueError(configFile, key, `entry ${index} names target ${JSON.stringify(entry.target)}, which this file does not bind`);
+    }
+    if (isObject(named) && named.engine === "opencode") {
+      throw fileValueError(configFile, key,
+        `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`);
     }
   }
 }

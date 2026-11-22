@@ -35,7 +35,7 @@ import type { OwnerGoneReason, ProcessOwnerRecord } from "./process-owner-eviden
 import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
 import type { AppServerDiagnostic } from "./errors.js";
 import type { FailureClassification } from "./failure-classification.js";
-import type { FallbackSource } from "./fallback-source.js";
+import type { FallbackSource, MachineFallback } from "./fallback-source.js";
 import type { SingleFamilyJudgement } from "./model-family.js";
 import type { NamedTargetResolution, NamedTargets } from "./named-targets.js";
 import type { UsageSummary } from "./usage-summary.js";
@@ -97,6 +97,7 @@ export interface RunRecordStartOptions {
   effectiveSettings?: EffectiveRunSettingsRecord;
   /** The named targets in force, for the manifest's `named_targets`; omitted, the run had none. */
   namedTargets?: NamedTargets;
+  machineFallback?: MachineFallback;
   effortPolicy?: EffortPolicy;
   /** Whether the machine's single-family notice is on for this run, for the manifest's `single_family_notice`; omitted, it is on. */
   singleFamilyNotice?: boolean;
@@ -632,6 +633,7 @@ interface Manifest {
    * and chain null where the binding names none.
    */
   named_targets: NamedTargetsRecord;
+  machine_fallback: MachineFallback | null;
   effort: EffortPolicy | null;
   /** Whether the machine's single-family notice was on for this run. */
   single_family_notice: boolean;
@@ -906,6 +908,7 @@ export class RunRecordWriter {
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       named_targets: namedTargetsRecord(options.namedTargets),
+      machine_fallback: options.machineFallback === undefined ? null : structuredClone(options.machineFallback),
       effort: options.effortPolicy ?? null,
       single_family_notice: options.singleFamilyNotice ?? true,
       single_family: null,

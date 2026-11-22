@@ -1,6 +1,7 @@
 import type { EffortPolicy } from "./effort-resolution.js";
 import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { StrippableCapability } from "./capability-stripping.js";
+import type { MachineFallback } from "./fallback-source.js";
 import type { NamedTargets } from "./named-targets.js";
 import type { ModelFamilyAssignments } from "./model-family.js";
 import type { OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode-model-registry.js";
@@ -75,9 +76,9 @@ export interface AgentOptions {
    * own retry, a substrate that is dead or cannot start. Output failures
    * never advance it. Each entry names its engine and model; an omitted
    * effort takes the call's own. Codex or Claude in any position; an
-   * opencode entry is rejected pre-spawn.
+   * opencode entry is rejected pre-spawn. Set false to disable inherited chains.
    */
-  fallback?: FallbackTarget[];
+  fallback?: FallbackTarget[] | false;
   cwd?: string;
   isolation?: IsolationMode;
   timeoutMs?: number;
@@ -150,9 +151,9 @@ export interface WorkerSessionCallOptions {
    * The fallback chain for the session's *creating* turn alone: the
    * engine and model are fixed for the session's life once a target
    * answers, so a later turn's availability failure fails that turn and
-   * escalation is a fresh dispatch.
+   * escalation is a fresh dispatch. Set false to disable inherited chains.
    */
-  fallback?: FallbackTarget[];
+  fallback?: FallbackTarget[] | false;
   cwd?: string;
   isolation?: IsolationMode;
   /** Per-turn deadline applied to every send; same semantics as a one-shot call's. */
@@ -324,6 +325,8 @@ export interface RuntimeOptions {
    * unbound.
    */
   namedTargets?: NamedTargets;
+  /** Fallback chains for dispatched models or engines, from the machine file. */
+  machineFallback?: MachineFallback;
   /**
    * The families the machine assigns to models by name (the config file's
    * `model_families` section), outranking the harness's own grouping of

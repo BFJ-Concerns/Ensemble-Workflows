@@ -22,9 +22,6 @@ import type { EngineName, FallbackTarget } from "./types.js";
  * `none`, `switched-off` and `later-turn` all pair with a null `fallback` and
  * stay distinct, so a reader never mistakes an author's explicit opt-out for
  * an absent declaration or for a chain that no longer applies.
- *
- * `map` and `switched-off` are not written yet: they are the kinds the
- * machine map and `fallback: false` record when they decide the chain.
  */
 export type FallbackSource =
   | { kind: "call" }
@@ -35,6 +32,45 @@ export type FallbackSource =
   | { kind: "switched-off"; by: "defaults"; engine: EngineName }
   | { kind: "none" }
   | { kind: "later-turn" };
+
+export type FallbackMap = Readonly<Record<string, FallbackTarget[]>>;
+
+export interface MachineFallback {
+  chains: FallbackMap;
+  source: string;
+}
+
+export interface SelectedFallback {
+  chain: FallbackTarget[] | undefined;
+  source: FallbackSource;
+}
+
+/**
+ * Finish selection after validation and after defaults and target policy.
+ * `passed` carries the hand-off by identity and `options` carries the
+ * validated values. A placement snapshot can make these separate objects.
+ */
+export function selectFallback(
+  passed: object,
+  options: { fallback?: FallbackTarget[] | false; model?: string; engine?: EngineName },
+  map: FallbackMap | undefined
+): SelectedFallback {
+  const { fallback, engine, model } = options;
+  if (fallback === false) {
+    return { chain: undefined, source: handedOff.get(passed) ?? { kind: "switched-off", by: "call" } };
+  }
+  if (fallback !== undefined) {
+    return { chain: fallback, source: handedOff.get(passed) ?? { kind: "call" } };
+  }
+  if (map !== undefined && engine !== undefined) {
+    const modelKey = model === undefined ? undefined : `${engine}:${model}`;
+    const key = modelKey !== undefined && Object.hasOwn(map, modelKey) ? modelKey : engine;
+    if (Object.hasOwn(map, key)) {
+      return { chain: map[key], source: { kind: "map", key } };
+    }
+  }
+  return { chain: undefined, source: { kind: "none" } };
+}
 
 /**
  * The provenance one options object carries from the layer that decided its
@@ -57,42 +93,22 @@ export function handOffFallbackSource<T extends object>(options: T, source: Fall
 }
 
 /**
- * The source of `validated.fallback`, as the runtime records it at a
- * dispatch's entry. A source handed off on `passed` wins. Without one — a
- * direct library call, which bypasses the hooks — the options are the
- * call's own, so a declared chain came from the call and an undeclared one
- * from nowhere.
- *
- * The two arguments split identity from value. `passed` is the options
- * object exactly as the caller handed it over, consulted only by identity:
- * no property of it is read here, so capture it before any copy or
- * snapshot replaces it (neither carries the hand-off). `validated` is the
- * object the option validation has already passed, and the only one whose
- * `fallback` is read: call this after validation, so an unreadable or
- * malformed chain is refused there as an author error before it can escape
- * from here as anything else. The two may be the same object where nothing
- * replaces the caller's options before validation.
+ * Apply the call's explicit fallback to the defaults merge, including
+ * values supplied outside the call's enumerable keys, and record its source.
  */
-export function fallbackSourceOf(passed: object, validated: { fallback?: FallbackTarget[] }): FallbackSource {
-  return handedOff.get(passed) ?? (validated.fallback === undefined ? { kind: "none" } : { kind: "call" });
-}
-
-/**
- * Attribute the chain a `defaults` merge produced, under the merge's own
- * precedence: the call's declaration wins, then the `defaults` block for
- * `engine`, then none. `merged` is the options object the merge returned;
- * the source is attached to it and it is returned.
- */
-export function attributeMergedChain<T extends { fallback?: FallbackTarget[] }>(
+export function attributeMergedChain<T extends { fallback?: FallbackTarget[] | false }>(
   merged: T,
-  callFallback: FallbackTarget[] | undefined,
+  callFallback: FallbackTarget[] | false | undefined,
   engine: EngineName
 ): T {
   if (callFallback !== undefined) {
-    return handOffFallbackSource(merged, { kind: "call" });
+    merged.fallback = callFallback;
+    return handOffFallbackSource(merged, callFallback === false ? { kind: "switched-off", by: "call" } : { kind: "call" });
   }
   if (merged.fallback !== undefined) {
-    return handOffFallbackSource(merged, { kind: "defaults", engine });
+    return handOffFallbackSource(merged, merged.fallback === false
+      ? { kind: "switched-off", by: "defaults", engine }
+      : { kind: "defaults", engine });
   }
-  return handOffFallbackSource(merged, { kind: "none" });
+  return merged;
 }

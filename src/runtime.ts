@@ -2,7 +2,7 @@ import { resolveEffort, isCanonicalEffort, assertEffortSection, effortPolicyKeys
 import type { EffortPolicy, EffortResolution } from "./effort-resolution.js";
 import { randomUUID } from "node:crypto";
 
-import { validateNamedTargetBindings } from "./ambient-settings.js";
+import { validateMachineFallback, validateNamedTargetBindings } from "./ambient-settings.js";
 import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
@@ -12,7 +12,7 @@ import type { DischargedLeanStart } from "./lean-start.js";
 import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } from "./failure-classification.js";
-import { fallbackSourceOf } from "./fallback-source.js";
+import { selectFallback } from "./fallback-source.js";
 import { withOptionOverrides } from "./option-overrides.js";
 import { isNamedTargetBound, namedTargetResolutionOf, resolveNamedTarget, settleChain, withTargetChain } from "./named-targets.js";
 import { modelFamilyOf, singleFamilyOf } from "./model-family.js";
@@ -20,7 +20,7 @@ import type { FamilyJudgedTarget, ModelFamilyAssignments, SingleFamilyJudgement 
 import type { NamedTargetResolution, NamedTargets, SettledChainEntry } from "./named-targets.js";
 
 import type { DischargedEnforcement, PreparedStrip } from "./capability-stripping.js";
-import type { FallbackSource } from "./fallback-source.js";
+import type { MachineFallback, SelectedFallback } from "./fallback-source.js";
 import { harnessVersion } from "./harness-version.js";
 import {
   assertValidAgentOptions,
@@ -400,8 +400,8 @@ interface WorkerSessionState {
   resolvedModel: string | null;
   resolvedEffort: string | null;
   stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null;
-  /** The source of the creating turn's chain, read once at creation. */
-  fallbackSource: FallbackSource;
+  /** The creating turn's chain as declared and its source. */
+  fallback: SelectedFallback;
   /** The named target the session was created through, resolved once at creation; null for a literal engine. */
   namedTarget: NamedTargetResolution | null;
   /** The creating turn's chain, settled once at creation. */
@@ -547,6 +547,7 @@ export class EnsembleRuntime {
   #lean: boolean;
   /** The machine's named targets, or null where the run was given none (every name is then unbound). */
   #namedTargets: NamedTargets | null;
+  #machineFallback: MachineFallback | undefined;
   #effortPolicy: EffortPolicy | null;
   /** The machine's model family assignments, outranking the harness's grouping of model names. */
   #modelFamilies: ModelFamilyAssignments;
@@ -616,6 +617,7 @@ export class EnsembleRuntime {
     strip?: StrippableCapability[];
     lean?: boolean;
     namedTargets?: NamedTargets;
+    machineFallback?: MachineFallback;
     effortPolicy?: EffortPolicy;
     modelFamilies?: ModelFamilyAssignments;
     claudeSessionStaleAfterMs?: number;
@@ -640,7 +642,11 @@ export class EnsembleRuntime {
     if (options.namedTargets !== undefined) {
       validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
     }
+    if (options.machineFallback !== undefined) {
+      validateMachineFallback(options.machineFallback.chains, options.namedTargets?.bindings, options.machineFallback.source);
+    }
     this.#namedTargets = options.namedTargets ?? null;
+    this.#machineFallback = options.machineFallback;
     this.#effortPolicy = options.effortPolicy ?? null;
     this.#modelFamilies = options.modelFamilies ?? {};
     if (this.#effortPolicy !== null) {
@@ -716,6 +722,9 @@ export class EnsembleRuntime {
     if (options.namedTargets !== undefined) {
       validateNamedTargetBindings(options.namedTargets.bindings, options.namedTargets.source);
     }
+    if (options.machineFallback !== undefined) {
+      validateMachineFallback(options.machineFallback.chains, options.namedTargets?.bindings, options.machineFallback.source);
+    }
     let runtime: EnsembleRuntime | null = null;
     const cwd = options.cwd ?? process.cwd();
     // Judged before any engine substrate is built, and resolved here for
@@ -767,6 +776,7 @@ export class EnsembleRuntime {
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
       ...(options.lean !== undefined ? { lean: options.lean } : {}),
       ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {}),
+      ...(options.machineFallback !== undefined ? { machineFallback: options.machineFallback } : {}),
       ...(options.effortPolicy !== undefined ? { effortPolicy: options.effortPolicy } : {}),
       ...(options.modelFamilies !== undefined ? { modelFamilies: options.modelFamilies } : {}),
       ...(options.claudeSessionStaleAfterMs !== undefined
@@ -921,9 +931,9 @@ export class EnsembleRuntime {
       passedOptions = options;
       assertValidAgentOptions(options);
     }
-    const fallbackSource = fallbackSourceOf(passedOptions, options);
     const namedTarget = namedTargetResolutionOf(passedOptions);
-    const chain = settleChain(this.#namedTargets, options.fallback, passedOptions);
+    const fallback = selectFallback(passedOptions, options, this.#machineFallback?.chains);
+    const chain = settleChain(this.#namedTargets, fallback.chain, passedOptions);
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.
       assertCompilableSchema(options.schema);
@@ -1007,7 +1017,7 @@ export class EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(
-      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, fallbackSource, namedTarget, stripRoutes, leanRoute
+      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, fallback, namedTarget, stripRoutes, leanRoute
     );
     const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
@@ -1137,9 +1147,11 @@ export class EnsembleRuntime {
     if (name !== null && declared.engine === undefined && declared.model === undefined && !isNamedTargetBound(this.#namedTargets, name)) {
       return { target: name, bound: false, engine: null, model: null, family: null };
     }
-    const resolved = snapshotAgentCwd(applyDefaults(this.resolveNamedTarget(options) as Partial<AgentOptions>));
+    const passed = applyDefaults(this.resolveNamedTarget(options) as Partial<AgentOptions>);
+    const resolved = snapshotAgentCwd(passed);
     assertValidAgentOptions(resolved);
-    const chain = settleChain(this.#namedTargets, resolved.fallback, resolved);
+    const fallback = selectFallback(passed, resolved, this.#machineFallback?.chains);
+    const chain = settleChain(this.#namedTargets, fallback.chain, passed);
     if (resolved.schema !== undefined) {
       assertCompilableSchema(resolved.schema);
     }
@@ -1147,9 +1159,7 @@ export class EnsembleRuntime {
       this.#placement.assertUsableCwdSync(resolved);
     }
     const engine = this.#engineFor(resolved.engine);
-    // The chain in force — the call's, the script's `defaults`, or the
-    // binding's — and the strip and lean start, judged on every target as
-    // the call judges them before admission.
+    // Judge the strip and lean start on every target, as a call does.
     const strip = effectiveStrip(this.#strip, resolved.strip);
     const lean = effectiveLean(this.#lean, resolved.lean);
     const targets = [engine, ...chain.map((entry) => this.#chainEngineFor(entry))];
@@ -1251,9 +1261,9 @@ export class EnsembleRuntime {
       options = withTargetChain(resolved, resolved);
       assertValidWorkerSessionOptions(options);
     }
-    const fallbackSource = fallbackSourceOf(options, options);
     const namedTarget = namedTargetResolutionOf(options);
-    const chain = settleChain(this.#namedTargets, options.fallback, options);
+    const fallback = selectFallback(options, options, this.#machineFallback?.chains);
+    const chain = settleChain(this.#namedTargets, fallback.chain, options);
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === undefined) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -1292,7 +1302,7 @@ export class EnsembleRuntime {
       resolvedEffort: null,
       stripRoutes,
       leanRoute,
-      fallbackSource,
+      fallback,
       namedTarget,
       chain,
       servingTarget: namedTarget?.name ?? null,
@@ -1383,9 +1393,6 @@ export class EnsembleRuntime {
         engine: engine.name,
         ...(options.model !== undefined ? { model: options.model } : {}),
         ...(options.effort !== undefined ? { effort: options.effort } : {}),
-        // The chain is the creating turn's alone: a later turn's
-        // record declares none, because none applied to it.
-        ...(options.fallback !== undefined && state.turnCount === 0 ? { fallback: options.fallback } : {}),
         ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
         ...(options.isolation !== undefined ? { isolation: options.isolation } : {}),
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
@@ -1399,9 +1406,9 @@ export class EnsembleRuntime {
       // The creating turn records the session's chain and its source; a
       // later turn records none, and says why, so it never reads as a call
       // that declared nothing or switched its chain off.
-      const fallbackSource: FallbackSource = state.turnCount === 0 ? state.fallbackSource : { kind: "later-turn" };
+      const fallback: SelectedFallback = state.turnCount === 0 ? state.fallback : { chain: undefined, source: { kind: "later-turn" } };
       const agentRecord = this.#newAgentRecord(
-        agentId, engine.name, prompt, recordOptions, fallbackSource, state.namedTarget, state.stripRoutes, state.leanRoute
+        agentId, engine.name, prompt, recordOptions, fallback, state.namedTarget, state.stripRoutes, state.leanRoute
       );
       // The engine exposes the served model and effort when its held worker
       // first starts. Every later turn is still on that worker, so carry the
@@ -3388,7 +3395,7 @@ export class EnsembleRuntime {
     engine: EngineName,
     prompt: string,
     options: Partial<AgentOptions>,
-    fallbackSource: FallbackSource,
+    fallback: SelectedFallback,
     namedTarget: NamedTargetResolution | null,
     stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null,
     leanRoute: DischargedLeanStart | null = null
@@ -3404,8 +3411,8 @@ export class EnsembleRuntime {
       },
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
-      fallback: options.fallback === undefined ? null : options.fallback.map((target) => ({ ...target })),
-      fallbackSource,
+      fallback: fallback.chain?.map((target) => ({ ...target })) ?? null,
+      fallbackSource: fallback.source,
       namedTarget,
       answeredBy: null,
       resolvedModel: null,

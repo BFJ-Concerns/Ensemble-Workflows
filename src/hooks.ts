@@ -96,7 +96,7 @@ export interface WorkflowRuntime {
 export interface WorkflowEngineDefaults {
   model?: string;
   effort?: string;
-  fallback?: FallbackTarget[];
+  fallback?: FallbackTarget[] | false;
 }
 
 export type WorkflowDefaults = Partial<Record<EngineName, WorkflowEngineDefaults>>;
@@ -222,7 +222,7 @@ export function createWorkflowHooks(options: {
       if (lookupDispatch === undefined) {
         throw new PreSpawnAuthorError("this runtime does not support the dispatch lookup");
       }
-      return lookupDispatch.call(options.runtime, lookupOptions, (resolved) => applyAgentDefaults(defaults, resolved));
+      return lookupDispatch.call(options.runtime, lookupOptions, (resolved) => withDeclaredModels(applyAgentDefaults(defaults, resolved), declaredModel));
     },
     tally: (name, value) => {
       const recordTally = options.runtime.recordTally;

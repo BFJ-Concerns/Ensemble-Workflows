@@ -15,11 +15,13 @@ test("caller identity has a named environment route without widening ambient set
     });
     assert.equal(CALLER_IDENTITY_ENV, "ENSEMBLE_CALLER_IDENTITY");
     assert.equal("callerIdentity" in settings, false);
+    assert.deepEqual(settings.machineFallback, { chains: {}, source: settings.configFile });
     assert.deepEqual(Object.keys(settings).sort(), [
       "agentCeiling",
       "concurrencyCaps",
       "configFile",
       "effortPolicy",
+      "machineFallback",
       "modelFamilies",
       "namedTargets",
       "openCodeModels",

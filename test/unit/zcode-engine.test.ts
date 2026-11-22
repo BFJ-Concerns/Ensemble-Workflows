@@ -16,6 +16,7 @@ import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } f
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { summariseUsage } from "../../src/usage-summary.js";
 import { WhitespaceStream } from "../../src/whitespace-stream.js";
 import { laterTurnPrompt, openingPrompt, WORKER_STANDING_INSTRUCTIONS } from "../../src/worker-instructions.js";
 import {
@@ -224,6 +225,11 @@ test("a zcode worker answers through one run, recording the served model, its sp
     assert.deepEqual(attempt.tokenUsageEvents.map((event) => event.total), [{
       cachedInputTokens: 1000, cacheCreationInputTokens: 0, inputTokens: 1200, outputTokens: 30, reasoningOutputTokens: 10, totalTokens: 1230
     }]);
+    // zcode's input includes its cached share and its output its reasoning.
+    assert.deepEqual(summariseUsage("zcode", attempt.tokenUsageEvents), {
+      freshInputTokens: 200, cachedInputTokens: 1000, cacheReadTokens: 1000, cacheCreationTokens: 0,
+      outputTokens: 20, reasoningOutputTokens: 10, unclassifiedTokens: 0, totalTokens: 1230
+    });
     assert.equal(attempt.transcripts[0]?.filename, "transcript.zcode.jsonl");
     assert.equal(attempt.transcripts[0]?.sessionId, "sess_a");
     assert.equal(attempt.transcripts[0]?.content.trim().split("\n").length, 7);

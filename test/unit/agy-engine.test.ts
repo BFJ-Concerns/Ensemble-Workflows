@@ -8,6 +8,7 @@ import test, { type TestContext } from "node:test";
 
 import { AgyEngineAdapter } from "../../src/agy-engine.js";
 import { CommandContainment } from "../../src/contained-command.js";
+import { DispatchRemap } from "../../src/dispatch-remap.js";
 import { EngineRegistry, type EngineAttemptResult } from "../../src/engines.js";
 import { AgySubstrateRefusedError, InvalidAgentOptionValueError, TurnTimeoutError, failedTurnResultOf } from "../../src/errors.js";
 import { assertValidFallbackOption } from "../../src/engine-option-validation.js";
@@ -395,4 +396,15 @@ test("a held agy worker reads stale after five minutes idle", async (t) => {
 
 test("a fallback chain may name an agy entry", () => {
   assert.doesNotThrow(() => assertValidFallbackOption([{ engine: "agy", model: "gemini-4-hydrogen" }]));
+});
+
+test("a dispatch remap routes a call to agy and records the move", async (t) => {
+  const { adapter, dir } = await scriptedAdapter(t, { turns: [[say("from agy")]] });
+  const remap = new DispatchRemap(["codex=agy:tiered-model"]);
+  const runtime = new EnsembleRuntime({ dispatchRemap: remap, defaultMaxAttempts: 1, cwd: dir, engines: new EngineRegistry([adapter]) });
+  t.after(() => runtime.close());
+  assert.equal(await runtime.agent("go", { engine: "codex", model: "gpt-6.2-sol" }), "from agy");
+  const record = runtime.lastAgentRecord();
+  assert.equal(record?.resolvedModel, "tiered-model");
+  assert.deepEqual(record?.attempts[0]?.remap, { key: "codex", requested: { engine: "codex", model: "gpt-6.2-sol" } });
 });

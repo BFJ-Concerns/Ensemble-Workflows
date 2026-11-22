@@ -88,9 +88,11 @@ each turn's reply. These are
 usage updates, not a token-by-token meter. Engines start at `spent: 0`, and a
 worker's `spent` stays `null` until its own usage is observed. On opencode,
 engine spend advances during execution while worker spend appears at
-settlement. Neither an engine's zero nor a worker's `null` proves that an
-active worker has consumed no tokens. Final attempt usage updates the
-worker's subtotal at settlement.
+settlement. agy applies the usage from the prompt reply when the attempt
+settles, so the worker's `spent` is `null` while its first attempt runs.
+A running retry can show spend from earlier attempts. Neither an engine's
+zero nor a worker's `null` proves that an active worker has consumed no
+tokens.
 
 ### `ensemble.<run-uuid>.local.json` schema
 
@@ -1234,7 +1236,7 @@ the disjoint summary vocabulary above.
 | Codex | `last` is the usage increment reported by the notification; `total` is cumulative across the thread, including earlier turns of a held session. There can be several notifications in one attempt. | The `thread/tokenUsage/updated` parameters: `{ threadId, turnId, tokenUsage: { last, total, … }, … }`. Breakdown names match the fields above; input includes cached input, and output includes reasoning when reported. |
 | Claude | A settled attempt normally has one derived event with `last` equal to `total`: usage across that attempt's API calls, excluding usage already accounted for by earlier attempts or held-session turns. If only live observations survive a failed attempt, there can instead be several incremental `last` values with attempt-cumulative `total`. | `{ threadId, turnId, tokenUsage: { last, total } }`. `threadId` is the Claude session id; `turnId` is synthetic (`<session-id>:claude-<counter>`). The transcript's `input_tokens` and `output_tokens` become `inputTokens` and `outputTokens`; `cache_read_input_tokens + cache_creation_input_tokens` becomes `cachedInputTokens`, with creation also in `cacheCreationInputTokens`. `totalTokens` sums input, combined cache and output. No reasoning split is reported. |
 | opencode | At most one derived event, with `last` equal to `total`, aggregated for that attempt. These are attempt totals, not cumulative session totals. | `{ threadId, turnId, model, providerModel, tokenUsage: { last, total }, cost }`. `model` is the configured registry key; `providerModel` is its provider route; `cost` is the reported figure or `null`. `threadId` is the session id (a synthetic id if missing); `turnId` is synthetic (`<session-id>:opencode-<counter>`). Native `input`, `output`, `reasoning` and `cache.read`/`cache.write` map to the corresponding breakdown fields, with cache reads and writes combined. Input, cache, output and reasoning are disjoint. |
-| agy | One event per turn: `last` is that turn's usage, as the `session/prompt` reply gave it; `total` is cumulative across the worker's session, including earlier attempts and earlier turns of a held session. | `{ threadId, turnId, model, tokenUsage: { last, total }, usage }`. `threadId` is the agy session id; `turnId` is synthetic (`<session-id>:agy-<counter>`); `model` is the model the session ran on; `usage` is agy's own counts. `inputTokens` and `outputTokens` map across, `thoughtTokens` becomes `reasoningOutputTokens` (within output), `cachedReadTokens + cachedWriteTokens` becomes `cachedInputTokens` (beside input), with the writes also in `cacheCreationInputTokens`; `totalTokens` is agy's own. |
+| agy | At most one event per turn. `last` is the usage from the `session/prompt` reply, and `total` sums those replies across the worker's session. Any automatic follow-up after the reply supplies context occupancy updates only. | `{ threadId, turnId, model, tokenUsage: { last, total }, usage }`. `threadId` is the agy session id; `turnId` is synthetic (`<session-id>:agy-<counter>`); `model` is the model the session ran on; `usage` is agy's own counts. `inputTokens` and `outputTokens` map across, `thoughtTokens` becomes `reasoningOutputTokens` (within output), `cachedReadTokens + cachedWriteTokens` becomes `cachedInputTokens` (beside input), with the writes also in `cacheCreationInputTokens`; `totalTokens` is agy's own. |
 
 To reproduce an attempt's summary, sum its events' `last` breakdowns and
 apply the engine's inclusion rule. For Codex, never sum `total` across

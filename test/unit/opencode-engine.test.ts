@@ -17,6 +17,7 @@ import { testOpenCodeModelRegistry, testOpenCodeModels } from "../fixtures/openc
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
   BudgetExceededError,
+  CapabilityStripUnsupportedError,
   EngineShutdownError,
   InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
@@ -29,6 +30,7 @@ import { runWorkflowScript } from "../../src/script-runner.js";
 import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
+import type { AgentOptions } from "../../src/types.js";
 
 import type {
   OpenCodeRunOptions,
@@ -1029,6 +1031,92 @@ test("opencode dispatches the effective strip and lean requests and records both
     assert.equal(record?.lean?.route, "config");
   } finally {
     await runtime.close();
+  }
+});
+
+test("opencode launches with verified strip or lean settings and refuses an unverified strip before spawn", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-dispatch-config-"));
+  const bin = path.join(dir, "opencode");
+  const observation = path.join(dir, "worker.json");
+  const rejectStrip = path.join(dir, "reject-strip");
+  const provider = { openrouter: { options: { baseURL: "https://example.invalid" } } };
+  const original = { provider, instructions: ["operator.md"], permission: { "*": "allow" } };
+  const dataHome = path.join(dir, "auth");
+  const runner = new OpenCodeCliRunner(bin, {
+    workerEnv: {
+      OPENCODE_CONFIG: path.join(dir, "operator.json"),
+      OPENCODE_CONFIG_CONTENT: "{}",
+      OPENCODE_PERMISSION: '{"*":"allow"}',
+      OPENCODE_TEST_HOME: "",
+      XDG_DATA_HOME: dataHome
+    }
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd: dir, runner, modelRegistry: testOpenCodeModelRegistry })]),
+    defaultMaxAttempts: 1
+  });
+  try {
+    await writeFile(bin, `#!/usr/bin/env node
+      import { existsSync, readFileSync, writeFileSync } from "node:fs";
+      const env = process.env;
+      const original = ${JSON.stringify(original)};
+      const content = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}");
+      const profile = () => JSON.parse(readFileSync(env.OPENCODE_CONFIG, "utf8"));
+      switch (process.argv[2]) {
+        case "debug":
+          console.log(JSON.stringify(env.OPENCODE_TEST_HOME ? profile() :
+            existsSync(${JSON.stringify(rejectStrip)}) ? original : { ...original, ...content }));
+          break;
+        case "models":
+          console.log("openrouter/z-ai/glm-5.2");
+          break;
+        case "run":
+          writeFileSync(${JSON.stringify(observation)}, JSON.stringify({
+            content,
+            permission: env.OPENCODE_PERMISSION === undefined ? null : JSON.parse(env.OPENCODE_PERMISSION),
+            profile: env.OPENCODE_TEST_HOME ? profile() : null,
+            config: env.OPENCODE_CONFIG,
+            configDir: env.OPENCODE_CONFIG_DIR,
+            configHome: env.XDG_CONFIG_HOME,
+            dataHome: env.XDG_DATA_HOME,
+            pure: env.OPENCODE_PURE,
+            disableProjectConfig: env.OPENCODE_DISABLE_PROJECT_CONFIG
+          }));
+          console.log(JSON.stringify({ type: "text", part: { type: "text", text: "configured answer" } }));
+          break;
+        default:
+          process.exitCode = 1;
+      }
+    `, { mode: 0o700 });
+    const options: AgentOptions = { engine: "opencode", model: "glm-5.2", strip: ["skills", "agents"] };
+
+    assert.equal(await runtime.agent("stripped worker", options), "configured answer");
+    const stripped = JSON.parse(await readFile(observation, "utf8"));
+    assert.deepEqual(stripped.permission, { "*": "allow", skill: "deny", task: "deny" });
+    assert.deepEqual(stripped.content.permission, stripped.permission);
+    assert.equal(stripped.profile, null);
+
+    assert.equal(await runtime.agent("lean and stripped worker", { ...options, lean: true }), "configured answer");
+    const lean = JSON.parse(await readFile(observation, "utf8"));
+    assert.equal(lean.permission, null);
+    assert.deepEqual(lean.content, {});
+    assert.deepEqual(lean.profile.permission, stripped.permission);
+    assert.deepEqual(lean.profile.provider, provider);
+    assert.equal(lean.profile.instructions, undefined);
+    assert.equal(lean.configDir, path.dirname(lean.config));
+    assert.equal(lean.configHome, lean.configDir);
+    assert.equal(lean.dataHome, dataHome);
+    assert.equal(lean.pure, "1");
+    assert.equal(lean.disableProjectConfig, "1");
+    await assert.rejects(access(lean.configDir), { code: "ENOENT" });
+
+    await rm(observation);
+    await writeFile(rejectStrip, "");
+    await assert.rejects(runtime.agent("refused worker", options), CapabilityStripUnsupportedError);
+    await assert.rejects(access(observation), { code: "ENOENT" });
+  } finally {
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

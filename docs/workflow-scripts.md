@@ -127,8 +127,13 @@ Each declaration supplies the whole chain. Set `fallback: false` on a call or
 in an engine's `defaults` block to stop the search and disable fallback. A
 call's own chain still takes precedence over `fallback: false` in defaults.
 
-- Each step re-dispatches the same prompt, schema, placement, and strip
-  settings on the next target, fresh.
+- Each step re-dispatches the same prompt, schema, placement, strip and
+  lean settings on the next target. Ensemble checks that each target
+  offers the requested strip or lean route before the first dispatch.
+  Opencode verifies its resolved configuration only when its entry is
+  reached. If that verification refuses a strip or lean start, the call
+  throws before launching that opencode worker, even if an earlier
+  target already ran. An uncaught refusal fails the run.
 - `maxAttempts` counts answered attempts across the whole chain; a refusal
   costs none.
 - A step to the same engine keeps its concurrency slot; a step to another
@@ -623,10 +628,10 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   variables, the Claude Code version that was probed, and which tools were
   denied or left in place. For `skills`, it also states this follow-up boundary.
 - **opencode** denies `skill` for `skills` and `task` for `agents`.
-  Ensemble checks the resolved global and agent permission rules before it
-  sends the prompt. If a rule overrides a deny, or an active external plugin
-  can change the permissions after configuration loads, the dispatch
-  refuses the strip.
+  At the opencode target's dispatch, Ensemble checks the resolved global
+  and agent permission rules before launching the worker. The dispatch
+  refuses the strip if a rule overrides a deny or an active external
+  plugin can change the permissions after configuration loads.
 
 Each agent record lists the requested strips and how each was enforced.
 
@@ -648,12 +653,12 @@ call cannot lift a run-wide `--lean` by setting `lean: false`.
 - **opencode** uses an isolated configuration with the resolved provider
   settings and permissions, the original data home and built-in tools.
   It disables external plugins and skips discovery of project configuration
-  and instructions. Ensemble checks that the registered model is still
-  listed and refuses the dispatch if the isolated configuration still loads
-  instructions, skills or MCP servers. A provider supplied only by an
-  external plugin may therefore be unavailable to a lean worker.
-- **Codex** refuses lean requests before dispatch. Each fallback target is
-  checked for lean support before the first dispatch.
+  and instructions. At the opencode target's dispatch, Ensemble checks
+  that the registered model is still listed and that the isolated
+  configuration loads no instructions, skills or MCP servers. A provider
+  supplied only by an external plugin may be unavailable to a lean worker.
+- **Codex** refuses lean requests before the first dispatch, whether it is
+  the initial target or a fallback entry.
 
 Each agent record carries `lean` naming the route the dispatching engine
 used, or `null` when no lean start was requested.

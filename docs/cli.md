@@ -97,6 +97,10 @@ Every other option may appear once. `--worker-scope`, `--concurrency` and `--age
 environment and configuration-file layers described in
 [Configuration](configuration.md).
 
+A malformed dispatch remap rule rejects the invocation with exit code 2
+before the run starts. The stderr diagnostic names the rule's source,
+`--remap` or `ENSEMBLE_DISPATCH_REMAP`.
+
 ## Running a single agent
 
 ```sh

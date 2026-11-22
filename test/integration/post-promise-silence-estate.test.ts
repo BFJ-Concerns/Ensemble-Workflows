@@ -102,8 +102,9 @@ test("built consumer rejects promise and MCP-progress alternation at the bounded
       alternating.push({ type: "mcp-progress" });
     }
     alternating.push({ type: "promise", diagnostic: "ALTERNATING_PROMISE_5" });
-    alternating.push({ type: "deadline" });
-    alternating.push({ type: "silence" });
+    // A consumer that misses the count bound can accept this answer. Leave
+    // the controlled silence timer unreleased so only the count can reject it.
+    alternating.push({ type: "success", text: "answer-after-promise-bound" });
 
     const result = await fixture.run([alternating], 1);
 

@@ -18,6 +18,7 @@
 //   { untilCancelled: true }    wait for session/cancel, end the turn `cancelled`
 //   { stop: "refusal" }         end the turn with this stop reason
 //   { error: { code, message } } end the turn with a JSON-RPC error
+//   { result: {...} }           send a custom prompt result
 //   { exit: code }              exit at once, the turn unanswered
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
@@ -25,7 +26,11 @@ import { createInterface } from "node:readline";
 
 const script = JSON.parse(process.env.SCRIPTED_ACP_AGENT ?? "{}");
 const turns = script.turns ?? [];
-const LEVELS = { "tiered-model": ["low", "medium", "high"], "single-level-model": [] };
+const LEVELS = {
+  "tiered-model": ["low", "medium", "high"],
+  "single-level-model": [],
+  "gpt-oss-120b-medium": []
+};
 const USAGE = { inputTokens: 100, outputTokens: 7, cachedReadTokens: 40, cachedWriteTokens: 0, thoughtTokens: 3, totalTokens: 110 };
 
 const sessions = new Map();
@@ -84,6 +89,7 @@ async function playTurn(id, sessionId, prompt, steps) {
     if (step.exit !== undefined) process.exit(step.exit);
     if (step.stop !== undefined) stopReason = step.stop;
     if (step.error !== undefined) return send({ id, error: step.error });
+    if (step.result !== undefined) return send({ id, result: step.result });
     if (step.permission !== undefined) {
       const requestId = String(++nextRequestId);
       const answered = new Promise((resolve) => awaitingClient.set(requestId, resolve));

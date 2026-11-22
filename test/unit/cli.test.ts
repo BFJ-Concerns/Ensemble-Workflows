@@ -2932,6 +2932,7 @@ test("the help answers carry orientation beyond the bare usage grammar", async (
   assert.equal(await runEnsembleCli(["agent", "--help"], { stdout: agentHelp, stderr: new CaptureStream() }), 0);
   assert.match(agentHelp.text(), /prompt is the single positional\s+argument, or stdin when omitted/);
   assert.match(agentHelp.text(), /--identity wraps the result/);
+  assert.match(agentHelp.text(), /--engine [^ )]*\bagy\b/);
 });
 
 test("an agent flag placed after the prompt is rejected as a misplacement", async () => {

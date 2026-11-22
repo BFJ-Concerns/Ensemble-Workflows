@@ -6,15 +6,16 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import test, { type TestContext } from "node:test";
 
+import { AcpClient } from "../../src/acp-client.js";
 import { AgyEngineAdapter } from "../../src/agy-engine.js";
-import { CommandContainment } from "../../src/contained-command.js";
+import { CommandContainment, type CommandStop } from "../../src/contained-command.js";
 import { DispatchRemap } from "../../src/dispatch-remap.js";
 import { EngineRegistry, type EngineAttemptResult } from "../../src/engines.js";
 import { AgySubstrateRefusedError, EngineShutdownError, InvalidAgentOptionValueError, TurnTimeoutError, failedTurnResultOf } from "../../src/errors.js";
 import { assertValidFallbackOption } from "../../src/engine-option-validation.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { summariseUsage } from "../../src/usage-summary.js";
-import { openingPrompt, previousFailureNotice, laterTurnPrompt } from "../../src/worker-instructions.js";
+import { openingPrompt, previousFailureNotice, laterTurnPrompt, inSessionCorrection } from "../../src/worker-instructions.js";
 import { NoWorkerScopes } from "../../src/worker-scopes.js";
 
 import type { TokenUsageEvent } from "../../src/types.js";
@@ -125,7 +126,7 @@ test("a model agy does not list is refused before any prompt, naming the models 
   await assert.rejects(
     runtime.agent("go", { engine: "agy", model: "gemini-4-hydrogen-low" }),
     (error: unknown) => error instanceof InvalidAgentOptionValueError &&
-      /tiered-model \| single-level-model/.test(error.message) && /a name carries no level/.test(error.message)
+      /tiered-model \| single-level-model \| gpt-oss-120b-medium/.test(error.message) && /a name carries no level/.test(error.message)
   );
 });
 
@@ -141,6 +142,14 @@ test("a model with no level setting runs, and reports no level", async (t) => {
   const { runtime } = await scriptedRuntime(t, { turns: [[say("done")]] });
   assert.equal(await runtime.agent("go", { engine: "agy", model: "single-level-model" }), "done");
   assert.equal(runtime.lastAgentRecord()?.resolvedEffort, null);
+});
+
+test("a model with no thought-level setting serves the level in its name", async (t) => {
+  const { runtime } = await scriptedRuntime(t, { turns: [[say("done")]] });
+  assert.equal(await runtime.agent("go", { engine: "agy", model: "gpt-oss-120b-medium", effort: "max" }), "done");
+  const record = runtime.lastAgentRecord();
+  assert.deepEqual(record?.effortResolution?.served, { source: "engine-report", level: "medium" });
+  assert.equal(record?.resolvedEffort, "medium");
 });
 
 test("agy with no sign-in is a substrate refusal, classed as availability", async (t) => {
@@ -236,6 +245,30 @@ test("a prompt agy refuses for want of a sign-in is an availability failure", as
   assert.deepEqual(first?.classification, { class: "availability", rule: "agy.sign-in-required" });
 });
 
+test("a malformed prompt reply fails as output without advancing the fallback chain", async (t) => {
+  const { runtime } = await scriptedRuntime(t, { turns: [[say("partial"), { result: {} }]] }, 1);
+  assert.equal(await runtime.agent("go", {
+    engine: "agy", fallback: [{ engine: "agy", model: "single-level-model" }]
+  }), null);
+  const attempts = runtime.lastAgentRecord()?.attempts;
+  assert.equal(attempts?.length, 1);
+  assert.equal(attempts?.[0]?.failure?.kind, "agy-invalid-prompt-reply");
+  assert.deepEqual(attempts?.[0]?.classification, { class: "output", rule: "agy.invalid-prompt-reply" });
+});
+
+test("a held agy session retries a malformed reply in the same worker", async (t) => {
+  const { adapter, dir } = await scriptedAdapter(t, { turns: [[{ result: {} }], [ECHO]] });
+  const runtime = new EnsembleRuntime({ defaultMaxAttempts: 2, cwd: dir, engines: new EngineRegistry([adapter]) });
+  t.after(() => runtime.close());
+  const session = runtime.createWorkerSession({ engine: "agy" });
+  const answer = await session.send("go");
+  const attempts = runtime.lastAgentRecord()?.attempts;
+  assert.equal(attempts?.length, 2);
+  const failure = attempts?.[0]?.failure;
+  assert.equal(failure?.kind, "agy-invalid-prompt-reply");
+  assert.equal(answer, inSessionCorrection({ kind: "agy-invalid-prompt-reply", message: String(failure?.message) }));
+});
+
 test("every tool approval agy asks for is granted", async (t) => {
   const { adapter, dir } = await scriptedAdapter(t, { turns: [[{ permission: "t1" }, say("ran it")]] });
   const invocation = adapter.createInvocation("run something", { cwd: dir });
@@ -270,9 +303,13 @@ test("a held agy worker whose process ends is lost, and its later turns settle a
 });
 
 test("agy refuses a capability strip and a lean start before any worker spawns", async (t) => {
-  const { runtime } = await scriptedRuntime(t, {});
+  const agent = inProcessAgent(t);
+  const runtime = new EnsembleRuntime({ defaultMaxAttempts: 1, engines: new EngineRegistry([new AgyEngineAdapter({ commands: agent.commands })]) });
+  t.after(() => runtime.close());
   await assert.rejects(runtime.agent("go", { engine: "agy", strip: ["skills"] }), /agy/);
+  assert.equal(agent.started(), 0);
   await assert.rejects(runtime.agent("go", { engine: "agy", lean: true }), /agy/);
+  assert.equal(agent.started(), 0);
 });
 
 /**
@@ -282,8 +319,14 @@ test("agy refuses a capability strip and a lean start before any worker spawns",
  * `session/new` and a model setting at once, and leaves each prompt to the
  * test. Each stop reports `stopAccount` as its attempt account.
  */
-function inProcessAgent(t: TestContext, options: { holdOpen?: boolean; stopAccount?: { owner: string; reason: string } } = {}): {
+function inProcessAgent(t: TestContext, options: {
+  holdOpen?: boolean;
+  ignoreCancel?: boolean;
+  holdPipes?: boolean;
+  stopAccount?: { owner: string; reason: string };
+} = {}): {
   commands: CommandContainment;
+  children: ChildProcess[];
   update: (body: Record<string, unknown>) => void;
   prompts: { text: string; answer: (stopReason: string) => void }[];
   cancels: () => number;
@@ -292,6 +335,7 @@ function inProcessAgent(t: TestContext, options: { holdOpen?: boolean; stopAccou
   releaseOpen: () => void;
 } {
   const commands = new CommandContainment(new NoWorkerScopes());
+  const children: ChildProcess[] = [];
   const prompts: { text: string; answer: (stopReason: string) => void }[] = [];
   let cancels = 0;
   let stops = 0;
@@ -302,6 +346,7 @@ function inProcessAgent(t: TestContext, options: { holdOpen?: boolean; stopAccou
   t.mock.method(commands, "contain", async () => {
     started += 1;
     const child = new ChildProcess();
+    children.push(child);
     const stdin = new PassThrough();
     const stdout = new PassThrough();
     Object.assign(child, { stdin, stdout, stderr: new PassThrough() });
@@ -326,24 +371,28 @@ function inProcessAgent(t: TestContext, options: { holdOpen?: boolean; stopAccou
         }
         if (method === "session/cancel") {
           cancels += 1;
-          prompts.at(-1)?.answer("cancelled");
+          if (!options.ignoreCancel) prompts.at(-1)?.answer("cancelled");
         }
       }
     });
-    let stopped: Promise<{ outcome: { kind: "stopped" }; attemptAccount: { owner: string; reason: string } | null }> | undefined;
+    let stopped: Promise<CommandStop> | undefined;
     return {
       child, reach: { kind: "scope", unit: "fixture.scope" },
       stop: () => stopped ??= (async () => {
         stops += 1;
         await Promise.resolve();
+        if (options.holdPipes) {
+          return { outcome: { kind: "unconfirmed", reason: "fixture pipes still open" }, attemptAccount: null };
+        }
         child.emit("exit", null, "SIGTERM");
         child.emit("close", null, "SIGTERM");
-        return { outcome: { kind: "stopped" as const }, attemptAccount: options.stopAccount ?? null };
+        return { outcome: { kind: "stopped" }, attemptAccount: options.stopAccount ?? null };
       })()
     };
   });
   return {
     commands,
+    children,
     update: (body) => send({ method: "session/update", params: { sessionId: "held", update: body } }),
     prompts,
     cancels: () => cancels,
@@ -362,6 +411,54 @@ async function until(condition: () => boolean): Promise<void> {
   for (let tries = 0; tries < 200 && !condition(); tries += 1) await flush();
   assert.ok(condition(), "the condition was never met");
 }
+
+test("ACP releases the child and its pipes when they outlive the drain deadline", async (t) => {
+  const agent = inProcessAgent(t, { holdPipes: true });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const client = await AcpClient.start({
+    name: "fixture agy",
+    file: "agy", args: ["acp"], cwd: process.cwd(), env: process.env, commands: agent.commands,
+    clientInfo: { name: "ensemble-test", version: "0" },
+    permissionPolicy: () => null
+  });
+  const child = agent.children[0]!;
+  const unref = t.mock.method(child, "unref");
+  const session = await client.newSession({ cwd: process.cwd(), onUpdate: () => undefined });
+  const rejected = assert.rejects(session.prompt("wait"), /was stopped by the harness/);
+  assert.equal((await client.close()).outcome.kind, "unconfirmed");
+  t.mock.timers.tick(999);
+  assert.equal(child.stdout?.destroyed, false);
+  t.mock.timers.tick(1);
+  await client.exited;
+  await rejected;
+  assert.equal(child.stdin?.destroyed, true);
+  assert.equal(child.stdout?.destroyed, true);
+  assert.equal(child.stderr?.destroyed, true);
+  assert.equal(unref.mock.callCount(), 1);
+});
+
+test("an agy worker that ignores cancel is stopped after ten seconds and its attempt accounts for one stop", async (t) => {
+  const stopAccount = { owner: "agy acp", reason: "the process group's end could not be established" };
+  const agent = inProcessAgent(t, { ignoreCancel: true, stopAccount });
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const invocation = adapter.createInvocation("wait", { cwd: process.cwd(), timeoutMs: 500 });
+  const pending = invocation.runAttempt({ attempt: 1 }).catch((error: unknown) => error);
+  await until(() => agent.prompts.length === 1);
+  t.mock.timers.tick(500);
+  await flush();
+  assert.equal(agent.cancels(), 1);
+  t.mock.timers.tick(9_999);
+  await flush();
+  assert.equal(agent.stops(), 0);
+  t.mock.timers.tick(1);
+  const failure = await pending;
+  assert.ok(failure instanceof TurnTimeoutError);
+  assert.deepEqual(failedTurnResultOf(failure)?.diagnostics?.unestablishedStops, [stopAccount]);
+  await invocation.close?.();
+  assert.equal(agent.stops(), 1);
+});
 
 test("agy's whitespace bound is reset by text, tool activity and thought, and a stop spends one attempt and is retried", async (t) => {
   const agent = inProcessAgent(t);

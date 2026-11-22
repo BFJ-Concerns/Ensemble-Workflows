@@ -444,8 +444,8 @@ ceiling, counts every token class an engine reports, cached input included:
   tokens.
 - **opencode** counts input, cache reads and writes, output and reasoning,
   plus any total a step reports without a breakdown.
-- **agy** counts the `totalTokens` of each turn's `session/prompt` reply:
-  uncached input, cache reads and output, which includes the thought tokens.
+- **agy** uses the `totalTokens` reported in each turn's
+  `session/prompt` reply.
 
 Set a Claude ceiling with that in mind. The run record's
 [token usage](run-records.md#token-usage-and-cost) shows each class
@@ -521,7 +521,7 @@ lists the accepted type names, and invalid `properties` asks for a JSON object.
 | `model` | Optional; without one the engine's default is used and noted on stderr | Optional; without one a warning is printed on stderr | **Required**: a key or route declared in [`opencode_models`](configuration.md#opencode_models) | Optional: a base name agy lists (`gemini-4-hydrogen`, not `gemini-4-hydrogen-low`); without one, agy's own default |
 | `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` | Resolved per model against the levels agy lists for it, then set as the session's thought level |
 | `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
-| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess | Cancels the turn; the session stays usable |
+| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess | Cancels the turn. A held session remains usable if agy answers within ten seconds. Otherwise Ensemble stops the worker |
 | `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Not supported: throws before the worker spawns | Not supported: throws before the worker spawns |
 | `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Not supported: throws before the worker spawns | Not supported: throws before the worker spawns |
 | `fallback` entry | Yes | Yes | No | Yes |
@@ -908,9 +908,14 @@ unsupported registry variant is refused before worker admission: the call
 throws, leaves no agent record, and adds nothing to the worker tally.
 
 Missing or rejected credentials advance the chain if an entry remains. With
-no entry left, the usual attempt bound applies. The attempt records
-`authentication-failure`, the engine's diagnostic and a sign-in step
-(`codex login`, `claude auth login` or `opencode auth login`). An explicit
+no entry left, the usual attempt bound applies. Codex, Claude and opencode
+record `authentication-failure`, the engine's diagnostic and a sign-in
+step (`codex login`, `claude auth login` or `opencode auth login`). agy
+records a missing sign-in at session startup as `AgySubstrateRefusedError`
+and a prompt refused for lack of sign-in as `agy-sign-in-required`. Both
+carry agy's diagnostic and direct the operator to sign in through `agy`.
+A malformed agy prompt reply is an output failure and stays on the current
+chain entry. An explicit
 provider HTTP 401 identifies an authentication failure even when Codex's
 retry-promise bound ends the turn. A dead or unstartable substrate retains its
 own availability rule if its diagnostic merely quotes a credential error.

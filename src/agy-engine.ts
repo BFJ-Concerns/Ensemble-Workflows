@@ -15,6 +15,7 @@ import { isCanonicalEffort, type EngineEffortReport, type ServedEffortLevels } f
 import { launchEnvironment } from "./engine-environment.js";
 import {
   AcpExitedError,
+  AcpProtocolError,
   AcpRequestError,
   AgySubstrateRefusedError,
   EngineShutdownError,
@@ -295,6 +296,7 @@ interface AgyTurn {
     | { kind: "deadline"; reply: AcpPromptResult | null }
     | { kind: "whitespace"; reply: AcpPromptResult | null }
     | { kind: "rejected"; error: AcpRequestError }
+    | { kind: "invalid-reply"; error: AcpProtocolError }
     | { kind: "lost"; error: Error };
   /** The message text after the turn's last tool call. */
   finalText: string;
@@ -363,6 +365,9 @@ async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | u
       turn.ending = { kind: stopping, reply: null };
     } else if (error instanceof AcpRequestError) {
       turn.ending = { kind: "rejected", error };
+    } else if (error instanceof AcpProtocolError) {
+      turn.transcript.push(JSON.stringify({ type: "invalid-reply", at: new Date().toISOString(), message: error.message }));
+      turn.ending = { kind: "invalid-reply", error };
     } else {
       turn.ending = { kind: "lost", error: error instanceof Error ? error : new Error(String(error)) };
     }
@@ -507,6 +512,9 @@ function settleTurn(evidence: EngineAttemptResult, turn: AgyTurn, sessionId: str
         ? { kind: "agy-sign-in-required", message: `agy refused the prompt for want of a sign-in (run \`agy\` and sign in): ${ending.error.message}` }
         : { kind: "agy-prompt-error", message: ending.error.message };
       return evidence;
+    case "invalid-reply":
+      evidence.attemptFailure = { kind: "agy-invalid-prompt-reply", message: ending.error.message };
+      return evidence;
     case "lost": {
       evidence.attemptFailure = { kind: "agy-worker-lost", message: `the agy worker ended before its turn did: ${ending.error.message}` };
       const exit = workerExitStatusOf(ending.error);
@@ -525,9 +533,10 @@ function shutdownWithEvidence(turn: AgyTurn, evidence: EngineAttemptResult): Eng
   return attachPartialWorkerText(attachFailedTurnResult(new EngineShutdownError("agy"), evidence), turn.allText);
 }
 
-/** Whether the turn's message reached the session: a reply of any stop reason, or a stop the harness made of it. */
+/** Whether the turn received a result or the harness stopped it. */
 function delivered(turn: AgyTurn): boolean {
-  return turn.ending.kind === "replied" || turn.ending.kind === "deadline" || turn.ending.kind === "whitespace";
+  return turn.ending.kind === "replied" || turn.ending.kind === "invalid-reply"
+    || turn.ending.kind === "deadline" || turn.ending.kind === "whitespace";
 }
 
 interface AgyInvocationOptions {

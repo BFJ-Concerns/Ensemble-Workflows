@@ -19694,6 +19694,7 @@ var AGY_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["agy-sign-in-required", { class: "availability", rule: "agy.sign-in-required" }],
   // The worker's process ended mid-turn: the substrate lost it before it answered.
   ["agy-worker-lost", { class: "availability", rule: "agy.worker-lost" }],
+  ["agy-invalid-prompt-reply", { class: "output", rule: "agy.invalid-prompt-reply" }],
   // agy ended the turn as a refusal, at a token or request limit, or cancelled it itself.
   ["agy-stop-reason", { class: "unclassified", rule: "agy.stop-reason" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "agy.deadline" }]
@@ -25282,7 +25283,16 @@ var AcpClient = class _AcpClient {
   }
   #stopCommand() {
     this.#stop ??= this.#command.stop().then((stop) => {
-      if (!this.#ended) this.#drain = setTimeout(() => this.#end(), PIPE_DRAIN_MS);
+      if (!this.#ended) {
+        this.#drain = setTimeout(() => {
+          const child = this.#command.child;
+          child.stdin?.destroy();
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          this.#end();
+        }, PIPE_DRAIN_MS);
+      }
       return stop;
     });
     return this.#stop;
@@ -25882,6 +25892,9 @@ async function runTurn(worker, message, timeoutMs, context) {
       turn.ending = { kind: stopping, reply: null };
     } else if (error instanceof AcpRequestError) {
       turn.ending = { kind: "rejected", error };
+    } else if (error instanceof AcpProtocolError) {
+      turn.transcript.push(JSON.stringify({ type: "invalid-reply", at: (/* @__PURE__ */ new Date()).toISOString(), message: error.message }));
+      turn.ending = { kind: "invalid-reply", error };
     } else {
       turn.ending = { kind: "lost", error: error instanceof Error ? error : new Error(String(error)) };
     }
@@ -26007,6 +26020,9 @@ function settleTurn(evidence, turn, sessionId, timeoutMs) {
     case "rejected":
       evidence.attemptFailure = ending.error.code === AGY_AUTHENTICATION_REQUIRED ? { kind: "agy-sign-in-required", message: `agy refused the prompt for want of a sign-in (run \`agy\` and sign in): ${ending.error.message}` } : { kind: "agy-prompt-error", message: ending.error.message };
       return evidence;
+    case "invalid-reply":
+      evidence.attemptFailure = { kind: "agy-invalid-prompt-reply", message: ending.error.message };
+      return evidence;
     case "lost": {
       evidence.attemptFailure = { kind: "agy-worker-lost", message: `the agy worker ended before its turn did: ${ending.error.message}` };
       const exit = workerExitStatusOf(ending.error);
@@ -26019,7 +26035,7 @@ function shutdownWithEvidence(turn, evidence) {
   return attachPartialWorkerText(attachFailedTurnResult(new EngineShutdownError("agy"), evidence), turn.allText);
 }
 function delivered(turn) {
-  return turn.ending.kind === "replied" || turn.ending.kind === "deadline" || turn.ending.kind === "whitespace";
+  return turn.ending.kind === "replied" || turn.ending.kind === "invalid-reply" || turn.ending.kind === "deadline" || turn.ending.kind === "whitespace";
 }
 var AgyEngineInvocation = class {
   #options;
@@ -37978,7 +37994,7 @@ async function runEnsembleCli(argv, options = {}) {
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage(program));
     stdout.write(
-      "\nDispatches one worker on the named engine (--engine codex|claude|opencode), or\non the engine and model a named target binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure, answeredBy }.\n"
+      "\nDispatches one worker (--engine codex|claude|opencode|agy), or\non the engine and model a named target binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure, answeredBy }.\n"
     );
     return 0;
   }

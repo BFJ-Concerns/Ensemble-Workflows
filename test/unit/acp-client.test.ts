@@ -75,7 +75,7 @@ test("a new session reports the agent's default model and thought level, and an 
     const { session, updates } = await open();
 
     assert.equal(session.id, "session-1");
-    assert.deepEqual(session.model, { id: "model", category: "model", current: "tiered-model", values: ["tiered-model", "single-level-model"] });
+    assert.deepEqual(session.model, { id: "model", category: "model", current: "tiered-model", values: ["tiered-model", "single-level-model", "gpt-oss-120b-medium"] });
     assert.deepEqual(session.thoughtLevel, { id: "thought_level", category: "thought_level", current: "high", values: ["low", "medium", "high"] });
     assert.deepEqual(session.opened._meta, { scripted: { cwd: process.cwd() } }, "the agent's own fields pass through");
     assert.deepEqual(updates.map((update) => update.kind), ["usage_update"]);

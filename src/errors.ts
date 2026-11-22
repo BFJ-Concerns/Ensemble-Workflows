@@ -616,16 +616,6 @@ export class ClaudeWorkerError extends EnsembleError {}
 export class ClaudeDispatchError extends SubstrateRefusedError {}
 
 /**
- * The Codex app-server could not serve a thread for this attempt because
- * the substrate itself never started or is already gone — the handshake
- * timed out, the process exited or failed to spawn — so no worker existed
- * — a substrate that exits or refuses before the worker exists is pre-spawn.
- * A `thread/start` the running server *rejected* is the server answering and
- * is not a member: that stays the attempt's own failure. The cause is kept
- * whole, and the app-server's exit evidence rides the carrier as it rode the
- * cause.
- */
-/**
  * agy could not give an attempt a worker: `agy acp` would not start or
  * initialise, has no sign-in, or opened no session. No prompt was sent, so
  * the refusal is pre-spawn, and agy's own account of it is kept as the
@@ -637,6 +627,16 @@ export class AgySubstrateRefusedError extends SubstrateRefusedError {
   }
 }
 
+/**
+ * The Codex app-server could not serve a thread for this attempt because
+ * the substrate itself never started or is already gone — the handshake
+ * timed out, the process exited or failed to spawn — so no worker existed
+ * — a substrate that exits or refuses before the worker exists is pre-spawn.
+ * A `thread/start` the running server *rejected* is the server answering and
+ * is not a member: that stays the attempt's own failure. The cause is kept
+ * whole, and the app-server's exit evidence rides the carrier as it rode the
+ * cause.
+ */
 export class CodexSubstrateRefusedError extends SubstrateRefusedError {
   /**
    * `detail` is the cause as the raising site presents it — the diagnosis

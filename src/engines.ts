@@ -135,6 +135,7 @@ export interface EngineAttemptFailure {
     | "agy-stop-reason"
     | "agy-sign-in-required"
     | "agy-prompt-error"
+    | "agy-invalid-prompt-reply"
     | "agy-worker-lost";
   message: string;
 }

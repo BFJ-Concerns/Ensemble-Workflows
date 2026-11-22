@@ -255,6 +255,7 @@ const AGY_FAILURE_KINDS = new Map<string, FailureClassification>([
   ["agy-sign-in-required", { class: "availability", rule: "agy.sign-in-required" }],
   // The worker's process ended mid-turn: the substrate lost it before it answered.
   ["agy-worker-lost", { class: "availability", rule: "agy.worker-lost" }],
+  ["agy-invalid-prompt-reply", { class: "output", rule: "agy.invalid-prompt-reply" }],
   // agy ended the turn as a refusal, at a token or request limit, or cancelled it itself.
   ["agy-stop-reason", { class: "unclassified", rule: "agy.stop-reason" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "agy.deadline" }]

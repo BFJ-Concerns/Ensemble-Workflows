@@ -156,7 +156,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage(program));
     stdout.write(
-      "\nDispatches one worker on the named engine (--engine codex|claude|opencode), or\n" +
+      "\nDispatches one worker (--engine codex|claude|opencode|agy), or\n" +
         "on the engine and model a named target binds (--target <name>), and\n" +
         "prints its result as JSON on stdout. The prompt is the single positional\n" +
         "argument, or stdin when omitted; put flags before the prompt. --schema\n" +

@@ -327,7 +327,16 @@ export class AcpClient {
     this.#stop ??= this.#command.stop().then((stop) => {
       // Stopping the reach ends whatever held the pipes open; a holder that
       // escaped it cannot keep the client's end waiting.
-      if (!this.#ended) this.#drain = setTimeout(() => this.#end(), PIPE_DRAIN_MS);
+      if (!this.#ended) {
+        this.#drain = setTimeout(() => {
+          const child = this.#command.child;
+          child.stdin?.destroy();
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          this.#end();
+        }, PIPE_DRAIN_MS);
+      }
       return stop;
     });
     return this.#stop;

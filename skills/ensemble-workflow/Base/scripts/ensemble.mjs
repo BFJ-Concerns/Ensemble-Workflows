@@ -3275,8 +3275,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path22) {
-      let input = path22;
+    function removeDotSegments(path23) {
+      let input = path23;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3350,11 +3350,11 @@ var require_utils = __commonJS({
       }
       return output.join("");
     }
-    function removeDotSegmentsRelative(path22) {
-      if (path22 === "" || path22[0] === "/") {
-        return removeDotSegments(path22);
+    function removeDotSegmentsRelative(path23) {
+      if (path23 === "" || path23[0] === "/") {
+        return removeDotSegments(path23);
       }
-      const segments = path22.split("/");
+      const segments = path23.split("/");
       const last = segments.length - 1;
       const output = [];
       let trailingDirectory = false;
@@ -3717,8 +3717,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path22 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path22 && path22 !== "/" ? path22 : void 0;
+        const path23 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path23 && path23 !== "/" ? path23 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -8498,8 +8498,8 @@ var require_acorn = __commonJS({
           node.body.push(stmt);
         }
         if (this.inModule) {
-          for (var i3 = 0, list3 = Object.keys(this.undefinedExports); i3 < list3.length; i3 += 1) {
-            var name = list3[i3];
+          for (var i3 = 0, list4 = Object.keys(this.undefinedExports); i3 < list4.length; i3 += 1) {
+            var name = list4[i3];
             this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
           }
         }
@@ -8983,8 +8983,8 @@ var require_acorn = __commonJS({
         return this.finishNode(node, "EmptyStatement");
       };
       pp$82.parseLabeledStatement = function(node, maybeName, expr, context) {
-        for (var i$1 = 0, list3 = this.labels; i$1 < list3.length; i$1 += 1) {
-          var label = list3[i$1];
+        for (var i$1 = 0, list4 = this.labels; i$1 < list4.length; i$1 += 1) {
+          var label = list4[i$1];
           if (label.name === maybeName) {
             this.raise(expr.start, "Label '" + maybeName + "' is already declared");
           }
@@ -9406,8 +9406,8 @@ var require_acorn = __commonJS({
               node.attributes = this.parseWithClause();
             }
           } else {
-            for (var i3 = 0, list3 = node.specifiers; i3 < list3.length; i3 += 1) {
-              var spec = list3[i3];
+            for (var i3 = 0, list4 = node.specifiers; i3 < list4.length; i3 += 1) {
+              var spec = list4[i3];
               this.checkUnreserved(spec.local);
               this.checkLocalExport(spec.local);
               if (spec.local.type === "Literal") {
@@ -9461,8 +9461,8 @@ var require_acorn = __commonJS({
         if (type === "Identifier") {
           this.checkExport(exports$1, pat, pat.start);
         } else if (type === "ObjectPattern") {
-          for (var i3 = 0, list3 = pat.properties; i3 < list3.length; i3 += 1) {
-            var prop = list3[i3];
+          for (var i3 = 0, list4 = pat.properties; i3 < list4.length; i3 += 1) {
+            var prop = list4[i3];
             this.checkPatternExport(exports$1, prop);
           }
         } else if (type === "ArrayPattern") {
@@ -9484,8 +9484,8 @@ var require_acorn = __commonJS({
         if (!exports$1) {
           return;
         }
-        for (var i3 = 0, list3 = decls; i3 < list3.length; i3 += 1) {
-          var decl = list3[i3];
+        for (var i3 = 0, list4 = decls; i3 < list4.length; i3 += 1) {
+          var decl = list4[i3];
           this.checkPatternExport(exports$1, decl.id);
         }
       };
@@ -9662,8 +9662,8 @@ var require_acorn = __commonJS({
               if (refDestructuringErrors) {
                 this.checkPatternErrors(refDestructuringErrors, true);
               }
-              for (var i3 = 0, list3 = node.properties; i3 < list3.length; i3 += 1) {
-                var prop = list3[i3];
+              for (var i3 = 0, list4 = node.properties; i3 < list4.length; i3 += 1) {
+                var prop = list4[i3];
                 this.toAssignable(prop, isBinding);
                 if (prop.type === "RestElement" && (prop.argument.type === "ArrayPattern" || prop.argument.type === "ObjectPattern")) {
                   this.raise(prop.argument.start, "Unexpected token");
@@ -9850,8 +9850,8 @@ var require_acorn = __commonJS({
         if (bindingType === void 0) bindingType = BIND_NONE2;
         switch (expr.type) {
           case "ObjectPattern":
-            for (var i3 = 0, list3 = expr.properties; i3 < list3.length; i3 += 1) {
-              var prop = list3[i3];
+            for (var i3 = 0, list4 = expr.properties; i3 < list4.length; i3 += 1) {
+              var prop = list4[i3];
               this.checkLValInnerPattern(prop, bindingType, checkClashes);
             }
             break;
@@ -10937,8 +10937,8 @@ var require_acorn = __commonJS({
         this.exitScope();
       };
       pp$52.isSimpleParamList = function(params) {
-        for (var i3 = 0, list3 = params; i3 < list3.length; i3 += 1) {
-          var param = list3[i3];
+        for (var i3 = 0, list4 = params; i3 < list4.length; i3 += 1) {
+          var param = list4[i3];
           if (param.type !== "Identifier") {
             return false;
           }
@@ -10947,8 +10947,8 @@ var require_acorn = __commonJS({
       };
       pp$52.checkParams = function(node, allowDuplicates) {
         var nameHash = /* @__PURE__ */ Object.create(null);
-        for (var i3 = 0, list3 = node.params; i3 < list3.length; i3 += 1) {
-          var param = list3[i3];
+        for (var i3 = 0, list4 = node.params; i3 < list4.length; i3 += 1) {
+          var param = list4[i3];
           this.checkLValInnerPattern(param, BIND_VAR2, allowDuplicates ? null : nameHash);
         }
       };
@@ -11275,8 +11275,8 @@ var require_acorn = __commonJS({
         d.nonBinary.sc = d.nonBinary.Script;
         d.nonBinary.scx = d.nonBinary.Script_Extensions;
       }
-      for (var i2 = 0, list2 = [9, 10, 11, 12, 13, 14]; i2 < list2.length; i2 += 1) {
-        var ecmaVersion2 = list2[i2];
+      for (var i2 = 0, list3 = [9, 10, 11, 12, 13, 14]; i2 < list3.length; i2 += 1) {
+        var ecmaVersion2 = list3[i2];
         buildUnicodeData2(ecmaVersion2);
       }
       var pp$12 = Parser3.prototype;
@@ -11386,8 +11386,8 @@ var require_acorn = __commonJS({
       RegExpValidationState3.prototype.eatChars = function eatChars2(chs, forceU) {
         if (forceU === void 0) forceU = false;
         var pos = this.pos;
-        for (var i3 = 0, list3 = chs; i3 < list3.length; i3 += 1) {
-          var ch = list3[i3];
+        for (var i3 = 0, list4 = chs; i3 < list4.length; i3 += 1) {
+          var ch = list4[i3];
           var current2 = this.at(pos, forceU);
           if (current2 === -1 || current2 !== ch) {
             return false;
@@ -11465,8 +11465,8 @@ var require_acorn = __commonJS({
         if (state.maxBackReference > state.numCapturingParens) {
           state.raise("Invalid escape");
         }
-        for (var i3 = 0, list3 = state.backReferenceNames; i3 < list3.length; i3 += 1) {
-          var name = list3[i3];
+        for (var i3 = 0, list4 = state.backReferenceNames; i3 < list4.length; i3 += 1) {
+          var name = list4[i3];
           if (!state.groupNames[name]) {
             state.raise("Invalid named capture referenced");
           }
@@ -11796,8 +11796,8 @@ var require_acorn = __commonJS({
           var known = state.groupNames[state.lastStringValue];
           if (known) {
             if (trackDisjunction) {
-              for (var i3 = 0, list3 = known; i3 < list3.length; i3 += 1) {
-                var altID = list3[i3];
+              for (var i3 = 0, list4 = known; i3 < list4.length; i3 += 1) {
+                var altID = list4[i3];
                 if (!altID.separatedFrom(state.branchID)) {
                   state.raise("Duplicate capture group name");
                 }
@@ -13679,8 +13679,8 @@ var require_walk = __commonJS({
       }
       var base = {};
       base.Program = base.BlockStatement = base.StaticBlock = function(node, st, c) {
-        for (var i2 = 0, list2 = node.body; i2 < list2.length; i2 += 1) {
-          var stmt = list2[i2];
+        for (var i2 = 0, list3 = node.body; i2 < list3.length; i2 += 1) {
+          var stmt = list3[i2];
           c(stmt, st, "Statement");
         }
       };
@@ -13706,8 +13706,8 @@ var require_walk = __commonJS({
       };
       base.SwitchStatement = function(node, st, c) {
         c(node.discriminant, st, "Expression");
-        for (var i2 = 0, list2 = node.cases; i2 < list2.length; i2 += 1) {
-          var cs = list2[i2];
+        for (var i2 = 0, list3 = node.cases; i2 < list3.length; i2 += 1) {
+          var cs = list3[i2];
           c(cs, st);
         }
       };
@@ -13715,8 +13715,8 @@ var require_walk = __commonJS({
         if (node.test) {
           c(node.test, st, "Expression");
         }
-        for (var i2 = 0, list2 = node.consequent; i2 < list2.length; i2 += 1) {
-          var cons = list2[i2];
+        for (var i2 = 0, list3 = node.consequent; i2 < list3.length; i2 += 1) {
+          var cons = list3[i2];
           c(cons, st, "Statement");
         }
       };
@@ -13776,8 +13776,8 @@ var require_walk = __commonJS({
         return c(node, st, "Function");
       };
       base.VariableDeclaration = function(node, st, c) {
-        for (var i2 = 0, list2 = node.declarations; i2 < list2.length; i2 += 1) {
-          var decl = list2[i2];
+        for (var i2 = 0, list3 = node.declarations; i2 < list3.length; i2 += 1) {
+          var decl = list3[i2];
           c(decl, st);
         }
       };
@@ -13791,8 +13791,8 @@ var require_walk = __commonJS({
         if (node.id) {
           c(node.id, st, "Pattern");
         }
-        for (var i2 = 0, list2 = node.params; i2 < list2.length; i2 += 1) {
-          var param = list2[i2];
+        for (var i2 = 0, list3 = node.params; i2 < list3.length; i2 += 1) {
+          var param = list3[i2];
           c(param, st, "Pattern");
         }
         c(node.body, st, node.expression ? "Expression" : "Statement");
@@ -13812,16 +13812,16 @@ var require_walk = __commonJS({
         return c(node.argument, st, "Pattern");
       };
       base.ArrayPattern = function(node, st, c) {
-        for (var i2 = 0, list2 = node.elements; i2 < list2.length; i2 += 1) {
-          var elt = list2[i2];
+        for (var i2 = 0, list3 = node.elements; i2 < list3.length; i2 += 1) {
+          var elt = list3[i2];
           if (elt) {
             c(elt, st, "Pattern");
           }
         }
       };
       base.ObjectPattern = function(node, st, c) {
-        for (var i2 = 0, list2 = node.properties; i2 < list2.length; i2 += 1) {
-          var prop = list2[i2];
+        for (var i2 = 0, list3 = node.properties; i2 < list3.length; i2 += 1) {
+          var prop = list3[i2];
           if (prop.type === "Property") {
             if (prop.computed) {
               c(prop.key, st, "Expression");
@@ -13835,29 +13835,29 @@ var require_walk = __commonJS({
       base.Expression = skipThrough;
       base.ThisExpression = base.Super = base.MetaProperty = ignore;
       base.ArrayExpression = function(node, st, c) {
-        for (var i2 = 0, list2 = node.elements; i2 < list2.length; i2 += 1) {
-          var elt = list2[i2];
+        for (var i2 = 0, list3 = node.elements; i2 < list3.length; i2 += 1) {
+          var elt = list3[i2];
           if (elt) {
             c(elt, st, "Expression");
           }
         }
       };
       base.ObjectExpression = function(node, st, c) {
-        for (var i2 = 0, list2 = node.properties; i2 < list2.length; i2 += 1) {
-          var prop = list2[i2];
+        for (var i2 = 0, list3 = node.properties; i2 < list3.length; i2 += 1) {
+          var prop = list3[i2];
           c(prop, st);
         }
       };
       base.FunctionExpression = base.ArrowFunctionExpression = base.FunctionDeclaration;
       base.SequenceExpression = function(node, st, c) {
-        for (var i2 = 0, list2 = node.expressions; i2 < list2.length; i2 += 1) {
-          var expr = list2[i2];
+        for (var i2 = 0, list3 = node.expressions; i2 < list3.length; i2 += 1) {
+          var expr = list3[i2];
           c(expr, st, "Expression");
         }
       };
       base.TemplateLiteral = function(node, st, c) {
-        for (var i2 = 0, list2 = node.quasis; i2 < list2.length; i2 += 1) {
-          var quasi = list2[i2];
+        for (var i2 = 0, list3 = node.quasis; i2 < list3.length; i2 += 1) {
+          var quasi = list3[i2];
           c(quasi, st);
         }
         for (var i$1 = 0, list$1 = node.expressions; i$1 < list$1.length; i$1 += 1) {
@@ -13885,8 +13885,8 @@ var require_walk = __commonJS({
       base.NewExpression = base.CallExpression = function(node, st, c) {
         c(node.callee, st, "Expression");
         if (node.arguments) {
-          for (var i2 = 0, list2 = node.arguments; i2 < list2.length; i2 += 1) {
-            var arg = list2[i2];
+          for (var i2 = 0, list3 = node.arguments; i2 < list3.length; i2 += 1) {
+            var arg = list3[i2];
             c(arg, st, "Expression");
           }
         }
@@ -13905,8 +13905,8 @@ var require_walk = __commonJS({
           c(node.source, st, "Expression");
         }
         if (node.attributes) {
-          for (var i2 = 0, list2 = node.attributes; i2 < list2.length; i2 += 1) {
-            var attr = list2[i2];
+          for (var i2 = 0, list3 = node.attributes; i2 < list3.length; i2 += 1) {
+            var attr = list3[i2];
             c(attr, st);
           }
         }
@@ -13917,8 +13917,8 @@ var require_walk = __commonJS({
         }
         c(node.source, st, "Expression");
         if (node.attributes) {
-          for (var i2 = 0, list2 = node.attributes; i2 < list2.length; i2 += 1) {
-            var attr = list2[i2];
+          for (var i2 = 0, list3 = node.attributes; i2 < list3.length; i2 += 1) {
+            var attr = list3[i2];
             c(attr, st);
           }
         }
@@ -13927,8 +13927,8 @@ var require_walk = __commonJS({
         c(node.value, st, "Expression");
       };
       base.ImportDeclaration = function(node, st, c) {
-        for (var i2 = 0, list2 = node.specifiers; i2 < list2.length; i2 += 1) {
-          var spec = list2[i2];
+        for (var i2 = 0, list3 = node.specifiers; i2 < list3.length; i2 += 1) {
+          var spec = list3[i2];
           c(spec, st);
         }
         c(node.source, st, "Expression");
@@ -13963,8 +13963,8 @@ var require_walk = __commonJS({
         c(node.body, st);
       };
       base.ClassBody = function(node, st, c) {
-        for (var i2 = 0, list2 = node.body; i2 < list2.length; i2 += 1) {
-          var elt = list2[i2];
+        for (var i2 = 0, list3 = node.body; i2 < list3.length; i2 += 1) {
+          var elt = list3[i2];
           c(elt, st);
         }
       };
@@ -14174,13 +14174,13 @@ var require_acorn_globals = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path21 from "node:path";
+import path22 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
 import { readFile as readFile12, stat as stat8 } from "node:fs/promises";
 import { homedir as homedir5, hostname as hostname4 } from "node:os";
-import path20 from "node:path";
+import path21 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/built-in-effort-levels.ts
@@ -15104,25 +15104,27 @@ function assertValidFallbackChain(chain) {
         );
       }
     }
-    if (target.effort !== void 0 && !isCanonicalEffort(target.effort)) {
-      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
-    }
+    assertValidFallbackEffort(target.effort, target.target === void 0 ? target.engine : void 0, index);
     if (target.target !== void 0) {
       if (typeof target.target !== "string" || target.target.trim().length === 0) {
         throw new FallbackTargetRejectedError(`entry ${index} target must be a non-empty string naming a target the machine configuration binds`);
       }
       return;
     }
-    if (target.engine === "opencode") {
-      throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
-    }
-    if (target.engine !== "codex" && target.engine !== "claude") {
-      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex" or "claude", got ${JSON.stringify(target.engine)}`);
+    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "opencode") {
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude" or "opencode", got ${JSON.stringify(target.engine)}`);
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
     }
   });
+}
+function assertValidFallbackEffort(effort, engine, index) {
+  if (effort === void 0 || isCanonicalEffort(effort)) return;
+  if ((engine === void 0 || engine === "opencode") && typeof effort === "string" && effort.trim().length > 0 && effort !== "ultra") return;
+  throw new FallbackTargetRejectedError(
+    `entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(effort)}`
+  );
 }
 function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRegistry) {
   const registered = registry.get(model);
@@ -16167,12 +16169,11 @@ function validateConfiguredChain(chain, targets, configFile, key) {
     if (named === void 0) {
       throw fileValueError(configFile, key, `entry ${index} names target ${JSON.stringify(entry.target)}, which this file does not bind`);
     }
-    if (isObject(named) && named.engine === "opencode") {
-      throw fileValueError(
-        configFile,
-        key,
-        `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
-      );
+    try {
+      if (isObject(named)) assertValidFallbackEffort(entry.effort, named.engine, index);
+    } catch (error) {
+      if (error instanceof AgentOptionRejectedError) throw fileValueError(configFile, key, error.message);
+      throw error;
     }
   }
 }
@@ -16498,9 +16499,15 @@ var CLAUDE_TRANSCRIPT = {
   filename: "transcript.claude.jsonl",
   source: "claude-session-jsonl"
 };
+var OPENCODE_TRANSCRIPT = {
+  held: "archive",
+  filename: "transcript.opencode.jsonl",
+  source: "opencode run --format json"
+};
 var LIVE_TRANSCRIPTS = {
   codex: CODEX_TRANSCRIPT,
-  claude: CLAUDE_TRANSCRIPT
+  claude: CLAUDE_TRANSCRIPT,
+  opencode: OPENCODE_TRANSCRIPT
 };
 function transcriptLine(event) {
   return `${JSON.stringify(event)}
@@ -19619,7 +19626,7 @@ function diagnoseAttemptFailure(evidence) {
     return failure;
   }
   const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
-  const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
+  const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status ?? openCodeHttpStatus(evidence);
   if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
     return failure;
   }
@@ -19716,6 +19723,7 @@ var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);
 var OPENCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
+  ["opencode-worker-lost", { class: "availability", rule: "opencode.worker-lost" }],
   ["opencode-run-error", { class: "unclassified", rule: "opencode.run-error" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "opencode.deadline" }]
 ]);
@@ -19751,9 +19759,22 @@ function classifyAttemptFailure(evidence) {
       return classifyCodexFailure(kind, evidence.appServerDiagnostic);
     case "claude":
       return classifyClaudeFailure(kind, evidence.diagnostics);
-    case "opencode":
+    case "opencode": {
+      const status = openCodeHttpStatus(evidence);
+      if (status === 401) return { class: "availability", rule: "opencode.authentication-failure" };
+      if (status === 402) return { class: "availability", rule: "opencode.usage-limit" };
+      if (status === 429) return { class: "availability", rule: "opencode.rate-limit" };
+      if (status !== void 0 && status >= 500 && status <= 599) {
+        return { class: "availability", rule: "opencode.provider-internal-error" };
+      }
       return OPENCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
+    }
   }
+}
+function openCodeHttpStatus(evidence) {
+  if (evidence.engine !== "opencode" || evidence.failure.kind !== "opencode-run-error") return void 0;
+  const status = objectField(evidence.diagnostics?.opencode, "http_status");
+  return typeof status === "number" ? status : void 0;
 }
 function classifyCodexFailure(kind, diagnostic) {
   const code = diagnostic?.code;
@@ -19962,11 +19983,7 @@ function settleChain(targets, chain, passed) {
       );
     }
     const binding = bindingFor(targets, entry.target, `fallback entry ${index}: `);
-    if (binding.engine === "opencode") {
-      throw new FallbackTargetRejectedError(
-        `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
-      );
-    }
+    assertValidFallbackEffort(entry.effort, binding.engine, index);
     return {
       engine: binding.engine,
       model: binding.model ?? declaredModel(binding.engine),
@@ -20109,8 +20126,8 @@ var RunProgress = class {
     this.#counters(engine).cap = cap;
     this.#touch();
   }
-  setArchiveDir(path22) {
-    this.#archiveDir = path22;
+  setArchiveDir(path23) {
+    this.#archiveDir = path23;
     this.#touch();
   }
   /** Publishes only observed identity; served values must not echo the request. */
@@ -20120,16 +20137,16 @@ var RunProgress = class {
     Object.assign(record, identity);
     this.#touch();
   }
-  noteAgentTranscript(id, path22) {
+  noteAgentTranscript(id, path23) {
     const record = this.#live.get(id);
     if (record === void 0) return;
-    record.transcript = path22;
+    record.transcript = path23;
     this.#touch();
   }
-  noteAgentWorktree(id, path22) {
+  noteAgentWorktree(id, path23) {
     const record = this.#live.get(id);
     if (record === void 0) return;
-    record.worktree = path22;
+    record.worktree = path23;
     this.#touch();
   }
   /** Cumulative worker tokens across attempts and targets; null means unobserved. */
@@ -20705,14 +20722,14 @@ function enteredWorktrees(entries) {
   }
   return worktrees;
 }
-async function readTranscriptFile(path22) {
+async function readTranscriptFile(path23) {
   let text;
   try {
-    text = await readFile8(path22, "utf8");
+    text = await readFile8(path23, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path22}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path23}`, { cause: error });
   }
-  return { path: path22, text, entries: parseTranscriptText(text) };
+  return { path: path23, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -23372,13 +23389,13 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle, observers) {
-    const path22 = await this.#controlPlane.transcriptPath(handle);
-    if (path22 === null) {
+    const path23 = await this.#controlPlane.transcriptPath(handle);
+    if (path23 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    const transcript = await readTranscriptFile(path22);
+    const transcript = await readTranscriptFile(path23);
     try {
-      observers?.onTranscriptPath?.(path22);
+      observers?.onTranscriptPath?.(path23);
     } catch {
     }
     return transcript;
@@ -25013,11 +25030,11 @@ function payloadContainsInvalidJsonSchema(value, depth = 0) {
   if (Array.isArray(value)) {
     return value.some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
   }
-  const object = asJsonObject(value);
-  if (object === null) {
+  const object2 = asJsonObject(value);
+  if (object2 === null) {
     return false;
   }
-  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
+  return Object.values(object2).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
 }
 function parseRpcMessage(line) {
   try {
@@ -25046,14 +25063,14 @@ function strictlyContainsAll(candidate, baseline) {
   return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
 }
 function asRpcError(value) {
-  const object = asJsonObject(value);
-  if (object === null) {
+  const object2 = asJsonObject(value);
+  if (object2 === null) {
     return { code: void 0, message: String(value) };
   }
   return {
-    code: typeof object.code === "number" ? object.code : void 0,
-    message: typeof object.message === "string" ? object.message : void 0,
-    data: object.data
+    code: typeof object2.code === "number" ? object2.code : void 0,
+    message: typeof object2.message === "string" ? object2.message : void 0,
+    data: object2.data
   };
 }
 function itemTypeFromItem(item) {
@@ -25140,6 +25157,169 @@ var ClaudeStripPreparer = class {
 
 // src/opencode-engine.ts
 import { randomUUID as randomUUID6 } from "node:crypto";
+
+// src/opencode-launch-config.ts
+import { mkdtemp as mkdtemp4, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path18 from "node:path";
+var OPENCODE_STRIP_TOOLS = { skills: "skill", agents: "task" };
+async function prepareOpenCodeLaunch(options) {
+  const { env, strip, lean, providerModel, run } = options;
+  if (!lean && strip.length === 0) return { env };
+  const refuse = (detail) => {
+    if (lean) throw new LeanStartUnsupportedError("opencode", detail);
+    throw new CapabilityStripUnsupportedError("opencode", strip[0], detail);
+  };
+  const readConfig = async (environment) => {
+    const result = await run(["debug", "config"], environment);
+    const config = result.exitCode === 0 ? parseObject(result.stdout) : null;
+    return config ?? refuse("opencode debug config did not return readable configuration");
+  };
+  const original = await readConfig(env);
+  if (!lean) {
+    if (list(original.plugin).length > 0 && !/^(1|true)$/i.test(env.OPENCODE_PURE ?? "")) {
+      refuse("active external plugins can change agent permissions after configuration is loaded");
+    }
+    const injected = parseConfigContent(env.OPENCODE_CONFIG_CONTENT || "{}");
+    if (injected === null) return refuse("OPENCODE_CONFIG_CONTENT must be a JSONC object for a stripped worker");
+    const denied = withStrippedPermissions(original, strip);
+    const stripped = {
+      ...env,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        ...injected,
+        ...denied,
+        agent: overlayAgentPermissions(denied.agent, injected.agent),
+        ...denied.mode === void 0 ? {} : { mode: overlayAgentPermissions(denied.mode, injected.mode) }
+      }),
+      OPENCODE_PERMISSION: JSON.stringify(denied.permission)
+    };
+    verifyStrips(await readConfig(stripped), strip);
+    return { env: stripped };
+  }
+  const directory = await mkdtemp4(path18.join(tmpdir(), "ensemble-opencode-lean-"));
+  const close = () => rm6(directory, { recursive: true, force: true });
+  try {
+    const configFile = path18.join(directory, "opencode.json");
+    const profile = {
+      $schema: "https://opencode.ai/config.json",
+      provider: original.provider,
+      enabled_providers: original.enabled_providers,
+      disabled_providers: original.disabled_providers,
+      default_agent: original.default_agent,
+      ...withStrippedPermissions(original, strip, true)
+    };
+    const content = JSON.stringify(profile).replace(/\{(?=(?:env|file):)/g, "\\u007b");
+    await writeFile7(configFile, content, { mode: 384 });
+    const isolated = {
+      ...env,
+      XDG_CONFIG_HOME: directory,
+      OPENCODE_CONFIG_DIR: directory,
+      OPENCODE_CONFIG: configFile,
+      OPENCODE_CONFIG_CONTENT: void 0,
+      OPENCODE_PERMISSION: void 0,
+      OPENCODE_TEST_HOME: directory,
+      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+      OPENCODE_DISABLE_CLAUDE_CODE: "1",
+      OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
+      OPENCODE_PURE: "1"
+    };
+    const resolved = await readConfig(isolated);
+    if (list(resolved.instructions).length > 0 || Object.values(object(resolved.mcp)).some((value) => object(value).enabled !== false) || Object.values(object(resolved.skills)).some((values) => list(values).length > 0) || Object.values(object(resolved.agent)).some((agent) => typeof object(agent).prompt === "string")) {
+      refuse("opencode still loads instructions, skills or MCP servers in the isolated configuration");
+    }
+    verifyStrips(resolved, strip);
+    const provider = providerModel.slice(0, providerModel.indexOf("/"));
+    const models = await run(["models", provider], isolated);
+    if (models.exitCode !== 0 || !models.stdout.split(/\r?\n/).some((line) => line.trim() === providerModel)) {
+      refuse(`the isolated configuration cannot reach the registered model ${JSON.stringify(providerModel)}`);
+    }
+    return { env: isolated, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+function withStrippedPermissions(config, strip, lean = false) {
+  const permission = (value) => {
+    const rules = typeof value === "string" ? { "*": value } : { ...object(value) };
+    for (const capability of strip) {
+      const tool = OPENCODE_STRIP_TOOLS[capability];
+      delete rules[tool];
+      rules[tool] = "deny";
+    }
+    return rules;
+  };
+  return {
+    permission: permission(config.permission),
+    agent: Object.fromEntries(Object.entries(object(config.agent)).map(([name, value]) => {
+      const agent = object(value);
+      return [name, lean ? { mode: agent.mode, disable: agent.disable, hidden: agent.hidden, permission: permission(agent.permission) } : { permission: permission(agent.permission) }];
+    })),
+    ...!lean && Object.hasOwn(config, "mode") ? {
+      mode: Object.fromEntries(Object.entries(object(config.mode)).map(([name, value]) => {
+        const mode = object(value);
+        return [name, { permission: permission(mode.permission) }];
+      }))
+    } : {}
+  };
+}
+function overlayAgentPermissions(denies, injected) {
+  const base = object(injected);
+  return {
+    ...base,
+    ...Object.fromEntries(Object.entries(denies).map(([name, value]) => [
+      name,
+      { ...object(base[name]), ...object(value) }
+    ]))
+  };
+}
+function verifyStrips(config, strip) {
+  const globalRules = Object.entries(object(config.permission));
+  for (const capability of strip) {
+    const tool = OPENCODE_STRIP_TOOLS[capability];
+    const agentRules = Object.values(object(config.agent)).map((agent) => Object.entries(object(object(agent).permission)));
+    for (const rules of [globalRules, ...agentRules.map((rules2) => [...globalRules, ...rules2])]) {
+      const last = rules.findLast(([pattern]) => {
+        const wildcard = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*").replaceAll("?", ".");
+        return new RegExp(`^${wildcard}$`, process.platform === "win32" ? "i" : "").test(tool);
+      });
+      const action = last?.[1];
+      if (action === "deny") continue;
+      const patterns = Object.entries(object(action));
+      if (patterns.length === 1 && patterns[0]?.[0] === "*" && patterns[0]?.[1] === "deny") continue;
+      throw new CapabilityStripUnsupportedError(
+        "opencode",
+        capability,
+        `opencode's resolved configuration does not grant a blanket deny of ${tool}`
+      );
+    }
+  }
+}
+function parseConfigContent(text) {
+  const string = /"(?:[^"\\]|\\.)*"/g.source;
+  const comments = /\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g.source;
+  const uncommented = text.replace(new RegExp(`(${string})|${comments}`, "g"), (_match, quoted) => quoted ?? "");
+  return parseObject(uncommented.replace(new RegExp(`(${string})|,(?=\\s*[}\\]])`, "g"), (_match, quoted) => quoted ?? ""));
+}
+function parseObject(text) {
+  try {
+    const parsed = JSON.parse(text);
+    return isObject3(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function isObject3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function object(value) {
+  return isObject3(value) ? value : {};
+}
+function list(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+// src/opencode-engine.ts
 var OpenCodeCliRunner = class {
   #bin;
   #killGraceMs;
@@ -25168,19 +25348,53 @@ var OpenCodeCliRunner = class {
       args.push("--variant", options.variant);
     }
     args.push(options.prompt);
-    return runProcess(
-      this.#bin,
-      args,
-      options.cwd,
-      this.#env,
-      this.#commands,
-      options.timeoutMs,
-      this.#killGraceMs,
-      options.signal,
-      options.onFirstData,
-      options.onData,
-      options.onCommandStop
-    );
+    const signal = options.signal;
+    if (signal?.aborted) return stoppedBeforeLaunch();
+    try {
+      const launch = await prepareOpenCodeLaunch({
+        env: this.#env,
+        strip: options.strip ?? [],
+        lean: options.lean === true,
+        providerModel: options.providerModel,
+        run: (command, env) => runProcess(
+          this.#bin,
+          command,
+          options.cwd,
+          env,
+          this.#commands,
+          3e4,
+          this.#killGraceMs,
+          signal,
+          void 0,
+          void 0,
+          options.onCommandStop
+        )
+      });
+      try {
+        return await runProcess(
+          this.#bin,
+          args,
+          options.cwd,
+          launch.env,
+          this.#commands,
+          options.timeoutMs,
+          this.#killGraceMs,
+          signal,
+          options.onFirstData,
+          options.onData,
+          options.onCommandStop
+        );
+      } finally {
+        await launch.close?.();
+      }
+    } catch (error) {
+      if (signal?.aborted) return stoppedBeforeLaunch();
+      const code = error?.code;
+      if (code === "ENOENT" || code === "EACCES") {
+        throw new SubstrateRefusedError(`opencode could not start (${code})`, { cause: error });
+      }
+      throw error;
+    }
   }
   async exportSession(sessionId, cwd, signal, onCommandStop) {
     const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, this.#commands, 3e4, this.#killGraceMs, signal, void 0, void 0, onCommandStop);
@@ -25253,27 +25467,43 @@ var OpenCodeEngineInvocation = class {
     let streamBuffer = "";
     const streamEvents = [];
     let streamSessionId = null;
+    const syntheticSessionId = this.#syntheticSessionId();
+    let identityPublished = false;
+    const publishEvent = (event) => {
+      if (!identityPublished && sessionIdFromEvent(event) !== null) {
+        identityPublished = true;
+        context.onIdentity?.({ resolvedModel: this.#providerModel, resolvedEffort: null });
+      }
+      context.onOutput?.();
+      context.onTranscriptEvent?.(event);
+    };
+    const reportUsage = (sessionId2, usage3) => {
+      if (usage3.breakdown === null) return;
+      const event = this.#reportUsage(sessionId2, usage3.breakdown, usage3.cost);
+      if (event !== null) context.onUsage?.(event);
+    };
     const onData = (chunk) => {
       streamBuffer += chunk;
       const lines = streamBuffer.split(/\r?\n/);
       streamBuffer = lines.pop() ?? "";
+      const previousCount = streamEvents.length;
       for (const line of lines) {
-        const parsed = parseRunEvents(line);
-        for (const event of parsed.events) {
-          streamEvents.push(event);
-          context.onOutput?.();
-        }
-        streamSessionId ??= parsed.sessionId;
+        const event = parseRunEvent(line);
+        if (event === void 0) continue;
+        streamEvents.push(event);
+        streamSessionId = sessionIdFromEvent(event) ?? streamSessionId;
+        publishEvent(event);
       }
-      const usage2 = usageFromStream(streamEvents);
-      if (usage2.breakdown !== null) {
-        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
+      if (streamEvents.length > previousCount) {
+        reportUsage(streamSessionId ?? syntheticSessionId, usageFromStream(streamEvents));
       }
     };
     const run = await this.#runner.run({
       prompt: this.#buildPrompt(context.previousFailure),
       cwd: this.#cwd,
       providerModel: this.#providerModel,
+      ...this.#options.strip === void 0 ? {} : { strip: this.#options.strip },
+      ...this.#options.lean === true ? { lean: true } : {},
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {},
       ...context.onLiveEvidence !== void 0 ? { onFirstData: context.onLiveEvidence } : {},
@@ -25282,6 +25512,10 @@ var OpenCodeEngineInvocation = class {
       signal: this.#abortController.signal
     });
     const parsedRun = parseRunEvents(run.stdout);
+    const sessionId = parsedRun.sessionId ?? syntheticSessionId;
+    for (const event of parsedRun.events.slice(streamEvents.length)) publishEvent(event);
+    const streamUsage = usageFromStream(parsedRun.events);
+    reportUsage(sessionId, streamUsage);
     const fallback = run.whitespaceLimitReached ? parsedRun.events.map(runTextPart).join("") : fallbackText(parsedRun.events);
     if (this.#abortController.signal.aborted) {
       throw attachWorkerExitStatus(
@@ -25297,10 +25531,10 @@ var OpenCodeEngineInvocation = class {
         {
           kind: "turn",
           timeoutMs,
-          threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
+          threadId: sessionId
         }
       );
-      const evidence = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, null);
+      const evidence = this.#attemptEvidence(parsedRun, null, sessionId, streamUsage);
       attachFailedTurnResult(error, {
         text: fallback,
         resolvedModel: this.#providerModel,
@@ -25359,15 +25593,20 @@ var OpenCodeEngineInvocation = class {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const { tokenUsageEvents, transcripts } = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, exportData);
+    const exportEvent = exportData === null ? null : { type: "session/export", data: exportData };
+    if (exportEvent !== null) context.onTranscriptEvent?.(exportEvent);
+    const usage2 = exportData === null ? streamUsage : { breakdown: usageFromExport(exportData), cost: exportData.info?.cost ?? null };
+    reportUsage(sessionId, usage2);
+    const { tokenUsageEvents, transcripts } = this.#attemptEvidence(parsedRun, exportEvent, sessionId, usage2);
     const reportedFailure = reportedRunFailure(parsedRun.events, exportData, text);
+    const lostBeforeAnswer = run.signal !== null && reportedFailure === null && text.trim().length === 0;
     if (run.exitCode !== 0 || reportedFailure !== null) {
       return {
         text,
         resolvedModel: this.#providerModel,
         attemptFailure: {
-          kind: "opencode-run-error",
-          message: reportedFailure === null ? openCodeFailureMessage(run, parsedRun.events) : `opencode run failed: ${reportedFailure}`
+          kind: lostBeforeAnswer ? "opencode-worker-lost" : "opencode-run-error",
+          message: reportedFailure === null ? openCodeFailureMessage(run, parsedRun.events) : `opencode run failed: ${reportedFailure.message}`
         },
         workerExit: { exitCode: run.exitCode, signal: run.signal },
         deltaText: text,
@@ -25378,7 +25617,8 @@ var OpenCodeEngineInvocation = class {
         transcripts,
         diagnostics: {
           opencode: {
-            session_export: exportDiagnostic
+            session_export: exportDiagnostic,
+            ...reportedFailure?.status === void 0 ? {} : { http_status: reportedFailure.status }
           }
         }
       };
@@ -25399,30 +25639,18 @@ var OpenCodeEngineInvocation = class {
       }
     };
   }
-  /**
-   * The spend and transcript one attempt produced: the export's account when
-   * it was read, else the stream's. Reports the spend as it does so.
-   */
-  #attemptEvidence(stdout, parsedRun, streamSessionId, exportData) {
-    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
-      breakdown: usageFromExport(exportData),
-      cost: exportData.info?.cost ?? null
-    };
-    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
-    if (usage2.breakdown !== null) {
-      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
-    }
+  #attemptEvidence(parsedRun, exportEvent, sessionId, usage2) {
+    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(sessionId, usage2.breakdown, usage2.breakdown, usage2.cost);
+    const events = exportEvent === null ? parsedRun.events : [...parsedRun.events, exportEvent];
     return {
       tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-      transcripts: [
-        {
-          filename: "transcript.opencode.jsonl",
-          format: "jsonl",
-          source: "opencode run --format json",
-          content: transcriptContent2(stdout, exportData),
-          ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
-        }
-      ]
+      transcripts: events.length === 0 ? [] : [{
+        filename: OPENCODE_TRANSCRIPT.filename,
+        format: "jsonl",
+        source: OPENCODE_TRANSCRIPT.source,
+        content: transcriptContent(events),
+        ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
+      }]
     };
   }
   async close() {
@@ -25447,18 +25675,19 @@ var OpenCodeEngineInvocation = class {
   #reportUsage(sessionId, total, cost) {
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
-      return;
+      return null;
     }
     this.#reportedUsage = total;
     const event = this.#usageEvent(sessionId, last, total, cost);
     if (event === null) {
-      return;
+      return null;
     }
     this.#onEvent?.({
       method: "thread/tokenUsage/updated",
       params: event.raw,
       receivedAt: Date.now()
     });
+    return event;
   }
   #usageEvent(sessionId, last, total, cost) {
     if (total.totalTokens === 0) {
@@ -25500,10 +25729,13 @@ var OpenCodeEngineInvocation = class {
     return lines.join("\n");
   }
 };
+function stoppedBeforeLaunch() {
+  return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
+}
 async function runProcess(file, args, cwd, env, commands, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop) {
   const startedAt = Date.now();
   if (abortSignal?.aborted) {
-    return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
+    return stoppedBeforeLaunch();
   }
   const scopes = commands === void 0 ? await createWorkerScopes() : void 0;
   const containment = commands ?? new CommandContainment(scopes);
@@ -25851,18 +26083,10 @@ function aggregateOpenCodeUsage(tokenSnapshots) {
     totalTokens
   };
 }
-function transcriptContent2(stdout, exportData) {
-  const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
-  if (exportData !== null) {
-    lines.push(JSON.stringify({ type: "session/export", data: exportData }));
-  }
-  return `${lines.join("\n")}
-`;
-}
 function openCodeFailureMessage(run, events) {
   const eventError = events.map(errorFromEvent).find((message) => message !== null);
   if (eventError !== void 0 && eventError !== null) {
-    return `opencode run failed: ${eventError}`;
+    return `opencode run failed: ${eventError.message}`;
   }
   const stderr = run.stderr.trim();
   if (stderr.length > 0) {
@@ -25893,7 +26117,7 @@ function reportedRunFailure(events, exportData, text) {
   }
   const tool = typeof lastTool.tool === "string" ? lastTool.tool : "unknown";
   const error = typeof lastTool.state.error === "string" ? lastTool.state.error : "no diagnostic reported";
-  return `tool ${tool} failed: ${error}`;
+  return { message: `tool ${tool} failed: ${error}` };
 }
 function errorFromEvent(event) {
   if (!isRecord(event)) {
@@ -25901,18 +26125,21 @@ function errorFromEvent(event) {
   }
   const error = event.error;
   if (typeof error === "string") {
-    return error;
+    return { message: error };
   }
   if (isRecord(error)) {
     const data2 = error.data;
     if (isRecord(data2) && typeof data2.message === "string") {
-      return data2.message;
+      return {
+        message: data2.message,
+        ...error.name === "APIError" && typeof data2.statusCode === "number" ? { status: data2.statusCode } : {}
+      };
     }
     if (typeof error.message === "string") {
-      return error.message;
+      return { message: error.message };
     }
     if (typeof error.name === "string") {
-      return error.name;
+      return { message: error.name };
     }
   }
   return null;
@@ -26101,14 +26328,14 @@ function describeSchemaErrors(errors) {
 }
 function findLocalReferenceCycle(schema) {
   const seenObjects = /* @__PURE__ */ new Set();
-  const visit = (value, path22) => {
+  const visit = (value, path23) => {
     if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
     seenObjects.add(value);
-    const object = value;
-    if (typeof object.$ref === "string") {
-      const seenRefs = /* @__PURE__ */ new Set([path22]);
-      let current2 = object;
-      let currentPath = path22;
+    const object2 = value;
+    if (typeof object2.$ref === "string") {
+      const seenRefs = /* @__PURE__ */ new Set([path23]);
+      let current2 = object2;
+      let currentPath = path23;
       while (typeof current2.$ref === "string") {
         const targetPath = current2.$ref;
         const target = localPointerTarget(schema, targetPath);
@@ -26119,8 +26346,8 @@ function findLocalReferenceCycle(schema) {
         currentPath = targetPath;
       }
     }
-    for (const [key, child] of Object.entries(object)) {
-      const cycle = visit(child, `${path22}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+    for (const [key, child] of Object.entries(object2)) {
+      const cycle = visit(child, `${path23}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
       if (cycle !== null) return cycle;
     }
     return null;
@@ -26145,14 +26372,14 @@ function normaliseForCodexOutputSchema(schema) {
 function assertAcyclicSchemaObject(schema) {
   const active = /* @__PURE__ */ new Map();
   const visited = /* @__PURE__ */ new Set();
-  const walk = (value, path22) => {
+  const walk = (value, path23) => {
     if (typeof value !== "object" || value === null) return;
     const firstSeenAt = active.get(value);
-    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path22, firstSeenAt);
+    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path23, firstSeenAt);
     if (visited.has(value)) return;
-    active.set(value, path22);
+    active.set(value, path23);
     for (const [key, child] of Object.entries(value)) {
-      walk(child, `${path22}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      walk(child, `${path23}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
     }
     active.delete(value);
     visited.add(value);
@@ -26166,15 +26393,15 @@ function normaliseSchemaNode(value) {
   if (Array.isArray(value)) {
     return value.map((item) => normaliseSchemaNode(item));
   }
-  const object = asJsonObject2(value);
-  if (object === null) {
+  const object2 = asJsonObject2(value);
+  if (object2 === null) {
     return value;
   }
   const normalised = {};
-  for (const [key, child] of Object.entries(object)) {
+  for (const [key, child] of Object.entries(object2)) {
     normalised[key] = cloneJsonNode(child);
   }
-  const authoredProperties = asJsonObject2(object.properties);
+  const authoredProperties = asJsonObject2(object2.properties);
   if (authoredProperties !== null) {
     const properties2 = {};
     for (const [key, propertySchema] of Object.entries(authoredProperties)) {
@@ -26182,14 +26409,14 @@ function normaliseSchemaNode(value) {
     }
     normalised.properties = properties2;
   }
-  normaliseSchemaMapKeyword(object, normalised, "$defs");
-  normaliseSchemaMapKeyword(object, normalised, "definitions");
-  if (Object.hasOwn(object, "items")) {
-    normalised.items = Array.isArray(object.items) ? object.items.map((item) => normaliseSchemaNode(item)) : normaliseSchemaNode(object.items);
+  normaliseSchemaMapKeyword(object2, normalised, "$defs");
+  normaliseSchemaMapKeyword(object2, normalised, "definitions");
+  if (Object.hasOwn(object2, "items")) {
+    normalised.items = Array.isArray(object2.items) ? object2.items.map((item) => normaliseSchemaNode(item)) : normaliseSchemaNode(object2.items);
   }
-  normaliseSchemaArrayKeyword(object, normalised, "anyOf");
-  normaliseSchemaArrayKeyword(object, normalised, "oneOf");
-  normaliseSchemaArrayKeyword(object, normalised, "allOf");
+  normaliseSchemaArrayKeyword(object2, normalised, "anyOf");
+  normaliseSchemaArrayKeyword(object2, normalised, "oneOf");
+  normaliseSchemaArrayKeyword(object2, normalised, "allOf");
   const properties = asJsonObject2(normalised.properties);
   if (properties === null) {
     return normalised;
@@ -26237,12 +26464,12 @@ function cloneJsonNode(value) {
   if (Array.isArray(value)) {
     return value.map((item) => cloneJsonNode(item));
   }
-  const object = asJsonObject2(value);
-  if (object === null) {
+  const object2 = asJsonObject2(value);
+  if (object2 === null) {
     return value;
   }
   const clone = {};
-  for (const [key, child] of Object.entries(object)) {
+  for (const [key, child] of Object.entries(object2)) {
     clone[key] = cloneJsonNode(child);
   }
   return clone;
@@ -26835,20 +27062,13 @@ var ClaudeEngineAdapter = class {
 var OpenCodeEngineAdapter = class {
   name = "opencode";
   concurrency;
-  /** A strip refuses before dispatch until its worker-boundary enforcement is established. */
   capabilities = {
-    skills: {
-      route: "unsupported",
-      detail: "worker-boundary enforcement of permission.skill=deny through OPENCODE_CONFIG_CONTENT is unproven"
-    },
-    agents: {
-      route: "unsupported",
-      detail: "worker-boundary enforcement of permission.task=deny through OPENCODE_CONFIG_CONTENT is unproven"
-    }
+    skills: { route: "config", detail: "opencode's skill permission is denied" },
+    agents: { route: "config", detail: "opencode's task permission is denied" }
   };
   leanStart = {
-    route: "unsupported",
-    detail: "no supported route withholds opencode user instructions, skills and MCP servers"
+    route: "config",
+    detail: "isolated opencode configuration with provider settings and permissions"
   };
   #scheduler;
   #cwd;
@@ -26928,7 +27148,7 @@ async function createDefaultEngineRegistry(options) {
   const grouping = parseWorkerScopeGrouping(options.workerScope ?? "worker", "workerScope");
   const ownsScopes = options.workerScopes === void 0;
   const workerScopes = options.workerScopes ?? await createWorkerScopes({ label: `${process.pid}-${randomUUID7()}` });
-  const workerCommands = new CommandContainment(workerScopes);
+  const workerCommands = new CommandContainment(workerScopes, { grouping });
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
@@ -27485,6 +27705,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const leanRoute = lean ? resolveLeanStart(engine.name, engine.leanStart) : null;
     for (const target of chain) {
       const targetEngine = this.#chainEngineFor(target);
+      this.#validateOpenCodeTarget(targetEngine, { model: target.model, effort: target.effort ?? options.effort });
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
@@ -27493,12 +27714,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
     this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
-    if (engine instanceof OpenCodeEngineAdapter) {
-      if (options.model === void 0) {
-        throw new OpenCodeModelRequiredError(engine.modelRegistry);
-      }
-      validateEngineDefaults(engine.name, options, engine.modelRegistry);
-    }
+    this.#validateOpenCodeTarget(engine, options);
     const dispatchOptions = strip.length === 0 && !lean ? options : withOptionOverrides(options, { ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} });
     const dispatchPhase = options.phase ?? this.progress.snapshot().currentPhase;
     const dispatchContext = [
@@ -27660,7 +27876,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const engine = this.#engineFor(resolved.engine);
     const strip = effectiveStrip(this.#strip, resolved.strip);
     const lean = effectiveLean(this.#lean, resolved.lean);
-    const targets = [engine, ...chain.map((entry) => this.#chainEngineFor(entry))];
+    const targets = [engine, ...chain.map((entry) => {
+      const target = this.#chainEngineFor(entry);
+      this.#validateOpenCodeTarget(target, { model: entry.model, effort: entry.effort ?? resolved.effort });
+      return target;
+    })];
     for (const target of targets) {
       if (strip.length > 0) {
         resolveStripEnforcement(target.name, target.capabilities, strip);
@@ -27669,12 +27889,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveLeanStart(target.name, target.leanStart);
       }
     }
-    if (engine instanceof OpenCodeEngineAdapter) {
-      if (resolved.model === void 0) {
-        throw new OpenCodeModelRequiredError(engine.modelRegistry);
-      }
-      validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
-    }
+    this.#validateOpenCodeTarget(engine, resolved);
     const model = resolved.model ?? null;
     return { target: name, bound: true, engine: engine.name, model, family: this.modelFamilyOf({ engine: engine.name, requested: model, served: null }) };
   }
@@ -27720,12 +27935,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /**
    * Judge a declared chain's named entries against this run's bindings
    * before anything spawns, as a dispatch settling it would: an unbound
-   * name, a target beside a literal engine or model, and a target bound to
-   * opencode throw. The script runner uses it on `defaults` chains so a
-   * static declaration fails before the body runs.
+   * name or a target beside a literal engine or model throws. The script
+   * runner uses it on `defaults` chains before the body runs.
    */
   settleFallbackChain(chain) {
-    settleChain(this.#namedTargets, chain, chain);
+    for (const target of settleChain(this.#namedTargets, chain, chain)) {
+      this.#validateOpenCodeTarget(this.#engines.get(target.engine), target);
+    }
   }
   createWorkerSession(declared) {
     let options = declared;
@@ -28526,21 +28742,21 @@ var EnsembleRuntime = class _EnsembleRuntime {
         // handed; an engine with no row has no live transcript.
         ...liveTranscript?.held === "archive" && recorder !== null ? {
           onTranscriptEvent: (event) => enqueue(async () => {
-            const path22 = await recorder.appendLiveTranscript(agentId, context.attempt, event);
-            if (path22 != null) this.progress.noteAgentTranscript(agentId, path22);
+            const path23 = await recorder.appendLiveTranscript(agentId, context.attempt, event);
+            if (path23 != null) this.progress.noteAgentTranscript(agentId, path23);
           })
         } : liveTranscript?.held === "engine" ? {
-          onTranscriptPath: (path22) => {
-            if (path22 === transcriptPath || !active) return;
-            transcriptPath = path22;
+          onTranscriptPath: (path23) => {
+            if (path23 === transcriptPath || !active) return;
+            transcriptPath = path23;
             if (recorder === null) {
-              this.progress.noteAgentTranscript(agentId, path22);
+              this.progress.noteAgentTranscript(agentId, path23);
               return;
             }
             enqueue(async () => {
               try {
-                await recorder.referenceEngineTranscript(agentId, context.attempt, path22);
-                this.progress.noteAgentTranscript(agentId, path22);
+                await recorder.referenceEngineTranscript(agentId, context.attempt, path23);
+                this.progress.noteAgentTranscript(agentId, path23);
               } catch (error) {
                 transcriptPath = void 0;
                 throw error;
@@ -29415,10 +29631,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return adapter;
   }
   /**
-   * A chain entry's engine, resolved pre-spawn: the validator has already
-   * confined entries to Codex and Claude, so an entry naming an engine this
-   * runtime does not carry (a registry built without it) is a declaration
-   * the run cannot honour, rejected before anything is paid for.
+   * Reject a chain entry naming an engine this run does not carry before
+   * anything is paid for.
    */
   #chainEngineFor(target) {
     const adapter = this.#engines.get(target.engine);
@@ -29426,6 +29640,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new FallbackTargetRejectedError(`the ${target.engine} engine is not available to this run`);
     }
     return adapter;
+  }
+  #validateOpenCodeTarget(engine, options) {
+    if (!(engine instanceof OpenCodeEngineAdapter)) return;
+    if (options.model === void 0) throw new OpenCodeModelRequiredError(engine.modelRegistry);
+    validateEngineDefaults(engine.name, {
+      model: options.model,
+      ...options.effort === void 0 ? {} : { effort: options.effort }
+    }, engine.modelRegistry);
   }
   #engineTurnOptions(options, cwd) {
     const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
@@ -29796,7 +30018,7 @@ import { createHash as createHash5 } from "node:crypto";
 import { constants as constants4 } from "node:fs";
 import { access as access4, readFile as readFile11, stat as stat7 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
-import path19 from "node:path";
+import path20 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -30533,8 +30755,8 @@ pp$8.parseTopLevel = function(node) {
     node.body.push(stmt);
   }
   if (this.inModule) {
-    for (var i2 = 0, list2 = Object.keys(this.undefinedExports); i2 < list2.length; i2 += 1) {
-      var name = list2[i2];
+    for (var i2 = 0, list3 = Object.keys(this.undefinedExports); i2 < list3.length; i2 += 1) {
+      var name = list3[i2];
       this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
     }
   }
@@ -31019,8 +31241,8 @@ pp$8.parseEmptyStatement = function(node) {
   return this.finishNode(node, "EmptyStatement");
 };
 pp$8.parseLabeledStatement = function(node, maybeName, expr, context) {
-  for (var i$1 = 0, list2 = this.labels; i$1 < list2.length; i$1 += 1) {
-    var label = list2[i$1];
+  for (var i$1 = 0, list3 = this.labels; i$1 < list3.length; i$1 += 1) {
+    var label = list3[i$1];
     if (label.name === maybeName) {
       this.raise(expr.start, "Label '" + maybeName + "' is already declared");
     }
@@ -31444,8 +31666,8 @@ pp$8.parseExport = function(node, exports$1) {
         node.attributes = this.parseWithClause();
       }
     } else {
-      for (var i2 = 0, list2 = node.specifiers; i2 < list2.length; i2 += 1) {
-        var spec = list2[i2];
+      for (var i2 = 0, list3 = node.specifiers; i2 < list3.length; i2 += 1) {
+        var spec = list3[i2];
         this.checkUnreserved(spec.local);
         this.checkLocalExport(spec.local);
         if (spec.local.type === "Literal") {
@@ -31499,8 +31721,8 @@ pp$8.checkPatternExport = function(exports$1, pat) {
   if (type === "Identifier") {
     this.checkExport(exports$1, pat, pat.start);
   } else if (type === "ObjectPattern") {
-    for (var i2 = 0, list2 = pat.properties; i2 < list2.length; i2 += 1) {
-      var prop = list2[i2];
+    for (var i2 = 0, list3 = pat.properties; i2 < list3.length; i2 += 1) {
+      var prop = list3[i2];
       this.checkPatternExport(exports$1, prop);
     }
   } else if (type === "ArrayPattern") {
@@ -31522,8 +31744,8 @@ pp$8.checkVariableExport = function(exports$1, decls) {
   if (!exports$1) {
     return;
   }
-  for (var i2 = 0, list2 = decls; i2 < list2.length; i2 += 1) {
-    var decl = list2[i2];
+  for (var i2 = 0, list3 = decls; i2 < list3.length; i2 += 1) {
+    var decl = list3[i2];
     this.checkPatternExport(exports$1, decl.id);
   }
 };
@@ -31700,8 +31922,8 @@ pp$7.toAssignable = function(node, isBinding, refDestructuringErrors) {
         if (refDestructuringErrors) {
           this.checkPatternErrors(refDestructuringErrors, true);
         }
-        for (var i2 = 0, list2 = node.properties; i2 < list2.length; i2 += 1) {
-          var prop = list2[i2];
+        for (var i2 = 0, list3 = node.properties; i2 < list3.length; i2 += 1) {
+          var prop = list3[i2];
           this.toAssignable(prop, isBinding);
           if (prop.type === "RestElement" && (prop.argument.type === "ArrayPattern" || prop.argument.type === "ObjectPattern")) {
             this.raise(prop.argument.start, "Unexpected token");
@@ -31888,8 +32110,8 @@ pp$7.checkLValPattern = function(expr, bindingType, checkClashes) {
   if (bindingType === void 0) bindingType = BIND_NONE;
   switch (expr.type) {
     case "ObjectPattern":
-      for (var i2 = 0, list2 = expr.properties; i2 < list2.length; i2 += 1) {
-        var prop = list2[i2];
+      for (var i2 = 0, list3 = expr.properties; i2 < list3.length; i2 += 1) {
+        var prop = list3[i2];
         this.checkLValInnerPattern(prop, bindingType, checkClashes);
       }
       break;
@@ -32975,8 +33197,8 @@ pp$5.parseFunctionBody = function(node, isArrowFunction, isMethod, forInit) {
   this.exitScope();
 };
 pp$5.isSimpleParamList = function(params) {
-  for (var i2 = 0, list2 = params; i2 < list2.length; i2 += 1) {
-    var param = list2[i2];
+  for (var i2 = 0, list3 = params; i2 < list3.length; i2 += 1) {
+    var param = list3[i2];
     if (param.type !== "Identifier") {
       return false;
     }
@@ -32985,8 +33207,8 @@ pp$5.isSimpleParamList = function(params) {
 };
 pp$5.checkParams = function(node, allowDuplicates) {
   var nameHash = /* @__PURE__ */ Object.create(null);
-  for (var i2 = 0, list2 = node.params; i2 < list2.length; i2 += 1) {
-    var param = list2[i2];
+  for (var i2 = 0, list3 = node.params; i2 < list3.length; i2 += 1) {
+    var param = list3[i2];
     this.checkLValInnerPattern(param, BIND_VAR, allowDuplicates ? null : nameHash);
   }
 };
@@ -33313,13 +33535,13 @@ function buildUnicodeData(ecmaVersion2) {
   d.nonBinary.sc = d.nonBinary.Script;
   d.nonBinary.scx = d.nonBinary.Script_Extensions;
 }
-for (i = 0, list = [9, 10, 11, 12, 13, 14]; i < list.length; i += 1) {
-  ecmaVersion = list[i];
+for (i = 0, list2 = [9, 10, 11, 12, 13, 14]; i < list2.length; i += 1) {
+  ecmaVersion = list2[i];
   buildUnicodeData(ecmaVersion);
 }
 var ecmaVersion;
 var i;
-var list;
+var list2;
 var pp$1 = Parser.prototype;
 var BranchID = function BranchID2(parent, base) {
   this.parent = parent;
@@ -33427,8 +33649,8 @@ RegExpValidationState.prototype.eat = function eat(ch, forceU) {
 RegExpValidationState.prototype.eatChars = function eatChars(chs, forceU) {
   if (forceU === void 0) forceU = false;
   var pos = this.pos;
-  for (var i2 = 0, list2 = chs; i2 < list2.length; i2 += 1) {
-    var ch = list2[i2];
+  for (var i2 = 0, list3 = chs; i2 < list3.length; i2 += 1) {
+    var ch = list3[i2];
     var current2 = this.at(pos, forceU);
     if (current2 === -1 || current2 !== ch) {
       return false;
@@ -33506,8 +33728,8 @@ pp$1.regexp_pattern = function(state) {
   if (state.maxBackReference > state.numCapturingParens) {
     state.raise("Invalid escape");
   }
-  for (var i2 = 0, list2 = state.backReferenceNames; i2 < list2.length; i2 += 1) {
-    var name = list2[i2];
+  for (var i2 = 0, list3 = state.backReferenceNames; i2 < list3.length; i2 += 1) {
+    var name = list3[i2];
     if (!state.groupNames[name]) {
       state.raise("Invalid named capture referenced");
     }
@@ -33837,8 +34059,8 @@ pp$1.regexp_groupSpecifier = function(state) {
     var known = state.groupNames[state.lastStringValue];
     if (known) {
       if (trackDisjunction) {
-        for (var i2 = 0, list2 = known; i2 < list2.length; i2 += 1) {
-          var altID = list2[i2];
+        for (var i2 = 0, list3 = known; i2 < list3.length; i2 += 1) {
+          var altID = list3[i2];
           if (!altID.separatedFrom(state.branchID)) {
             state.raise("Duplicate capture group name");
           }
@@ -35496,7 +35718,7 @@ var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 import { constants as constants3 } from "node:fs";
 import { access as access3, readdir as readdir8, readFile as readFile10 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
-import path18 from "node:path";
+import path19 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
 };
 var NestedWorkflowError = class extends WorkflowResolutionError {
@@ -35505,10 +35727,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path18.join(homedir4(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path19.join(homedir4(), ".local", "share");
   return {
-    project: path18.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path18.join(dataHome2, "ensemble", "workflows")
+    project: path19.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path19.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -35518,7 +35740,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path18.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path19.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access3(scriptPath, constants3.R_OK);
   } catch (error) {
@@ -35591,7 +35813,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path18.join(dir, entry.name);
+    const scriptPath = path19.join(dir, entry.name);
     try {
       const source = await readFile10(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
@@ -35656,14 +35878,14 @@ function assertJsonSerialisable(value, label, pathRoot) {
     throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
   }
 }
-function findUnserialisable(value, path22, ancestors, honourToJson) {
+function findUnserialisable(value, path23, ancestors, honourToJson) {
   switch (typeof value) {
     case "function":
-      return `${path22} is a function`;
+      return `${path23} is a function`;
     case "symbol":
-      return `${path22} is a symbol`;
+      return `${path23} is a symbol`;
     case "bigint":
-      return `${path22} is a BigInt`;
+      return `${path23} is a BigInt`;
     case "object":
       break;
     default:
@@ -35674,16 +35896,16 @@ function findUnserialisable(value, path22, ancestors, honourToJson) {
   }
   const toJson = value.toJSON;
   if (honourToJson && typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path22, ancestors, false);
+    return findUnserialisable(toJson.call(value), path23, ancestors, false);
   }
   if (ancestors.has(value)) {
-    return `${path22} closes a cycle`;
+    return `${path23} closes a cycle`;
   }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path22}[${index}]`, ancestors, true);
+        const offence = findUnserialisable(value[index], `${path23}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -35691,7 +35913,7 @@ function findUnserialisable(value, path22, ancestors, honourToJson) {
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path22}.${key}`, ancestors, true);
+      const offence = findUnserialisable(entry, `${path23}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -35738,7 +35960,7 @@ async function runWorkflowScript(options) {
   for (const [engine, block] of Object.entries(defaults ?? {})) {
     if (!block?.fallback || options.runtime.settleFallbackChain === void 0) continue;
     try {
-      options.runtime.settleFallbackChain(block.fallback);
+      options.runtime.settleFallbackChain(withDeclaredModels(block.fallback, (name) => defaults?.[name]?.model));
     } catch (error) {
       if (error instanceof AgentOptionRejectedError) {
         throw new WorkflowScriptError(`Workflow defaults.${engine}.fallback: ${error.message}`);
@@ -35746,8 +35968,8 @@ async function runWorkflowScript(options) {
       throw error;
     }
   }
-  const resolvedFilename = path19.resolve(options.filename);
-  const cwd = options.cwd ?? path19.dirname(resolvedFilename);
+  const resolvedFilename = path20.resolve(options.filename);
+  const cwd = options.cwd ?? path20.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -36926,9 +37148,9 @@ async function runEnsembleCli(argv, options = {}) {
     return 2;
   }
   const configuredStatus = ambientSettings.statusDir;
-  if (configuredStatus.value !== null && configuredStatus.layer !== "default" && !path20.isAbsolute(configuredStatus.value)) {
+  if (configuredStatus.value !== null && configuredStatus.layer !== "default" && !path21.isAbsolute(configuredStatus.value)) {
     const setting = configuredStatus.layer === "env" ? "ENSEMBLE_STATUS_DIR" : `status.dir in ${JSON.stringify(ambientSettings.configFile)}`;
-    stderr.write(`[status] ${setting}: path ${JSON.stringify(configuredStatus.value)} resolves to ${JSON.stringify(path20.resolve(cwd, configuredStatus.value))} against cwd ${JSON.stringify(cwd)}; use an absolute path to choose a directory independently of cwd
+    stderr.write(`[status] ${setting}: path ${JSON.stringify(configuredStatus.value)} resolves to ${JSON.stringify(path21.resolve(cwd, configuredStatus.value))} against cwd ${JSON.stringify(cwd)}; use an absolute path to choose a directory independently of cwd
 `);
   }
   if (invocation.kind === "workflow" && invocation.scriptArg === void 0) {
@@ -36936,9 +37158,9 @@ async function runEnsembleCli(argv, options = {}) {
     return 2;
   }
   const configuredRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
-  const runRecordDir = configuredRecordDir ? path20.resolve(configuredRecordDir) : configuredRecordDir;
+  const runRecordDir = configuredRecordDir ? path21.resolve(configuredRecordDir) : configuredRecordDir;
   const configuredSentinelDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
-  const sentinelStoreDir = configuredSentinelDir ? path20.resolve(configuredSentinelDir) : configuredSentinelDir;
+  const sentinelStoreDir = configuredSentinelDir ? path21.resolve(configuredSentinelDir) : configuredSentinelDir;
   let prepared;
   try {
     prepared = await prepareRun(invocation, cwd, program);
@@ -37016,7 +37238,7 @@ async function runEnsembleCli(argv, options = {}) {
     if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
         progress,
-        dir: path20.resolve(cwd, statusDir),
+        dir: path21.resolve(cwd, statusDir),
         createDirectory: options.statusDir === void 0 && ambientSettings.statusDir.layer === "default",
         onError: (error) => {
           stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
@@ -37429,7 +37651,7 @@ function workflowName(meta) {
 async function prepareRun(invocation, cwd, program) {
   if (invocation.kind === "agent") {
     if (invocation.agentOptions.cwd !== void 0) {
-      const requestedCwd = path20.resolve(cwd, invocation.agentOptions.cwd);
+      const requestedCwd = path21.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
         isDirectory2 = (await stat8(requestedCwd)).isDirectory();
@@ -37441,7 +37663,7 @@ async function prepareRun(invocation, cwd, program) {
       }
     }
     return {
-      workflowPath: path20.join(cwd, "<ensemble-agent>"),
+      workflowPath: path21.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
       runnerArgs: [],
       recordArgs: {
@@ -37453,7 +37675,7 @@ async function prepareRun(invocation, cwd, program) {
   if (invocation.scriptArg === void 0) {
     throw new Error("workflow invocation has no script path");
   }
-  const workflowPath = path20.resolve(cwd, invocation.scriptArg);
+  const workflowPath = path21.resolve(cwd, invocation.scriptArg);
   await checkWorkflowScriptPath(workflowPath);
   return {
     workflowPath,
@@ -37469,7 +37691,7 @@ function launcherResourceRequirements(recordDir, injectedRecordDir, settings, en
   const setting = injectedRecordDir ? "the runRecordDir option" : layer === "config-file" ? `run_record.dir in ${settings.configFile}` : RUN_RECORD_DIR_ENV;
   const directory = !injectedRecordDir && layer === "default" ? defaultDirectory(
     { rule: "$XDG_DATA_HOME/ensemble (else ~/.local/share/ensemble)", movedBy: RUN_RECORD_DIR_ENV },
-    env.XDG_DATA_HOME ? readSetting("XDG_DATA_HOME", env.XDG_DATA_HOME, process.cwd()) : path20.join(homedir5(), ".local", "share"),
+    env.XDG_DATA_HOME ? readSetting("XDG_DATA_HOME", env.XDG_DATA_HOME, process.cwd()) : path21.join(homedir5(), ".local", "share"),
     "ensemble"
   ) : declaredDirectory(readSetting(setting, recordDir, process.cwd()));
   return [{ owner: "launcher", role, access: "create-entries", ...directory }];
@@ -37741,7 +37963,7 @@ var WORKFLOW_TUNING_OPTIONS = {
 async function parseWorkflowInvocation(argv, cwd, program) {
   if (argv[0] === "run") {
     try {
-      await stat8(path20.resolve(cwd, "run"));
+      await stat8(path21.resolve(cwd, "run"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       throw new CliUsageError(`${program}: "run" was taken as the script path; there is no run subcommand. Use: ${program} [run options] <script.js> [args...]`);
@@ -37835,7 +38057,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
       assertCompilableSchema(schema);
     } catch (error) {
       if (!(error instanceof InvalidAgentSchemaError)) throw error;
-      const source = parsed.values.schema.startsWith("@") ? path20.resolve(cwd, parsed.values.schema.slice(1)) : "the inline argument";
+      const source = parsed.values.schema.startsWith("@") ? path21.resolve(cwd, parsed.values.schema.slice(1)) : "the inline argument";
       throw new CliUsageError(`--schema from ${source}: ${error.message}`);
     }
   }
@@ -38123,7 +38345,7 @@ async function parseJsonValue(value, cwd, flagName) {
     if (filename.length === 0) {
       throw new CliUsageError(`${flagName} @file requires a file path`);
     }
-    const filePath = path20.resolve(cwd, filename);
+    const filePath = path21.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
       source = await readFile12(filePath, "utf8");
@@ -38369,7 +38591,7 @@ function programNameFor(scriptPath) {
   if (scriptPath === void 0 || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
-  const absolutePath = path20.resolve(scriptPath);
+  const absolutePath = path21.resolve(scriptPath);
   const quotedPath = /^[a-zA-Z0-9_./:@%+=,-]+$/.test(absolutePath) ? absolutePath : quoteShellArgument(absolutePath);
   return /\.(?:mjs|cjs|js)$/.test(absolutePath) ? `node ${quotedPath}` : quotedPath;
 }
@@ -38499,7 +38721,7 @@ function isError(error) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path21.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path22.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
 function flushed(stream) {
   return new Promise((resolve) => {
     stream.write("", () => resolve());

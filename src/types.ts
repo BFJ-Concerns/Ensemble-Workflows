@@ -75,8 +75,7 @@ export interface AgentOptions {
    * availability — allowance exhausted, provider overload past its
    * own retry, a substrate that is dead or cannot start. Output failures
    * never advance it. Each entry names its engine and model; an omitted
-   * effort takes the call's own. Codex or Claude in any position; an
-   * opencode entry is rejected pre-spawn. Set false to disable inherited chains.
+   * effort takes the call's own. Set false to disable inherited chains.
    */
   fallback?: FallbackTarget[] | false;
   cwd?: string;

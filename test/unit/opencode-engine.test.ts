@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import { CommandContainment } from "../../src/contained-command.js";
-import { createWorkerScopes, NoWorkerScopes } from "../../src/worker-scopes.js";
+import { createWorkerScopes, NoWorkerScopes, waitUntil } from "../../src/worker-scopes.js";
 import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
 import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
 import { testOpenCodeModelRegistry, testOpenCodeModels } from "../fixtures/opencode/models.js";
@@ -16,7 +16,6 @@ import { testOpenCodeModelRegistry, testOpenCodeModels } from "../fixtures/openc
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
   BudgetExceededError,
-  CapabilityStripUnsupportedError,
   EngineShutdownError,
   InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
@@ -25,6 +24,8 @@ import {
 import { RunRecordWriter } from "../../src/run-record.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { runWorkflowScript } from "../../src/script-runner.js";
+import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
 
@@ -924,37 +925,110 @@ test("a statically declared opencode effort outside the model's variants fails b
   );
 });
 
-test("opencode refuses unproven capability strips before the runner starts", async () => {
-  // Measured opencode 1.18.4 accepts OPENCODE_CONFIG_CONTENT as a merge
-  // overlay, including these deny keys. Config resolution is not a worker
-  // proof, however: until a live worker demonstrates that each deny takes
-  // effect, the adapter must reject both capability names before its runner
-  // sees a process rather than silently dispatching an unrestricted worker.
-  for (const capability of ["skills", "agents"] as const) {
-    const runner = new FakeOpenCodeRunner();
+test("opencode dispatches the effective strip and lean requests and records both", async () => {
+  const runner = new FakeOpenCodeRunner();
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry })]),
+    defaultMaxAttempts: 1,
+    strip: ["skills"]
+  });
+  try {
+    assert.equal(await runtime.agent("restricted", {
+      engine: "opencode", model: "glm-5.2", strip: ["agents"], lean: true
+    }), "final answer");
+    assert.deepEqual(runner.runs[0]?.strip, ["skills", "agents"]);
+    assert.equal(runner.runs[0]?.lean, true);
+    const record = runtime.lastAgentRecord();
+    assert.equal(record?.strip?.enforcement.skills?.route, "config");
+    assert.equal(record?.strip?.enforcement.agents?.route, "config");
+    assert.equal(record?.lean?.route, "config");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("opencode accepts literal and named fallback targets with registered models", async () => {
+  const claude = new ChainEngine("claude", [claudeRefusal(429, null), claudeRefusal(429, null)]);
+  const runner = new FakeOpenCodeRunner();
+  const modelRegistry = createOpenCodeModelRegistry(testOpenCodeModels.map((model) => ({ ...model, variants: ["fixture-variant"] })));
+  const opencode = new OpenCodeEngineAdapter({ runner, modelRegistry });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([claude, opencode]),
+    defaultMaxAttempts: 1,
+    namedTargets: { source: "fixture", bindings: { backup: { engine: "opencode" } } }
+  });
+  try {
+    await assert.rejects(runtime.agent("unregistered", {
+      engine: "claude", fallback: [{ engine: "opencode", model: "unregistered" }]
+    }), OpenCodeModelNotRegisteredError);
+    assert.equal(claude.dispatches.length, 0);
+
+    assert.equal(await runtime.agent("literal", {
+      engine: "claude", fallback: [{ engine: "opencode", model: "glm-5.2", effort: "fixture-variant" }]
+    }), "final answer");
+    assert.equal(runtime.lastAgentRecord()?.attempts[1]?.target.engine, "opencode");
+
+    const completed = await runWorkflowScript({
+      filename: "named-opencode-fallback.js",
+      runtime,
+      log: () => undefined,
+      source: `
+        export const meta = { name: "named-opencode-fallback" };
+        export const defaults = {
+          claude: { fallback: [{ target: "backup", effort: "fixture-variant" }] },
+          opencode: { model: "glm-5.2" }
+        };
+        return await agent("named", { engine: "claude" });
+      `
+    });
+    assert.equal(completed.result, "final answer");
+    assert.equal(runtime.lastAgentRecord()?.attempts[1]?.namedTarget, "backup");
+    assert.deepEqual(runner.runs.map((run) => run.variant), ["fixture-variant", "fixture-variant"]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+const unavailableOpenCodeRuns: Array<{ rule: string; run: Partial<OpenCodeRunResult> }> = [
+  {
+    rule: "opencode.rate-limit",
+    run: {
+      exitCode: 1,
+      stdout: JSON.stringify({
+        type: "error", sessionID: "ses_refused",
+        error: { name: "APIError", data: { statusCode: 429, message: "fixture refusing requests" } }
+      })
+    }
+  },
+  { rule: "opencode.worker-lost", run: { exitCode: null, signal: "SIGKILL", stdout: "" } }
+];
+
+for (const { rule, run } of unavailableOpenCodeRuns) {
+  test(`an opencode failure classed as ${rule} advances a same-engine fallback`, async () => {
+    const runner = new FakeOpenCodeRunner({
+      runResults: [run],
+      exportText: null,
+      runResult: {
+        stdout: JSON.stringify({ type: "text", part: { type: "text", text: "backup answered" } })
+      }
+    });
     const runtime = new EnsembleRuntime({
       engines: new EngineRegistry([new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry })]),
       defaultMaxAttempts: 1
     });
     try {
-      await assert.rejects(
-        () => runtime.agent("must not start", { engine: "opencode", model: "glm-5.2", strip: [capability] }),
-        (error: unknown) => {
-          assert.ok(error instanceof CapabilityStripUnsupportedError);
-          assert.match(error.message, new RegExp(`cannot strip the "${capability}" capability`));
-          assert.match(error.message, /OPENCODE_CONFIG_CONTENT/);
-          assert.match(error.message, /worker-boundary enforcement .* is unproven/);
-          assert.match(error.message, /Remove the strip request, or use an engine that can enforce it/);
-          assert.doesNotMatch(error.message, /measured|2026-08-27|1\.18\.4/);
-          return true;
-        }
-      );
-      assert.equal(runner.runs.length, 0);
+      assert.equal(await runtime.agent("fallback", {
+        engine: "opencode", model: "glm-5.2", fallback: [{ engine: "opencode", model: "glm-5.2" }]
+      }), "backup answered");
+      assert.equal(runner.runs.length, 2);
+      assert.deepEqual(runtime.lastAgentRecord()?.attempts[0]?.classification, {
+        class: "availability", rule
+      });
     } finally {
       await runtime.close();
     }
-  }
-});
+  });
+}
 
 test("opencode run parses final text, usage, transcript, and effort variant", async () => {
   const runner = new FakeOpenCodeRunner();
@@ -1004,7 +1078,7 @@ test("opencode run parses final text, usage, transcript, and effort variant", as
   assert.match(result.transcripts?.[0]?.content ?? "", /session\/export/);
 });
 
-test("opencode publishes streamed usage while its worker is still running", async () => {
+test("opencode publishes streamed usage and preserves the live transcript at settlement", async () => {
   let releaseRunner: () => void;
   const runnerHeld = new Promise<void>((resolve) => {
     releaseRunner = resolve;
@@ -1024,9 +1098,11 @@ test("opencode publishes streamed usage while its worker is still running", asyn
       }
     })
   ].join("\n");
+  const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-live-"));
+  const finalEvent = JSON.stringify({ type: "text", part: { type: "text", text: "stream ending" } });
   const runner = new FakeOpenCodeRunner({
-    runResult: { stdout: `${stream}\n` },
-    onDataChunks: [`${stream}\n`],
+    runResult: { stdout: `${stream}\n${finalEvent}` },
+    onDataChunks: [stream.slice(0, 13), `${stream.slice(13)}\n${finalEvent}`],
     beforeResolve: async () => {
       liveChunksDelivered();
       await runnerHeld;
@@ -1042,6 +1118,19 @@ test("opencode publishes streamed usage while its worker is still running", asyn
     engines: new EngineRegistry([adapter]),
     defaultMaxAttempts: 1
   });
+  const writer = await RunRecordWriter.start({
+    storeDir: cwd,
+    cwd,
+    runUuid: "opencode-live",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'opencode-live' };",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+  const agentJsonPath = path.join(writer.archiveDir, "agents/000001/agent.json");
+  const relativePath = "agents/000001/attempt-001-1-transcript.opencode.jsonl";
+  const transcriptPath = path.join(writer.archiveDir, relativePath);
   let settled = false;
   const result = runtime.agent("report live usage", { engine: "opencode", model: "glm-5.2" }).then((value) => {
     settled = true;
@@ -1050,16 +1139,37 @@ test("opencode publishes streamed usage while its worker is still running", asyn
 
   try {
     await liveChunksDeliveredPromise;
+    assert.equal(await waitUntil(() => runtime!.progress.snapshot().agents[0]?.transcript === relativePath, 5_000), true);
     const snapshot = runtime.progress.snapshot();
+    const inProgress = JSON.parse(await readFile(agentJsonPath, "utf8"));
+    assert.equal(inProgress.current_attempt.transcript, relativePath);
+    assert.equal(inProgress.current_attempt.attempt, 1);
+    assert.equal(inProgress.current_attempt.resolved_model, runner.runs[0]?.providerModel);
+    assert.equal(await waitUntil(async () => (await readFile(transcriptPath, "utf8")) === `${stream}\n`, 5_000), true);
+    assert.equal(snapshot.agents[0]?.state, "running");
+    assert.equal(snapshot.agents[0]?.attempt, 1);
+    assert.equal(snapshot.agents[0]?.spent, 10);
+    assert.ok(snapshot.agents[0]?.lastEvidenceAtMs);
     assert.equal(settled, false);
     assert.equal(snapshot.state, "running");
     assert.equal(snapshot.engines.opencode?.active, 1);
     assert.equal(snapshot.engines.opencode?.done, 0);
     assert.equal(snapshot.engines.opencode?.spent, 10);
+
+    releaseRunner!();
+    assert.equal(await result, "final answer");
+    const settledRecord = JSON.parse(await readFile(agentJsonPath, "utf8"));
+    assert.equal(settledRecord.current_attempt, undefined);
+    assert.equal(settledRecord.transcripts[0]?.path, relativePath);
+    const lines = (await readFile(transcriptPath, "utf8")).trimEnd().split("\n");
+    assert.equal(lines.length, 4);
+    assert.equal(lines[2], finalEvent);
+    assert.equal(JSON.parse(lines[3]!).type, "session/export");
   } finally {
     releaseRunner!();
-    await result;
+    await result.catch(() => undefined);
     await runtime.close();
+    await rm(cwd, { recursive: true, force: true });
   }
 });
 

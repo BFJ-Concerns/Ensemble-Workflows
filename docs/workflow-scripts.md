@@ -97,13 +97,14 @@ See [Failures](#failures). A Claude call with no `model` is flagged on stderr.
 ### Fallback chains
 
 `fallback` declares an ordered chain of other targets for a call —
-`[{ engine, model, effort? }, …]`, each a Codex or Claude target, or
+`[{ engine, model, effort? }, …]`, each a Codex, Claude or opencode target, or
 `{ target, effort? }` naming a [named target](#named-targets). A named entry
 takes its binding's engine and model — never the binding's own chain — and a
 binding without a model takes the script's `defaults` model for that engine,
-else the engine's own default. Ensemble
-moves the call to the next target when the current one fails for
-**availability**: the allowance is exhausted, the provider is overloaded past
+else the engine's own default where it has one. An opencode entry must
+resolve to a registered model, and its effort may name a variant that model
+declares. Ensemble moves the call to the next target on an **availability**
+failure: the allowance is exhausted, the provider is overloaded past
 its own retries, the engine refused the call for want of a valid sign-in,
 the engine's process died or never started, or the launch environment denied
 a resource the engine needs. Output failures (empty, unparseable, or off-schema
@@ -140,12 +141,13 @@ call's own chain still takes precedence over `fallback: false` in defaults.
   use another engine for recovery from its death.
 - A chain whose every target refuses fails with the last target's own
   failure.
-- An empty or malformed chain, an opencode entry (named or literal), or an
-  engine the run does not have throws `FallbackTargetRejectedError` before any
-  worker spawns. A named entry the configuration does not bind, or one naming
-  a `target` beside an `engine` or `model`, throws `NamedTargetRejectedError`;
-  in a `defaults` chain, either fails the run before the script body runs.
-  An opencode call may declare a chain of Codex and Claude targets.
+- An empty or malformed chain, or an engine the run does not have, throws
+  `FallbackTargetRejectedError` before any worker spawns. A named entry the
+  configuration does not bind, or one naming a `target` beside an `engine`
+  or `model`, throws `NamedTargetRejectedError`. Static `defaults` chains
+  are checked before the script body runs.
+- An opencode entry can be used in a one-shot call. A held session's chain
+  requires every entry to support `session()`.
 
 Every step is a dispatch Ensemble makes and records itself. The run record
 shows each attempt's target and which entry answered, and stderr says when a
@@ -475,9 +477,9 @@ lists the accepted type names, and invalid `properties` asks for a JSON object.
 | `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` |
 | `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
 | `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess |
-| `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Not supported: throws before the worker spawns |
-| `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Not supported: throws before the worker spawns |
-| `fallback` entry | Yes | Yes | No |
+| `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Enforced through permission deny rules |
+| `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Isolated configuration with provider settings and permissions |
+| `fallback` entry | Yes | Yes | Yes, for one-shot calls |
 | `session()` | Yes | Yes | No: throws before the worker spawns |
 
 Effort resolves for each dispatch target, including a fallback entry and a
@@ -576,11 +578,11 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   The agent record's enforcement detail names the deny rules and `env`
   variables, the Claude Code version that was probed, and which tools were
   denied or left in place. For `skills`, it also states this follow-up boundary.
-- **opencode** rejects any strip before the worker spawns. Its permission
-  overlay was inspected on opencode 1.18.4: `OPENCODE_CONFIG_CONTENT` merged
-  `permission.skill=deny` and `permission.task=deny`, but the live workers
-  timed out before demonstrating that these denies took effect. This is
-  historical configuration evidence, not proof about the installed version.
+- **opencode** denies `skill` for `skills` and `task` for `agents`.
+  Ensemble checks the resolved global and agent permission rules before it
+  sends the prompt. If a rule overrides a deny, or an active external plugin
+  can change the permissions after configuration loads, the dispatch
+  refuses the strip.
 
 Each agent record lists the requested strips and how each was enforced.
 
@@ -599,9 +601,15 @@ call cannot lift a run-wide `--lean` by setting `lean: false`.
   authentication, permissions and Ensemble's per-dispatch settings remain
   enabled. This route is measured on Claude Code 2.1.322. Capability strips
   prepare against the same context mode as their worker.
-- **Codex** and **opencode** have no supported route: a lean request refuses
-  before a worker spawns, naming the engine. Each fallback target is checked
-  before the first dispatch too, so a chain cannot silently lose lean mode.
+- **opencode** uses an isolated configuration with the resolved provider
+  settings and permissions, the original data home and built-in tools.
+  It disables external plugins and skips discovery of project configuration
+  and instructions. Ensemble checks that the registered model is still
+  listed and refuses the dispatch if the isolated configuration still loads
+  instructions, skills or MCP servers. A provider supplied only by an
+  external plugin may therefore be unavailable to a lean worker.
+- **Codex** refuses lean requests before dispatch. Each fallback target is
+  checked for lean support before the first dispatch.
 
 Each agent record carries `lean` naming the route the dispatching engine
 used, or `null` when no lean start was requested.
@@ -860,11 +868,11 @@ and keep the worker's partial text, exit status, and the engine's diagnostic
 on the attempt record. A call whose deadline should end it outright sets
 `maxAttempts: 1`.
 
-Each opencode run and session-export command starts inside its own run-owned
-systemd scope before it can start descendants. Cancellation, an attempt deadline,
-and the command's own exit stop that containment, including shell commands
-that start another session or become reparented. Stop uses SIGTERM, a two-second
-grace, then SIGKILL with three seconds to confirm the scope is empty. Output
+Opencode commands enter the run's containment before they can start
+descendants. Cancellation, an attempt deadline, and the command's own exit
+stop that command's process tree, including shell commands that start
+another session or become reparented. Stop uses SIGTERM, a two-second grace,
+then SIGKILL with three seconds to confirm the containment is empty. Output
 pipes drain for at most one further second after the stop attempt; a descendant
 holding a pipe cannot indefinitely delay the run's teardown report.
 

@@ -283,7 +283,7 @@ test("named chain-entry mistakes are refused before any worker spawns", async ()
     { fallback: [{ target: "revewer" }], pattern: /fallback entry 0: target "revewer" is not bound: \/machine\/ensemble\/config\.json binds "doer", "local"/ },
     { fallback: [{ target: "doer", engine: "codex" }], pattern: /fallback entry 0 names target "doer" beside engine "codex".*\/machine\/ensemble\/config\.json/ },
     { fallback: [{ target: "doer", model: "x" }], pattern: /fallback entry 0 names target "doer" beside model "x"/ },
-    { fallback: [{ target: "local" }], pattern: /entry 0 names target "local", bound to the opencode engine/ },
+    { fallback: [{ target: "local" }], pattern: /the opencode engine is not available to this run/ },
     { fallback: [{ target: "" }], pattern: /entry 0 target must be a non-empty string/ },
     { fallback: [{ target: "doer", effort: "extreme" }], pattern: /entry 0 effort must be one of/ }
   ];
@@ -521,10 +521,6 @@ test("machine and library targets share validation before workers start", async 
       {
         targets: { doer: { engine: "codex", fallback: [{ target: "back", engine: "claude", model: "x" }] }, back: { engine: "codex" } },
         pattern: /targets\.doer\.fallback in .*config\.json: entry 0 names target "back" beside a literal engine or model/
-      },
-      {
-        targets: { doer: { engine: "codex", fallback: [{ target: "local" }] }, local: { engine: "opencode", model: "glm" } },
-        pattern: /targets\.doer\.fallback in .*config\.json: entry 0 names target "local", bound to the opencode engine/
       }
     ];
     for (const entry of refusals) {

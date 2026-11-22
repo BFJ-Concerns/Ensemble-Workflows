@@ -92,7 +92,7 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
     return failure;
   }
   const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
-  const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status;
+  const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status ?? openCodeHttpStatus(evidence);
   // Substrate failures may quote credential errors from recent stderr.
   // Words alone must not override availability. An explicit provider 401
   // identifies authentication even when retry-promise bounds wrap the error.
@@ -237,6 +237,7 @@ const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
 // The opencode runner's failure kinds: a run that exited in error, and the
 // harness's own per-turn deadline ending the subprocess.
 const OPENCODE_FAILURE_KINDS = new Map<string, FailureClassification>([
+  ["opencode-worker-lost", { class: "availability", rule: "opencode.worker-lost" }],
   ["opencode-run-error", { class: "unclassified", rule: "opencode.run-error" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "opencode.deadline" }]
 ]);
@@ -287,9 +288,23 @@ export function classifyAttemptFailure(evidence: AttemptFailureEvidence): Failur
       return classifyCodexFailure(kind, evidence.appServerDiagnostic);
     case "claude":
       return classifyClaudeFailure(kind, evidence.diagnostics);
-    case "opencode":
+    case "opencode": {
+      const status = openCodeHttpStatus(evidence);
+      if (status === 401) return { class: "availability", rule: "opencode.authentication-failure" };
+      if (status === 402) return { class: "availability", rule: "opencode.usage-limit" };
+      if (status === 429) return { class: "availability", rule: "opencode.rate-limit" };
+      if (status !== undefined && status >= 500 && status <= 599) {
+        return { class: "availability", rule: "opencode.provider-internal-error" };
+      }
       return OPENCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
+    }
   }
+}
+
+function openCodeHttpStatus(evidence: AttemptFailureEvidence): number | undefined {
+  if (evidence.engine !== "opencode" || evidence.failure.kind !== "opencode-run-error") return undefined;
+  const status = objectField(evidence.diagnostics?.opencode, "http_status");
+  return typeof status === "number" ? status : undefined;
 }
 
 function classifyCodexFailure(

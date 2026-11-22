@@ -1,4 +1,5 @@
-import { FallbackTargetRejectedError, NamedTargetRejectedError } from "./errors.js";
+import { assertValidFallbackEffort } from "./engine-option-validation.js";
+import { NamedTargetRejectedError } from "./errors.js";
 import { handOffFallbackSource } from "./fallback-source.js";
 import { withOptionOverrides } from "./option-overrides.js";
 
@@ -156,8 +157,7 @@ export function withDeclaredModels<T extends object>(options: T, lookup: (engine
  * engine (as handed off on `passed`), else the engine's own default.
  *
  * Refused before anything spawns: a named entry beside a literal engine or
- * model, or naming a name the bindings do not hold (both naming the file),
- * and a named entry bound to opencode, which takes no chain entries.
+ * model, or naming a name the bindings do not hold (both naming the file).
  */
 export function settleChain(targets: NamedTargets | null, chain: readonly FallbackTarget[] | undefined, passed: object): SettledChainEntry[] {
   const declaredModel = declaredModels.get(passed) ?? (() => undefined);
@@ -174,11 +174,7 @@ export function settleChain(targets: NamedTargets | null, chain: readonly Fallba
       );
     }
     const binding = bindingFor(targets, entry.target, `fallback entry ${index}: `);
-    if (binding.engine === "opencode") {
-      throw new FallbackTargetRejectedError(
-        `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`
-      );
-    }
+    assertValidFallbackEffort(entry.effort, binding.engine, index);
     return {
       engine: binding.engine,
       model: binding.model ?? declaredModel(binding.engine),

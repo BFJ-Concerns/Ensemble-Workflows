@@ -51,6 +51,12 @@ export const CLAUDE_TRANSCRIPT = {
   source: "claude-session-jsonl"
 } as const satisfies LiveTranscript;
 
+export const OPENCODE_TRANSCRIPT = {
+  held: "archive",
+  filename: "transcript.opencode.jsonl",
+  source: "opencode run --format json"
+} as const satisfies LiveTranscript;
+
 /**
  * Every engine's live transcript. The runtime reads it to bind an attempt's
  * transcript observer and the run record to name, settle and recover the
@@ -59,7 +65,8 @@ export const CLAUDE_TRANSCRIPT = {
  */
 export const LIVE_TRANSCRIPTS: Partial<Record<EngineName, LiveTranscript>> = {
   codex: CODEX_TRANSCRIPT,
-  claude: CLAUDE_TRANSCRIPT
+  claude: CLAUDE_TRANSCRIPT,
+  opencode: OPENCODE_TRANSCRIPT
 };
 
 /** One transcript event as the line an archive-held live transcript gains for it. */

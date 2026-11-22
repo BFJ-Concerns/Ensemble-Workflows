@@ -3011,7 +3011,7 @@ test("runtime abandonment during the dispatch write leaves unmeasured archive ti
   }
 });
 
-for (const engine of ["codex", "claude"] as const) {
+for (const engine of ["codex", "claude", "opencode"] as const) {
   for (const resumedSweep of [false, true]) {
     test(`${engine} abandonment retains served identity and partial transcript${resumedSweep ? " after a sweep dies" : ""}`, async () => {
       const scratch = await mkdtemp(path.join(tmpdir(), "abandoned-record-test-"));
@@ -3042,11 +3042,12 @@ for (const engine of ["codex", "claude"] as const) {
         assert.equal(liveLeaf.complete, false);
         assert.deepEqual(liveLeaf.unobserved, [{ agent: 2, attempt: 1, reason: "record-unsettled", measured: "none" }]);
         let expected: Buffer;
-        if (engine === "codex") {
-          const relative = await writer.appendLiveTranscript(2, 1, { method: "turn/started" });
+        if (engine !== "claude") {
+          const first = engine === "opencode" ? { type: "step_start" } : { method: "turn/started" };
+          const relative = await writer.appendLiveTranscript(2, 1, first);
           assert.ok(relative);
           const file = path.join(writer.archiveDir, relative);
-          expected = Buffer.from('{"method":"turn/started"}\n{"delta":"late append"}\n');
+          expected = Buffer.from(`${JSON.stringify(first)}\n{"delta":"late append"}\n`);
           // The append reached disk, but the writer died before its manifest update.
           await writeFile(file, expected);
           assert.notEqual((await readManifest()).files.find((entry: { path: string }) => entry.path === relative).size, expected.length);
@@ -3097,6 +3098,10 @@ for (const engine of ["codex", "claude"] as const) {
         assert.equal(abandoned.transcripts.length, 1);
         assert.equal(abandoned.transcripts[0].partial, true);
         assert.equal(abandoned.transcripts[0].attempt, 1);
+        if (engine === "opencode") {
+          assert.equal(abandoned.transcripts[0].source, "opencode run --format json");
+          assert.match(abandoned.transcripts[0].path, /attempt-001-1-transcript\.opencode\.jsonl$/);
+        }
         assert.deepEqual(await readFile(path.join(writer.archiveDir, abandoned.transcripts[0].path)), expected);
         assert.deepEqual(await readFile(completedPath), completedBytes, "settled records must not be rewritten");
         const leaf = (await readManifest()).cost_rollup[engine]["served-model"];

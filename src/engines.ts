@@ -129,7 +129,8 @@ export interface EngineAttemptFailure {
     | "claude-transcript-error"
     | "claude-collection-error"
     | "claude-worker-diagnostic"
-    | "opencode-run-error";
+    | "opencode-run-error"
+    | "opencode-worker-lost";
   message: string;
 }
 
@@ -931,23 +932,14 @@ export interface OpenCodeEngineAdapterOptions {
 export class OpenCodeEngineAdapter implements EngineAdapter {
   readonly name = "opencode" satisfies EngineName;
   readonly concurrency: number;
-  /** A strip refuses before dispatch until its worker-boundary enforcement is established. */
   readonly capabilities: EngineCapabilityTable = {
-    skills: {
-      route: "unsupported",
-      detail:
-        "worker-boundary enforcement of permission.skill=deny through OPENCODE_CONFIG_CONTENT is unproven"
-    },
-    agents: {
-      route: "unsupported",
-      detail:
-        "worker-boundary enforcement of permission.task=deny through OPENCODE_CONFIG_CONTENT is unproven"
-    }
+    skills: { route: "config", detail: "opencode's skill permission is denied" },
+    agents: { route: "config", detail: "opencode's task permission is denied" }
   };
 
   readonly leanStart: LeanStartSupport = {
-    route: "unsupported",
-    detail: "no supported route withholds opencode user instructions, skills and MCP servers"
+    route: "config",
+    detail: "isolated opencode configuration with provider settings and permissions"
   };
 
   #scheduler: Scheduler;
@@ -1087,7 +1079,7 @@ export async function createDefaultEngineRegistry(
   // The run's contained commands: an engine whose workers run a command of
   // their own starts it through this. It is the run's whoever owns the
   // scope manager, so the registry always closes it.
-  const workerCommands = new CommandContainment(workerScopes);
+  const workerCommands = new CommandContainment(workerScopes, { grouping });
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,

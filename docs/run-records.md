@@ -624,6 +624,16 @@ families; their versions are listed in [Schema versions](#schema-versions).
   The CLI records empty `chains` when the file declares no map. A library
   writer given no policy records `null`. Earlier version-7 manifests may
   omit this field, which leaves the policy unrecorded.
+- `single_family_notice`: whether the machine's
+  [single-family notice](configuration.md#single_family_notice) was on for
+  the run.
+- `single_family`: `{ family, workers }` when, at the run's end with the
+  notice on, every worker resolved onto one
+  [model family](workflow-scripts.md#model-families) — each worker judged on
+  the target it was dispatched to before any fallback step, a multi-turn
+  session counting once. `null` while the run is open, with the notice off,
+  and where the workers spanned families, none ran, or one's family is
+  unknown.
 - `workflow_invocations`: the root workflow and every child it invoked through
   `workflow()`, in the order they were recorded — call order, except that
   concurrent `workflow()` calls are recorded as each one resolves. Each entry carries an ordinal (0 for the root),

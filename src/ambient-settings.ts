@@ -16,6 +16,7 @@ import { HOLD_SCOPE_ENV } from "./holds.js";
 import { createOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type { FallbackMap, MachineFallback } from "./fallback-source.js";
+import type { ModelFamilyAssignments } from "./model-family.js";
 import type { NamedTargetBinding, NamedTargets } from "./named-targets.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type { EngineConcurrencyCaps, EngineName, EngineWorkerEnvironment } from "./types.js";
@@ -115,6 +116,19 @@ export interface AmbientSettings {
   namedTargets: NamedTargets;
   machineFallback: MachineFallback;
   effortPolicy: EffortPolicy;
+  /**
+   * The families this machine assigns to models by name (the config file's
+   * `model_families` section), outranking the harness's own grouping.
+   * Config-file only, like `workerEnvironment`; with no section, the
+   * grouping alone decides.
+   */
+  modelFamilies: ModelFamilyAssignments;
+  /**
+   * Whether a run whose workers all resolved onto one model family says so
+   * at its end (the config file's `single_family_notice`). On unless the
+   * file turns it off.
+   */
+  singleFamilyNotice: boolean;
 }
 
 export interface AmbientSettingFlags {
@@ -148,6 +162,8 @@ interface MachineConfig {
   targets?: Record<string, NamedTargetBinding>;
   fallback?: FallbackMap;
   effort?: EffortSection;
+  model_families?: Record<string, string>;
+  single_family_notice?: boolean;
 }
 
 type OpenCodeBillingMode = NonNullable<OpenCodeModelRegistryEntry["billing"]>["mode"];
@@ -217,7 +233,9 @@ export function resolveAmbientSettings(input: {
     openCodeModels: openCodeModelEntries(config?.opencode_models),
     namedTargets: { bindings: config?.targets ?? {}, source: configFile },
     machineFallback: { chains: config?.fallback ?? {}, source: configFile },
-    effortPolicy: { section: config?.effort ?? {}, source: configFile }
+    effortPolicy: { section: config?.effort ?? {}, source: configFile },
+    modelFamilies: config?.model_families ?? {},
+    singleFamilyNotice: config?.single_family_notice ?? true
   };
 }
 
@@ -264,7 +282,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   if (!newer) {
     assertKnownKeys(
       parsed,
-      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "fallback", "effort"],
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "fallback", "effort", "model_families", "single_family_notice"],
       configFile
     );
   }
@@ -283,6 +301,10 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
+  validateModelFamilies(parsed, configFile);
+  if (parsed.single_family_notice !== undefined && typeof parsed.single_family_notice !== "boolean") {
+    throw fileValueError(configFile, "single_family_notice", "must be a boolean");
+  }
   validateNamedTargetBindings(parsed.targets, configFile);
   validateMachineFallback(parsed.fallback, parsed.targets, configFile);
   if (parsed.effort !== undefined) {
@@ -363,6 +385,28 @@ function validateWorkerEnvironment(root: Record<string, unknown>, configFile: st
       if (typeof value !== "string") {
         throw fileValueError(configFile, `${qualified}.${name}`, "must be a string");
       }
+    }
+  }
+}
+
+/**
+ * `model_families` maps model names, an open set like `worker_environment`'s
+ * variable names, to the family each belongs to.
+ */
+function validateModelFamilies(root: Record<string, unknown>, configFile: string): void {
+  const section = root.model_families;
+  if (section === undefined) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "model_families", "must be a JSON object of model names to family names");
+  }
+  for (const [model, family] of Object.entries(section)) {
+    if (model.trim().length === 0) {
+      throw fileValueError(configFile, "model_families", "model names must be non-empty");
+    }
+    if (typeof family !== "string" || family.trim().length === 0) {
+      throw fileValueError(configFile, `model_families.${model}`, "must be a non-empty string");
     }
   }
 }

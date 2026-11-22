@@ -3,6 +3,7 @@ import type { WorkerScopeGrouping } from "./worker-scopes.js";
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { MachineFallback } from "./fallback-source.js";
 import type { NamedTargets } from "./named-targets.js";
+import type { ModelFamilyAssignments } from "./model-family.js";
 import type { OpenCodeModelRegistryEntry, OpenCodeModelSource } from "./opencode-model-registry.js";
 
 export type JsonObject = Record<string, unknown>;
@@ -218,7 +219,8 @@ export interface IdentifiedAgentResult {
 /**
  * Where a dispatch runs: an engine, its model (null where the engine's own
  * default decides and the harness does not know it), and the model family,
- * null where the harness cannot tell.
+ * judged from the model whichever engine runs it, and null where the
+ * harness cannot tell.
  */
 export interface DispatchTarget {
   engine: EngineName;
@@ -325,6 +327,13 @@ export interface RuntimeOptions {
   namedTargets?: NamedTargets;
   /** Fallback chains for dispatched models or engines, from the machine file. */
   machineFallback?: MachineFallback;
+  /**
+   * The families the machine assigns to models by name (the config file's
+   * `model_families` section), outranking the harness's own grouping of
+   * model names wherever a family is judged. Omitted, the grouping alone
+   * decides.
+   */
+  modelFamilies?: ModelFamilyAssignments;
   /**
    * Run-wide capability strip: united with every call's own `strip`
    * list before enforcement, so a run can restrict all its workers without

@@ -15,7 +15,8 @@ import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } f
 import { selectFallback } from "./fallback-source.js";
 import { withOptionOverrides } from "./option-overrides.js";
 import { isNamedTargetBound, namedTargetResolutionOf, resolveNamedTarget, settleChain, withTargetChain } from "./named-targets.js";
-import { modelFamilyOf } from "./model-family.js";
+import { modelFamilyOf, singleFamilyOf } from "./model-family.js";
+import type { FamilyJudgedTarget, ModelFamilyAssignments, SingleFamilyJudgement } from "./model-family.js";
 import type { NamedTargetResolution, NamedTargets, SettledChainEntry } from "./named-targets.js";
 
 import type { DischargedEnforcement, PreparedStrip } from "./capability-stripping.js";
@@ -346,32 +347,30 @@ function identifiedResult(
   options: { label?: string },
   output: unknown,
   record: RuntimeAgentRecord,
-  openCodeModels: OpenCodeModelRegistry | undefined
+  familyOf: (target: FamilyJudgedTarget) => string | null
 ): IdentifiedAgentResult {
   return {
     label: options.label ?? null,
     phase: record.phase,
     output,
     failure: record.status === "complete" ? null : settledFailureAccount(record),
-    answeredBy: answeringTarget(record, openCodeModels)
+    answeredBy: answeringTarget(record, familyOf)
   };
 }
 
 /**
  * The target that answered `record`, as an identified envelope names it:
  * the engine, the model it served (else the model the answering attempt
- * requested), and the family judged on the requested model, which is the
- * name an opencode registry entry is declared under. Null when no target
- * answered.
+ * requested), and the family judged on the model requested and the model
+ * served. Null when no target answered.
  */
-function answeringTarget(record: RuntimeAgentRecord, openCodeModels: OpenCodeModelRegistry | undefined): DispatchTarget | null {
+function answeringTarget(record: RuntimeAgentRecord, familyOf: (target: FamilyJudgedTarget) => string | null): DispatchTarget | null {
   if (record.answeredBy === null) {
     return null;
   }
-  const { engine } = record.answeredBy;
+  const { engine, model: served } = record.answeredBy;
   const requested = record.attempts.findLast((attempt) => attempt.status === "complete")?.target.model ?? null;
-  const model = record.answeredBy.model ?? requested;
-  return { engine, model, family: modelFamilyOf(engine, requested ?? model, openCodeModels) };
+  return { engine, model: served ?? requested, family: familyOf({ engine, requested, served }) };
 }
 
 function identifiedFailure(options: { identity?: boolean; label?: string; phase?: string }, error: unknown, phase = options.phase ?? null): unknown {
@@ -550,6 +549,10 @@ export class EnsembleRuntime {
   #namedTargets: NamedTargets | null;
   #machineFallback: MachineFallback | undefined;
   #effortPolicy: EffortPolicy | null;
+  /** The machine's model family assignments, outranking the harness's grouping of model names. */
+  #modelFamilies: ModelFamilyAssignments;
+  /** Every agent record the run has opened, in dispatch order, for the single-family judgement at its end. */
+  #openedAgentRecords: RuntimeAgentRecord[] = [];
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
@@ -616,6 +619,7 @@ export class EnsembleRuntime {
     namedTargets?: NamedTargets;
     machineFallback?: MachineFallback;
     effortPolicy?: EffortPolicy;
+    modelFamilies?: ModelFamilyAssignments;
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     holdsDir?: string;
@@ -644,6 +648,7 @@ export class EnsembleRuntime {
     this.#namedTargets = options.namedTargets ?? null;
     this.#machineFallback = options.machineFallback;
     this.#effortPolicy = options.effortPolicy ?? null;
+    this.#modelFamilies = options.modelFamilies ?? {};
     if (this.#effortPolicy !== null) {
       assertEffortSection(this.#effortPolicy.section, (key, detail) => {
         throw new InvalidAgentOptionValueError(`effort.${key}`, null, detail);
@@ -773,6 +778,7 @@ export class EnsembleRuntime {
       ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {}),
       ...(options.machineFallback !== undefined ? { machineFallback: options.machineFallback } : {}),
       ...(options.effortPolicy !== undefined ? { effortPolicy: options.effortPolicy } : {}),
+      ...(options.modelFamilies !== undefined ? { modelFamilies: options.modelFamilies } : {}),
       ...(options.claudeSessionStaleAfterMs !== undefined
         ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs }
         : {}),
@@ -1030,7 +1036,7 @@ export class EnsembleRuntime {
         // completed, so a worker's genuine null answer and an exhausted
         // collapse never read alike. The durable record is unchanged — it
         // already carries label and phase as first-class fields.
-        return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
+        return identifiedResult(options, output, agentRecord, (target) => this.modelFamilyOf(target));
       }
       return output;
     } catch (error) {
@@ -1172,7 +1178,51 @@ export class EnsembleRuntime {
       validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
     }
     const model = resolved.model ?? null;
-    return { target: name, bound: true, engine: engine.name, model, family: modelFamilyOf(engine.name, model, this.openCodeModelRegistry) };
+    return { target: name, bound: true, engine: engine.name, model, family: this.modelFamilyOf({ engine: engine.name, requested: model, served: null }) };
+  }
+
+  /**
+   * The model family `target` runs on, judged from its model under this
+   * run's family assignments and opencode registry; see
+   * {@link modelFamilyOf}. Null where the harness cannot tell.
+   */
+  modelFamilyOf(target: FamilyJudgedTarget): string | null {
+    return modelFamilyOf(target, this.#modelFamilies, this.openCodeModelRegistry);
+  }
+
+  /**
+   * Whether every worker this run dispatched resolved onto one model
+   * family, judged at the run's end for its stderr notice and manifest.
+   * A worker is a one-shot call or a multi-turn session, whose turns are
+   * one worker; one that never reached an attempt ran on nothing and is
+   * not counted. Each is judged on the target it resolved to at dispatch —
+   * its first attempt's, whatever a fallback chain later moved it to — with
+   * the model that target served, on any of a session's turns, standing in
+   * where the call named none.
+   * The family and the worker count when every worker shares one family,
+   * null where they span families, where none ran, or where any worker's
+   * family is unknown.
+   */
+  singleFamily(): SingleFamilyJudgement | null {
+    // Each worker's attempts in dispatch order: a session's turns are one
+    // worker, so a later turn can report the model its first dispatch served.
+    const workers = new Map<string, RuntimeAgentAttemptRecord[]>();
+    for (const record of this.#openedAgentRecords) {
+      const key = record.session === null ? `agent:${record.id}` : `session:${record.session.id}`;
+      workers.set(key, [...(workers.get(key) ?? []), ...record.attempts]);
+    }
+    const families: (string | null)[] = [];
+    for (const attempts of workers.values()) {
+      const first = attempts[0];
+      if (first === undefined) {
+        continue;
+      }
+      const { engine, model } = first.target;
+      const served = attempts.find((attempt) =>
+        attempt.target.engine === engine && attempt.target.model === model && attempt.resolvedModel !== null)?.resolvedModel ?? null;
+      families.push(this.modelFamilyOf({ engine, requested: model, served }));
+    }
+    return singleFamilyOf(families);
   }
 
   /**
@@ -1400,7 +1450,7 @@ export class EnsembleRuntime {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
           if (options.identity === true) {
-            return identifiedResult(options, output, agentRecord, this.openCodeModelRegistry);
+            return identifiedResult(options, output, agentRecord, (target) => this.modelFamilyOf(target));
           }
           return output;
         } catch (error) {
@@ -3350,7 +3400,7 @@ export class EnsembleRuntime {
     stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null,
     leanRoute: DischargedLeanStart | null = null
   ): RuntimeAgentRecord {
-    return {
+    const record: RuntimeAgentRecord = {
       id,
       engine,
       headerIdentity: "original_request",
@@ -3393,6 +3443,8 @@ export class EnsembleRuntime {
       executionMs: 0,
       attempts: []
     };
+    this.#openedAgentRecords.push(record);
+    return record;
   }
 }
 

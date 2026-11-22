@@ -89,7 +89,11 @@ version 1:
   "fallback": {
     "codex:gpt-6.1-sol": [{ "target": "reviewer" }],
     "codex": [{ "engine": "claude", "model": "claude-opus-5-5" }]
-  }
+  },
+  "model_families": {
+    "house-coder": "qwen"
+  },
+  "single_family_notice": true
 }
 ```
 
@@ -108,6 +112,8 @@ version 1:
 | `effort` | object | Machine bounds and per-model native level maps (see [effort](#effort)); no flag or environment variable |
 | `targets` | object | Your own names for an engine, with or without a model and a fallback chain |
 | `fallback` | object | Fallback chains keyed by `engine:model` or `engine` |
+| `model_families` | object of strings | The family each named model belongs to, outranking Ensemble's own grouping (see [`model_families`](#model_families)) |
+| `single_family_notice` | boolean | Whether a run whose workers all resolved onto one model family says so at its end; defaults to `true` (see [`single_family_notice`](#single_family_notice)) |
 
 Every numeric value must be an integer of at least 1. The file is strict: an
 unsupported `schema_version`, an unknown key, an invalid value, an unreadable
@@ -287,7 +293,7 @@ the entry by its route. A key or route that would name two entries is invalid.
 |---|---|---|
 | `provider_model` | Yes | The `provider/model` route that `opencode run --model` takes |
 | `display_name` | No | Display name; defaults to the key |
-| `family` | No | Model family, for choosing between models |
+| `family` | No | The entry's model family. It outranks [`model_families`](#model_families) and Ensemble's grouping of the key and route |
 | `vision` | No | Whether the model accepts image input; defaults to `false` |
 | `billing` | No | `pay-as-you-go` or `self-hosted` |
 | `variants` | No | The served variants the model accepts as `effort` |
@@ -342,6 +348,31 @@ it reads the file, including chains the run never selects.
 A model-specific chain takes precedence over the engine's chain. The call,
 script defaults and named-target binding all take precedence over the map.
 Use `fallback: false` in a call or in script defaults to stop inheritance.
+
+### `model_families`
+
+Assigns models to families by name. Each key is a model name as a call, a
+binding or an engine names it — a requested model, an opencode key or route,
+or a model an engine reported serving — and each value is the family it
+belongs to. An assignment outranks Ensemble's own grouping of model names,
+so it places a model the grouping cannot, such as a gateway's own alias, or
+moves one it groups wrongly. Keys match exactly. Write a value in the same
+spelling as the built-in family it should join (`claude`, `gpt`, `glm`, and
+the rest listed under
+[Model families](workflow-scripts.md#model-families)); any other value is a
+family of its own. Like `targets`, it exists only in the file. A library
+caller passes the same map as `modelFamilies`.
+
+### `single_family_notice`
+
+When every worker in a run resolved onto one model family, the run says so
+at its end: a `[single-family]` line on stderr (see
+[CLI output](cli.md#output)) and `single_family` in the run record's
+manifest (see [Run records](run-records.md#manifest)). Named targets put a
+doer and its reviewer on one family a single binding edit away, and nothing
+in the launch would show it. Set `single_family_notice` to `false` on a
+machine that runs one family by choice; the manifest then records the switch
+as off and the run says nothing.
 
 ## Environment variables
 
@@ -466,6 +497,7 @@ These options have no flag or environment variable:
 | `workerEnvironment` | None | Per-engine variables injected above inherited values; pass the resolved `worker_environment` map explicitly |
 | `openCodeModels` | None | The models opencode workers may name, in the registry entry shape; the library reads no machine configuration, so without this option every opencode call is refused |
 | `effortPolicy` | None | Machine effort policy `{ section, source }`, with the [effort](#effort) section and the file it came from; pass it explicitly because the library reads no machine configuration |
+| `modelFamilies` | None | The [`model_families`](#model_families) map, outranking Ensemble's grouping of model names wherever a family is judged |
 | `namedTargets` | None | The names calls may give as `target`: `{ bindings, source }`, where `bindings` is the `targets` map and `source` the file it came from, which every refusal names. Without it, every named target is refused as unbound |
 | `machineFallback` | None | `{ chains, source }`, where `chains` has the shape of the machine `fallback` map and `source` names its source in validation errors |
 | `openCodeModelSource` | `{ kind: "caller" }` | Where `openCodeModels` were declared: `{ kind: "machine-config", file }` for models taken from a machine configuration file, `{ kind: "caller" }` otherwise. An opencode refusal draws on it to say where models are declared |

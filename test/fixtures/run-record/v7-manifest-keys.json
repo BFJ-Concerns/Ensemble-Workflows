@@ -32,6 +32,8 @@
     "run_uuid",
     "schema_version",
     "session_events",
+    "single_family",
+    "single_family_notice",
     "started_at",
     "status",
     "tallies",

@@ -12,7 +12,8 @@ default:
 # bundle-freshness check — after the tests deliberately, so a red gate on a
 # stale bundle still reports the test results, and the check compares
 # against the bundle the test recipe just rebuilt. Version checking also
-# checks the lockfile metadata against the package and launcher reports.
+# checks the lockfile metadata and the plugin manifests against the package
+# and launcher reports.
 verify: lint test bundle-fresh version-check
 
 # Fail when the tracked skill bundle differs from the fresh build `test`
@@ -44,7 +45,7 @@ install:
 build:
     npm run build
 
-# Print the agreed package, lockfile and launcher version without rebuilding.
+# Print the agreed package, lockfile, plugin manifest and launcher version without rebuilding.
 version-check:
     node scripts/release-version.mjs check
 

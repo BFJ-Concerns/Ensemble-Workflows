@@ -1,0 +1,20 @@
+{
+  "name": "ensemble",
+  "version": "0.3.0",
+  "description": "Ensemble runs JavaScript workflow scripts over AI coding agents on Codex, Claude Code, opencode, ZCode and Google's Antigravity CLI, so one model family can check another's work. The plugin carries the ensemble-workflow skill and the launcher it drives.",
+  "author": {
+    "name": "BFJ Concerns",
+    "url": "https://github.com/BFJ-Concerns"
+  },
+  "homepage": "https://github.com/BFJ-Concerns/Ensemble-Workflows#readme",
+  "repository": "https://github.com/BFJ-Concerns/Ensemble-Workflows",
+  "license": "AGPL-3.0-or-later",
+  "keywords": [
+    "workflow",
+    "orchestration",
+    "multi-agent",
+    "cross-engine",
+    "codex",
+    "opencode"
+  ]
+}

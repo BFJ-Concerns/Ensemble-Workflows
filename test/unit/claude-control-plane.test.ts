@@ -1092,10 +1092,11 @@ test("a real private tmux server gives Claude its editor despite login shell ove
         });
       }
     `, { mode: 0o755 });
-    const control = new ClaudeCliControlPlane({
+    const controlOptions = {
       claudeBin: claude, projectsDir: dir,
-      workerEnv: { ANTHROPIC_AUTH_TOKEN: "declared-token" }, valveAttachSettleMs: 1_500, valveDeliveryTimeoutMs: 1_000
-    });
+      workerEnv: { ANTHROPIC_AUTH_TOKEN: "declared-token" }, valveAttachSettleMs: 1_500
+    };
+    const control = new ClaudeCliControlPlane(controlOptions);
     const message = "é😀\nwhole turn";
     const result = await control.steer(stub.handle, message);
     const { token, sandboxed, visual, editor } = JSON.parse(await readFile(path.join(dir, "attach-env"), "utf8"));
@@ -1108,7 +1109,8 @@ test("a real private tmux server gives Claude its editor despite login shell ove
     assert.equal(JSON.parse(rows.at(-1)!).message.content, message);
 
     await writeFile(stallEditor, "");
-    assert.deepEqual(await control.steer(stub.handle, "will time out"), {
+    const stalledControl = new ClaudeCliControlPlane({ ...controlOptions, valveDeliveryTimeoutMs: 1_000 });
+    assert.deepEqual(await stalledControl.steer(stub.handle, "will time out"), {
       submitted: false,
       reason: "prompt editor did not finish copying within 1000ms; pane showed: Waiting for input Choose an option"
     });

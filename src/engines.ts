@@ -31,6 +31,7 @@ import { presentOperationalError } from "./operator-diagnosis.js";
 import { createOpenCodeModelRegistry, defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
 import { normaliseForCodexOutputSchema } from "./schema.js";
+import { previousFailureNotice } from "./worker-instructions.js";
 import {
   defaultClaudeConcurrency,
   defaultCodexConcurrency,
@@ -650,7 +651,7 @@ class CodexWorkerSession implements EngineWorkerSession {
     const message =
       context.previousFailure === undefined
         ? prompt
-        : `A previous attempt failed (${context.previousFailure.kind}): ${context.previousFailure.message}. Correct it this time.`;
+        : previousFailureNotice(context.previousFailure);
     try {
       return await this.#transport.runTurn(threadId, message, {
         ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
@@ -1199,7 +1200,7 @@ function promptWithFailureFeedback(prompt: string, failure: PreviousAttemptFailu
   if (failure === undefined) {
     return prompt;
   }
-  return `${prompt}\n\nA previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
+  return `${prompt}\n\n${previousFailureNotice(failure)}`;
 }
 
 export {

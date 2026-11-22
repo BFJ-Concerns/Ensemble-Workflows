@@ -21069,6 +21069,51 @@ var WhitespaceStream = class {
   }
 };
 
+// src/worker-instructions.ts
+var WORKER_STANDING_INSTRUCTIONS = [
+  "You are an automated worker dispatched by the Ensemble orchestration harness.",
+  "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
+].join("\n");
+var SCHEMA_CONTRACT_LEAD = {
+  opening: "When finished, include",
+  later: "For this reply, include"
+};
+function schemaContract(schema, turn) {
+  return [
+    `${SCHEMA_CONTRACT_LEAD[turn]} in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:`,
+    JSON.stringify(schema)
+  ].join("\n");
+}
+function previousFailureNotice(failure) {
+  return `A previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
+}
+function inSessionCorrection(failure) {
+  switch (failure.kind) {
+    case "schema-validation":
+      return `Your final JSON did not satisfy the required schema. Validation errors: ${failure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
+    case "invalid-json":
+      return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
+    case "empty-output":
+      return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
+    case "WhitespaceStreamError":
+      return "Your last turn was stopped because it had streamed nothing but whitespace for two minutes. The work you had already done stands. Please continue the task from where it stopped and output your final answer.";
+    case "TurnTimeoutError":
+      return `Your last turn was stopped at its time limit before it gave a final answer (${failure.message}). The work you had already done stands. Please finish what remains and output your final answer; this turn has the same limit.`;
+    default:
+      return `Your last turn did not complete (${failure.kind}: ${failure.message}). Please complete the task and output your final answer now.`;
+  }
+}
+function openingPrompt(parts) {
+  const lines = [WORKER_STANDING_INSTRUCTIONS];
+  if (parts.schema !== void 0) lines.push(schemaContract(parts.schema, "opening"));
+  if (parts.previousFailure !== void 0) lines.push(previousFailureNotice(parts.previousFailure));
+  lines.push("", "Task:", parts.task);
+  return lines.join("\n");
+}
+function laterTurnPrompt(parts) {
+  return parts.schema === void 0 ? parts.task : [schemaContract(parts.schema, "later"), "", parts.task].join("\n");
+}
+
 // src/claude-control-plane.ts
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID4 } from "node:crypto";
@@ -22354,10 +22399,6 @@ function claudeNativeEffort(effort) {
 }
 var dispatchCounter = 0;
 var SETTLED_CONFIRMATION_POLLS = 5;
-var CLAUDE_WORKER_STANDING_INSTRUCTIONS = [
-  "You are an automated worker dispatched by the Ensemble orchestration harness.",
-  "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
-].join("\n");
 var CLAUDE_TASK_END_LINE = "(This line only marks where the task above ends; any whitespace before it belongs to the task.)";
 var ClaudeEngineInvocation = class {
   #cwd;
@@ -22651,7 +22692,7 @@ var ClaudeEngineInvocation = class {
     const prompt = this.#buildDispatchPrompt(previousFailure);
     const handle = await this.#controlPlane.dispatch({
       prompt,
-      appendSystemPrompt: CLAUDE_WORKER_STANDING_INSTRUCTIONS,
+      appendSystemPrompt: WORKER_STANDING_INSTRUCTIONS,
       name: this.#nextName(),
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
@@ -22697,7 +22738,7 @@ var ClaudeEngineInvocation = class {
   async #correctInSession(handle, previousFailure, fromIndex, observers) {
     this.#collectionMark = fromIndex;
     this.#deliveryFailure = null;
-    const message = this.#correctionMessage(previousFailure);
+    const message = inSessionCorrection(previousFailure);
     await this.#deliver(handle, { message, mark: fromIndex, what: "the correction", carriesTurn: false }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
@@ -23329,21 +23370,14 @@ var ClaudeEngineInvocation = class {
   /**
    * A dispatch's opening message. It begins with the task, so a task whose
    * first word is `/<skill>` runs that skill exactly as an operator's typed
-   * message would, unless the worker is stripped of skills; the standing instructions reach the worker through the
-   * system prompt (`CLAUDE_WORKER_STANDING_INSTRUCTIONS`), and the turn's
+   * message would, unless the worker is stripped of skills; the standing instructions are appended to Claude Code's
+   * default system prompt at launch (`WORKER_STANDING_INSTRUCTIONS`), and the turn's
    * schema contract and any previous attempt's failure follow the task.
    */
   #buildDispatchPrompt(previousFailure) {
     const after = [];
-    if (this.#turnSchema !== void 0) {
-      after.push(
-        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema)
-      );
-    }
-    if (previousFailure !== void 0) {
-      after.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
-    }
+    if (this.#turnSchema !== void 0) after.push(schemaContract(this.#turnSchema, "opening"));
+    if (previousFailure !== void 0) after.push(previousFailureNotice(previousFailure));
     const task = this.#turnPrompt;
     const framed = task === "" || task.trimStart() !== task || this.#options.strip?.includes("skills") === true;
     if (!framed && after.length === 0 && task.trimEnd() !== task) after.push(CLAUDE_TASK_END_LINE);
@@ -23365,16 +23399,8 @@ var ClaudeEngineInvocation = class {
    * turn adds — its schema contract, when it has one, and its task.
    */
   #buildTurnMessage() {
-    const lines = [];
-    if (this.#turnSchema !== void 0) {
-      lines.push(
-        "For this reply, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema),
-        ""
-      );
-    }
-    lines.push(this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask());
-    return lines.join("\n");
+    const task = this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask();
+    return laterTurnPrompt({ task, ...this.#turnSchema !== void 0 ? { schema: this.#turnSchema } : {} });
   }
   /**
    * The turn's prompt again, for a session that accepted a submission of it
@@ -23392,18 +23418,6 @@ var ClaudeEngineInvocation = class {
       "",
       this.#acceptedTurnCopy
     ].join("\n");
-  }
-  #correctionMessage(previousFailure) {
-    switch (previousFailure.kind) {
-      case "schema-validation":
-        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
-      case "invalid-json":
-        return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
-      case "empty-output":
-        return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
-      default:
-        return `Your last turn did not complete (${previousFailure.kind}: ${previousFailure.message}). Please complete the task and output your final answer now.`;
-    }
   }
   #blockedNudge(waitingFor) {
     const context = waitingFor !== void 0 ? ` (waiting for: ${waitingFor})` : "";
@@ -25293,21 +25307,11 @@ var OpenCodeEngineInvocation = class {
     return event;
   }
   #buildPrompt(previousFailure) {
-    const lines = [
-      "You are an automated worker dispatched by the Ensemble orchestration harness.",
-      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions - make a reasonable decision and finish the task."
-    ];
-    if (this.#options.schema !== void 0) {
-      lines.push(
-        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#options.schema)
-      );
-    }
-    if (previousFailure !== void 0) {
-      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
-    }
-    lines.push("", "Task:", this.#prompt);
-    return lines.join("\n");
+    return openingPrompt({
+      task: this.#prompt,
+      ...this.#options.schema !== void 0 ? { schema: this.#options.schema } : {},
+      ...previousFailure !== void 0 ? { previousFailure } : {}
+    });
   }
 };
 async function runProcess(file, args, cwd, env, commands, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop) {
@@ -26443,7 +26447,7 @@ var CodexWorkerSession = class {
     const threadId = await this.#ensureThread();
     if (this.#lost !== null) return this.#lostResult();
     if (this.#closed) throw new EngineShutdownError("codex");
-    const message = context.previousFailure === void 0 ? prompt : `A previous attempt failed (${context.previousFailure.kind}): ${context.previousFailure.message}. Correct it this time.`;
+    const message = context.previousFailure === void 0 ? prompt : previousFailureNotice(context.previousFailure);
     try {
       return await this.#transport.runTurn(threadId, message, {
         ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
@@ -26818,7 +26822,7 @@ function promptWithFailureFeedback(prompt, failure) {
   }
   return `${prompt}
 
-A previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
+${previousFailureNotice(failure)}`;
 }
 
 // src/runtime.ts

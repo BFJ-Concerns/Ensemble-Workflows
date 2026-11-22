@@ -28108,8 +28108,8 @@ async function runZCodeTurn(settings, request, onCommandStop) {
   const { listing } = await settings.abilities();
   if (request.signal.aborted) throw new EngineShutdownError("zcode");
   const requested = requestedReasoningLevel(options);
-  const launch = async (reasoningLevel) => {
-    const stream2 = new ZCodeStream(settings, context);
+  const launch = async (reasoningLevel, earlier) => {
+    const stream2 = new ZCodeStream(settings, context, earlier?.stream);
     const run2 = await settings.runner.run({
       prompt: request.prompt,
       cwd: settings.cwd,
@@ -28125,16 +28125,16 @@ async function runZCodeTurn(settings, request, onCommandStop) {
       onCommandStop
     });
     stream2.end(run2.stdout);
-    return { stream: stream2, run: run2 };
+    return { stream: stream2, run: run2, durationMs: (earlier?.durationMs ?? 0) + run2.durationMs };
   };
-  let { stream, run } = await launch(requested ?? defaultZCodeReasoningLevel(listing.levels(selection)) ?? UNLISTED_MODEL_LEVEL);
+  let { stream, run, durationMs } = await launch(requested ?? defaultZCodeReasoningLevel(listing.levels(selection)) ?? UNLISTED_MODEL_LEVEL);
   if (requested === void 0 && listing.levels(selection) === void 0 && !request.signal.aborted) {
     const refusal2 = stream.evidence().failure(run);
     const levels2 = refusal2 === null ? null : supportedLevelsOfRefusal(refusal2.message);
     const level = defaultZCodeReasoningLevel(levels2 ?? void 0);
     if (levels2 !== null && level !== void 0) {
       listing.learn(selection, levels2);
-      ({ stream, run } = await launch(level));
+      ({ stream, run, durationMs } = await launch(level, { stream, durationMs }));
     }
   }
   const evidence = stream.evidence();
@@ -28143,7 +28143,7 @@ async function runZCodeTurn(settings, request, onCommandStop) {
   const base = {
     text,
     deltaText: evidence.streamedText,
-    durationMs: run.durationMs,
+    durationMs,
     firstDeltaMs: evidence.firstTextAt === null ? null : evidence.firstTextAt - stream.startedAt,
     items: {},
     tokenUsageEvents: evidence.usageEvents,
@@ -28187,9 +28187,12 @@ function watchZCodeLine(line, whitespace) {
   }
 }
 var ZCodeStream = class {
-  startedAt = Date.now();
+  /** When the attempt's first run started. */
+  startedAt;
   #settings;
   #context;
+  /** Events of the attempt's earlier runs, which its transcript keeps before this run's. */
+  #earlierEvents;
   #buffer = "";
   #events = [];
   #result = null;
@@ -28204,9 +28207,15 @@ var ZCodeStream = class {
   #resolvedModel = null;
   #resolvedEffort = null;
   #turnError = null;
-  constructor(settings, context) {
+  /** `earlier` is the stream of a run the same attempt made before this one. */
+  constructor(settings, context, earlier) {
     this.#settings = settings;
     this.#context = context;
+    this.startedAt = earlier?.startedAt ?? Date.now();
+    this.#earlierEvents = earlier === void 0 ? [] : earlier.#allEvents();
+  }
+  #allEvents() {
+    return [...this.#earlierEvents, ...this.#events];
   }
   push(chunk) {
     this.#buffer += chunk;
@@ -28292,7 +28301,7 @@ var ZCodeStream = class {
     const response = typeof result?.response === "string" ? result.response : null;
     const streamedText = this.#lastTextMessage === null ? "" : this.#messageText.get(this.#lastTextMessage) ?? "";
     const turnError = this.#turnError;
-    const content = transcriptContent(this.#events);
+    const content = transcriptContent(this.#allEvents());
     return {
       response,
       streamedText,

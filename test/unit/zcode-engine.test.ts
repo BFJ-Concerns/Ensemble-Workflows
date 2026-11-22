@@ -602,6 +602,57 @@ test("a zcode attempt's events reach the archive as they stream, and the settled
   }
 });
 
+test("an attempt whose guessed level zcode refused records both runs: the archived transcript holds the refused one, and the duration is the whole attempt's", async () => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-zcode-relaunch-"));
+  const refusal = 'Unsupported reasoning level "medium" for model "z-ai/glm-5.3-flash" from provider "nanogpt". Supported levels: disabled, enabled.';
+  const refused = failedRun("sess_refused", refusal);
+  const answered = finishedRun("sess_a", "answered", "z-ai/glm-5.3-flash");
+  const runner = new FakeZCodeRunner([refused, answered], { models: PARTIAL_LISTING, modelsExit: 1 });
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new ZCodeEngineAdapter({ cwd: store, runner })]),
+    cwd: store,
+    defaultMaxAttempts: 1
+  });
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd: store,
+    runUuid: "run-zcode-relaunch",
+    workflowPath: path.join(store, "workflow.js"),
+    workflowSource: "export const meta = { name: 'zcode-relaunch' };\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  const recordAgent = writer.recordAgent.bind(writer);
+  writer.recordAgent = async (record: RuntimeAgentRecord) => {
+    records.push(structuredClone(record));
+    await recordAgent(record);
+  };
+  runtime.setRunRecorder(writer);
+  try {
+    assert.equal(await runtime.agent("go", { engine: "zcode", model: "nanogpt/z-ai/glm-5.3-flash" }), "answered");
+    assert.deepEqual(runner.runs.map((run) => run.reasoningLevel), ["medium", "enabled"]);
+    const attempt = records.at(-1)!.attempts[0]!;
+    // Each scripted run reports 7 ms.
+    assert.equal(attempt.durationMs, 14);
+    const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+      transcripts: Array<{ path: string; session_id: string | null }>;
+    };
+    assert.deepEqual(agent.transcripts.map((transcript) => [transcript.path, transcript.session_id]), [
+      ["agents/000001/attempt-001-1-transcript.zcode.jsonl", "sess_a"]
+    ]);
+    const lines = (await readFile(path.join(writer.archiveDir, agent.transcripts[0]!.path), "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as { type: string; sessionId?: string });
+    assert.deepEqual(lines.map((line) => [line.type, line.sessionId]), [
+      ...refused.events.map((event) => [(event as { type: string }).type, "sess_refused"]),
+      ...answered.events.map((event) => [(event as { type: string }).type, "sess_a"])
+    ]);
+  } finally {
+    await runtime.close();
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
 test("the effort a request's start reports stays on the record through its completion", async () => {
   const run = finishedRun("sess_e", "ok");
   const start = run.events[1] as { payload: { modelCall: { reasoning: { effectiveLevel: string } } } };

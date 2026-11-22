@@ -664,8 +664,8 @@ async function runZCodeTurn(
   const { listing } = await settings.abilities();
   if (request.signal.aborted) throw new EngineShutdownError("zcode");
   const requested = requestedReasoningLevel(options);
-  const launch = async (reasoningLevel: string) => {
-    const stream = new ZCodeStream(settings, context);
+  const launch = async (reasoningLevel: string, earlier?: { stream: ZCodeStream; durationMs: number }) => {
+    const stream = new ZCodeStream(settings, context, earlier?.stream);
     const run = await settings.runner.run({
       prompt: request.prompt,
       cwd: settings.cwd,
@@ -681,18 +681,20 @@ async function runZCodeTurn(
       onCommandStop
     });
     stream.end(run.stdout);
-    return { stream, run };
+    return { stream, run, durationMs: (earlier?.durationMs ?? 0) + run.durationMs };
   };
-  let { stream, run } = await launch(requested ?? defaultZCodeReasoningLevel(listing.levels(selection)) ?? UNLISTED_MODEL_LEVEL);
+  let { stream, run, durationMs } = await launch(requested ?? defaultZCodeReasoningLevel(listing.levels(selection)) ?? UNLISTED_MODEL_LEVEL);
   if (requested === undefined && listing.levels(selection) === undefined && !request.signal.aborted) {
     // The level was a guess for a model the listing lacked: zcode's refusal
     // names the model's levels, and the run is made again at its own choice.
+    // The attempt is both runs: its transcript holds the refused run's
+    // events before the second's, and its duration is the two runs'.
     const refusal = stream.evidence().failure(run);
     const levels = refusal === null ? null : supportedLevelsOfRefusal(refusal.message);
     const level = defaultZCodeReasoningLevel(levels ?? undefined);
     if (levels !== null && level !== undefined) {
       listing.learn(selection, levels);
-      ({ stream, run } = await launch(level));
+      ({ stream, run, durationMs } = await launch(level, { stream, durationMs }));
     }
   }
   const evidence = stream.evidence();
@@ -701,7 +703,7 @@ async function runZCodeTurn(
   const base = {
     text,
     deltaText: evidence.streamedText,
-    durationMs: run.durationMs,
+    durationMs,
     firstDeltaMs: evidence.firstTextAt === null ? null : evidence.firstTextAt - stream.startedAt,
     items: {},
     tokenUsageEvents: evidence.usageEvents,
@@ -758,9 +760,12 @@ export function watchZCodeLine(line: string, whitespace: WhitespaceStream): void
  * run ended.
  */
 class ZCodeStream {
-  readonly startedAt = Date.now();
+  /** When the attempt's first run started. */
+  readonly startedAt: number;
   #settings: ZCodeTurnSettings;
   #context: EngineAttemptContext;
+  /** Events of the attempt's earlier runs, which its transcript keeps before this run's. */
+  #earlierEvents: readonly unknown[];
   #buffer = "";
   #events: unknown[] = [];
   #result: Record<string, unknown> | null = null;
@@ -776,9 +781,16 @@ class ZCodeStream {
   #resolvedEffort: string | null = null;
   #turnError: Record<string, unknown> | null = null;
 
-  constructor(settings: ZCodeTurnSettings, context: EngineAttemptContext) {
+  /** `earlier` is the stream of a run the same attempt made before this one. */
+  constructor(settings: ZCodeTurnSettings, context: EngineAttemptContext, earlier?: ZCodeStream) {
     this.#settings = settings;
     this.#context = context;
+    this.startedAt = earlier?.startedAt ?? Date.now();
+    this.#earlierEvents = earlier === undefined ? [] : earlier.#allEvents();
+  }
+
+  #allEvents(): unknown[] {
+    return [...this.#earlierEvents, ...this.#events];
   }
 
   push(chunk: string): void {
@@ -873,7 +885,7 @@ class ZCodeStream {
     const response = typeof result?.response === "string" ? result.response : null;
     const streamedText = this.#lastTextMessage === null ? "" : this.#messageText.get(this.#lastTextMessage) ?? "";
     const turnError = this.#turnError;
-    const content = transcriptContent(this.#events);
+    const content = transcriptContent(this.#allEvents());
     return {
       response,
       streamedText,

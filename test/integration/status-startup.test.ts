@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
 
-const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundle = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 test("concurrent runs publish supervision before FIFO source delivery and names before body entry", { timeout: 120_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-startup-"));

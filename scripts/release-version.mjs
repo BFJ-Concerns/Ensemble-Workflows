@@ -5,7 +5,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const launcher = path.join(root, "skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.join(root, "plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const validVersion = (value) => typeof value === "string" && value === value.trim() && versionPattern.test(value);
 const readJson = (name) => JSON.parse(readFileSync(path.join(root, name), "utf8"));

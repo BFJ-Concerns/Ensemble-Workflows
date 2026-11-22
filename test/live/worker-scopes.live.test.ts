@@ -18,7 +18,7 @@ import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths, waitForPath, type
 import { liveCodexModel } from "./live-models.js";
 
 const exec = promisify(execFile);
-const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 const live = process.env.ENSEMBLE_LIVE === "1";
 const claudeModel = process.env.ENSEMBLE_LIVE_CLAUDE_MODEL ?? "haiku";
 // Each wait the test allows itself before releasing its probes.

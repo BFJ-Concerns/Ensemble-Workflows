@@ -1,12 +1,12 @@
 # Command-line interface
 
 The launcher is a single self-contained file,
-`skills/ensemble-workflow/Base/scripts/ensemble.mjs`. Run it with Node.js
+`plugin/skills/ensemble-workflow/scripts/ensemble.mjs`. Run it with Node.js
 24.14.0 or later; an older Node exits 1 with a version error. This page writes
 it as `ensemble`, as if a shell alias or a symlink on `PATH` gave it that name:
 
 ```sh
-alias ensemble='node /path/to/Ensemble-Workflows/skills/ensemble-workflow/Base/scripts/ensemble.mjs'
+alias ensemble='node /path/to/Ensemble-Workflows/plugin/skills/ensemble-workflow/scripts/ensemble.mjs'
 ```
 
 ## Synopsis

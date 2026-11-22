@@ -84,7 +84,7 @@ alias ensemble='node /path/to/ensemble.mjs'
 ```
 
 The launcher can live anywhere. A checkout of this repository carries the
-same file at `skills/ensemble-workflow/Base/scripts/ensemble.mjs`, built from
+same file at `plugin/skills/ensemble-workflow/scripts/ensemble.mjs`, built from
 the checkout's own source; see [Building from source](#building-from-source).
 
 ## A first workflow
@@ -252,7 +252,7 @@ npm run build
 ```
 
 The build compiles the TypeScript in `src/` to `dist/` and rebuilds the
-launcher at `skills/ensemble-workflow/Base/scripts/ensemble.mjs`.
+launcher at `plugin/skills/ensemble-workflow/scripts/ensemble.mjs`.
 
 If `tsc` is missing, let any other install in that checkout finish first:
 [`npm ci`](https://docs.npmjs.com/cli/v11/commands/npm-ci/) removes

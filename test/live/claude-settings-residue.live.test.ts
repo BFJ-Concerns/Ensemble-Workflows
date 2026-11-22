@@ -13,7 +13,7 @@ import { readProcessStartTicks } from "../../src/process-owner-evidence.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 
 const exec = promisify(execFile);
-const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundle = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 const live = process.env.ENSEMBLE_LIVE === "1";
 interface Identity { pid: number; start: string; cwd: string; comm: string }
 interface Run { child: ChildProcess; exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }> }

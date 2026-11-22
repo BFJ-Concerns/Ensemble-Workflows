@@ -10,7 +10,7 @@ import { parseTranscriptText, type TranscriptEntry } from "../../src/claude-tran
 import { findOnlyFile, runNode } from "../integration/estate-process.js";
 import { suiteClaudeDaemon } from "./suite-claude-daemon.js";
 
-const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundle = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 const skip = process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false;
 const worker = { engine: "claude", model: "claude-haiku-5-5", effort: "low", timeoutMs: 120_000, maxAttempts: 1 };
 

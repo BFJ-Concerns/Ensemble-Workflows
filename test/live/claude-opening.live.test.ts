@@ -13,7 +13,7 @@ import { parseTranscriptText } from "../../src/claude-transcript.js";
 import { findOnlyFile, runNode } from "../integration/estate-process.js";
 import { TYPED_FOLLOW_UP_OPENING_PROMPT } from "./claude-follow-up-typed-prompts.js";
 
-const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundle = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 for (const [size, suffix, expectedAnswer, description] of [
   [0, "\n", "PINEAPPLE", "a trailing newline"],

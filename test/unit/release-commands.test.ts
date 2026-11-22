@@ -8,7 +8,7 @@ import test from "node:test";
 
 import type { TestContext } from "node:test";
 
-const launcherPath = "skills/ensemble-workflow/Base/scripts/ensemble.mjs";
+const launcherPath = "plugin/skills/ensemble-workflow/scripts/ensemble.mjs";
 
 async function checkout(t: TestContext): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "ensemble-release-"));

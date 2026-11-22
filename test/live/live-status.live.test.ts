@@ -13,7 +13,7 @@ import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths } from "./held-wor
 import type { HeldProbe } from "./held-worker-probes.js";
 import { liveCodexModel } from "./live-models.js";
 
-const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundle = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 const consumer = path.resolve("test/consumers/read-live-status.mjs");
 
 for (const engine of ["claude", "codex"] as const) {

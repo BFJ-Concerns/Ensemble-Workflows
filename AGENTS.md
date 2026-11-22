@@ -40,7 +40,7 @@ the app-server protocol schema).
 
 ## The launcher
 
-`skills/ensemble-workflow/Base/scripts/ensemble.mjs` is the self-contained
+`plugin/skills/ensemble-workflow/scripts/ensemble.mjs` is the self-contained
 launcher, built from `src/` by `npm run build:skill`. Skill installs expect
 exactly that path, so do not move or rename it, and keep the directory to that
 one file: the `ensemble-workflow` skill's guidance (`SKILL.md` and its

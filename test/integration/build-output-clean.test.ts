@@ -14,7 +14,7 @@ test("a rebuild removes tests and modules whose sources were deleted", async () 
       await cp(path.resolve(entry), path.join(directory, entry), { recursive: true });
     }
     await symlink(path.resolve("node_modules"), path.join(directory, "node_modules"), "dir");
-    await mkdir(path.join(directory, "skills/ensemble-workflow/Base/scripts"), { recursive: true });
+    await mkdir(path.join(directory, "plugin/skills/ensemble-workflow/scripts"), { recursive: true });
     await mkdir(path.join(directory, "test/unit"), { recursive: true });
     const removedModule = path.join(directory, "src/withdrawn.ts");
     const removedTest = path.join(directory, "test/unit/withdrawn.test.ts");

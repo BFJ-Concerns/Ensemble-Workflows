@@ -17,7 +17,7 @@ import {
   typedFollowUpPrompt
 } from "./claude-follow-up-typed-prompts.js";
 
-const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundle = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 interface AgentRecord {
   status: string;

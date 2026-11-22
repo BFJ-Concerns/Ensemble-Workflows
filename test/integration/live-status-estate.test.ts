@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { executablePath, runNode } from "./estate-process.js";
 
-const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundle = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 const consumer = path.resolve("test/consumers/read-live-status.mjs");
 const fixture = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 

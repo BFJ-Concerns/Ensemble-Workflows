@@ -9,7 +9,7 @@ import test from "node:test";
 import { hermeticEstateEnvironment, findOnlyFile } from "./estate-process.js";
 
 const execFileAsync = promisify(execFile);
-const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 for (const versionExitCode of [0, 1]) {
   test(`a refused relative opencode home leaves launcher cwd untouched after version query exit ${versionExitCode}`, async () => {

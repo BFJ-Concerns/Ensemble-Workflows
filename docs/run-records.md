@@ -881,6 +881,11 @@ The fields present throughout a record's lifetime are:
   means no outcome was observed: either the run's own close ended while the
   dispatch record was still being written, or another run's sweep found the
   record left `"in-progress"` by a killed run (with an `abandonment` block).
+  `"timed-out"` means a run deadline ended the agent or an enforced turn,
+  first-output or transport-request deadline ended its final attempt.
+  Claude registration and first-life failures, a worker lost from the
+  roster and the whitespace-stream bound settle the agent `"failed"` when
+  they end its final attempt.
 - `termination_cause`: the `{ kind, message }` that settled the agent at that
   status when the runtime decided it — a run that ended under the worker, or a
   deadline the runtime enforced — and `null` when the attempts already name the
@@ -918,7 +923,8 @@ The fields present throughout a record's lifetime are:
   `"substrate-never-started"` (every attempt was refused before a worker
   existed, including a resource-preflight refusal), `"worker-interrupted"` or
   `"worker-timed-out"` (the run cut the
-  worker short before usage was reported), or `"engine-reported-no-usage"`
+  worker short before usage was reported), `"worker-lost"` (the worker was
+  gone before final usage), or `"engine-reported-no-usage"`
   (a settled worker supplied no usage). Any usage the engine did report,
   including zero tokens, is retained as a summary instead of an absence reason.
 - `queued_ms`, `execution_ms`: time spent waiting for admission and time
@@ -1082,7 +1088,7 @@ on the same target.
 
 | Rule | Class | Meaning |
 |---|---|---|
-| `output` | `output` | Empty output, unparseable JSON, or an answer that fails its schema |
+| `output` | `output` | Empty output, unparseable JSON, an answer that fails its schema, or a stream that exceeded the [whitespace bound](workflow-scripts.md#whitespace-streams). `ClaudeHeldWhitespaceStreamError` *settles* because the worker had to stop |
 | `effort.rejected` | `unclassified` | The provider refused the requested reasoning level; *settles* |
 | `<engine>.authentication-failure` | `unclassified` | The engine's credentials were rejected |
 | `<engine>.model-not-found` | `unclassified` | The engine does not know the model |
@@ -1113,6 +1119,7 @@ on the same target.
 | `claude.no-first-life` | `availability` | The session registered but never wrote a transcript |
 | `claude.api-refusal` | `unclassified` | The API refused the turn with any other status or code |
 | `claude.client-diagnostic` | `unclassified` | Claude Code reported an error with no API status behind it |
+| `claude.worker-lost` | `availability` | A one-shot Claude worker left the roster before answering |
 | `claude.deadline` | `unclassified` | The call's `timeoutMs` ended the turn |
 | `claude.blocked` | `unclassified` | The worker stayed blocked awaiting input past the recovery bound |
 | `claude.valve` | `unclassified` | The message was never submitted to the session |
@@ -1207,7 +1214,7 @@ Each leaf has four fields:
   booked under the leaf reported usage. It is never a zero summary. The reason
   is a word of the agent record's `usage.unavailable`, taken from the leaf's
   `unobserved` entries: the first of `record-unsettled`, `worker-interrupted`,
-  `worker-timed-out` and `engine-reported-no-usage` that any entry names, so
+  `worker-timed-out`, `worker-lost` and `engine-reported-no-usage` that any entry names, so
   spend that may exist outranks an engine's account of none. A leaf with no
   `unobserved` entries holds only refused attempts and reads
   `substrate-never-started`. Read `unobserved` for each attempt's own reason.
@@ -1242,6 +1249,7 @@ Each leaf has four fields:
   | `record-unsettled` | had no observed outcome: still running in a live manifest, or running when its writer died (SIGKILL), so the sweep listed it as `abandoned`; or it is an attempt nothing numbered |
   | `worker-interrupted` | was cut short by the run ending with it in flight: the run's interrupt (SIGINT or SIGTERM), or a script body that returned or failed |
   | `worker-timed-out` | was cut short by a run or turn deadline the runtime enforced, including a timed-out attempt the runtime then retried, so an agent whose record reads `complete` can still name one here |
+  | `worker-lost` | lost its worker before final usage, or addressed a session whose worker was already gone |
   | `engine-reported-no-usage` | settled on its engine's own account, which carried no usage |
 
 Each attempt is judged by its own entry, never by the agent's status. The run

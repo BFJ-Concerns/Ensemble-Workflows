@@ -24,6 +24,7 @@ import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 import {
   REFUSED_BEFORE_WORKER_KINDS,
   buildCostRollup,
+  isWorkerLossFailureKind,
   type CostRollup,
   type RollupAgentView,
   type RollupAttemptView
@@ -1628,7 +1629,7 @@ function agentUsage(
   record: RuntimeAgentRecord
 ): { summary: UsageSummary } | {
   unavailable: "record-unsettled" | "no-attempt-ran" | "engine-reported-no-usage"
-    | "substrate-never-started" | "worker-interrupted" | "worker-timed-out";
+    | "substrate-never-started" | "worker-interrupted" | "worker-timed-out" | "worker-lost";
 } {
   // Summed attempt by attempt under each attempt's own engine: a fallback
   // chain can put one agent's attempts on two engines, and each engine's
@@ -1658,6 +1659,9 @@ function agentUsage(
   }
   if (record.status === "timed-out") {
     return { unavailable: "worker-timed-out" };
+  }
+  if (record.attempts.some((attempt) => isWorkerLossFailureKind(attempt.failure?.kind))) {
+    return { unavailable: "worker-lost" };
   }
   return { unavailable: "engine-reported-no-usage" };
 }

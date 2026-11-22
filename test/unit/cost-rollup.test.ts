@@ -300,6 +300,19 @@ test("a Claude worker that never registered or came to life was not cut short by
   }
 });
 
+test("a lost worker has unobserved spend even when it reported partial usage", () => {
+  const rollup = buildCostRollup([agent(1, [
+    attempt(1, { failureKind: "claude-worker-lost", tokenUsageEvents: [] }),
+    attempt(2, { failureKind: "session-lost" })
+  ])]);
+  const leaf = rollup.codex?.["gpt-6-luna"];
+  assert.equal(leaf?.complete, false);
+  assert.deepEqual(leaf?.unobserved, [
+    { agent: 1, attempt: 1, reason: "worker-lost", measured: "none" },
+    { agent: 1, attempt: 2, reason: "worker-lost", measured: "partial" }
+  ]);
+});
+
 test("a run deadline marks only the attempt it cut short timed out", () => {
   const rollup = buildCostRollup([
     agent(1, [

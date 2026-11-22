@@ -5,6 +5,7 @@ import { launchEnvironment } from "./engine-environment.js";
 import {
   EngineShutdownError,
   TurnTimeoutError,
+  WhitespaceStreamError,
   attachFailedTurnResult,
   attachPartialWorkerText,
   attachWorkerExitStatus,
@@ -12,6 +13,7 @@ import {
   partialWorkerTextOf
 } from "./errors.js";
 import { subtractUsage } from "./usage-summary.js";
+import { WhitespaceStream } from "./whitespace-stream.js";
 import { createWorkerScopes, DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
 
 import type {
@@ -62,6 +64,8 @@ export interface OpenCodeRunResult {
   durationMs: number;
   /** The runner's per-turn timer expired while the subprocess was still running. */
   deadlineExpired?: boolean;
+  /** The run was stopped after streaming only whitespace past the bound. */
+  whitespaceLimitReached?: boolean;
 }
 
 export interface OpenCodeEngineInvocationOptions {
@@ -264,7 +268,9 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       signal: this.#abortController.signal
     });
     const parsedRun = parseRunEvents(run.stdout);
-    const fallback = fallbackText(parsedRun.events);
+    const fallback = run.whitespaceLimitReached
+      ? parsedRun.events.map(runTextPart).join("")
+      : fallbackText(parsedRun.events);
     if (this.#abortController.signal.aborted) {
       // A cancelled worker is a shutdown, not an opencode failure — and a
       // cancelled invocation must not fork a fresh export subprocess just
@@ -274,19 +280,19 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         { exitCode: run.exitCode, signal: run.signal }
       );
     }
-    if (run.deadlineExpired === true && this.#options.timeoutMs !== undefined) {
-      // The deadline ends the turn without an export, but what the stream
-      // already showed — its spend and its transcript — is the attempt's
-      // evidence all the same, and rides the timeout to the recorder.
+    const timeoutMs = run.deadlineExpired ? this.#options.timeoutMs : undefined;
+    if (run.whitespaceLimitReached || timeoutMs !== undefined) {
+      // A stopped run has no export. Keep the spend and transcript already
+      // observed in the stream on the attempt's failure.
       const workerExit = { exitCode: run.exitCode, signal: run.signal };
-      const timeout = new TurnTimeoutError(
-        `opencode turn timed out after ${this.#options.timeoutMs}ms: ${openCodeFailureMessage(run, parsedRun.events)}`, {
-        kind: "turn",
-        timeoutMs: this.#options.timeoutMs,
-        threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
-      });
+      const error = timeoutMs === undefined ? new WhitespaceStreamError() : new TurnTimeoutError(
+        `opencode turn timed out after ${timeoutMs}ms: ${openCodeFailureMessage(run, parsedRun.events)}`, {
+          kind: "turn",
+          timeoutMs,
+          threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
+        });
       const evidence = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, null);
-      attachFailedTurnResult(timeout, {
+      attachFailedTurnResult(error, {
         text: fallback,
         resolvedModel: this.#providerModel,
         workerExit,
@@ -296,7 +302,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         items: {},
         ...evidence
       });
-      throw attachWorkerExitStatus(attachPartialWorkerText(timeout, fallback), workerExit);
+      throw attachWorkerExitStatus(attachPartialWorkerText(error, fallback), workerExit);
     }
     let exportData: OpenCodeExport | null = null;
     let exportDiagnostic: OpenCodeExportDiagnostic;
@@ -556,7 +562,7 @@ async function runProcess(
     const command = await containment.contain(`opencode ${args[0]}`, file, args, {
       cwd, env, stdio: ["ignore", "pipe", "pipe"]
     });
-    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop);
+    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, args[0] === "run", abortSignal, onFirstData, onData, onCommandStop);
   } finally {
     if (scopes !== undefined) {
       try {
@@ -574,6 +580,7 @@ function collectProcess(
   startedAt: number,
   timeoutMs: number | undefined,
   killGraceMs: number,
+  watchWhitespace: boolean,
   abortSignal?: AbortSignal,
   onFirstData?: () => void,
   onData?: (chunk: string) => void,
@@ -591,16 +598,22 @@ function collectProcess(
     let closed = exited && (child.stdout?.closed ?? true) && (child.stderr?.closed ?? true);
     let stopped = false;
     let deadlineExpired = false;
+    let whitespaceLimitReached = false;
     let stopping: Promise<void> | undefined;
     let drainTimer: NodeJS.Timeout | undefined;
     let processError: Error | undefined;
     let exitCode: number | null = child.exitCode;
     let exitSignal: NodeJS.Signals | null = child.signalCode;
 
+    let streamBuffer = "";
+    const whitespace = watchWhitespace ? new WhitespaceStream(startedAt, () => {
+      whitespaceLimitReached = true;
+      stop();
+    }) : null;
+
     const settle = (): void => {
       if (settled || !stopped || !closed) return;
       settled = true;
-      clearTimeout(timeout);
       clearTimeout(drainTimer);
       abortSignal?.removeEventListener("abort", terminate);
       child.stdout?.destroy();
@@ -612,10 +625,12 @@ function collectProcess(
         reject(processError);
       } else {
         resolve({ exitCode, signal: exitSignal, stdout: stdout.join(""), stderr: stderr.join(""),
-          durationMs: Date.now() - startedAt, deadlineExpired });
+          durationMs: Date.now() - startedAt, deadlineExpired, whitespaceLimitReached });
       }
     };
     const stop = (): void => {
+      whitespace?.clear();
+      clearTimeout(timeout);
       stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then((observation) => {
         // Delivery precedes settlement, so errors and ordinary results alike
         // retain the account. The engine passes an attempt-local collector.
@@ -649,19 +664,31 @@ function collectProcess(
       }
       try { onData?.(chunk); } catch { /* Live accounting cannot fail a worker. */ }
       stdout.push(chunk);
+      if (whitespace !== null && stopping === undefined) {
+        streamBuffer += chunk;
+        const lines = streamBuffer.split(/\r?\n/);
+        streamBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const event = parseRunEvent(line);
+          const text = runTextPart(event);
+          if (text !== null) {
+            whitespace.observeText(text);
+          } else if (isRecord(event) && (event.type === "tool_use" || event.type === "reasoning")) {
+            whitespace.observeActivity();
+          }
+        }
+      }
     });
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => stderr.push(chunk));
     child.on("error", (error) => {
       processError = error;
-      clearTimeout(timeout);
       stop();
     });
     child.on("exit", (code, signal) => {
       exited = true;
       exitCode = code;
       exitSignal = signal;
-      clearTimeout(timeout);
       // A normally exited engine can leave live shell commands behind too.
       stop();
     });
@@ -669,7 +696,6 @@ function collectProcess(
       closed = true;
       exitCode = code;
       exitSignal = signal;
-      clearTimeout(timeout);
       stop();
       settle();
     });
@@ -684,22 +710,23 @@ function parseRunEvents(stdout: string): ParsedRunEvents {
   const events: unknown[] = [];
   let sessionId: string | null = null;
   for (const line of stdout.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) {
-      continue;
-    }
-    try {
-      const event = JSON.parse(trimmed) as unknown;
-      events.push(event);
-      const candidate = sessionIdFromEvent(event);
-      if (candidate !== null) {
-        sessionId = candidate;
-      }
-    } catch {
-      events.push({ type: "raw", text: line });
-    }
+    const event = parseRunEvent(line);
+    if (event === undefined) continue;
+    events.push(event);
+    const candidate = sessionIdFromEvent(event);
+    if (candidate !== null) sessionId = candidate;
   }
   return { events, sessionId };
+}
+
+function parseRunEvent(line: string): unknown {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return undefined;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return { type: "raw", text: line };
+  }
 }
 
 function sessionIdFromEvent(event: unknown): string | null {
@@ -752,6 +779,11 @@ function finalAssistantText(exportData: OpenCodeExport): string {
   return "";
 }
 
+function runTextPart(event: unknown): string | null {
+  if (!isRecord(event) || event.type !== "text" || !isRecord(event.part)) return null;
+  return event.part.type === "text" && typeof event.part.text === "string" ? event.part.text : null;
+}
+
 function fallbackText(events: unknown[]): string {
   let currentStepText: string[] | null = null;
   let finalStoppedStepText = "";
@@ -763,14 +795,15 @@ function fallbackText(events: unknown[]): string {
       currentStepText = [];
       continue;
     }
-    if (event.type === "text" && event.part.type === "text" && typeof event.part.text === "string") {
+    const text = runTextPart(event);
+    if (text !== null) {
       // A message may stream in several text parts; retaining the step boundary
       // prevents earlier tool-progress narration from becoming the answer.
       if (currentStepText === null && finalStoppedStepText.length > 0) {
         continue;
       }
       currentStepText ??= [];
-      currentStepText.push(event.part.text);
+      currentStepText.push(text);
       continue;
     }
     if (event.type === "step_finish" && event.part.type === "step-finish") {

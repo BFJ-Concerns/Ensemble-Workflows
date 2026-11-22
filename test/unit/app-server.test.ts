@@ -26,6 +26,7 @@ import {
   AppServerSystemError,
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError,
+  WhitespaceStreamError,
   appServerDiagnosticOf,
   partialTranscriptOf,
   partialWorkerTextOf,
@@ -824,6 +825,41 @@ test("per-turn timeout is not deferred by ongoing MCP tool progress", { timeout:
     await transport.close();
   }
 });
+
+for (const activity of ["foreign", "current"] as const) {
+  test(`a Codex whitespace stream uses the bound for ${activity} turn activity`, { timeout: 5_000 }, async (t) => {
+    const codexBin = await fakeCodexFailingTurnServer(activity === "foreign" ? "whitespace-stream" : "whitespace-with-reasoning");
+    const streamed = Promise.withResolvers<void>();
+    const transport = await CodexAppServerTransport.start({
+      ...defaultTransportOptions(codexBin),
+      onEvent: (event) => {
+        if (event.method === "test/clock") t.mock.timers.tick(110_000);
+        if (event.method === "test/streamed") streamed.resolve();
+      }
+    });
+    try {
+      const threadId = await transport.openThread({});
+      t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+      let settled = false;
+      const turn = transport.runTurn(threadId, "stream whitespace", { timeoutMs: 240_000 });
+      void turn.catch(() => { settled = true; });
+      await streamed.promise;
+      t.mock.timers.tick(119_999);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, false);
+      assert.equal(Date.now(), activity === "foreign" ? 119_999 : 229_999);
+      t.mock.timers.tick(1);
+      await assert.rejects(turn, (error: unknown) => {
+        assert.ok(error instanceof WhitespaceStreamError);
+        assert.equal(partialWorkerTextOf(error), " \t\n");
+        return true;
+      });
+    } finally {
+      t.mock.timers.reset();
+      await transport.close();
+    }
+  });
+}
 
 test("transport close carries each live turn's own partial text", async () => {
   const codexBin = await fakeCodexFailingTurnServer("hang-after-delta");
@@ -2041,6 +2077,8 @@ async function fakeCodexFailingTurnServer(
     | "held-loss-after-ack"
     | "held-loss-after-notification"
     | "hang-after-delta"
+    | "whitespace-stream"
+    | "whitespace-with-reasoning"
     | "no-turn-start-ack"
     | "garbage-line"
     | "terminated-garbage-line"
@@ -2184,6 +2222,18 @@ reader.on("line", (line) => {
           send({ method: "turn/completed", params: { threadId, turn: { id: "turn-2" } } });
         }, 120);
       }
+      return;
+    }
+    if (mode === "whitespace-stream" || mode === "whitespace-with-reasoning") {
+      send({ method: "turn/started", params: { threadId, turn: { id: "turn-1" } } });
+      send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: " \\t" } });
+      if (mode === "whitespace-with-reasoning") {
+        send({ method: "test/clock", params: { threadId } });
+        send({ method: "item/reasoning/textDelta", params: { threadId, turnId: "turn-1", delta: "current turn" } });
+      }
+      send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "\\n" } });
+      send({ method: "item/reasoning/textDelta", params: { threadId, turnId: "turn-0", delta: "old turn" } });
+      send({ method: "test/streamed", params: { threadId } });
       return;
     }
     if (mode === "no-first-delta") {

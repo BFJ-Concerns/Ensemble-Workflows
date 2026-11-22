@@ -8,13 +8,16 @@ import {
   ClaudeCommandNotSkillError,
   ClaudeDeliveryError,
   ClaudeFirstLifeTimeoutError,
+  ClaudeHeldWhitespaceStreamError,
   ClaudePollTimeoutError,
   ClaudeRegistrationTimeoutError,
   ClaudeTranscriptError,
   ClaudeValveError,
   ClaudeWorkerDiagnosticError,
   ClaudeWorkerError,
+  ClaudeWorkerLostError,
   EngineShutdownError,
+  WhitespaceStreamError,
   attachFailedTurnResult,
   attachPartialWorkerText,
   failedTurnResultOf,
@@ -31,6 +34,7 @@ import {
   readTranscriptFile,
   resolvedModelSince,
   submissionReceipt,
+  streamOutputSince,
   openingCommand,
   unrunCommand,
   turnComplete,
@@ -38,6 +42,7 @@ import {
 } from "./claude-transcript.js";
 import { isPreparedClaudeStrip } from "./claude-tool-surface.js";
 import { subtractUsage } from "./usage-summary.js";
+import { WhitespaceStream } from "./whitespace-stream.js";
 
 import { CLAUDE_ROSTER_ABSENCE_BOUND, CLAUDE_ROSTER_LOSS_REASON } from "./claude-control-plane.js";
 
@@ -511,6 +516,14 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
           } })
         }));
       }
+      if (error instanceof WhitespaceStreamError) {
+        if (error instanceof ClaudeHeldWhitespaceStreamError && this.#handle !== null) {
+          this.#noteLost({ nativeSession: this.#handle.sessionId,
+            reason: "the worker was stopped after streaming only whitespace", observedAt: Date.now() });
+        }
+        await this.#teardown();
+        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
+      }
       if (error instanceof ClaudeWorkerError) {
         // Preserve the operational cause and current-turn text on the failed
         // result while retaining the shared loop's bounded retry governance.
@@ -564,7 +577,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 
   #lostResult(evidence: FailureEvidence | null = null, fromIndex = 0): EngineAttemptResult {
     const message = this.#lost?.reason ?? "the held Claude worker is gone";
-    const error = new ClaudePollTimeoutError(message);
+    const error = new ClaudeWorkerLostError(message);
     if (evidence !== null) this.#attachWorkerText(error, evidence, fromIndex);
     return {
       ...failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)),
@@ -661,7 +674,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * pending.
    */
   async #deliver(handle: ClaudeSessionHandle, submission: Submission, observers: AttemptObservers): Promise<void> {
-    if (this.#lost !== null) throw new ClaudePollTimeoutError(this.#lost.reason);
+    if (this.#lost !== null) throw new ClaudeWorkerLostError(this.#lost.reason);
     if (submission.carriesTurn) this.#collectionMark = submission.mark;
     const outcome = await this.#controlPlane.steer(handle, submission.message);
     if (!outcome.submitted) {
@@ -927,8 +940,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     opening?: Submission
   ): Promise<TranscriptFile> {
     // No timeoutMs → no poll deadline; wait indefinitely for the worker to settle.
-    const deadline = this.#options.timeoutMs === undefined ? Infinity : Date.now() + this.#options.timeoutMs;
-    const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
+    const startedAt = Date.now();
+    const deadline = startedAt + (this.#options.timeoutMs ?? Infinity);
+    const firstLifeDeadline = startedAt + this.#firstLifeTimeoutMs;
+    const whitespace = new WhitespaceStream(startedAt);
+    let observedEntries = fromIndex;
+    let observedText = "";
     // Corrections necessarily operate on an existing transcript. The guard is
     // only for a newly dispatched child that never starts writing one.
     let sawLife = fromIndex > 0;
@@ -1010,6 +1027,15 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         if (turnComplete(transcript.entries, fromIndex) && !awaitingTask) {
           return transcript;
         }
+        for (const output of streamOutputSince(transcript.entries, observedEntries)) {
+          if (output === null) {
+            whitespace.observeActivity();
+          } else {
+            whitespace.observeText(output);
+            observedText += output;
+          }
+        }
+        observedEntries = transcript.entries.length;
       }
       if (!sawLife && Date.now() >= firstLifeDeadline) {
         throw this.#firstLifeFailure(handle,
@@ -1028,12 +1054,18 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
           if (!sawLife && opening !== undefined) {
             throw this.#firstLifeFailure(handle, "worker left the roster before writing an opening transcript");
           }
-          throw new ClaudePollTimeoutError("worker left the roster before completing");
+          throw new ClaudeWorkerLostError("worker left the roster before completing");
         }
         await this.#pollDelay();
         continue;
       }
       absences = 0;
+
+      const whitespaceDeadline = whitespace.expiresAt();
+      if (Date.now() >= whitespaceDeadline && whitespaceDeadline < deadline) {
+        const error = this.#multiTurn ? new ClaudeHeldWhitespaceStreamError() : new WhitespaceStreamError();
+        throw attachPartialWorkerText(error, observedText);
+      }
 
       if (!sawLife && opening !== undefined && openingCommandName !== null) {
         const replaced = await this.#commandInReplacingSession(handle, status, openingCommandName);
@@ -1102,7 +1134,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       if (Date.now() >= deadline) {
         throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
       }
-      await this.#pollDelay();
+      await this.#pollDelay(whitespaceDeadline - Date.now());
     }
   }
 
@@ -1132,9 +1164,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   }
 
   /** A poll gap that ends early — by rejecting — the moment close() aborts. */
-  #pollDelay(): Promise<void> {
-    return delay(this.#pollIntervalMs, AbortSignal.any([this.#abortController.signal, this.#lossController.signal]),
-      () => this.#closed || this.#lost === null ? new EngineShutdownError("claude") : new ClaudePollTimeoutError(this.#lost.reason));
+  #pollDelay(maxMs = Infinity): Promise<void> {
+    return delay(Math.max(0, Math.min(this.#pollIntervalMs, maxMs)), AbortSignal.any([this.#abortController.signal, this.#lossController.signal]),
+      () => this.#closed || this.#lost === null ? new EngineShutdownError("claude") : new ClaudeWorkerLostError(this.#lost.reason));
   }
 
   #assertOpen(): void {
@@ -1511,7 +1543,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
  * the live run, which is the one place a budget or audit consumer reads.
  */
 function failedTurnResult(
-  error: ClaudeWorkerError,
+  error: ClaudeWorkerError | WhitespaceStreamError,
   evidence: FailureEvidence | null,
   usageEvent: TokenUsageEvent | null
 ): EngineAttemptResult {
@@ -1574,7 +1606,14 @@ interface FailureEvidence {
 type AttemptObservers = Pick<EngineAttemptContext, "onLiveEvidence" | "onWaiting" | "onTranscriptPath" | "onOutput" | "onIdentity" | "onUsage">;
 
 
-function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
+function claudeAttemptFailure(error: ClaudeWorkerError | WhitespaceStreamError): EngineAttemptFailure {
+  if (error instanceof WhitespaceStreamError) {
+    return { kind: error instanceof ClaudeHeldWhitespaceStreamError
+      ? "ClaudeHeldWhitespaceStreamError" : "WhitespaceStreamError", message: error.message };
+  }
+  if (error instanceof ClaudeWorkerLostError) {
+    return { kind: "claude-worker-lost", message: error.message };
+  }
   if (error instanceof ClaudeFirstLifeTimeoutError) {
     return { kind: "claude-first-life-timeout", message: error.message };
   }

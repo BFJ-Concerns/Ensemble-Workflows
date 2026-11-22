@@ -18,7 +18,8 @@ import {
   attachFirstDeltaMs,
   attachWorkerExitStatus,
   CodexSchemaSubsetUnsupportedError,
-  TurnTimeoutError
+  TurnTimeoutError,
+  WhitespaceStreamError
 } from "./errors.js";
 import type { AppServerDiagnostic, WorkerExitStatus } from "./errors.js";
 
@@ -34,6 +35,7 @@ import type {
 } from "./types.js";
 import { tokenUsageEventFromParams } from "./budget.js";
 import { launchEnvironment } from "./engine-environment.js";
+import { WhitespaceStream } from "./whitespace-stream.js";
 
 interface PendingRequest {
   method: string;
@@ -66,6 +68,7 @@ export interface TurnProgressObserver {
 }
 
 interface TurnState {
+  whitespace: WhitespaceStream;
   progress: TurnProgressObserver;
   threadId: string;
   /** Learned from turn/start or the first turn-correlated inbound frame; ephemeral threads run one turn. */
@@ -936,6 +939,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         const turn = this.#turnCorrelatedBy(requestParams);
         if (turn !== undefined) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
+          turn.whitespace.observeActivity();
           this.#disarmFirstOutputDeadline(turn);
           this.#noteTurnFirstOutput(turn);
           try { turn.progress.onOutput?.(); } catch { /* Observability cannot fail a turn. */ }
@@ -1021,6 +1025,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
 
     const now = Date.now();
+    if (speaksForTurn && isToolOrReasoningActivity(method, params)) {
+      turn.whitespace.observeActivity();
+    }
     if (isTurnProgressNotification(method)) {
       turn.consecutiveRetryPromises = 0;
     }
@@ -1058,6 +1065,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
       if (typeof params.delta === "string") {
         turn.deltaText += params.delta;
+        if (speaksForTurn) turn.whitespace.observeText(params.delta);
       }
       return;
     }
@@ -1067,6 +1075,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       const itemType = itemTypeFromItem(item);
       if (itemType === "agentMessage" && typeof item?.text === "string") {
         turn.itemText = item.text;
+        if (speaksForTurn) turn.whitespace.observeText(item.text);
       }
       return;
     }
@@ -1341,6 +1350,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#transcripts.delete(threadId);
     this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
+    turn.whitespace.clear();
     this.#disarmRetryPromiseSilenceDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
@@ -1356,13 +1366,15 @@ export class CodexAppServerTransport implements RuntimeTransport {
         // terminal cause and replacement attempts must still be able to run.
       });
     }
-    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
+    turn.reject(attachPartialWorkerText(error, error instanceof WhitespaceStreamError && turn.deltaText.length > 0
+      ? turn.deltaText : turn.itemText ?? turn.deltaText));
   }
 
   #completeTurn(threadId: string, turn: TurnState): void {
     this.#turns.delete(threadId);
     this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
+    turn.whitespace.clear();
     this.#disarmRetryPromiseSilenceDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
@@ -1444,10 +1456,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
       rejectTurn = reject;
     });
 
+    const startedAt = Date.now();
     const state: TurnState = {
+      whitespace: new WhitespaceStream(startedAt, () => this.#rejectTurn(threadId, state, new WhitespaceStreamError())),
       threadId,
       turnId: undefined,
-      startedAt: Date.now(),
+      startedAt,
       firstDeltaAt: null,
       firstOutputSeen: false,
       progress: {},
@@ -1650,6 +1664,19 @@ function renderPayloadSafely(payload: unknown): string {
   } catch (error) {
     return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
   }
+}
+
+const TOOL_OR_REASONING_ITEMS = new Set([
+  "reasoning", "plan", "commandExecution", "fileChange", "functionCallOutput", "mcpToolCall",
+  "dynamicToolCall", "collabAgentToolCall", "subAgentActivity", "webSearch", "imageView", "imageGeneration", "sleep"
+]);
+
+function isToolOrReasoningActivity(method: string, params: JsonObject): boolean {
+  if (method === "item/started" || method === "item/completed") {
+    return TOOL_OR_REASONING_ITEMS.has(itemTypeFromItem(asJsonObject(params.item)));
+  }
+  return method === "turn/plan/updated" || method === "turn/diff/updated" ||
+    (method.startsWith("item/") && !method.startsWith("item/agentMessage/"));
 }
 
 function isTurnProgressNotification(method: string): boolean {

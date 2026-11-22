@@ -282,6 +282,31 @@ export function finalAssistantText(entries: TranscriptEntry[], fromIndex = 0): s
   return null;
 }
 
+/** Text and tool or reasoning activity recorded since the previous transcript read. */
+export function* streamOutputSince(entries: TranscriptEntry[], fromIndex: number): Iterable<string | null> {
+  for (const entry of entries.slice(fromIndex)) {
+    const content = entry.message?.content;
+    if (entry.type === "user" && Array.isArray(content) &&
+      content.some((block) => asRecord(block)?.type === "tool_result")) {
+      yield null;
+    }
+    if (entry.type !== "assistant" || entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER) continue;
+    if (typeof content === "string") {
+      yield content;
+    } else if (Array.isArray(content)) {
+      for (const block of content) {
+        const part = asRecord(block);
+        if (part?.type === "text" && typeof part.text === "string") {
+          yield part.text;
+        } else if (part?.type === "thinking" || part?.type === "redacted_thinking" ||
+                   part?.type === "tool_use" || part?.type === "server_tool_use") {
+          yield null;
+        }
+      }
+    }
+  }
+}
+
 /**
  * Claude Code's placeholder model id on a message it composed itself — a
  * client-side diagnostic rather than a model reply. It names no served

@@ -59,6 +59,8 @@ const SETTLING_FAILURE_KINDS: ReadonlySet<string> = new Set([
   "effort-rejected",
   // The held worker no longer exists, and a retry would address the same absent session.
   SESSION_LOST_KIND,
+  // The engine had to stop the native session to end its whitespace stream.
+  "ClaudeHeldWhitespaceStreamError",
   // Claude Code ran no skill for the command the task opens with, and a retry sends the same opening.
   "claude-command-not-skill"
 ]);
@@ -114,7 +116,9 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
   return failure;
 }
 
-const OUTPUT_FAILURE_KINDS = new Set(["empty-output", "invalid-json", "schema-validation"]);
+const OUTPUT_FAILURE_KINDS = new Set([
+  "empty-output", "invalid-json", "schema-validation", "WhitespaceStreamError", "ClaudeHeldWhitespaceStreamError"
+]);
 
 /**
  * Codex names its terminal conditions in the `codexErrorInfo` field of the
@@ -192,12 +196,10 @@ const CLAUDE_AVAILABILITY_CODES = new Map<string, string>([
  * The availability class moves a call down its fallback chain, where the
  * same prompt is launched on another target. A kind the engine raises may
  * therefore sit in that class only when the failure shows the session never
- * held the prompt: the launch was refused, no session registered, or the
- * session never wrote a transcript. Once a transcript exists the session
- * took something, and a prompt that did not arrive as sent is a delivery
- * failure: retried on the same target, after the engine has stopped that
- * session or followed its turn to the end, and never a reason to start the
- * work a second time elsewhere. (A refusal by the API is classed from the
+ * held the prompt or is gone before answering. A prompt that did not
+ * arrive as sent is a delivery failure. It can retry on the same target
+ * once the engine has stopped the session or followed its turn to the end.
+ * (A refusal by the API is classed from the
  * status the transcript records, in `classifyClaudeFailure`: the provider
  * declined the turn, whatever the session held.)
  */
@@ -212,6 +214,7 @@ const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
   ["claude-registration-timeout", { class: "availability", rule: "claude.no-registration" }],
   // The session registered but never produced a transcript: a dead worker.
   ["claude-first-life-timeout", { class: "availability", rule: "claude.no-first-life" }],
+  ["claude-worker-lost", { class: "availability", rule: "claude.worker-lost" }],
   ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],
   ["claude-blocked", { class: "unclassified", rule: "claude.blocked" }],
   ["claude-valve-error", { class: "unclassified", rule: "claude.valve" }],

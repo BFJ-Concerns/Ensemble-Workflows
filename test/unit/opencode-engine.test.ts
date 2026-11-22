@@ -315,6 +315,54 @@ test("a worker killed by signal leaves its exit evidence in the attempt record",
   }
 });
 
+test("opencode worker loss records unobserved spend with and without stream usage", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-loss-"));
+  const stream = JSON.stringify({
+    type: "step_finish",
+    sessionID: "ses_killed",
+    part: { type: "step-finish", reason: "tool-calls", tokens: { input: 3, output: 2, reasoning: 1 } }
+  });
+  const runner = new FakeOpenCodeRunner({
+    runResult: { exitCode: null, signal: "SIGKILL" },
+    runResults: [{ stdout: "" }, { stdout: stream }],
+    exportText: null
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd: dir, runner, modelRegistry: testOpenCodeModelRegistry })]),
+    defaultMaxAttempts: 1
+  });
+  try {
+    const writer = await RunRecordWriter.start({
+      storeDir: dir,
+      cwd: dir,
+      runUuid: "run-opencode-loss",
+      workflowPath: path.join(dir, "workflow.js"),
+      workflowSource: "export const meta = { name: 'opencode-loss' };",
+      args: [],
+      cliFlags: { jsonArgs: false }
+    });
+    runtime.setRunRecorder(writer);
+    for (const prompt of ["die before reporting usage", "die after reporting usage"]) {
+      assert.equal(await runtime.agent(prompt, { engine: "opencode", model: "glm-5.2" }), null);
+      assert.equal(runtime.lastAgentRecord()?.attempts[0]?.failure?.kind, "opencode-worker-lost");
+    }
+    await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+    const first = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+    assert.deepEqual(first.usage, { unavailable: "worker-lost" });
+    const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8"));
+    const spend = manifest.cost_rollup.opencode["openrouter/z-ai/glm-5.2"];
+    assert.equal(spend.complete, false);
+    assert.deepEqual(spend.unobserved, [
+      { agent: 1, attempt: 1, reason: "worker-lost", measured: "none" },
+      { agent: 2, attempt: 1, reason: "worker-lost", measured: "partial" }
+    ]);
+  } finally {
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("an opencode subprocess stopped by its turn deadline records a timeout", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-deadline-"));
   const bin = path.join(directory, "opencode");

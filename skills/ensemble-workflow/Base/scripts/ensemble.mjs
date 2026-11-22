@@ -16679,7 +16679,7 @@ function isWhitespaceStreamFailureKind(kind) {
   return kind === "WhitespaceStreamError" || kind === "ClaudeHeldWhitespaceStreamError";
 }
 function isWorkerLossFailureKind(kind) {
-  return kind === "claude-worker-lost" || kind === "session-lost";
+  return kind === "claude-worker-lost" || kind === "opencode-worker-lost" || kind === "session-lost";
 }
 var UNOBSERVED_REASON = {
   interrupted: "worker-interrupted",

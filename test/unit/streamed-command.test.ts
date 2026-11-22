@@ -29,6 +29,18 @@ test("a command that cannot be started is its substrate refusing, not a raw proc
   }
 });
 
+test("Node rejecting a NUL in a command argument is not a substrate refusal", async () => {
+  const commands = new CommandContainment(new NoWorkerScopes());
+  try {
+    await assert.rejects(
+      runStreamedCommand(options(commands, { args: ["invalid\0prompt"] })),
+      { code: "ERR_INVALID_ARG_VALUE" }
+    );
+  } finally {
+    await commands.close();
+  }
+});
+
 test("an argument longer than Linux passes is refused before anything spawns, naming the limit", async (t) => {
   const commands = new CommandContainment(new NoWorkerScopes());
   const contain = t.mock.method(commands, "contain");

@@ -26980,8 +26980,9 @@ async function runStreamedCommand(options) {
   }
 }
 function unstartable(label, error) {
-  const code = error?.code;
-  if (!(error instanceof Error) || typeof code !== "string") return error;
+  if (!(error instanceof Error)) return error;
+  const { code, errno, syscall } = error;
+  if (typeof code !== "string" || typeof errno !== "number" || !/^spawn(?: |$)/.test(syscall ?? "")) return error;
   return new SubstrateRefusedError(`${label} could not be started (${code}): ${error.message}`, { cause: error });
 }
 function collectProcess(command, startedAt, options) {

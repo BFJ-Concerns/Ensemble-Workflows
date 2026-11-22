@@ -921,18 +921,21 @@ The fields present throughout a record's lifetime are:
   dispatch record was still being written, or another run's sweep found the
   record left `"in-progress"` by a killed run (with an `abandonment` block).
   `"timed-out"` means a run deadline ended the agent or an enforced turn,
-  first-output or transport-request deadline ended its final attempt.
+  first-output or transport-request deadline ended its final attempt. The
+  Antigravity background-silence bound also settles the agent `"timed-out"`
+  when it ends the final attempt.
   Claude registration and first-life failures, a worker lost from the
   roster and the whitespace-stream bound settle the agent `"failed"` when
   they end its final attempt.
 - `termination_cause`: the `{ kind, message }` that settled the agent at that
   status when the runtime decided it — a run that ended under the worker, or a
-  deadline the runtime enforced — and `null` when the attempts already name the
+  deadline or silence bound the runtime enforced — and `null` when the attempts already name the
   cause. An unsettled dispatch record carries `"record-unsettled"`: the writer has not yet observed an outcome, and a reaped record retains that account. A close failure after a completed attempt carries the close error here. Two deadline kinds are distinguished: `"turn-timeout"` (the per-agent
   turn deadline expired while the worker was still going) and
   `"request-timeout"` (a transport request deadline expired because the engine
   never answered a request). The first means a slow worker; the second, an
-  unresponsive engine.
+  unresponsive engine. An attempt ended by Antigravity's background-silence
+  bound carries `"agy-background-silence"` here.
 - `schema`: the requested JSON Schema, or `null`.
 - `strip`: requested capability names and how each was enforced. For an
   engine that prepares a live strip, `enforcement` is empty until preparation

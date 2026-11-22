@@ -399,6 +399,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       openCodeModelSource: { kind: "machine-config", file: ambientSettings.configFile },
       effortPolicy: ambientSettings.effortPolicy,
       namedTargets: ambientSettings.namedTargets,
+      machineFallback: ambientSettings.machineFallback,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     // The CLI `--timeout` flag wins over a programmatically injected one; both

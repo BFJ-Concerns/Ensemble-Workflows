@@ -104,13 +104,26 @@ binding without a model takes the script's `defaults` model for that engine,
 else the engine's own default. Ensemble
 moves the call to the next target when the current one fails for
 **availability**: the allowance is exhausted, the provider is overloaded past
-its own retries, the engine's process died or never started, or the launch
-environment denied a resource the engine needs. Output failures (empty,
-unparseable, or off-schema answers) are retried on the same target and never
-advance the chain, and neither does any other failure. The run-record
-reference lists every
+its own retries, the engine refused the call for want of a valid sign-in,
+the engine's process died or never started, or the launch environment denied
+a resource the engine needs. Output failures (empty, unparseable, or off-schema
+answers) are retried on the same target. Only availability failures advance
+the chain. The run-record reference lists every
 [failure classification rule](run-records.md#failure-classification-rules)
 and its class.
+
+Ensemble uses the first declaration it finds in this order.
+
+1. The call's `fallback`.
+2. The script's `defaults` for the engine the call dispatches on.
+3. The named target's binding, if the call names a target.
+4. The machine's [fallback map](configuration.md#fallback), checking
+   `engine:model` for the resolved dispatch options, then `engine`. A
+   dispatch that leaves the model to the engine checks the engine key.
+
+Each declaration supplies the whole chain. Set `fallback: false` on a call or
+in an engine's `defaults` block to stop the search and disable fallback. A
+call's own chain still takes precedence over `fallback: false` in defaults.
 
 - Each step re-dispatches the same prompt, schema, placement, and strip
   settings on the next target, fresh.
@@ -153,8 +166,8 @@ binding's engine, with the binding's model where it names one; a binding
 without a model takes the script's `defaults` model for that engine, else the
 engine's own default. The `defaults` block for the bound engine supplies
 `effort` and `fallback` where the call leaves them unset, exactly as for a
-call naming that engine. A chain then comes from the first of: the call's own
-`fallback`, the bound engine's `defaults` block, the binding's `fallback`.
+call naming that engine. See [Fallback chains](#fallback-chains) for the
+full order.
 
 These throw `NamedTargetRejectedError` before any worker spawns, naming the
 name and the configuration file:
@@ -392,7 +405,7 @@ engine, throws before any worker spawns.
 | `model` | Model to run (see per-engine notes below) |
 | `effort` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `schema` | JSON Schema the answer must satisfy |
-| `fallback` | Ordered chain of `{ engine, model, effort? }` or `{ target, effort? }` targets (see [Fallback chains](#fallback-chains)) |
+| `fallback` | Ordered chain of `{ engine, model, effort? }` or `{ target, effort? }` targets, or `false` to disable fallback (see [Fallback chains](#fallback-chains)) |
 | `cwd` | Worker working directory; must exist. Defaults to the run's working directory |
 | `isolation` | `"worktree"` to run in a fresh git worktree (see [Worktree isolation](#worktree-isolation)) |
 | `timeoutMs` | Per-attempt deadline, a positive integer up to 2147483647. Unbounded when omitted |
@@ -790,17 +803,15 @@ An opencode model absent from the machine registry, a missing model, or an
 unsupported registry variant is refused before worker admission: the call
 throws, leaves no agent record, and adds nothing to the worker tally.
 
-Rejected credentials on a started worker consume an attempt and retry within
-the same bound. A dead or unstartable substrate retains its availability
-classification even when its diagnostic mentions credentials.
-An explicit provider HTTP 401 on a started turn records authentication
-failure even when Codex's retry-promise bound ends the turn.
-The attempt records `authentication-failure`, the engine's
-diagnostic, and a sign-in step: `codex login`, `claude auth login`, or
-`opencode auth login`. These failures are `unclassified`, with a named
-engine-specific authentication rule. Codex `modelNotFound` errors record
-`model-not-found` with a hint to choose an available model, and retain the
-normal attempt bound.
+Missing or rejected credentials advance the chain if an entry remains. With
+no entry left, the usual attempt bound applies. The attempt records
+`authentication-failure`, the engine's diagnostic and a sign-in step
+(`codex login`, `claude auth login` or `opencode auth login`). An explicit
+provider HTTP 401 identifies an authentication failure even when Codex's
+retry-promise bound ends the turn. A dead or unstartable substrate retains its
+own availability rule if its diagnostic merely quotes a credential error.
+Codex `modelNotFound` errors record `model-not-found` with a hint to choose an
+available model and retain the normal attempt bound.
 
 Operational failures — a Claude session that never registered or died, a
 transcript that could not be read, an opencode subprocess killed at its
@@ -923,9 +934,10 @@ engine's own diagnostic:
   retries (`responseTooManyFailedAttempts`) on a 429 or 5xx, or an app-server
   that died or never started; a Claude API refusal carrying a 429, 503, or 529, a dispatch
   Claude Code refused, a dispatch the daemon never registered, or a session
-  that never showed life; on any engine, a directory the engine needs that
-  the launching process cannot use (`preflight.resource-denied`). Only this
-  class advances a fallback chain.
+  that never showed life. On any engine, this includes missing or rejected
+  credentials (`<engine>.authentication-failure`) and a directory the engine
+  needs that the launching process cannot use (`preflight.resource-denied`).
+  Only this class advances a fallback chain.
 - **output** — the worker answered badly: empty, unparseable, or off-schema.
 - **unclassified** — anything else, including a deadline, a Codex schema
   rejection, a provider request rejection, and a client error about a bad

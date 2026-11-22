@@ -1252,7 +1252,7 @@ for (const refusal of [
         assert.ok(attempt?.failure?.message.includes(refusal.text));
         if (refusal.kind === "authentication-failure") {
           assert.match(attempt?.failure?.message ?? "", /claude auth login/);
-          assert.deepEqual(attempt?.classification, { class: "unclassified", rule: "claude.authentication-failure" });
+          assert.deepEqual(attempt?.classification, { class: "availability", rule: "claude.authentication-failure" });
         }
         assert.deepEqual(attempt?.diagnostics?.apiError, { status: refusal.status ?? null, code: refusal.code });
         assert.equal(attempt?.rawOutput, null);

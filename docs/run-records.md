@@ -839,18 +839,20 @@ The fields present throughout a record's lifetime are:
   - `{ "kind": "target", "target": "<name>" }`: the binding of the named
     target the call asked for, which the call and its `defaults` block left
     to supply the chain.
-  - `{ "kind": "none" }`: neither the call nor its `defaults` block declared
-    a chain. A direct library call has no `defaults`, so its chain reads
-    `call` or `none`.
+  - `{ "kind": "map", "key": "<engine:model or engine>" }`: the matching
+    key in the machine fallback map.
+  - `{ "kind": "switched-off", "by": "call" }`: the call set
+    `fallback: false`.
+  - `{ "kind": "switched-off", "by": "defaults", "engine": "<engine>" }`:
+    the script's defaults for the dispatched engine set `fallback: false`.
+  - `{ "kind": "none" }`: the search found no fallback declaration.
   - `{ "kind": "later-turn" }`: the second or later turn of a multi-turn
     session. A session's chain applies to its creating turn alone, so
     `fallback` is `null` here; the creating turn's record (the same
     `session.id`, `turn` 1) carries the session's chain and its source.
 
-  `none` and `later-turn` both pair with a `null` chain and are not
-  interchangeable: one says nothing was declared, the other that the
-  session's chain no longer applies. A reader that meets an unknown `kind`
-  should treat the chain's source as unrecorded. The field joined the agent
+  `none`, `switched-off` and `later-turn` all pair with a `null` chain.
+  Treat an unknown `kind` as an unrecorded source. The field joined the agent
   record within schema version 4, so a version-4 agent record from an older
   Ensemble checkout can lack it; read a missing `fallback_source` as
   unrecorded, never as `none`.
@@ -1084,7 +1086,7 @@ on the same target.
 |---|---|---|
 | `output` | `output` | Empty output, unparseable JSON, or an answer that fails its schema |
 | `effort.rejected` | `unclassified` | The provider refused the requested reasoning level; *settles* |
-| `<engine>.authentication-failure` | `unclassified` | The engine's credentials were rejected |
+| `<engine>.authentication-failure` | `availability` | Credentials were missing or rejected |
 | `<engine>.model-not-found` | `unclassified` | The engine does not know the model |
 | `substrate.refused` | `availability` | The launch environment denied a resource the engine needs, before its substrate started |
 | `preflight.resource-denied` | `availability` | The resource preflight found a location the worker needs inaccessible |

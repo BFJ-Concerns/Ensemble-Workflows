@@ -255,11 +255,25 @@ test("credential diagnoses preserve engine evidence and name each engine's sign-
     assert.equal(failure.kind, "authentication-failure");
     assert.ok(failure.message.includes(remedy));
     assert.ok(failure.message.includes(input.failure.message));
-    assert.deepEqual(classifyAttemptFailure({ ...input, failure }), { class: "unclassified", rule: `${engine}.authentication-failure` });
+    assert.deepEqual(classifyAttemptFailure({ ...input, failure }), { class: "availability", rule: `${engine}.authentication-failure` });
   }
   const input = evidence({ engine: "codex", failure: { kind: "engine-error", message: "gateway mentions invalid_api_key" }, appServerDiagnostic: { code: "serverOverloaded", httpStatusCode: 503 } });
   assert.deepEqual(diagnoseAttemptFailure(input), input.failure);
   assert.equal(diagnoseAttemptFailure(evidence({ engine: "claude", failure: { kind: "claude-worker-diagnostic", message: "denied" }, diagnostics: { apiError: { status: 401, code: "authentication_error" } } })).kind, "authentication-failure");
+});
+
+test("an opencode provider's missing API key advances the chain, while a tool's does not", () => {
+  for (const [diagnostic, expected] of [
+    ["API key is missing. Pass it using the 'apiKey' parameter.", { class: "availability", rule: "opencode.authentication-failure" }],
+    ["tool bash failed: API key is missing", { class: "unclassified", rule: "opencode.run-error" }]
+  ] as const) {
+    const input = evidence({
+      engine: "opencode",
+      failure: { kind: "opencode-run-error", message: `opencode run failed: ${diagnostic}` }
+    });
+    const failure = diagnoseAttemptFailure(input);
+    assert.deepEqual(classifyAttemptFailure({ ...input, failure }), expected);
+  }
 });
 
 test("credential words do not override an established availability diagnosis", () => {
@@ -289,7 +303,7 @@ test("a structured provider 401 outranks the retry-promise availability wrapper"
       assert.equal(failure.kind, "authentication-failure");
       assert.match(failure.message, /codex login/);
       assert.ok(failure.message.includes(input.failure.message));
-      assert.deepEqual(classifyAttemptFailure({ ...input, failure }), { class: "unclassified", rule: "codex.authentication-failure" });
+      assert.deepEqual(classifyAttemptFailure({ ...input, failure }), { class: "availability", rule: "codex.authentication-failure" });
     } else {
       assert.deepEqual(failure, input.failure);
       assert.equal(classifyAttemptFailure({ ...input, failure }).class, "availability");

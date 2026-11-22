@@ -213,13 +213,17 @@ A rule's destination is an `engine:model` pair or an `engine` alone. A
 destination without a model takes that engine's model from the script's
 `defaults`, or uses the engine's own default if the script has none. The
 requested canonical effort carries over and is resolved under the
-destination's effort policy. A named target keeps its place in the fallback search order.
+destination's effort policy. If an opencode call requests a raw variant as
+its effort and a rule moves the call to another engine, Ensemble rejects the
+call before worker admission because the destination requires a canonical
+effort level. A named target keeps its place in the fallback search order.
 
 Ensemble applies the rules to the first dispatch and to each reached
 fallback entry. A session uses its label and phase at `session()` creation.
 Once established, its worker keeps the engine and model for subsequent
 turns. Stderr names the winning key for each remapped dispatch and reports
-rules that matched no dispatch at the end of the run.
+rules that matched no dispatch at the end of the run. Every matching rule
+counts as matched, even when another rule wins the dispatch.
 [Run records](run-records.md#run-record-schema) preserve the effective
 rules and the requested and dispatched targets.
 

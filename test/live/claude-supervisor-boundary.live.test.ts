@@ -174,7 +174,7 @@ test("the built launcher re-places an idle held session after respawn without an
   const root = await mkdtemp(path.join(tmpdir(), "ensemble-supervisor-replacement-"));
   const env = await ownedSupervisorEnvironment(root);
   const slice = containingSlice(await readFile("/proc/self/cgroup", "utf8"));
-  const probe: HeldProbe = { paths: probePaths(root, "replacement"), evidence: { kind: "cgroup" }, token: `REPLACEMENT_${randomUUID()}` };
+  const probe: HeldProbe = { paths: probePaths(root, "replacement"), evidence: { kind: "cgroup" }, token: `REPLACEMENT_${randomUUID()}`, holdLimitSeconds: 240 };
   const idle = path.join(root, "idle");
   const close = path.join(root, "close");
   const workflow = path.join(root, "workflow.js");

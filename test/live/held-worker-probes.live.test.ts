@@ -38,13 +38,15 @@ for (const engine of ["claude", "codex"] as const) {
       const first: HeldProbe = {
         paths: probePaths(directory, "first"),
         evidence: { kind: "cgroup" },
-        token: `RELEASED_FIRST_${randomUUID()}`
+        token: `RELEASED_FIRST_${randomUUID()}`,
+        holdLimitSeconds: 420
       };
       const marker = `HELD_PROBE_${randomUUID()}`;
       const second: HeldProbe = {
         paths: probePaths(directory, "second"),
         evidence: { kind: "marker", content: marker },
-        token: `RELEASED_SECOND_${randomUUID()}`
+        token: `RELEASED_SECOND_${randomUUID()}`,
+        holdLimitSeconds: 420
       };
 
       let testFailed = false;

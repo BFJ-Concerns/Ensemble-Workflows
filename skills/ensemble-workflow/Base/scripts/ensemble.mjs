@@ -25575,19 +25575,38 @@ function list(value) {
 }
 
 // src/streamed-command.ts
+var MAX_ARGUMENT_BYTES = 128 * 1024;
+function fitsOneArgument(argument) {
+  return Buffer.byteLength(argument, "utf8") + 1 <= MAX_ARGUMENT_BYTES;
+}
 async function runStreamedCommand(options) {
   const startedAt = Date.now();
   if (options.signal?.aborted) {
     return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
   }
+  const oversized = options.args.find((argument) => !fitsOneArgument(argument));
+  if (oversized !== void 0) {
+    throw new AgentPromptRejectedError(
+      `${options.label} cannot be given an argument of ${Buffer.byteLength(oversized, "utf8")} bytes: Linux passes at most ${MAX_ARGUMENT_BYTES} bytes (128 KiB) in one command-line argument`
+    );
+  }
   const scopes = options.commands === void 0 ? await createWorkerScopes() : void 0;
   const containment = options.commands ?? new CommandContainment(scopes);
   try {
-    const command = await containment.contain(options.label, options.file, options.args, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
+    let command;
+    try {
+      command = await containment.contain(options.label, options.file, options.args, {
+        cwd: options.cwd,
+        env: options.env,
+        stdio: [options.stdin === void 0 ? "ignore" : "pipe", "pipe", "pipe"]
+      });
+    } catch (error) {
+      throw unstartable(options.label, error);
+    }
+    if (options.stdin !== void 0) {
+      command.child.stdin?.on("error", () => void 0);
+      command.child.stdin?.end(options.stdin);
+    }
     return await collectProcess(command, startedAt, { ...options, abortSignal: options.signal });
   } finally {
     if (scopes !== void 0) {
@@ -25598,6 +25617,11 @@ async function runStreamedCommand(options) {
       }
     }
   }
+}
+function unstartable(label, error) {
+  const code = error?.code;
+  if (!(error instanceof Error) || typeof code !== "string") return error;
+  return new SubstrateRefusedError(`${label} could not be started (${code}): ${error.message}`, { cause: error });
 }
 function collectProcess(command, startedAt, options) {
   const { timeoutMs, killGraceMs, watchLine, abortSignal, onFirstData, onData, onCommandStop } = options;
@@ -25744,7 +25768,8 @@ var OpenCodeCliRunner = class {
     if (options.variant !== void 0) {
       args.push("--variant", options.variant);
     }
-    args.push(options.prompt);
+    const promptOnStdin = !fitsOneArgument(options.prompt);
+    if (!promptOnStdin) args.push(options.prompt);
     const signal = options.signal;
     if (signal?.aborted) return stoppedBeforeLaunch();
     try {
@@ -25771,6 +25796,7 @@ var OpenCodeCliRunner = class {
           label: "opencode run",
           file: this.#bin,
           args,
+          ...promptOnStdin ? { stdin: options.prompt } : {},
           cwd: options.cwd,
           env: launch.env,
           commands: this.#commands,
@@ -25787,10 +25813,6 @@ var OpenCodeCliRunner = class {
       }
     } catch (error) {
       if (signal?.aborted) return stoppedBeforeLaunch();
-      const code = error?.code;
-      if (code === "ENOENT" || code === "EACCES") {
-        throw new SubstrateRefusedError(`opencode could not start (${code})`, { cause: error });
-      }
       throw error;
     }
   }

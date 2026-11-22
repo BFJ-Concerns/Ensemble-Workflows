@@ -4,7 +4,6 @@ import { unestablishedStopDiagnostics, type CommandContainment, type CommandStop
 import { launchEnvironment } from "./engine-environment.js";
 import {
   EngineShutdownError,
-  SubstrateRefusedError,
   TurnTimeoutError,
   WhitespaceStreamError,
   attachFailedTurnResult,
@@ -16,7 +15,7 @@ import {
 import { OPENCODE_TRANSCRIPT, transcriptContent } from "./live-transcript.js";
 import { prepareOpenCodeLaunch } from "./opencode-launch-config.js";
 import { subtractUsage } from "./usage-summary.js";
-import { runStreamedCommand, type StreamedCommandResult } from "./streamed-command.js";
+import { fitsOneArgument, runStreamedCommand, type StreamedCommandResult } from "./streamed-command.js";
 import { DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
 
 import type { WhitespaceStream } from "./whitespace-stream.js";
@@ -147,7 +146,10 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
     if (options.variant !== undefined) {
       args.push("--variant", options.variant);
     }
-    args.push(options.prompt);
+    // A prompt too long for one argument reaches opencode on stdin, which
+    // `opencode run` reads as the message when no message argument is given.
+    const promptOnStdin = !fitsOneArgument(options.prompt);
+    if (!promptOnStdin) args.push(options.prompt);
     const signal = options.signal;
     if (signal?.aborted) return stoppedBeforeLaunch();
     try {
@@ -164,7 +166,8 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
       });
       try {
         return await runStreamedCommand({
-          label: "opencode run", file: this.#bin, args, cwd: options.cwd, env: launch.env,
+          label: "opencode run", file: this.#bin, args, ...(promptOnStdin ? { stdin: options.prompt } : {}),
+          cwd: options.cwd, env: launch.env,
           commands: this.#commands, timeoutMs: options.timeoutMs, killGraceMs: this.#killGraceMs,
           signal, onFirstData: options.onFirstData, onData: options.onData,
           onCommandStop: options.onCommandStop, watchLine: watchOpenCodeLine
@@ -174,10 +177,6 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
       }
     } catch (error) {
       if (signal?.aborted) return stoppedBeforeLaunch();
-      const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      if (code === "ENOENT" || code === "EACCES") {
-        throw new SubstrateRefusedError(`opencode could not start (${code})`, { cause: error });
-      }
       throw error;
     }
   }

@@ -1,4 +1,5 @@
 import { CommandContainment, type CommandStop, type ContainedCommand } from "./contained-command.js";
+import { AgentPromptRejectedError, SubstrateRefusedError } from "./errors.js";
 import { WhitespaceStream } from "./whitespace-stream.js";
 import { createWorkerScopes, DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
 
@@ -12,6 +13,8 @@ export interface StreamedCommandOptions {
   label: string;
   file: string;
   args: string[];
+  /** Written to the command's stdin, which is then closed; omitted, stdin is empty. */
+  stdin?: string | undefined;
   cwd: string;
   env: NodeJS.ProcessEnv;
   /** The run's containment; omitted, the command gets machinery of its own, closed before returning. */
@@ -49,19 +52,57 @@ export interface StreamedCommandResult {
   whitespaceLimitReached?: boolean;
 }
 
+/**
+ * The most bytes Linux passes in one command-line argument
+ * (`MAX_ARG_STRLEN`, 32 pages), its terminating NUL included. A longer
+ * argument fails the spawn with E2BIG.
+ */
+export const MAX_ARGUMENT_BYTES = 128 * 1024;
+
+/** Whether `argument` fits in one command-line argument. */
+export function fitsOneArgument(argument: string): boolean {
+  return Buffer.byteLength(argument, "utf8") + 1 <= MAX_ARGUMENT_BYTES;
+}
+
+/**
+ * Runs the command, contained, and collects it whole. A command that
+ * cannot be started (its executable missing or not executable, or the
+ * system refusing the spawn) is a `SubstrateRefusedError`: nothing ran,
+ * and the engine behind it is unavailable rather than the turn wrong. An
+ * argument too long for the system is refused before anything spawns,
+ * naming the limit.
+ */
 export async function runStreamedCommand(options: StreamedCommandOptions): Promise<StreamedCommandResult> {
   const startedAt = Date.now();
   if (options.signal?.aborted) {
     return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
+  }
+  const oversized = options.args.find((argument) => !fitsOneArgument(argument));
+  if (oversized !== undefined) {
+    throw new AgentPromptRejectedError(
+      `${options.label} cannot be given an argument of ${Buffer.byteLength(oversized, "utf8")} bytes: ` +
+      `Linux passes at most ${MAX_ARGUMENT_BYTES} bytes (128 KiB) in one command-line argument`
+    );
   }
   // The default registry supplies run-owned containment. A standalone runner
   // owns the same machinery for this command and closes it before returning.
   const scopes = options.commands === undefined ? await createWorkerScopes() : undefined;
   const containment = options.commands ?? new CommandContainment(scopes!);
   try {
-    const command = await containment.contain(options.label, options.file, options.args, {
-      cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"]
-    });
+    let command: ContainedCommand;
+    try {
+      command = await containment.contain(options.label, options.file, options.args, {
+        cwd: options.cwd, env: options.env, stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"]
+      });
+    } catch (error) {
+      throw unstartable(options.label, error);
+    }
+    if (options.stdin !== undefined) {
+      // A command that exits without reading its input closes the pipe;
+      // its exit, not the write, is the outcome.
+      command.child.stdin?.on("error", () => undefined);
+      command.child.stdin?.end(options.stdin);
+    }
     return await collectProcess(command, startedAt, { ...options, abortSignal: options.signal });
   } finally {
     if (scopes !== undefined) {
@@ -72,6 +113,13 @@ export async function runStreamedCommand(options: StreamedCommandOptions): Promi
       }
     }
   }
+}
+
+/** A spawn failure (it carries the system's error code) as the substrate refusal it is; anything else unchanged. */
+function unstartable(label: string, error: unknown): unknown {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (!(error instanceof Error) || typeof code !== "string") return error;
+  return new SubstrateRefusedError(`${label} could not be started (${code}): ${error.message}`, { cause: error });
 }
 
 /** Stop ownership before waiting for pipes: a descendant may hold them open. */

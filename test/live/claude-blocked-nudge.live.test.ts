@@ -137,7 +137,11 @@ for (const refuse of [false, true]) {
       assert.equal(submissions.length, refuse ? 3 : 2, "one opening, a nudge, and only its refused copy if injected");
       assert.deepEqual(submissions.map(submission => submission.submitted), refuse ? [true, false, true] : [true, true]);
       assert.equal(new Set(submissions.map(submission => submission.session)).size, 1);
-      assert.match(submissions.at(-1)?.message ?? "", /waiting for input/);
+      // The valve closed a native dialog before the nudge, so the nudge says
+      // Ensemble closed it, names what Claude Code reported it waiting for,
+      // and says nobody refused.
+      assert.match(submissions.at(-1)?.message ?? "", /^Ensemble closed a prompt you were waiting on \(Claude Code reported it as waiting for: [^)]+\)/);
+      assert.match(submissions.at(-1)?.message ?? "", /Nobody refused the action/);
       const inputs = entries.filter(entry => entry.type === "user" && typeof entry.message?.content === "string");
       assert.equal(inputs.length, 2, "the refused copy must not create a native user turn");
       assert.equal(inputs[1]?.message?.content, submissions.at(-1)?.message, "the nudge must arrive exactly once and unchanged");

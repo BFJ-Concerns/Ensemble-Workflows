@@ -41,6 +41,7 @@ import {
   usageSince
 } from "./claude-transcript.js";
 import { isPreparedClaudeStrip } from "./claude-tool-surface.js";
+import { CLAUDE_TRANSCRIPT } from "./live-transcript.js";
 import { subtractUsage } from "./usage-summary.js";
 import { WhitespaceStream } from "./whitespace-stream.js";
 import {
@@ -1232,9 +1233,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       diagnostics: { ...handle.launchFailure?.diagnostics, worktrees: enteredWorktrees(entries) },
       transcripts: [
         {
-          filename: "transcript.claude.jsonl",
+          filename: CLAUDE_TRANSCRIPT.filename,
           format: "jsonl",
-          source: "claude-session-jsonl",
+          source: CLAUDE_TRANSCRIPT.source,
           sessionId: handle.sessionId,
           content: transcript.text
         }
@@ -1280,7 +1281,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     if (this.#handle === null) {
       // A rejected opening can already have native output. The control plane
       // snapshots it before teardown, even though dispatch returned no handle.
-      const retained = failedTurnResultOf(error)?.transcripts?.find(item => item.source === "claude-session-jsonl");
+      const retained = failedTurnResultOf(error)?.transcripts?.find(item => item.source === CLAUDE_TRANSCRIPT.source);
       if (retained?.sessionId === undefined) return null;
       handle = { sessionId: retained.sessionId };
       transcript = { text: retained.content, entries: parseTranscriptText(retained.content) };
@@ -1533,9 +1534,9 @@ function failedTurnResult(
       : {
           transcripts: [
             {
-              filename: "transcript.claude.jsonl",
+              filename: CLAUDE_TRANSCRIPT.filename,
               format: "jsonl" as const,
-              source: "claude-session-jsonl",
+              source: CLAUDE_TRANSCRIPT.source,
               sessionId: evidence.handle.sessionId,
               content: evidence.transcript.text,
               partial: !evidence.completed

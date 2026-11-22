@@ -22,6 +22,7 @@ import {
   WhitespaceStreamError
 } from "./errors.js";
 import type { AppServerDiagnostic, WorkerExitStatus } from "./errors.js";
+import { CODEX_TRANSCRIPT, transcriptContent } from "./live-transcript.js";
 
 import type {
   JsonObject,
@@ -1271,9 +1272,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
     // so settlement links the same evidence the live archive already holds.
     if (transcript !== undefined && transcript.events.length > 0) {
       attachPartialTranscript(error, {
-        filename: "transcript.codex.jsonl",
+        filename: CODEX_TRANSCRIPT.filename,
         format: "jsonl",
-        source: "codex-app-server-events",
+        source: CODEX_TRANSCRIPT.source,
         threadId,
         content: this.#transcriptText(threadId),
         partial: turn.completedAt === null
@@ -1328,9 +1329,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
       transcriptCapture: transcript === undefined ? "lost" : "retained",
       transcripts: [
         {
-          filename: "transcript.codex.jsonl",
+          filename: CODEX_TRANSCRIPT.filename,
           format: "jsonl",
-          source: "codex-app-server-events",
+          source: CODEX_TRANSCRIPT.source,
           threadId,
           content: this.#transcriptText(threadId)
         }
@@ -1373,7 +1374,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (transcript === undefined) {
       return "";
     }
-    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+    return transcriptContent(transcript.events);
   }
 
   #createTurnState(

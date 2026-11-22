@@ -76,8 +76,7 @@ export interface AgentOptions {
    * availability — allowance exhausted, provider overload past its
    * own retry, a substrate that is dead or cannot start. Output failures
    * never advance it. Each entry names its engine and model; an omitted
-   * effort takes the call's own. Codex or Claude in any position; an
-   * opencode entry is rejected pre-spawn. Set false to disable inherited chains.
+   * effort takes the call's own. Set false to disable inherited chains.
    */
   fallback?: FallbackTarget[] | false;
   cwd?: string;
@@ -515,10 +514,20 @@ export interface TurnResult {
   diagnostics?: JsonObject;
 }
 
+/**
+ * How an engine makes a running attempt's transcript followable. Which of
+ * the two an attempt is handed follows from the engine's row in
+ * `LIVE_TRANSCRIPTS` (live-transcript.ts); an engine calls the one it is
+ * given and never both.
+ */
 export interface LiveTranscriptObserver {
-  /** Receives each Codex app-server event in arrival order. */
+  /**
+   * For an engine whose transcript the harness captures: receives each
+   * transcript event in arrival order, one JSON value per call, and appends
+   * it to the attempt's live transcript as one line.
+   */
   onTranscriptEvent?: (event: unknown) => void;
-  /** Receives the readable absolute path of an engine-owned transcript. */
+  /** For an engine that writes a transcript file of its own: receives that file's readable absolute path. */
   onTranscriptPath?: (path: string) => void;
 }
 

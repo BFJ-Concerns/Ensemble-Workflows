@@ -100,7 +100,7 @@ version 1:
 | Key | Type | Description |
 |---|---|---|
 | `schema_version` | integer | Must be `1` |
-| `worker_scope` | `"worker"` or `"run"` | Systemd scope grouping for Claude and Codex workers |
+| `worker_scope` | `"worker"` or `"run"` | Systemd scope grouping for workers |
 | `agent_ceiling` | integer | Maximum workers running at once across every engine |
 | `concurrency.<engine>` | integer | Maximum workers running at once on that engine |
 | `run_record.enabled` | boolean | Whether runs write a durable run record |
@@ -218,8 +218,8 @@ receive `claude/launchUnreclaimed` with the dispatch name and the reason.
 Claude sessions and the Codex app-server are placed in transient scopes in
 the slice that holds the launcher. `worker_scope` chooses one scope per Claude
 worker and one for the run's shared Codex app-server (`worker`, the default),
-or one scope shared by both engines (`run`). Codex workers are threads of one
-process, so they share a scope even in `worker` mode. `ENSEMBLE_WORKER_SCOPE`
+or a scope shared across engines in the run (`run`). Codex workers are
+threads of one process, so they share a scope even in `worker` mode. `ENSEMBLE_WORKER_SCOPE`
 overrides the file; `--worker-scope worker|run` overrides both.
 
 A launcher directly in the user manager's root slice (`-.slice`) keeps its
@@ -253,10 +253,11 @@ before a move in the original cgroup. Run teardown stops the scopes Ensemble own
 Claude control-command scopes and the shared supervisor are outside that
 ownership.
 
-Opencode run and session-export commands, and each agy worker's `agy acp`
-process, take a separate scope under either grouping. They enter that scope before executing, so commands they start
-inherit its ownership. An attempt can therefore stop its own commands without
-ending another worker. Without a scope, they use a process group. A stop
+Under `worker`, each opencode command and agy ACP worker takes its own
+scope. Under `run`, each takes a subgroup of the shared scope. Descendants
+inherit that placement, so an attempt can stop its commands while other
+workers continue. If the manager cannot provide a scope or subgroup, the
+command uses a process group. A stop
 an attempt makes before the run ends discloses unconfirmed reach on the attempt
 record and stderr, without changing the attempt's or run's outcome. A command
 the run's own ending cuts short there produces a teardown failure because

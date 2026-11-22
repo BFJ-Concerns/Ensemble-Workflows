@@ -4,6 +4,7 @@ import { CommandContainment, unestablishedStopDiagnostics, type CommandStop, typ
 import { launchEnvironment } from "./engine-environment.js";
 import {
   EngineShutdownError,
+  SubstrateRefusedError,
   TurnTimeoutError,
   WhitespaceStreamError,
   attachFailedTurnResult,
@@ -12,11 +13,14 @@ import {
   failedTurnResultOf,
   partialWorkerTextOf
 } from "./errors.js";
+import { OPENCODE_TRANSCRIPT, transcriptContent } from "./live-transcript.js";
+import { prepareOpenCodeLaunch } from "./opencode-launch-config.js";
 import { subtractUsage } from "./usage-summary.js";
 import { WhitespaceStream } from "./whitespace-stream.js";
 import { openingPrompt } from "./worker-instructions.js";
 import { createWorkerScopes, DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
 
+import type { StrippableCapability } from "./capability-stripping.js";
 import type {
   EngineAttemptContext,
   PreviousAttemptFailure,
@@ -47,6 +51,8 @@ export interface OpenCodeRunOptions {
   // Omitted → the run subprocess is not killed on a deadline (unbounded).
   timeoutMs?: number;
   variant?: string;
+  strip?: readonly StrippableCapability[];
+  lean?: boolean;
   /** Aborting stops the command's containment (SIGTERM, escalating to SIGKILL). */
   signal?: AbortSignal;
   /** Called once, on the run's first stdout chunk — the earliest observable sign of worker output. */
@@ -150,19 +156,36 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
       args.push("--variant", options.variant);
     }
     args.push(options.prompt);
-    return runProcess(
-      this.#bin,
-      args,
-      options.cwd,
-      this.#env,
-      this.#commands,
-      options.timeoutMs,
-      this.#killGraceMs,
-      options.signal,
-      options.onFirstData,
-      options.onData,
-      options.onCommandStop
-    );
+    const signal = options.signal;
+    if (signal?.aborted) return stoppedBeforeLaunch();
+    try {
+      const launch = await prepareOpenCodeLaunch({
+        env: this.#env,
+        strip: options.strip ?? [],
+        lean: options.lean === true,
+        providerModel: options.providerModel,
+        run: (command, env) => runProcess(
+          this.#bin, command, options.cwd, env, this.#commands, 30_000,
+          this.#killGraceMs, signal, undefined, undefined, options.onCommandStop
+        )
+      });
+      try {
+        return await runProcess(
+          this.#bin, args, options.cwd, launch.env, this.#commands,
+          options.timeoutMs, this.#killGraceMs, signal, options.onFirstData,
+          options.onData, options.onCommandStop
+        );
+      } finally {
+        await launch.close?.();
+      }
+    } catch (error) {
+      if (signal?.aborted) return stoppedBeforeLaunch();
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "ENOENT" || code === "EACCES") {
+        throw new SubstrateRefusedError(`opencode could not start (${code})`, { cause: error });
+      }
+      throw error;
+    }
   }
 
   async exportSession(sessionId: string, cwd: string, signal?: AbortSignal, onCommandStop?: (stop: CommandStop) => void): Promise<OpenCodeSessionExportResult> {
@@ -240,27 +263,43 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     let streamBuffer = "";
     const streamEvents: unknown[] = [];
     let streamSessionId: string | null = null;
+    const syntheticSessionId = this.#syntheticSessionId();
+    let identityPublished = false;
+    const publishEvent = (event: unknown): void => {
+      if (!identityPublished && sessionIdFromEvent(event) !== null) {
+        identityPublished = true;
+        context.onIdentity?.({ resolvedModel: this.#providerModel, resolvedEffort: null });
+      }
+      context.onOutput?.();
+      context.onTranscriptEvent?.(event);
+    };
+    const reportUsage = (sessionId: string, usage: OpenCodeUsage): void => {
+      if (usage.breakdown === null) return;
+      const event = this.#reportUsage(sessionId, usage.breakdown, usage.cost);
+      if (event !== null) context.onUsage?.(event);
+    };
     const onData = (chunk: string): void => {
       streamBuffer += chunk;
       const lines = streamBuffer.split(/\r?\n/);
       streamBuffer = lines.pop() ?? "";
+      const previousCount = streamEvents.length;
       for (const line of lines) {
-        const parsed = parseRunEvents(line);
-        for (const event of parsed.events) {
-          streamEvents.push(event);
-          context.onOutput?.();
-        }
-        streamSessionId ??= parsed.sessionId;
+        const event = parseRunEvent(line);
+        if (event === undefined) continue;
+        streamEvents.push(event);
+        streamSessionId = sessionIdFromEvent(event) ?? streamSessionId;
+        publishEvent(event);
       }
-      const usage = usageFromStream(streamEvents);
-      if (usage.breakdown !== null) {
-        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.cost);
+      if (streamEvents.length > previousCount) {
+        reportUsage(streamSessionId ?? syntheticSessionId, usageFromStream(streamEvents));
       }
     };
     const run = await this.#runner.run({
       prompt: this.#buildPrompt(context.previousFailure),
       cwd: this.#cwd,
       providerModel: this.#providerModel,
+      ...(this.#options.strip === undefined ? {} : { strip: this.#options.strip }),
+      ...(this.#options.lean === true ? { lean: true } : {}),
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {}),
       ...(context.onLiveEvidence !== undefined ? { onFirstData: context.onLiveEvidence } : {}),
@@ -269,6 +308,12 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       signal: this.#abortController.signal
     });
     const parsedRun = parseRunEvents(run.stdout);
+    const sessionId = parsedRun.sessionId ?? syntheticSessionId;
+    // A runner can return the last line without a newline, or provide only
+    // its completed stdout. Publish any events not delivered in its chunks.
+    for (const event of parsedRun.events.slice(streamEvents.length)) publishEvent(event);
+    const streamUsage = usageFromStream(parsedRun.events);
+    reportUsage(sessionId, streamUsage);
     const fallback = run.whitespaceLimitReached
       ? parsedRun.events.map(runTextPart).join("")
       : fallbackText(parsedRun.events);
@@ -290,9 +335,9 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         `opencode turn timed out after ${timeoutMs}ms: ${openCodeFailureMessage(run, parsedRun.events)}`, {
           kind: "turn",
           timeoutMs,
-          threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
+          threadId: sessionId
         });
-      const evidence = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, null);
+      const evidence = this.#attemptEvidence(parsedRun, null, sessionId, streamUsage);
       attachFailedTurnResult(error, {
         text: fallback,
         resolvedModel: this.#providerModel,
@@ -355,9 +400,16 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const { tokenUsageEvents, transcripts } = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, exportData);
+    const exportEvent = exportData === null ? null : { type: "session/export", data: exportData };
+    if (exportEvent !== null) context.onTranscriptEvent?.(exportEvent);
+    const usage = exportData === null
+      ? streamUsage
+      : { breakdown: usageFromExport(exportData), cost: exportData.info?.cost ?? null };
+    reportUsage(sessionId, usage);
+    const { tokenUsageEvents, transcripts } = this.#attemptEvidence(parsedRun, exportEvent, sessionId, usage);
 
     const reportedFailure = reportedRunFailure(parsedRun.events, exportData, text);
+    const lostBeforeAnswer = run.signal !== null && reportedFailure === null && text.trim().length === 0;
     if (run.exitCode !== 0 || reportedFailure !== null) {
       // An operational failure consumes a bounded retry attempt, the
       // contract the usage brief documents for every engine — so it returns
@@ -373,10 +425,10 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         text,
         resolvedModel: this.#providerModel,
         attemptFailure: {
-          kind: "opencode-run-error",
+          kind: lostBeforeAnswer ? "opencode-worker-lost" : "opencode-run-error",
           message: reportedFailure === null
             ? openCodeFailureMessage(run, parsedRun.events)
-            : `opencode run failed: ${reportedFailure}`
+            : `opencode run failed: ${reportedFailure.message}`
         },
         workerExit: { exitCode: run.exitCode, signal: run.signal },
         deltaText: text,
@@ -387,7 +439,8 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         transcripts,
         diagnostics: {
           opencode: {
-            session_export: exportDiagnostic
+            session_export: exportDiagnostic,
+            ...(reportedFailure?.status === undefined ? {} : { http_status: reportedFailure.status })
           }
         }
       };
@@ -410,46 +463,25 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     };
   }
 
-  /**
-   * The spend and transcript one attempt produced: the export's account when
-   * it was read, else the stream's. Reports the spend as it does so.
-   */
   #attemptEvidence(
-    stdout: string,
-    parsedRun: ReturnType<typeof parseRunEvents>,
-    streamSessionId: string | null,
-    exportData: OpenCodeExport | null
+    parsedRun: ParsedRunEvents,
+    exportEvent: { type: string; data: OpenCodeExport } | null,
+    sessionId: string,
+    usage: OpenCodeUsage
   ): { tokenUsageEvents: TokenUsageEvent[]; transcripts: EngineTranscriptArtifact[] } {
-    const usage =
-      exportData === null
-        ? usageFromStream(parsedRun.events)
-        : {
-            breakdown: usageFromExport(exportData),
-            cost: exportData.info?.cost ?? null
-          };
-    // A token-bearing stream that carries no session id is still measured
-    // spend — suppressing it reintroduces a fixed defect (spend that
-    // never reaches the ledger), behind a narrower gate. The identifiers
-    // exist only to attribute the event, so a missing id gets a synthetic,
-    // clearly-labelled one rather than costing the accounting.
-    const usageEvent =
-      usage.breakdown === null
-        ? null
-        : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.breakdown, usage.cost);
-    if (usage.breakdown !== null) {
-      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.cost);
-    }
+    const usageEvent = usage.breakdown === null
+      ? null
+      : this.#usageEvent(sessionId, usage.breakdown, usage.breakdown, usage.cost);
+    const events = exportEvent === null ? parsedRun.events : [...parsedRun.events, exportEvent];
     return {
       tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-      transcripts: [
-        {
-          filename: "transcript.opencode.jsonl",
-          format: "jsonl" as const,
-          source: "opencode run --format json",
-          content: transcriptContent(stdout, exportData),
-          ...(parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {})
-        }
-      ]
+      transcripts: events.length === 0 ? [] : [{
+        filename: OPENCODE_TRANSCRIPT.filename,
+        format: "jsonl",
+        source: OPENCODE_TRANSCRIPT.source,
+        content: transcriptContent(events),
+        ...(parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {})
+      }]
     };
   }
 
@@ -474,21 +506,22 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     return `opencode-no-session-${randomUUID()}`;
   }
 
-  #reportUsage(sessionId: string, total: TokenUsageBreakdown, cost: unknown): void {
+  #reportUsage(sessionId: string, total: TokenUsageBreakdown, cost: unknown): TokenUsageEvent | null {
     const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
-      return;
+      return null;
     }
     this.#reportedUsage = total;
     const event = this.#usageEvent(sessionId, last, total, cost);
     if (event === null) {
-      return;
+      return null;
     }
     this.#onEvent?.({
       method: "thread/tokenUsage/updated",
       params: event.raw,
       receivedAt: Date.now()
     });
+    return event;
   }
 
   #usageEvent(
@@ -528,6 +561,10 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
   }
 }
 
+function stoppedBeforeLaunch(): OpenCodeRunResult {
+  return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
+}
+
 async function runProcess(
   file: string,
   args: string[],
@@ -543,7 +580,7 @@ async function runProcess(
 ): Promise<OpenCodeRunResult> {
   const startedAt = Date.now();
   if (abortSignal?.aborted) {
-    return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
+    return stoppedBeforeLaunch();
   }
   // The default registry supplies run-owned containment. A standalone runner
   // owns the same machinery for this command and closes it before returning.
@@ -948,21 +985,10 @@ function aggregateOpenCodeUsage(tokenSnapshots: unknown[]): TokenUsageBreakdown 
   };
 }
 
-function transcriptContent(stdout: string, exportData: OpenCodeExport | null): string {
-  const lines = stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (exportData !== null) {
-    lines.push(JSON.stringify({ type: "session/export", data: exportData }));
-  }
-  return `${lines.join("\n")}\n`;
-}
-
 function openCodeFailureMessage(run: OpenCodeRunResult, events: unknown[]): string {
   const eventError = events.map(errorFromEvent).find((message) => message !== null);
   if (eventError !== undefined && eventError !== null) {
-    return `opencode run failed: ${eventError}`;
+    return `opencode run failed: ${eventError.message}`;
   }
   const stderr = run.stderr.trim();
   if (stderr.length > 0) {
@@ -971,7 +997,12 @@ function openCodeFailureMessage(run: OpenCodeRunResult, events: unknown[]): stri
   return `opencode run failed with exit code ${run.exitCode ?? `signal ${run.signal ?? "unknown"}`}`;
 }
 
-function reportedRunFailure(events: unknown[], exportData: OpenCodeExport | null, text: string): string | null {
+interface OpenCodeReportedFailure {
+  message: string;
+  status?: number;
+}
+
+function reportedRunFailure(events: unknown[], exportData: OpenCodeExport | null, text: string): OpenCodeReportedFailure | null {
   const eventError = events.map(errorFromEvent).find((message) => message !== null);
   if (eventError !== undefined) {
     return eventError;
@@ -999,27 +1030,30 @@ function reportedRunFailure(events: unknown[], exportData: OpenCodeExport | null
   }
   const tool = typeof lastTool.tool === "string" ? lastTool.tool : "unknown";
   const error = typeof lastTool.state.error === "string" ? lastTool.state.error : "no diagnostic reported";
-  return `tool ${tool} failed: ${error}`;
+  return { message: `tool ${tool} failed: ${error}` };
 }
 
-function errorFromEvent(event: unknown): string | null {
+function errorFromEvent(event: unknown): OpenCodeReportedFailure | null {
   if (!isRecord(event)) {
     return null;
   }
   const error = event.error;
   if (typeof error === "string") {
-    return error;
+    return { message: error };
   }
   if (isRecord(error)) {
     const data = error.data;
     if (isRecord(data) && typeof data.message === "string") {
-      return data.message;
+      return {
+        message: data.message,
+        ...(error.name === "APIError" && typeof data.statusCode === "number" ? { status: data.statusCode } : {})
+      };
     }
     if (typeof error.message === "string") {
-      return error.message;
+      return { message: error.message };
     }
     if (typeof error.name === "string") {
-      return error.name;
+      return { message: error.name };
     }
   }
   return null;

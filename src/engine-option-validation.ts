@@ -313,8 +313,8 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
       }
       return;
     }
-    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "opencode") {
-      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude" or "opencode", got ${JSON.stringify(target.engine)}`);
+    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "opencode" && target.engine !== "agy") {
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude", "opencode" or "agy", got ${JSON.stringify(target.engine)}`);
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);

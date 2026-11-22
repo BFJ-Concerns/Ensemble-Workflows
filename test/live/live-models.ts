@@ -13,9 +13,14 @@ import type { OpenCodeModelRegistryEntry } from "../../src/opencode-model-regist
  *   the model (at `low` effort) every other Codex leg takes when it is set.
  * - `ENSEMBLE_LIVE_OPENCODE_MODEL`: a key from the machine configuration's
  *   `opencode_models`; opencode has no default, so every opencode leg needs it.
+ * - `ENSEMBLE_LIVE_AGY_MODEL`: an agy model, by the base name agy lists
+ *   (`gemini-4-hydrogen`). Every agy leg needs it and runs it at `low`:
+ *   agy runs on the operator's own signed-in subscription, which a machine
+ *   without that sign-in cannot reach, and agy's default is its dearest tier.
  */
 export const liveCodexModel = nonEmpty(process.env.ENSEMBLE_LIVE_CODEX_MODEL);
 export const liveOpenCodeModel = nonEmpty(process.env.ENSEMBLE_LIVE_OPENCODE_MODEL);
+export const liveAgyModel = nonEmpty(process.env.ENSEMBLE_LIVE_AGY_MODEL);
 
 /** The Codex model options a leg passes: the pinned model at `low` effort, or none for the engine default. */
 export function liveCodexOptions(): { model?: string; effort?: "low" } {

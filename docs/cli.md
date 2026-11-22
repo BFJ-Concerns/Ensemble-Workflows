@@ -97,6 +97,10 @@ Every other option may appear once. `--worker-scope`, `--concurrency` and `--age
 environment and configuration-file layers described in
 [Configuration](configuration.md).
 
+A malformed dispatch remap rule rejects the invocation with exit code 2
+before the run starts. The stderr diagnostic names the rule's source,
+`--remap` or `ENSEMBLE_DISPATCH_REMAP`.
+
 ## Running a single agent
 
 ```sh
@@ -109,7 +113,7 @@ the prompt.
 
 | Option | Description |
 |---|---|
-| `--engine <engine>` | `codex`, `claude`, or `opencode`. Required unless `--target` is given |
+| `--engine <engine>` | `codex`, `claude`, `opencode`, or `agy`. Required unless `--target` is given |
 | `--target <name>` | A named target from the machine configuration's [`targets`](configuration.md#targets) section, in place of `--engine` and `--model`. Given beside either, it fails the run before the worker spawns, naming the configuration file, as does a name the file does not bind |
 | `--model <model>` | Model to run. Required for opencode |
 | `--effort <effort>` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; resolved against known served levels and [machine bounds](configuration.md#effort). On opencode, a declared raw variant is also accepted when no machine bound applies |

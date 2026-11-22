@@ -1,8 +1,8 @@
 # Configuration
 
-Ensemble needs no configuration to run Codex and Claude workers. opencode
-workers need the models they may use declared in the machine configuration
-file.
+Ensemble needs no configuration to run Codex, Claude and agy workers.
+opencode workers need the models they may use declared in the machine
+configuration file.
 
 ## How settings resolve
 
@@ -25,7 +25,7 @@ concurrency caps with the layer that supplied each (`flag`, `env`,
 
 | Setting | Default |
 |---|---|
-| Concurrency cap | `codex` 12, `claude` 12, `opencode` 2 workers at once |
+| Concurrency cap | `codex` 12, `claude` 12, `opencode` 2, `agy` 12 workers at once |
 | Worker scope grouping | `worker` |
 | Agent ceiling (all engines together) | Unbounded |
 | Durable run record | On, stored under `$XDG_DATA_HOME/ensemble/` (normally `~/.local/share/ensemble/`) |
@@ -165,7 +165,7 @@ the run's own `ENSEMBLE_` settings (`ENSEMBLE_RUN_RECORD`,
 `ENSEMBLE_AGENT_CEILING`, `ENSEMBLE_CONCURRENCY_*`, `ENSEMBLE_HOLD_SCOPE`, and
 `ENSEMBLE_CALLER_IDENTITY`, `ENSEMBLE_WORKER_SCOPE`) are withheld from every `claude` process Ensemble
 launches; a `worker_environment` declaration of one of those names is still
-injected. Codex and opencode workers end with the run and inherit those
+injected. Codex, opencode and agy workers end with the run and inherit those
 variables normally. A nested `ensemble` invocation inside a Claude worker
 therefore resolves those settings from the machine configuration and the
 defaults. The hold scope is the exception: it is passed to the worker session
@@ -253,11 +253,11 @@ before a move in the original cgroup. Run teardown stops the scopes Ensemble own
 Claude control-command scopes and the shared supervisor are outside that
 ownership.
 
-Under `worker`, each opencode command takes its own scope. Under `run`,
-each command takes a subgroup of the shared scope. Descendants inherit
-the command's placement, so an attempt can stop its commands while other
-workers continue. If the manager cannot provide a scope or subgroup,
-opencode uses a process group. A stop
+Under `worker`, each opencode command and agy ACP worker takes its own
+scope. Under `run`, each takes a subgroup of the shared scope. Descendants
+inherit that placement, so an attempt can stop its commands while other
+workers continue. If the manager cannot provide a scope or subgroup, the
+command uses a process group. A stop
 an attempt makes before the run ends discloses unconfirmed reach on the attempt
 record and stderr, without changing the attempt's or run's outcome. A command
 the run's own ending cuts short there produces a teardown failure because
@@ -321,13 +321,13 @@ Each key is a name; the value is its binding:
 
 | Field | Required | Description |
 |---|---|---|
-| `engine` | Yes | `codex`, `claude` or `opencode` |
+| `engine` | Yes | `codex`, `claude`, `opencode` or `agy` |
 | `model` | No | The model to dispatch. Without it, the call takes the script's `defaults` model for the bound engine, else the engine's own default, as a call that pins no model does |
 | `fallback` | No | A fallback chain array. An entry may name another target in this section and takes only its engine and model |
 
 A name may spell an engine's name: names are their own namespace, reached only
-through `target`. A binding to an engine other than `codex`, `claude` or
-`opencode`, a blank model, a malformed chain, or an unknown field stops every
+through `target`. A binding to an engine other than `codex`, `claude`,
+`opencode` or `agy`, a blank model, a malformed chain, or an unknown field stops every
 run before any worker starts, naming the key and the file, as does a chain
 entry naming a target this section does not bind. An opencode
 binding's model is checked against `opencode_models` when a call dispatches on
@@ -383,13 +383,14 @@ as off and the run says nothing.
 | `ENSEMBLE_CONCURRENCY_CODEX` | Codex concurrency cap |
 | `ENSEMBLE_CONCURRENCY_CLAUDE` | Claude concurrency cap |
 | `ENSEMBLE_CONCURRENCY_OPENCODE` | opencode concurrency cap |
+| `ENSEMBLE_CONCURRENCY_AGY` | agy concurrency cap |
 | `ENSEMBLE_RUN_RECORD` | Turns the durable run record on or off |
 | `ENSEMBLE_RUN_RECORD_DIR` | The record store's data home |
 | `ENSEMBLE_STATUS` | Turns the live status file on or off |
 | `ENSEMBLE_STATUS_DIR` | Directory for live status files; must already exist while status is on |
 | `ENSEMBLE_CALLER_IDENTITY` | Opaque identity of the invoking session, recorded in the manifest's `caller_identity`; `--caller-identity` overrides it |
 | `ENSEMBLE_WORKER_SCOPE` | `worker` or `run`; systemd worker grouping, overridden by `--worker-scope` |
-| `ENSEMBLE_DISPATCH_REMAP` | Comma-separated [dispatch remap](workflow-scripts.md#dispatch-remap) rules for this launch. A `--remap` flag replaces the list |
+| `ENSEMBLE_DISPATCH_REMAP` | Comma-separated [dispatch remap](workflow-scripts.md#dispatch-remap) rules for this launch. Use `--remap` for a glob containing a comma. The flags replace the environment list |
 | `ENSEMBLE_HOLD_SCOPE` | Scope for decision holds, inherited by nested invocations; `--hold-scope` overrides it (see [Holds](workflow-scripts.md#holds)) |
 
 The on/off switches accept `on`/`off`, `true`/`false`, `yes`/`no`, or `1`/`0`.
@@ -479,8 +480,8 @@ own environment.
 
 | Option | CLI flag | Default | Description |
 |---|---|---|---|
-| `budgetCeilings` | `--budget` | Unbounded | Per-engine token budgets, `{ codex?, claude?, opencode? }` |
-| `concurrencyCaps` | `--concurrency` | As in [Defaults](#defaults) | Per-engine concurrency caps, `{ codex?, claude?, opencode? }` |
+| `budgetCeilings` | `--budget` | Unbounded | Per-engine token budgets, `{ codex?, claude?, opencode?, agy? }` |
+| `concurrencyCaps` | `--concurrency` | As in [Defaults](#defaults) | Per-engine concurrency caps, `{ codex?, claude?, opencode?, agy? }` |
 | `agentCeiling` | `--agent-ceiling` | Unbounded | Run-wide agent ceiling; `null` leaves it unbounded |
 | `strip` | `--strip` | None | Capabilities stripped from every worker, added to each call's own `strip` |
 | `lean` | `--lean` | `false` | Start every worker without the operator's interactive context; per-call `lean: false` cannot lift it |
@@ -488,15 +489,22 @@ own environment.
 | `dispatchRemap` | `--remap` | None | A fresh `DispatchRemap` instance for this run, constructed with an array of rule strings |
 | `workerScope` | `--worker-scope` | `worker` | Systemd scope grouping (`worker` or `run`); the library uses the explicit option or its default |
 
+The CLI alone writes the per-dispatch remap line and end-of-run report to
+stderr. Library callers can listen for `dispatch/remapped` through
+`runtime.onEvent()` and get unmatched rules from `DispatchRemap#unmatched()`.
+The instance retains its matches for its lifetime. Use a fresh instance to
+track matches for each run independently.
+
 These options have no flag or environment variable:
 
 | Option | Default | Description |
 |---|---|---|
 | `retryPromiseSilenceTimeoutMs` | 15 minutes | Codex only. How long a turn may stay silent after the app-server promises to retry before the turn is ended |
 | `firstOutputTimeoutMs` | 15 minutes | Codex only. How long a started turn may wait for its first output-bearing frame |
-| `requestTimeoutMs` | 30 seconds | Codex app-server transport request timeout |
+| `requestTimeoutMs` | 30 seconds | Codex app-server transport request timeout, and the bound on every agy request but a prompt |
 | `claudeSessionStaleAfterMs` | 60 minutes | When a held Claude session is marked stale (see [Sessions](workflow-scripts.md#multi-turn-sessions)) |
 | `codexSessionStaleAfterMs` | 60 minutes | When a held Codex session is marked stale |
+| `agySessionStaleAfterMs` | 5 minutes | When a held agy session is marked stale |
 | `workerEnvironment` | None | Per-engine variables injected above inherited values; pass the resolved `worker_environment` map explicitly |
 | `openCodeModels` | None | The models opencode workers may name, in the registry entry shape; the library reads no machine configuration, so without this option every opencode call is refused |
 | `effortPolicy` | None | Machine effort policy `{ section, source }`, with the [effort](#effort) section and the file it came from; pass it explicitly because the library reads no machine configuration |

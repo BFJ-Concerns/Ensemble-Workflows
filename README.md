@@ -1,13 +1,15 @@
 # Ensemble
 
 Ensemble runs JavaScript workflow scripts that coordinate many AI coding
-agents across several engines: **Codex**, **Claude Code**, and **opencode**.
+agents across several engines: **Codex**, **Claude Code**, **opencode**, and
+Google's **Antigravity CLI** (`agy`).
 A script fans work out to agents, collects their structured answers, and
 combines them. Each agent call names the engine it runs on, so one model
 family can check another's work within a single run.
 
 - Codex runs over `codex app-server`, Claude runs as Claude Code background
-  sessions (`claude --bg`), and opencode runs through `opencode run`. Every
+  sessions (`claude --bg`), opencode runs through `opencode run`, and agy
+  runs each worker as an `agy acp` session. Every
   call names its engine, or a named target the machine configuration binds to
   one; there is no default.
 - A call given a JSON Schema returns a value that validates against it, or
@@ -29,7 +31,8 @@ family can check another's work within a single run.
 
 - Node.js 24.14.0 or later.
 - The CLI for each engine you use, installed and signed in: `codex` for
-  Codex, `claude` (Claude Code) for Claude, and `opencode` for opencode.
+  Codex, `claude` (Claude Code) for Claude, `opencode` for opencode, and
+  `agy` for agy.
   opencode models must also be declared in the
   [machine configuration](docs/configuration.md#opencode_models).
 - For Claude, accept its bypass-permissions disclaimer once interactively
@@ -196,7 +199,7 @@ see [CLI](docs/cli.md).
 
 ## Configuration
 
-Codex and Claude workers need no Ensemble configuration file. Claude needs
+Codex, Claude and agy workers need no Ensemble configuration file. Claude needs
 the [one-time bypass-permissions consent](docs/workflow-scripts.md#claude-dispatch)
 before its first dispatch. An optional file at
 `~/.config/ensemble/config.json` sets concurrency caps, a run-wide agent

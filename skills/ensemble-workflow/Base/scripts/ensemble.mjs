@@ -14311,7 +14311,7 @@ function appServerDiagnosticOf(error) {
   }
   return null;
 }
-var CODEX_SCHEMA_REJECTION_REMEDY = "Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude' or 'opencode', which validate the full JSON Schema client-side.";
+var CODEX_SCHEMA_REJECTION_REMEDY = "Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude', 'opencode' or 'agy', which validate the full JSON Schema client-side.";
 function payloadBesideMessage(diagnostic) {
   let parsed;
   try {
@@ -14408,6 +14408,32 @@ var AppServerRetryPromiseBrokenError = class extends AppServerRequestError {
 };
 var AppServerSystemError = class extends AppServerRequestError {
 };
+var AcpRequestError = class extends EnsembleError {
+  method;
+  code;
+  data;
+  constructor(agent, method, error) {
+    const code = error.code === void 0 ? "" : ` (${error.code})`;
+    const data2 = error.data === void 0 ? "" : `; data: ${renderDiagnostic(error.data)}`;
+    super(`${agent}: ${method} failed${code}: ${error.message ?? "the agent gave no message"}${data2}`, { cause: error });
+    this.method = method;
+    this.code = error.code;
+    this.data = error.data;
+  }
+};
+var AcpExitedError = class extends EnsembleError {
+};
+var AcpRequestTimeoutError = class extends EnsembleError {
+  method;
+  timeoutMs;
+  constructor(agent, method, timeoutMs) {
+    super(`${agent}: ${method} went unanswered for ${timeoutMs}ms`);
+    this.method = method;
+    this.timeoutMs = timeoutMs;
+  }
+};
+var AcpProtocolError = class extends EnsembleError {
+};
 var AppServerFirstOutputTimeoutError = class extends EnsembleError {
   constructor(timeoutMs) {
     super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
@@ -14453,12 +14479,12 @@ var BudgetExceededError = class extends EnsembleError {
 };
 var MissingEngineError = class extends AgentOptionRejectedError {
   constructor() {
-    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'");
+    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', engine: 'opencode', or engine: 'agy'");
   }
 };
 var UnknownEngineError = class extends AgentOptionRejectedError {
   constructor(engine) {
-    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', or 'opencode'`);
+    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', 'opencode', or 'agy'`);
   }
 };
 var EngineShutdownError = class extends EnsembleError {
@@ -14469,6 +14495,11 @@ var EngineShutdownError = class extends EnsembleError {
 var ClaudeWorkerError = class extends EnsembleError {
 };
 var ClaudeDispatchError = class extends SubstrateRefusedError {
+};
+var AgySubstrateRefusedError = class extends SubstrateRefusedError {
+  constructor(message, cause) {
+    super(message, cause === void 0 ? void 0 : { cause });
+  }
 };
 var CodexSubstrateRefusedError = class extends SubstrateRefusedError {
   /**
@@ -14555,13 +14586,13 @@ var NamedTargetRejectedError = class extends AgentOptionRejectedError {
   }
 };
 var EffortBoundsUnservedError = class extends AgentOptionRejectedError {
-  constructor(refusal) {
+  constructor(refusal2) {
     const bounds = [
-      ...refusal.bounds.ceiling !== null ? [`ceiling ${refusal.bounds.ceiling.level} (effort key ${JSON.stringify(refusal.bounds.ceiling.key)})`] : [],
-      ...refusal.bounds.floor !== null ? [`floor ${refusal.bounds.floor.level} (effort key ${JSON.stringify(refusal.bounds.floor.key)})`] : []
+      ...refusal2.bounds.ceiling !== null ? [`ceiling ${refusal2.bounds.ceiling.level} (effort key ${JSON.stringify(refusal2.bounds.ceiling.key)})`] : [],
+      ...refusal2.bounds.floor !== null ? [`floor ${refusal2.bounds.floor.level} (effort key ${JSON.stringify(refusal2.bounds.floor.key)})`] : []
     ];
     super(
-      `effort ${JSON.stringify(refusal.requested)} cannot be served on ${refusal.engine} ${refusal.model !== null ? `model ${JSON.stringify(refusal.model)}` : "at the engine's default model"}: the machine's ${bounds.join(" and ")} in ${refusal.source} admit${bounds.length === 1 ? "s" : ""} none of the levels the model serves (${refusal.served.join(" | ")}). The worker was not dispatched. Move the bound, or declare the model's served levels in the effort section.`
+      `effort ${JSON.stringify(refusal2.requested)} cannot be served on ${refusal2.engine} ${refusal2.model !== null ? `model ${JSON.stringify(refusal2.model)}` : "at the engine's default model"}: the machine's ${bounds.join(" and ")} in ${refusal2.source} admit${bounds.length === 1 ? "s" : ""} none of the levels the model serves (${refusal2.served.join(" | ")}). The worker was not dispatched. Move the bound, or declare the model's served levels in the effort section.`
     );
   }
 };
@@ -14681,7 +14712,7 @@ function isCanonicalEffort(value) {
 function effortPolicyKeys(engine, model) {
   return [...model !== void 0 ? [`${engine}:${model}`] : [], engine, "*"];
 }
-var ENGINE_NAMES = ["codex", "claude", "opencode"];
+var ENGINE_NAMES = ["codex", "claude", "opencode", "agy"];
 var EFFORT_TARGET_POLICY_FIELDS = ["ceiling", "floor", "levels"];
 function assertEffortSection(section, fail) {
   if (!isPlainObject(section)) {
@@ -14814,6 +14845,9 @@ function defaultClaudeConcurrency() {
 }
 function defaultOpenCodeConcurrency() {
   return 2;
+}
+function defaultAgyConcurrency() {
+  return 12;
 }
 
 // src/capability-stripping.ts
@@ -15111,8 +15145,8 @@ function assertValidFallbackChain(chain) {
       }
       return;
     }
-    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "opencode") {
-      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude" or "opencode", got ${JSON.stringify(target.engine)}`);
+    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "opencode" && target.engine !== "agy") {
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude", "opencode" or "agy", got ${JSON.stringify(target.engine)}`);
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
@@ -15879,7 +15913,7 @@ var AmbientConfigError = class extends Error {
 };
 var OPENCODE_MODEL_DECLARATION_KEYS = ["provider_model", "display_name", "family", "vision", "billing", "variants"];
 var OPENCODE_BILLING_MODES = ["pay-as-you-go", "self-hosted"];
-var ENGINES = ["codex", "claude", "opencode"];
+var ENGINES = ["codex", "claude", "opencode", "agy"];
 function isConfiguredEngine(value) {
   return ENGINES.includes(value);
 }
@@ -15891,7 +15925,8 @@ function resolveAmbientSettings(input) {
   const defaults = {
     codex: defaultCodexConcurrency(),
     claude: defaultClaudeConcurrency(),
-    opencode: defaultOpenCodeConcurrency()
+    opencode: defaultOpenCodeConcurrency(),
+    agy: defaultAgyConcurrency()
   };
   return {
     configFile,
@@ -16545,7 +16580,8 @@ function subtractUsage(total, previous) {
 var ENGINE_INCLUSION_RULES = {
   codex: { cachedWithinInput: true, reasoningWithinOutput: true },
   claude: { cachedWithinInput: false, reasoningWithinOutput: true },
-  opencode: { cachedWithinInput: false, reasoningWithinOutput: false }
+  opencode: { cachedWithinInput: false, reasoningWithinOutput: false },
+  agy: { cachedWithinInput: false, reasoningWithinOutput: true }
 };
 function summariseUsage(engine, events) {
   if (events.length === 0) {
@@ -17803,7 +17839,7 @@ function isObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isEngineName(value) {
-  return value === "codex" || value === "claude" || value === "opencode";
+  return value === "codex" || value === "claude" || value === "opencode" || value === "agy";
 }
 function isAgentStatus(value) {
   return value === "in-progress" || value === "complete" || value === "failed" || value === "timed-out" || value === "interrupted" || value === "abandoned";
@@ -17868,13 +17904,14 @@ async function findHarnessRoot() {
   }
 }
 async function toolVersions(archiveDir) {
-  const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
+  const [gitVersion, codexVersion, claudeVersion, openCodeVersion, agyVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
     commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
-    queryOpenCodeVersion(archiveDir)
+    queryOpenCodeVersion(archiveDir),
+    commandVersion("agy", ["--version"])
   ]);
-  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
+  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion, agy: agyVersion };
 }
 async function queryOpenCodeVersion(archiveDir) {
   const scratch = await mkdtemp(path6.join(archiveDir, ".opencode-version-"));
@@ -18689,6 +18726,7 @@ var TokenBudget = class {
       codex: ceilings.codex ?? null,
       claude: ceilings.claude ?? null,
       opencode: ceilings.opencode ?? null,
+      agy: ceilings.agy ?? null,
       ...ceilings
     };
   }
@@ -19849,6 +19887,17 @@ var OPENCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["opencode-run-error", { class: "unclassified", rule: "opencode.run-error" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "opencode.deadline" }]
 ]);
+var AGY_FAILURE_KINDS = /* @__PURE__ */ new Map([
+  ["AgySubstrateRefusedError", { class: "availability", rule: "agy.substrate-refused" }],
+  // The prompt was refused for want of a sign-in: the session never held it.
+  ["agy-sign-in-required", { class: "availability", rule: "agy.sign-in-required" }],
+  // The worker's process ended mid-turn: the substrate lost it before it answered.
+  ["agy-worker-lost", { class: "availability", rule: "agy.worker-lost" }],
+  ["agy-invalid-prompt-reply", { class: "output", rule: "agy.invalid-prompt-reply" }],
+  // agy ended the turn as a refusal, at a token or request limit, or cancelled it itself.
+  ["agy-stop-reason", { class: "unclassified", rule: "agy.stop-reason" }],
+  ["TurnTimeoutError", { class: "unclassified", rule: "agy.deadline" }]
+]);
 function classifyAttemptFailure(evidence) {
   if (evidence.failure.kind === "effort-rejected") return { class: "unclassified", rule: "effort.rejected" };
   const { kind } = evidence.failure;
@@ -19891,6 +19940,8 @@ function classifyAttemptFailure(evidence) {
       }
       return OPENCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
     }
+    case "agy":
+      return AGY_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
   }
 }
 function openCodeHttpStatus(evidence) {
@@ -21405,6 +21456,51 @@ var WhitespaceStream = class {
   }
 };
 
+// src/worker-instructions.ts
+var WORKER_STANDING_INSTRUCTIONS = [
+  "You are an automated worker dispatched by the Ensemble orchestration harness.",
+  "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
+].join("\n");
+var SCHEMA_CONTRACT_LEAD = {
+  opening: "When finished, include",
+  later: "For this reply, include"
+};
+function schemaContract(schema, turn) {
+  return [
+    `${SCHEMA_CONTRACT_LEAD[turn]} in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:`,
+    JSON.stringify(schema)
+  ].join("\n");
+}
+function previousFailureNotice(failure) {
+  return `A previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
+}
+function inSessionCorrection(failure) {
+  switch (failure.kind) {
+    case "schema-validation":
+      return `Your final JSON did not satisfy the required schema. Validation errors: ${failure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
+    case "invalid-json":
+      return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
+    case "empty-output":
+      return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
+    case "WhitespaceStreamError":
+      return "Your last turn was stopped because it had streamed nothing but whitespace for two minutes. The work you had already done stands. Please continue the task from where it stopped and output your final answer.";
+    case "TurnTimeoutError":
+      return `Your last turn was stopped at its time limit before it gave a final answer (${failure.message}). The work you had already done stands. Please finish what remains and output your final answer; this turn has the same limit.`;
+    default:
+      return `Your last turn did not complete (${failure.kind}: ${failure.message}). Please complete the task and output your final answer now.`;
+  }
+}
+function openingPrompt(parts) {
+  const lines = [WORKER_STANDING_INSTRUCTIONS];
+  if (parts.schema !== void 0) lines.push(schemaContract(parts.schema, "opening"));
+  if (parts.previousFailure !== void 0) lines.push(previousFailureNotice(parts.previousFailure));
+  lines.push("", "Task:", parts.task);
+  return lines.join("\n");
+}
+function laterTurnPrompt(parts) {
+  return parts.schema === void 0 ? parts.task : [schemaContract(parts.schema, "later"), "", parts.task].join("\n");
+}
+
 // src/claude-control-plane.ts
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID4 } from "node:crypto";
@@ -21478,6 +21574,14 @@ function openCodeResources(env) {
     { owner: "opencode", role: "opencode scratch files", access: "create-entries", ...temporaryLocation(env.written, env.cwd, "", "opencode") }
   ];
 }
+function agyResources(env) {
+  return [{
+    owner: "agy",
+    role: "Antigravity CLI home",
+    access: "create-entries",
+    ...defaultDirectory({ rule: "$HOME/.gemini/antigravity-cli", movedBy: "HOME" }, homeRoot(env.written, env.cwd), ".gemini", "antigravity-cli")
+  }];
+}
 function claudeConfigDirectory(env, cwd) {
   return path16.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path16.join(homeOf(env), ".claude")).normalize("NFC"));
 }
@@ -21496,7 +21600,8 @@ function temporaryLocation(env, cwd, qualifier = "", ...below) {
 var ENGINE_RESOURCE_RESOLVERS = {
   codex: codexResources,
   claude: claudeResources,
-  opencode: openCodeResources
+  opencode: openCodeResources,
+  agy: agyResources
 };
 function engineResourceRequirements(engine, declared, cwd, launcher = process.env) {
   return ENGINE_RESOURCE_RESOLVERS[engine]({
@@ -22706,10 +22811,6 @@ function claudeNativeEffort(effort) {
 }
 var dispatchCounter = 0;
 var SETTLED_CONFIRMATION_POLLS = 5;
-var CLAUDE_WORKER_STANDING_INSTRUCTIONS = [
-  "You are an automated worker dispatched by the Ensemble orchestration harness.",
-  "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
-].join("\n");
 var CLAUDE_TASK_END_LINE = "(This line only marks where the task above ends; any whitespace before it belongs to the task.)";
 var ClaudeEngineInvocation = class {
   #cwd;
@@ -23003,7 +23104,7 @@ var ClaudeEngineInvocation = class {
     const prompt = this.#buildDispatchPrompt(previousFailure);
     const handle = await this.#controlPlane.dispatch({
       prompt,
-      appendSystemPrompt: CLAUDE_WORKER_STANDING_INSTRUCTIONS,
+      appendSystemPrompt: WORKER_STANDING_INSTRUCTIONS,
       name: this.#nextName(),
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
@@ -23049,7 +23150,7 @@ var ClaudeEngineInvocation = class {
   async #correctInSession(handle, previousFailure, fromIndex, observers) {
     this.#collectionMark = fromIndex;
     this.#deliveryFailure = null;
-    const message = this.#correctionMessage(previousFailure);
+    const message = inSessionCorrection(previousFailure);
     await this.#deliver(handle, { message, mark: fromIndex, what: "the correction", carriesTurn: false }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
@@ -23681,21 +23782,14 @@ var ClaudeEngineInvocation = class {
   /**
    * A dispatch's opening message. It begins with the task, so a task whose
    * first word is `/<skill>` runs that skill exactly as an operator's typed
-   * message would, unless the worker is stripped of skills; the standing instructions reach the worker through the
-   * system prompt (`CLAUDE_WORKER_STANDING_INSTRUCTIONS`), and the turn's
+   * message would, unless the worker is stripped of skills; the standing instructions are appended to Claude Code's
+   * default system prompt at launch (`WORKER_STANDING_INSTRUCTIONS`), and the turn's
    * schema contract and any previous attempt's failure follow the task.
    */
   #buildDispatchPrompt(previousFailure) {
     const after = [];
-    if (this.#turnSchema !== void 0) {
-      after.push(
-        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema)
-      );
-    }
-    if (previousFailure !== void 0) {
-      after.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
-    }
+    if (this.#turnSchema !== void 0) after.push(schemaContract(this.#turnSchema, "opening"));
+    if (previousFailure !== void 0) after.push(previousFailureNotice(previousFailure));
     const task = this.#turnPrompt;
     const framed = task === "" || task.trimStart() !== task || this.#options.strip?.includes("skills") === true;
     if (!framed && after.length === 0 && task.trimEnd() !== task) after.push(CLAUDE_TASK_END_LINE);
@@ -23717,16 +23811,8 @@ var ClaudeEngineInvocation = class {
    * turn adds — its schema contract, when it has one, and its task.
    */
   #buildTurnMessage() {
-    const lines = [];
-    if (this.#turnSchema !== void 0) {
-      lines.push(
-        "For this reply, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema),
-        ""
-      );
-    }
-    lines.push(this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask());
-    return lines.join("\n");
+    const task = this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask();
+    return laterTurnPrompt({ task, ...this.#turnSchema !== void 0 ? { schema: this.#turnSchema } : {} });
   }
   /**
    * The turn's prompt again, for a session that accepted a submission of it
@@ -23744,18 +23830,6 @@ var ClaudeEngineInvocation = class {
       "",
       this.#acceptedTurnCopy
     ].join("\n");
-  }
-  #correctionMessage(previousFailure) {
-    switch (previousFailure.kind) {
-      case "schema-validation":
-        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
-      case "invalid-json":
-        return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
-      case "empty-output":
-        return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
-      default:
-        return `Your last turn did not complete (${previousFailure.kind}: ${previousFailure.message}). Please complete the task and output your final answer now.`;
-    }
   }
   #blockedNudge(waitingFor) {
     const context = waitingFor !== void 0 ? ` (waiting for: ${waitingFor})` : "";
@@ -23888,6 +23962,81 @@ import { randomUUID as randomUUID7 } from "node:crypto";
 // src/app-server.ts
 import { spawn as spawn3 } from "node:child_process";
 import { createInterface } from "node:readline";
+
+// src/bounded-line-reader.ts
+function readBoundedLines(stream, options) {
+  const { maxLineBytes, oversizedPrefixBytes, onLine, onOversizedLine } = options;
+  let chunks = [];
+  let byteLength = 0;
+  let prefix = Buffer.alloc(0);
+  let discardingOversizedLine = false;
+  let oversizedLineByteLength = 0;
+  const resetLine = () => {
+    chunks = [];
+    byteLength = 0;
+    prefix = Buffer.alloc(0);
+    discardingOversizedLine = false;
+    oversizedLineByteLength = 0;
+  };
+  const retain = (chunk) => {
+    if (chunk.length === 0) {
+      return;
+    }
+    chunks.push(chunk);
+    byteLength += chunk.length;
+    if (prefix.length < oversizedPrefixBytes) {
+      prefix = Buffer.concat([prefix, chunk.subarray(0, oversizedPrefixBytes - prefix.length)]);
+    }
+  };
+  const reportOversizedLine = () => {
+    const reportedByteLength = oversizedLineByteLength;
+    const reportedPrefix = prefix.toString("utf8");
+    resetLine();
+    onOversizedLine(reportedByteLength, reportedPrefix);
+  };
+  const deliverRetainedLine = () => {
+    const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+    resetLine();
+    onLine(line);
+  };
+  stream.on("data", (chunk) => {
+    let offset2 = 0;
+    while (offset2 < chunk.length) {
+      const newline = chunk.indexOf(10, offset2);
+      const end = newline === -1 ? chunk.length : newline;
+      const segment = chunk.subarray(offset2, end);
+      if (discardingOversizedLine) {
+        oversizedLineByteLength += segment.length;
+        if (newline !== -1) {
+          reportOversizedLine();
+        }
+      } else if (byteLength + segment.length <= maxLineBytes) {
+        retain(segment);
+        if (newline !== -1) {
+          deliverRetainedLine();
+        }
+      } else {
+        const retainedBytes = Math.max(0, maxLineBytes - byteLength);
+        retain(segment.subarray(0, retainedBytes));
+        discardingOversizedLine = true;
+        oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
+        if (newline !== -1) {
+          reportOversizedLine();
+        }
+      }
+      offset2 = newline === -1 ? chunk.length : newline + 1;
+    }
+  });
+  stream.once("end", () => {
+    if (discardingOversizedLine) {
+      reportOversizedLine();
+    } else if (byteLength > 0) {
+      deliverRetainedLine();
+    }
+  });
+}
+
+// src/app-server.ts
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
@@ -24426,73 +24575,13 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     });
   }
   #wireReader() {
-    let chunks = [];
-    let byteLength = 0;
-    let prefix = Buffer.alloc(0);
-    let discardingOversizedLine = false;
-    let oversizedLineByteLength = 0;
-    const resetLine = () => {
-      chunks = [];
-      byteLength = 0;
-      prefix = Buffer.alloc(0);
-      discardingOversizedLine = false;
-      oversizedLineByteLength = 0;
-    };
-    const retain = (chunk) => {
-      if (chunk.length === 0) {
-        return;
-      }
-      chunks.push(chunk);
-      byteLength += chunk.length;
-      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
-        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
-      }
-    };
-    const reportOversizedLine = () => {
-      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
-    };
-    const handleRetainedLine = () => {
-      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-      resetLine();
-      this.#handleLine(line);
-    };
-    this.#process.stdout.on("data", (chunk) => {
-      let offset2 = 0;
-      while (offset2 < chunk.length) {
-        const newline = chunk.indexOf(10, offset2);
-        const end = newline === -1 ? chunk.length : newline;
-        const segment = chunk.subarray(offset2, end);
-        if (discardingOversizedLine) {
-          oversizedLineByteLength += segment.length;
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
-          retain(segment);
-          if (newline !== -1) {
-            handleRetainedLine();
-          }
-        } else {
-          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
-          retain(segment.subarray(0, retainedBytes));
-          discardingOversizedLine = true;
-          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        }
-        offset2 = newline === -1 ? chunk.length : newline + 1;
-      }
+    readBoundedLines(this.#process.stdout, {
+      maxLineBytes: MAX_APP_SERVER_STDOUT_LINE_BYTES,
+      oversizedPrefixBytes: DECODE_FAILURE_BUFFER_PREFIX_BYTES,
+      onLine: (line) => this.#handleLine(line),
+      onOversizedLine: (byteLength, prefix) => this.#reportDecodeFailure(byteLength, prefix)
     });
     this.#process.stdout.once("end", () => {
-      if (discardingOversizedLine) {
-        reportOversizedLine();
-        resetLine();
-      } else if (byteLength > 0) {
-        handleRetainedLine();
-      }
       if (this.#hasExited) {
         return;
       }
@@ -25299,6 +25388,1152 @@ var ClaudeStripPreparer = class {
   }
 };
 
+// src/acp-client.ts
+import { createInterface as createInterface2 } from "node:readline";
+var ACP_PROTOCOL_VERSION = 1;
+var MAX_ACP_LINE_BYTES = 8 * 1024 * 1024;
+var DECODE_FAILURE_PREFIX_LENGTH = 512;
+var DEFAULT_REQUEST_TIMEOUT_MS = 6e4;
+var STDERR_TAIL_LINES = 50;
+var STDERR_LINE_LENGTH = 2e3;
+var PIPE_DRAIN_MS = 1e3;
+function acpPermissionChoice(request, ...kinds) {
+  for (const kind of kinds) {
+    const option = request.options.find((candidate) => candidate.kind === kind);
+    if (option !== void 0) return option.optionId;
+  }
+  return null;
+}
+function acpUpdateText(update) {
+  const content = asObject(update.body.content);
+  return content !== null && content.type === "text" && typeof content.text === "string" ? content.text : null;
+}
+var AcpClient = class _AcpClient {
+  /** Resolves once the agent's process has ended, however it ended. Never rejects. */
+  exited;
+  #options;
+  #command;
+  #agent = {};
+  #nextId = 0;
+  #pending = /* @__PURE__ */ new Map();
+  #sessions = /* @__PURE__ */ new Map();
+  #stderrTail = [];
+  #exit = null;
+  /** Why the client itself ended the agent, where it did: the process could not run, or an update's consumer threw. */
+  #fault;
+  #ended = false;
+  #closing = false;
+  #stop = null;
+  #drain;
+  #resolveExited;
+  /**
+   * Start the agent and complete `initialize`. Rejects with the spawn
+   * failure when the command cannot start (nothing ran), and otherwise
+   * stops the process before rejecting: with `AcpProtocolError` for an
+   * agent on another protocol version, or with whatever `initialize` failed
+   * on.
+   */
+  static async start(options) {
+    const command = await options.commands.contain(options.name, options.file, options.args, {
+      cwd: options.cwd,
+      ...options.env !== void 0 ? { env: options.env } : {},
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    const client = new _AcpClient(options, command);
+    try {
+      client.#agent = await client.#request("initialize", {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        // The agent uses its own file and terminal tools: the client offers none.
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+        clientInfo: options.clientInfo
+      }, (result) => {
+        const reply = asObject(result);
+        if (reply === null || reply.protocolVersion !== ACP_PROTOCOL_VERSION) {
+          throw new AcpProtocolError(
+            `${options.name}: initialize answered protocol version ${JSON.stringify(reply?.protocolVersion)}; this client speaks ${ACP_PROTOCOL_VERSION}`
+          );
+        }
+        return reply;
+      });
+      return client;
+    } catch (error) {
+      await client.close();
+      throw error;
+    }
+  }
+  constructor(options, command) {
+    this.#options = options;
+    this.#command = command;
+    this.exited = new Promise((resolve) => this.#resolveExited = resolve);
+    this.#wire();
+  }
+  /** The agent's `initialize` reply as sent: its capabilities, `agentInfo`, `authMethods`, and its own `_meta`. */
+  get agent() {
+    return this.#agent;
+  }
+  /** How far the run's ownership of the agent's process reaches. */
+  get reach() {
+    return this.#command.reach;
+  }
+  /**
+   * Open a session. The model and thought level it reports are the agent's
+   * defaults until set; `AcpSession.opened` holds the whole reply.
+   */
+  newSession(options) {
+    return this.#request("session/new", { cwd: options.cwd, mcpServers: [], ...options.params }, (result) => {
+      const reply = asObject(result);
+      const id = reply?.sessionId;
+      if (reply === null || typeof id !== "string" || id.length === 0) {
+        throw new AcpProtocolError(`${this.#options.name}: session/new answered without a session id`);
+      }
+      return new AcpSession(id, reply, options.onUpdate, {
+        request: (method, params, settle, bounded2) => this.#request(method, { sessionId: id, ...params }, settle, bounded2),
+        notify: (method, params) => this.#notify(method, { sessionId: id, ...params }),
+        updates: (deliver) => this.#sessions.set(id, deliver),
+        name: this.#options.name
+      });
+    });
+  }
+  /**
+   * Stop the agent's process and everything within its reach, and reject
+   * what it had not answered. Returns the stop, whose `attemptAccount` the
+   * adapter owes the attempt that made it. Every call shares one stop, and
+   * a process that ended by itself has been stopped already. Never rejects.
+   */
+  close() {
+    if (this.#exit === null) this.#closing = true;
+    return this.#stopCommand();
+  }
+  #stopCommand() {
+    this.#stop ??= this.#command.stop().then((stop) => {
+      if (!this.#ended) {
+        this.#drain = setTimeout(() => {
+          const child = this.#command.child;
+          child.stdin?.destroy();
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          this.#end();
+        }, PIPE_DRAIN_MS);
+      }
+      return stop;
+    });
+    return this.#stop;
+  }
+  #wire() {
+    const child = this.#command.child;
+    readBoundedLines(child.stdout, {
+      maxLineBytes: MAX_ACP_LINE_BYTES,
+      oversizedPrefixBytes: DECODE_FAILURE_PREFIX_LENGTH,
+      onLine: (line) => this.#handleLine(line),
+      onOversizedLine: (byteLength, linePrefix) => this.#reportDecodeFailure(byteLength, linePrefix)
+    });
+    createInterface2({ input: child.stderr }).on("line", (line) => {
+      this.#stderrTail.push(line.slice(0, STDERR_LINE_LENGTH));
+      if (this.#stderrTail.length > STDERR_TAIL_LINES) this.#stderrTail.shift();
+    });
+    child.stdin.on("error", () => void 0);
+    child.once("error", (error) => {
+      this.#fault ??= `could not run: ${error.message}`;
+      void this.#stopCommand();
+    });
+    child.once("exit", (exitCode, signal) => {
+      this.#exit = { exitCode, signal };
+      void this.#stopCommand();
+    });
+    child.once("close", (exitCode, signal) => {
+      this.#exit ??= { exitCode, signal };
+      this.#end();
+    });
+    if (child.exitCode !== null || child.signalCode !== null) {
+      this.#exit = { exitCode: child.exitCode, signal: child.signalCode };
+      void this.#stopCommand();
+    }
+  }
+  /** The process is over: reject what it never answered and publish how it ended. Runs once. */
+  #end() {
+    if (this.#ended) return;
+    this.#ended = true;
+    clearTimeout(this.#drain);
+    const failure = this.#exitedError();
+    for (const [id, pending] of this.#pending) {
+      this.#pending.delete(id);
+      clearTimeout(pending.timeout);
+      pending.reject(failure);
+    }
+    this.#resolveExited({ exitCode: this.#exit?.exitCode ?? null, signal: this.#exit?.signal ?? null, stderrTail: this.#stderrTail.join("\n") });
+  }
+  #exitedError() {
+    const name = this.#options.name;
+    let account;
+    if (this.#fault !== void 0) {
+      account = `${name} ${this.#fault}`;
+    } else if (this.#closing) {
+      account = `${name} was stopped by the harness`;
+    } else if (this.#exit === null) {
+      account = `${name} closed its output`;
+    } else {
+      account = this.#exit.signal !== null ? `${name} was ended by ${this.#exit.signal}` : `${name} exited with code ${this.#exit.exitCode}`;
+    }
+    const stderr = this.#stderrTail.join("\n").trim();
+    const ownEnding = this.#fault === void 0 && !this.#closing;
+    const error = new AcpExitedError(stderr.length > 0 && ownEnding ? `${account}; its last stderr: ${stderr}` : account);
+    return this.#exit === null ? error : attachWorkerExitStatus(error, this.#exit);
+  }
+  /**
+   * Send a request and settle it from its reply. `settle` turns the result
+   * into the value and runs synchronously as the reply frame is handled, so
+   * state it sets — a registered session, a settings snapshot — is in place
+   * before the next frame; a throw out of it rejects the request.
+   */
+  #request(method, params, settle, bounded2 = true) {
+    return new Promise((resolve, reject) => {
+      if (this.#ended) {
+        reject(this.#exitedError());
+        return;
+      }
+      const id = ++this.#nextId;
+      const timeoutMs = this.#options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+      const timeout = bounded2 ? setTimeout(() => {
+        this.#pending.delete(id);
+        reject(new AcpRequestTimeoutError(this.#options.name, method, timeoutMs));
+      }, timeoutMs) : void 0;
+      this.#pending.set(id, {
+        method,
+        settle: (result) => {
+          try {
+            resolve(settle(result));
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          }
+        },
+        reject,
+        timeout
+      });
+      this.#write({ jsonrpc: "2.0", id, method, params });
+    });
+  }
+  #notify(method, params) {
+    this.#write({ jsonrpc: "2.0", method, params });
+  }
+  /** A frame written to a process that has gone is dropped: its request is rejected when the process's end is handled. */
+  #write(frame) {
+    const stdin = this.#command.child.stdin;
+    if (this.#ended || stdin.destroyed || !stdin.writable) return;
+    stdin.write(`${JSON.stringify(frame)}
+`);
+  }
+  #handleLine(line) {
+    if (line.trim().length === 0) return;
+    const frame = parseFrame(line);
+    const id = frame?.id;
+    const method = frame?.method;
+    if (frame === null) {
+      this.#reportUnusable(line);
+    } else if (typeof method === "string" && (typeof id === "string" || typeof id === "number")) {
+      this.#answerAgentRequest(id, method, asObject(frame.params) ?? {});
+    } else if (typeof method === "string") {
+      if (method === "session/update") this.#routeUpdate(asObject(frame.params) ?? {}, line);
+    } else if (typeof id === "number" && this.#pending.has(id) && ("result" in frame || "error" in frame)) {
+      const pending = this.#pending.get(id);
+      this.#pending.delete(id);
+      clearTimeout(pending.timeout);
+      if ("error" in frame) {
+        const error = asObject(frame.error);
+        pending.reject(new AcpRequestError(this.#options.name, pending.method, {
+          code: typeof error?.code === "number" ? error.code : void 0,
+          message: typeof error?.message === "string" ? error.message : void 0,
+          ...error?.data !== void 0 ? { data: error.data } : {}
+        }));
+      } else {
+        pending.settle(frame.result);
+      }
+    } else {
+      this.#reportUnusable(line);
+    }
+  }
+  #routeUpdate(params, line) {
+    const body = asObject(params.update);
+    const deliver = typeof params.sessionId === "string" ? this.#sessions.get(params.sessionId) : void 0;
+    if (body === null || typeof body.sessionUpdate !== "string" || deliver === void 0) {
+      this.#reportUnusable(line);
+      return;
+    }
+    try {
+      deliver({ kind: body.sessionUpdate, body, receivedAt: Date.now() });
+    } catch (error) {
+      this.#fault ??= `was stopped because the consumer of its updates threw: ${error instanceof Error ? error.message : String(error)}`;
+      void this.#stopCommand();
+    }
+  }
+  #answerAgentRequest(id, method, params) {
+    if (method !== "session/request_permission") {
+      this.#write({ jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${method}` } });
+      return;
+    }
+    const request = {
+      sessionId: typeof params.sessionId === "string" ? params.sessionId : "",
+      toolCall: asObject(params.toolCall) ?? {},
+      options: (Array.isArray(params.options) ? params.options : []).flatMap((entry) => {
+        const option = asObject(entry);
+        return option !== null && typeof option.optionId === "string" ? [{ optionId: option.optionId, name: typeof option.name === "string" ? option.name : "", kind: typeof option.kind === "string" ? option.kind : "" }] : [];
+      })
+    };
+    let choice;
+    try {
+      choice = this.#options.permissionPolicy(request);
+      if (choice !== null && !request.options.some((option) => option.optionId === choice)) {
+        throw new Error(`the permission policy chose ${JSON.stringify(choice)}, which the request did not offer`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#write({ jsonrpc: "2.0", id, error: { code: -32603, message: `the client could not answer the permission request: ${message}` } });
+      return;
+    }
+    this.#write({
+      jsonrpc: "2.0",
+      id,
+      result: { outcome: choice === null ? { outcome: "cancelled" } : { outcome: "selected", optionId: choice } }
+    });
+  }
+  #reportUnusable(line) {
+    this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_PREFIX_LENGTH));
+  }
+  #reportDecodeFailure(byteLength, linePrefix) {
+    try {
+      this.#options.onDecodeFailure?.({ byteLength, linePrefix });
+    } catch {
+    }
+  }
+};
+var AcpSession = class {
+  id;
+  /** The `session/new` reply as sent, the agent's own fields included. */
+  opened;
+  #selects;
+  #onUpdate;
+  #channel;
+  /** Sessions are opened by `AcpClient.newSession`. */
+  constructor(id, opened, onUpdate, channel) {
+    this.id = id;
+    this.opened = opened;
+    this.#selects = selectsOf(opened.configOptions);
+    this.#onUpdate = onUpdate;
+    this.#channel = channel;
+    channel.updates((update) => {
+      if (update.kind === "config_option_update") this.#selects = selectsOf(update.body.configOptions);
+      this.#onUpdate(update);
+    });
+  }
+  /**
+   * The models the session can run on and the one it will: null where the
+   * agent offers no model setting.
+   */
+  get model() {
+    return this.#select("model");
+  }
+  /**
+   * The thought levels the current model offers and the one in force. The
+   * levels are the current model's alone, so they are read after
+   * `setModel`; null where that model offers no choice of level.
+   */
+  get thoughtLevel() {
+    return this.#select("thought_level");
+  }
+  /** Every setting the session offers as a choice, as last reported. */
+  get selects() {
+    return this.#selects;
+  }
+  /** Rejects with the agent's `AcpRequestError` for a model it does not list. */
+  setModel(value) {
+    return this.#set("model", value);
+  }
+  /** Rejects with the agent's `AcpRequestError` for a level the current model does not offer. */
+  setThoughtLevel(value) {
+    return this.#set("thought_level", value);
+  }
+  /**
+   * Run one turn. Resolves when the agent ends it, whatever the stop
+   * reason: a refusal or a cancelled turn is a result here, and the adapter
+   * says what each means for the attempt. The turn's text, tool calls and
+   * thoughts arrive through `onUpdate` before this resolves. There is no
+   * deadline: the adapter ends a turn it will not wait for with `cancel()`.
+   */
+  prompt(prompt) {
+    const blocks = typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt;
+    return this.#channel.request("session/prompt", { prompt: blocks }, (result) => {
+      const reply = asObject(result);
+      if (reply === null || typeof reply.stopReason !== "string") {
+        throw new AcpProtocolError(`${this.#channel.name}: session/prompt answered without a stop reason`);
+      }
+      return { stopReason: reply.stopReason, usage: usageOf(reply.usage), reply };
+    }, false);
+  }
+  /**
+   * Ask the agent to end the turn in flight. The turn's `prompt()` then
+   * resolves, with stop reason `cancelled` on a conforming agent, and the
+   * session takes another prompt.
+   */
+  cancel() {
+    this.#channel.notify("session/cancel", {});
+  }
+  #select(category) {
+    return this.#selects.find((select) => select.category === category) ?? null;
+  }
+  #set(category, value) {
+    const select = this.#select(category);
+    if (select === null) {
+      return Promise.reject(new AcpProtocolError(`${this.#channel.name}: session ${this.id} offers no ${category} setting`));
+    }
+    return this.#channel.request("session/set_config_option", { configId: select.id, value }, (result) => {
+      const reported = asObject(result)?.configOptions;
+      if (reported !== void 0) this.#selects = selectsOf(reported);
+    });
+  }
+};
+function selectsOf(configOptions) {
+  if (!Array.isArray(configOptions)) return [];
+  return configOptions.flatMap((entry) => {
+    const option = asObject(entry);
+    if (option === null || option.type !== "select" || typeof option.id !== "string" || typeof option.currentValue !== "string") {
+      return [];
+    }
+    return [{
+      id: option.id,
+      category: typeof option.category === "string" ? option.category : null,
+      current: option.currentValue,
+      values: selectValues(option.options)
+    }];
+  });
+}
+function selectValues(options) {
+  if (!Array.isArray(options)) return [];
+  return options.flatMap((entry) => {
+    const option = asObject(entry);
+    if (option === null) return [];
+    return typeof option.value === "string" ? [option.value] : selectValues(option.options);
+  });
+}
+function usageOf(usage2) {
+  const reported = asObject(usage2);
+  if (reported === null) return null;
+  const count = (key) => typeof reported[key] === "number" ? reported[key] : null;
+  return {
+    inputTokens: count("inputTokens"),
+    outputTokens: count("outputTokens"),
+    cachedReadTokens: count("cachedReadTokens"),
+    cachedWriteTokens: count("cachedWriteTokens"),
+    thoughtTokens: count("thoughtTokens"),
+    totalTokens: count("totalTokens")
+  };
+}
+function parseFrame(line) {
+  try {
+    return asObject(JSON.parse(line));
+  } catch {
+    return null;
+  }
+}
+function asObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+
+// src/scheduler.ts
+var Scheduler = class {
+  concurrency;
+  #active = 0;
+  #queue = [];
+  #shutdownError = null;
+  constructor(concurrency) {
+    if (!Number.isInteger(concurrency) || concurrency < 1) {
+      throw new Error(`Concurrency must be a positive integer, got ${concurrency}`);
+    }
+    this.concurrency = concurrency;
+  }
+  active() {
+    return this.#active;
+  }
+  queued() {
+    return this.#queue.length;
+  }
+  schedule(task) {
+    if (this.#shutdownError !== null) {
+      return Promise.reject(this.#shutdownError);
+    }
+    return new Promise((resolve, reject) => {
+      const run = () => {
+        this.#active += 1;
+        Promise.resolve().then(task).then(resolve, reject).finally(() => {
+          this.#active -= 1;
+          this.#drain();
+        });
+      };
+      this.#queue.push({ run, reject });
+      this.#drain();
+    });
+  }
+  /**
+   * Rejects everything still queued and refuses new work. Active tasks are
+   * untouched — cancelling started work is the adapter's job, since only it
+   * knows how to reach a live session or child process.
+   */
+  close(rejection) {
+    if (this.#shutdownError !== null) {
+      return;
+    }
+    this.#shutdownError = rejection;
+    const queued = this.#queue.splice(0);
+    for (const task of queued) {
+      task.reject(rejection);
+    }
+  }
+  #drain() {
+    while (this.#active < this.concurrency) {
+      const next = this.#queue.shift();
+      if (next === void 0) {
+        return;
+      }
+      next.run();
+    }
+  }
+};
+
+// src/agy-engine.ts
+var AGY_ACP = "agy acp";
+var CANCEL_GRACE_MS = 1e4;
+var SOLE_LEVEL_SUFFIX = /-(none|minimal|low|medium|high|xhigh|max)$/;
+var AGY_AUTHENTICATION_REQUIRED = -32e3;
+var AGY_INVALID_PARAMS = -32602;
+var AGY_PERMISSION_POLICY = (request) => acpPermissionChoice(request, "allow_once", "allow_always");
+var AgyWorker = class _AgyWorker {
+  client;
+  session;
+  /** The level the model runs at, where it has one to report. */
+  effort;
+  /** This worker's session usage: a replacement worker starts its own. */
+  account;
+  #listener = null;
+  #stop = null;
+  constructor(client, session, effort, account, route) {
+    this.client = client;
+    this.session = session;
+    this.effort = effort;
+    this.account = account;
+    route(this);
+  }
+  /**
+   * Start the server, open the session and apply the model and level.
+   * Rejects with `AgySubstrateRefusedError` where agy could not start, has
+   * no sign-in or opened no session, and with `InvalidAgentOptionValueError`
+   * for a model agy does not list or a level the model does not offer;
+   * every rejection stops the process first.
+   */
+  static async open(launch, settings) {
+    let client;
+    try {
+      client = await AcpClient.start({
+        name: AGY_ACP,
+        file: launch.bin,
+        args: ["acp"],
+        cwd: settings.cwd,
+        env: launch.env,
+        commands: launch.commands,
+        clientInfo: launch.clientInfo,
+        permissionPolicy: AGY_PERMISSION_POLICY,
+        onDecodeFailure: (failure) => launch.onEvent?.({
+          method: "transport/decodeFailed",
+          params: { byteLength: failure.byteLength, linePrefix: failure.linePrefix },
+          receivedAt: Date.now()
+        }),
+        ...launch.requestTimeoutMs !== void 0 ? { requestTimeoutMs: launch.requestTimeoutMs } : {}
+      });
+    } catch (error) {
+      throw refusal(`${AGY_ACP} could not start in ${settings.cwd}`, error);
+    }
+    let deliver = () => void 0;
+    try {
+      const session = await client.newSession({ cwd: settings.cwd, onUpdate: (update) => deliver(update) });
+      const effort = await applySettings(session, settings);
+      return new _AgyWorker(client, session, effort, new AgyAccount(launch.onEvent), (worker) => {
+        deliver = (update) => worker.#listener?.(update);
+      });
+    } catch (error) {
+      await client.close();
+      if (error instanceof InvalidAgentOptionValueError) throw error;
+      if (error instanceof AcpRequestError && error.code === AGY_AUTHENTICATION_REQUIRED) {
+        throw refusal("agy is not signed in: run `agy` once and sign in to the account its workers should use", error);
+      }
+      throw refusal(`${AGY_ACP} opened no session in ${settings.cwd}`, error);
+    }
+  }
+  /** The model the session runs on, as agy names it; null where agy offers no model setting. */
+  get model() {
+    return this.session.model?.current ?? null;
+  }
+  /** Receives this worker's updates; one turn listens at a time. */
+  listen(listener) {
+    this.#listener = listener;
+  }
+  /** Stops the process; every call shares the one stop. */
+  close() {
+    this.#stop ??= this.client.close();
+    return this.#stop;
+  }
+  get closed() {
+    return this.#stop !== null;
+  }
+};
+function refusal(detail, cause) {
+  const reason = cause instanceof Error ? cause.message : String(cause);
+  const refused2 = new AgySubstrateRefusedError(`${detail}: ${reason}`, cause instanceof Error ? cause : void 0);
+  const exit = workerExitStatusOf(cause);
+  return exit === null ? refused2 : attachWorkerExitStatus(refused2, exit);
+}
+async function applySettings(session, settings) {
+  if (settings.model !== void 0) {
+    const offered = session.model?.values ?? [];
+    if (!offered.includes(settings.model)) {
+      throw new InvalidAgentOptionValueError(
+        "model",
+        settings.model,
+        `one of ${offered.join(" | ")} (the models agy lists; the effort is set apart from the model, so a name carries no level)`
+      );
+    }
+    try {
+      await session.setModel(settings.model);
+    } catch (error) {
+      if (error instanceof AcpRequestError && error.code === AGY_INVALID_PARAMS) {
+        throw new InvalidAgentOptionValueError("model", settings.model, `a model agy serves (${error.message})`);
+      }
+      throw error;
+    }
+  }
+  const model = session.model?.current ?? settings.model ?? "the default model";
+  const levels2 = session.thoughtLevel;
+  if (levels2 === null) {
+    const sole = soleLevelOf(model);
+    if (settings.effort !== void 0 && settings.effort !== sole) {
+      throw new InvalidAgentOptionValueError(
+        "effort",
+        settings.effort,
+        sole === null ? `absent \u2014 agy offers no thought level for ${model}` : `${sole}, the one level agy offers for ${model}`
+      );
+    }
+    return sole;
+  }
+  if (settings.effort === void 0) return levels2.current;
+  if (!levels2.values.includes(settings.effort)) {
+    throw new InvalidAgentOptionValueError(
+      "effort",
+      settings.effort,
+      `one of ${levels2.values.join(" | ")} (the thought levels agy offers for ${model})`
+    );
+  }
+  if (levels2.current !== settings.effort) {
+    try {
+      await session.setThoughtLevel(settings.effort);
+    } catch (error) {
+      if (error instanceof AcpRequestError && error.code === AGY_INVALID_PARAMS) {
+        throw new InvalidAgentOptionValueError("effort", settings.effort, `a thought level agy serves for ${model} (${error.message})`);
+      }
+      throw error;
+    }
+  }
+  return session.thoughtLevel?.current ?? settings.effort;
+}
+function soleLevelOf(model) {
+  return SOLE_LEVEL_SUFFIX.exec(model)?.[1] ?? null;
+}
+async function readCatalogue(launch, cwd) {
+  const worker = await AgyWorker.open(launch, { cwd });
+  try {
+    const defaultModel = worker.model;
+    const levels2 = /* @__PURE__ */ new Map();
+    for (const model of worker.session.model?.values ?? []) {
+      await worker.session.setModel(model);
+      const offered = worker.session.thoughtLevel?.values ?? [];
+      const sole = soleLevelOf(model);
+      const canonical = worker.session.thoughtLevel === null ? sole === null ? [] : [sole] : offered.filter(isCanonicalEffort);
+      levels2.set(model, canonical.length === 0 ? null : Object.fromEntries(canonical.map((level) => [level, level])));
+    }
+    return { defaultModel, levels: levels2 };
+  } finally {
+    await worker.close();
+  }
+}
+async function runTurn(worker, message, timeoutMs, context) {
+  const startedAt = Date.now();
+  const turn = {
+    ending: { kind: "lost", error: new Error("unsettled") },
+    finalText: "",
+    allText: "",
+    startedAt,
+    firstDeltaAt: null,
+    endedAt: startedAt,
+    transcript: [JSON.stringify({ type: "prompt", at: new Date(startedAt).toISOString(), text: message })],
+    stops: []
+  };
+  let stopping = null;
+  let grace;
+  const stop = (reason) => {
+    if (stopping !== null) return;
+    stopping = reason;
+    worker.session.cancel();
+    grace = setTimeout(() => {
+      void worker.close();
+    }, CANCEL_GRACE_MS);
+  };
+  const whitespace = new WhitespaceStream(startedAt, () => stop("whitespace"));
+  const deadline = timeoutMs === void 0 ? void 0 : setTimeout(() => stop("deadline"), timeoutMs);
+  let seen = false;
+  worker.listen((update) => {
+    turn.transcript.push(JSON.stringify({ type: "update", at: new Date(update.receivedAt).toISOString(), update: update.body }));
+    if (!seen) {
+      seen = true;
+      safely(() => context.onLiveEvidence?.());
+    }
+    const text = update.kind === "agent_message_chunk" ? acpUpdateText(update) : null;
+    if (text !== null) {
+      turn.firstDeltaAt ??= update.receivedAt;
+      turn.allText += text;
+      turn.finalText += text;
+      whitespace.observeText(text);
+    } else if (update.kind === "tool_call" || update.kind === "tool_call_update") {
+      turn.finalText = "";
+      whitespace.observeActivity();
+    } else if (update.kind === "agent_thought_chunk" || update.kind === "plan") {
+      whitespace.observeActivity();
+    }
+    safely(() => context.onOutput?.());
+  });
+  try {
+    const reply = await worker.session.prompt(message);
+    turn.transcript.push(JSON.stringify({ type: "reply", at: (/* @__PURE__ */ new Date()).toISOString(), reply: reply.reply }));
+    turn.ending = stopping === null ? { kind: "replied", reply } : { kind: stopping, reply };
+  } catch (error) {
+    if (stopping !== null && error instanceof AcpExitedError) {
+      turn.ending = { kind: stopping, reply: null };
+    } else if (error instanceof AcpRequestError) {
+      turn.ending = { kind: "rejected", error };
+    } else if (error instanceof AcpProtocolError) {
+      turn.transcript.push(JSON.stringify({ type: "invalid-reply", at: (/* @__PURE__ */ new Date()).toISOString(), message: error.message }));
+      turn.ending = { kind: "invalid-reply", error };
+    } else {
+      turn.ending = { kind: "lost", error: error instanceof Error ? error : new Error(String(error)) };
+    }
+  } finally {
+    clearTimeout(deadline);
+    clearTimeout(grace);
+    whitespace.clear();
+    worker.listen(null);
+    turn.endedAt = Date.now();
+  }
+  return turn;
+}
+function safely(observe) {
+  try {
+    observe();
+  } catch {
+  }
+}
+function breakdownOf(usage2) {
+  const cachedRead = usage2.cachedReadTokens ?? 0;
+  const cachedWrite = usage2.cachedWriteTokens;
+  const input = usage2.inputTokens ?? 0;
+  const output = usage2.outputTokens ?? 0;
+  const thought = usage2.thoughtTokens;
+  return {
+    inputTokens: input,
+    cachedInputTokens: cachedRead + (cachedWrite ?? 0),
+    ...cachedWrite !== null ? { cacheCreationInputTokens: cachedWrite } : {},
+    outputTokens: output,
+    ...thought !== null ? { reasoningOutputTokens: thought } : {},
+    totalTokens: usage2.totalTokens ?? input + cachedRead + (cachedWrite ?? 0) + output
+  };
+}
+function addUsage(total, last) {
+  if (total === null) return last;
+  const optional = (key) => total[key] === void 0 && last[key] === void 0 ? {} : { [key]: (total[key] ?? 0) + (last[key] ?? 0) };
+  return {
+    inputTokens: total.inputTokens + last.inputTokens,
+    cachedInputTokens: total.cachedInputTokens + last.cachedInputTokens,
+    outputTokens: total.outputTokens + last.outputTokens,
+    totalTokens: total.totalTokens + last.totalTokens,
+    ...optional("cacheCreationInputTokens"),
+    ...optional("reasoningOutputTokens")
+  };
+}
+var AgyAccount = class {
+  #total = null;
+  #turns = 0;
+  #onEvent;
+  constructor(onEvent) {
+    this.#onEvent = onEvent;
+  }
+  /** Records a reply's usage, reports it, and returns its event; null where the reply carried none. */
+  usage(worker, reply, context) {
+    if (reply?.usage == null) return null;
+    const last = breakdownOf(reply.usage);
+    if (last.totalTokens === 0) return null;
+    this.#total = addUsage(this.#total, last);
+    this.#turns += 1;
+    const threadId = worker.session.id;
+    const turnId = `${threadId}:agy-${this.#turns}`;
+    const raw = {
+      threadId,
+      turnId,
+      model: worker.model,
+      tokenUsage: { last: { ...last }, total: { ...this.#total } },
+      usage: { ...reply.usage }
+    };
+    const event = { threadId, turnId, last, total: this.#total, raw };
+    safely(() => context.onUsage?.(event));
+    safely(() => this.#onEvent?.({ method: "thread/tokenUsage/updated", params: raw, receivedAt: Date.now() }));
+    return event;
+  }
+};
+function turnEvidence(worker, turn, context) {
+  const ending = turn.ending;
+  const reply = ending.kind === "replied" || ending.kind === "deadline" || ending.kind === "whitespace" ? ending.reply : null;
+  const usageEvent = worker.account.usage(worker, reply, context);
+  const transcript = {
+    filename: "transcript.agy.jsonl",
+    format: "jsonl",
+    source: "agy acp session/update stream",
+    content: `${turn.transcript.join("\n")}
+`,
+    sessionId: worker.session.id,
+    ...ending.kind === "replied" ? {} : { partial: true }
+  };
+  const model = worker.model;
+  return {
+    text: turn.finalText,
+    ...model !== null ? { resolvedModel: model } : {},
+    ...worker.effort !== null ? { resolvedEffort: worker.effort } : {},
+    deltaText: turn.allText,
+    durationMs: turn.endedAt - turn.startedAt,
+    firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
+    items: {},
+    tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+    transcripts: [transcript],
+    diagnostics: {
+      agy: {
+        session_id: worker.session.id,
+        stop_reason: reply?.stopReason ?? null,
+        ...ending.kind === "rejected" ? { error: { code: ending.error.code ?? null, message: ending.error.message } } : {}
+      },
+      ...unestablishedStopDiagnostics(turn.stops)
+    }
+  };
+}
+function settleTurn(evidence, turn, sessionId, timeoutMs) {
+  const ending = turn.ending;
+  switch (ending.kind) {
+    case "replied":
+      if (ending.reply.stopReason !== "end_turn") {
+        evidence.attemptFailure = { kind: "agy-stop-reason", message: `agy ended the turn with stop reason ${JSON.stringify(ending.reply.stopReason)}` };
+      }
+      return evidence;
+    case "deadline": {
+      const error = new TurnTimeoutError(`agy turn timed out after ${timeoutMs}ms`, { kind: "turn", timeoutMs: timeoutMs ?? 0, threadId: sessionId });
+      throw attachPartialWorkerText(attachFailedTurnResult(error, evidence), turn.allText);
+    }
+    case "whitespace":
+      throw attachPartialWorkerText(attachFailedTurnResult(new WhitespaceStreamError(), evidence), turn.allText);
+    case "rejected":
+      evidence.attemptFailure = ending.error.code === AGY_AUTHENTICATION_REQUIRED ? { kind: "agy-sign-in-required", message: `agy refused the prompt for want of a sign-in (run \`agy\` and sign in): ${ending.error.message}` } : { kind: "agy-prompt-error", message: ending.error.message };
+      return evidence;
+    case "invalid-reply":
+      evidence.attemptFailure = { kind: "agy-invalid-prompt-reply", message: ending.error.message };
+      return evidence;
+    case "lost": {
+      evidence.attemptFailure = { kind: "agy-worker-lost", message: `the agy worker ended before its turn did: ${ending.error.message}` };
+      const exit = workerExitStatusOf(ending.error);
+      if (exit !== null) evidence.workerExit = exit;
+      return evidence;
+    }
+  }
+}
+function shutdownWithEvidence(turn, evidence) {
+  return attachPartialWorkerText(attachFailedTurnResult(new EngineShutdownError("agy"), evidence), turn.allText);
+}
+function delivered(turn) {
+  return turn.ending.kind === "replied" || turn.ending.kind === "invalid-reply" || turn.ending.kind === "deadline" || turn.ending.kind === "whitespace";
+}
+var AgyEngineInvocation = class {
+  #options;
+  /** The attempt in flight's worker, for a close that cuts it short. */
+  #worker = null;
+  #closed = false;
+  #settlement = null;
+  constructor(options) {
+    this.#options = options;
+  }
+  runAttempt(context) {
+    const settlement = this.#runAttempt(context);
+    this.#settlement = settlement;
+    return settlement;
+  }
+  async #runAttempt(context) {
+    if (this.#closed) throw new EngineShutdownError("agy");
+    const options = this.#options.options;
+    const worker = await AgyWorker.open(this.#options.launch, workerSettings(this.#options.cwd, options));
+    this.#worker = worker;
+    try {
+      if (this.#closed) throw new EngineShutdownError("agy");
+      const message = openingPrompt({
+        task: this.#options.prompt,
+        ...options.schema !== void 0 ? { schema: options.schema } : {},
+        ...context.previousFailure !== void 0 ? { previousFailure: context.previousFailure } : {}
+      });
+      safely(() => context.onIdentity?.({ resolvedModel: worker.model, resolvedEffort: worker.effort }));
+      const turn = await runTurn(worker, message, options.timeoutMs, context);
+      turn.stops.push(await worker.close());
+      const evidence = turnEvidence(worker, turn, context);
+      if (this.#closed) throw shutdownWithEvidence(turn, evidence);
+      return settleTurn(evidence, turn, worker.session.id, options.timeoutMs);
+    } finally {
+      await worker.close();
+      if (this.#worker === worker) this.#worker = null;
+    }
+  }
+  async close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    try {
+      await this.#worker?.close();
+      await this.#settlement?.catch(() => void 0);
+    } finally {
+      this.#worker = null;
+      this.#options.onClose(this);
+    }
+  }
+};
+function workerSettings(cwd, options) {
+  return {
+    cwd,
+    ...options.model !== void 0 ? { model: options.model } : {},
+    ...options.effort !== void 0 ? { effort: options.effort } : {}
+  };
+}
+var AgyWorkerSession = class {
+  #options;
+  #worker = null;
+  #opening = null;
+  /** Whether any turn's message has reached the session, so a later turn is not its first. */
+  #opened = false;
+  #lost = null;
+  #lostExit = null;
+  #closed = false;
+  constructor(options) {
+    this.#options = options;
+  }
+  beginTurn(prompt, turn) {
+    let turnDelivered = false;
+    return {
+      runAttempt: async (context) => {
+        if (this.#lost !== null) return this.#lostResult();
+        if (this.#closed) throw new EngineShutdownError("agy");
+        const worker = await this.#ensureWorker();
+        if (this.#lost !== null) return this.#lostResult();
+        if (this.#closed) throw new EngineShutdownError("agy");
+        const message = turnDelivered && context.previousFailure !== void 0 ? inSessionCorrection(context.previousFailure) : this.#turnMessage(prompt, turn.schema, context.previousFailure);
+        safely(() => context.onIdentity?.({ resolvedModel: worker.model, resolvedEffort: worker.effort }));
+        const ran = await runTurn(worker, message, this.#options.options.timeoutMs, context);
+        if (delivered(ran)) {
+          turnDelivered = true;
+          this.#opened = true;
+        }
+        const gone = ran.ending.kind === "lost" || worker.closed;
+        if (gone) ran.stops.push(await worker.close());
+        const evidence = turnEvidence(worker, ran, context);
+        if (this.#closed) throw shutdownWithEvidence(ran, evidence);
+        if (gone) {
+          const exit = await worker.client.exited;
+          this.#noteLost(worker, ran.ending.kind === "lost" ? ran.ending.error.message : "it did not end a cancelled turn and was stopped", exit);
+          const lost = this.#lostResult();
+          return { ...evidence, attemptFailure: lost.attemptFailure, ...lost.workerExit !== void 0 ? { workerExit: lost.workerExit } : {} };
+        }
+        return settleTurn(evidence, ran, worker.session.id, this.#options.options.timeoutMs);
+      }
+    };
+  }
+  /**
+   * A turn's message: the opening prompt for the session's first, which
+   * carries the standing instructions, and the later-turn prompt after.
+   * An opening resent after a failure it never saw is told of the failure.
+   */
+  #turnMessage(prompt, schema, previousFailure) {
+    if (this.#opened) {
+      const message = laterTurnPrompt({ task: prompt, ...schema !== void 0 ? { schema } : {} });
+      return previousFailure === void 0 ? message : `${previousFailureNotice(previousFailure)}
+
+${message}`;
+    }
+    return openingPrompt({
+      task: prompt,
+      ...schema !== void 0 ? { schema } : {},
+      ...previousFailure !== void 0 ? { previousFailure } : {}
+    });
+  }
+  /**
+   * Single-flight worker open, not failure-memoised: a failed open leaves
+   * the session without a worker, so the call's next attempt or next turn
+   * may try again.
+   */
+  #ensureWorker() {
+    if (this.#worker !== null) return Promise.resolve(this.#worker);
+    this.#opening ??= (async () => {
+      try {
+        const worker = await AgyWorker.open(this.#options.launch, workerSettings(this.#options.cwd, this.#options.options));
+        if (this.#closed) {
+          await worker.close();
+          throw new EngineShutdownError("agy");
+        }
+        this.#worker = worker;
+        void worker.client.exited.then((exit) => {
+          if (!worker.closed) this.#noteLost(worker, describeExit(exit), exit);
+        });
+        return worker;
+      } finally {
+        this.#opening = null;
+      }
+    })();
+    return this.#opening;
+  }
+  #noteLost(worker, reason, exit) {
+    if (this.#closed || this.#lost !== null) return;
+    this.#lost = { nativeSession: worker.session.id, reason: `the agy worker is gone: ${reason}`, observedAt: Date.now() };
+    this.#lostExit = exit.exitCode !== null || exit.signal !== null ? { exitCode: exit.exitCode, signal: exit.signal } : null;
+    safely(() => this.#options.observer?.onLost(this.#lost));
+  }
+  #lostResult() {
+    return {
+      text: "",
+      deltaText: "",
+      durationMs: null,
+      firstDeltaMs: null,
+      items: {},
+      tokenUsageEvents: [],
+      attemptFailure: { kind: "session-lost", message: this.#lost.reason },
+      ...this.#lostExit !== null ? { workerExit: this.#lostExit } : {}
+    };
+  }
+  async close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    try {
+      await this.#opening?.catch(() => void 0);
+      await this.#worker?.close();
+    } finally {
+      this.#worker = null;
+      this.#options.onClose(this);
+    }
+  }
+};
+function describeExit(exit) {
+  const how = exit.signal !== null ? `${AGY_ACP} was ended by ${exit.signal}` : `${AGY_ACP} exited with code ${exit.exitCode}`;
+  const stderr = exit.stderrTail.trim();
+  return stderr.length > 0 ? `${how}; its last stderr: ${stderr}` : how;
+}
+var AgyEngineAdapter = class {
+  name = "agy";
+  concurrency;
+  /** A strip refuses before dispatch: agy's `DisableBuiltInTools` and its skills were never driven. */
+  capabilities = {
+    skills: {
+      route: "unsupported",
+      detail: "no route that withholds agy's skills from one session has been established"
+    },
+    agents: {
+      route: "unsupported",
+      detail: "no route that withholds agy's subagent tools from one session has been established (DisableBuiltInTools on session/new is undriven)"
+    }
+  };
+  leanStart = {
+    route: "unsupported",
+    detail: "no established route withholds agy's user instructions, skills and MCP servers from one session"
+  };
+  #cwd;
+  #launch;
+  #ownsCommands;
+  #scheduler;
+  #invocations = /* @__PURE__ */ new Set();
+  #sessions = /* @__PURE__ */ new Set();
+  #catalogue = null;
+  #closed = false;
+  constructor(options = {}) {
+    this.concurrency = options.concurrency ?? defaultAgyConcurrency();
+    this.#scheduler = new Scheduler(this.concurrency);
+    this.#cwd = options.cwd ?? process.cwd();
+    this.#ownsCommands = options.commands === void 0;
+    this.#launch = {
+      bin: options.bin ?? "agy",
+      env: launchEnvironment("agy", options.workerEnv),
+      commands: options.commands ?? new CommandContainment(new NoWorkerScopes()),
+      clientInfo: options.clientInfo ?? { name: "ensemble-workflows", version: "0" },
+      ...options.requestTimeoutMs !== void 0 ? { requestTimeoutMs: options.requestTimeoutMs } : {},
+      ...options.onEvent !== void 0 ? { onEvent: options.onEvent } : {}
+    };
+  }
+  schedule(task) {
+    return this.#scheduler.schedule(task);
+  }
+  /**
+   * agy's own account of a model's levels: read once per adapter from a
+   * session that is never prompted, and read again after a failed reading.
+   * Null where agy cannot be read or does not list the model.
+   */
+  async effortReport(model) {
+    if (this.#closed) return null;
+    this.#catalogue ??= readCatalogue(this.#launch, this.#cwd);
+    let catalogue;
+    try {
+      catalogue = await this.#catalogue;
+    } catch {
+      this.#catalogue = null;
+      return null;
+    }
+    const identity = model ?? catalogue.defaultModel;
+    if (identity === null || !catalogue.levels.has(identity)) return null;
+    return { identity, levels: catalogue.levels.get(identity) ?? null };
+  }
+  createInvocation(prompt, options) {
+    if (this.#closed) throw new EngineShutdownError(this.name);
+    const invocation = new AgyEngineInvocation({
+      prompt,
+      options,
+      cwd: options.cwd ?? this.#cwd,
+      launch: this.#launch,
+      onClose: (closed) => this.#invocations.delete(closed)
+    });
+    this.#invocations.add(invocation);
+    return invocation;
+  }
+  createSession(options, observer) {
+    if (this.#closed) throw new EngineShutdownError(this.name);
+    const session = new AgyWorkerSession({
+      options,
+      cwd: options.cwd ?? this.#cwd,
+      launch: this.#launch,
+      observer,
+      onClose: (closed) => this.#sessions.delete(closed)
+    });
+    this.#sessions.add(session);
+    return session;
+  }
+  async close() {
+    this.#closed = true;
+    this.#scheduler.close(new EngineShutdownError(this.name));
+    await Promise.allSettled([
+      ...[...this.#invocations].map((invocation) => invocation.close()),
+      ...[...this.#sessions].map((session) => session.close()),
+      this.#catalogue?.catch(() => void 0)
+    ]);
+    if (this.#ownsCommands) await this.#launch.commands.close();
+  }
+};
+
 // src/opencode-engine.ts
 import { randomUUID as randomUUID6 } from "node:crypto";
 
@@ -25880,21 +27115,11 @@ var OpenCodeEngineInvocation = class {
     return event;
   }
   #buildPrompt(previousFailure) {
-    const lines = [
-      "You are an automated worker dispatched by the Ensemble orchestration harness.",
-      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions - make a reasonable decision and finish the task."
-    ];
-    if (this.#options.schema !== void 0) {
-      lines.push(
-        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#options.schema)
-      );
-    }
-    if (previousFailure !== void 0) {
-      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
-    }
-    lines.push("", "Task:", this.#prompt);
-    return lines.join("\n");
+    return openingPrompt({
+      task: this.#prompt,
+      ...this.#options.schema !== void 0 ? { schema: this.#options.schema } : {},
+      ...previousFailure !== void 0 ? { previousFailure } : {}
+    });
   }
 };
 function stoppedBeforeLaunch() {
@@ -26321,66 +27546,6 @@ function numberValue(value) {
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-// src/scheduler.ts
-var Scheduler = class {
-  concurrency;
-  #active = 0;
-  #queue = [];
-  #shutdownError = null;
-  constructor(concurrency) {
-    if (!Number.isInteger(concurrency) || concurrency < 1) {
-      throw new Error(`Concurrency must be a positive integer, got ${concurrency}`);
-    }
-    this.concurrency = concurrency;
-  }
-  active() {
-    return this.#active;
-  }
-  queued() {
-    return this.#queue.length;
-  }
-  schedule(task) {
-    if (this.#shutdownError !== null) {
-      return Promise.reject(this.#shutdownError);
-    }
-    return new Promise((resolve, reject) => {
-      const run = () => {
-        this.#active += 1;
-        Promise.resolve().then(task).then(resolve, reject).finally(() => {
-          this.#active -= 1;
-          this.#drain();
-        });
-      };
-      this.#queue.push({ run, reject });
-      this.#drain();
-    });
-  }
-  /**
-   * Rejects everything still queued and refuses new work. Active tasks are
-   * untouched — cancelling started work is the adapter's job, since only it
-   * knows how to reach a live session or child process.
-   */
-  close(rejection) {
-    if (this.#shutdownError !== null) {
-      return;
-    }
-    this.#shutdownError = rejection;
-    const queued = this.#queue.splice(0);
-    for (const task of queued) {
-      task.reject(rejection);
-    }
-  }
-  #drain() {
-    while (this.#active < this.concurrency) {
-      const next = this.#queue.shift();
-      if (next === void 0) {
-        return;
-      }
-      next.run();
-    }
-  }
-};
 
 // src/schema.ts
 var import_ajv = __toESM(require_ajv(), 1);
@@ -27028,7 +28193,7 @@ var CodexWorkerSession = class {
     const threadId = await this.#ensureThread();
     if (this.#lost !== null) return this.#lostResult();
     if (this.#closed) throw new EngineShutdownError("codex");
-    const message = context.previousFailure === void 0 ? prompt : `A previous attempt failed (${context.previousFailure.kind}): ${context.previousFailure.message}. Correct it this time.`;
+    const message = context.previousFailure === void 0 ? prompt : previousFailureNotice(context.previousFailure);
     try {
       return await this.#transport.runTurn(threadId, message, {
         ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
@@ -27361,14 +28526,23 @@ async function createDefaultEngineRegistry(options) {
         ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
         ...options.openCodeModels !== void 0 || options.openCodeModelSource !== void 0 ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels ?? [], options.openCodeModelSource) } : {},
         onEvent: options.onOpenCodeEvent
+      }),
+      new AgyEngineAdapter({
+        cwd: options.cwd,
+        commands: workerCommands,
+        clientInfo: { name: options.clientName, version: options.clientVersion },
+        requestTimeoutMs: options.requestTimeoutMs,
+        ...options.workerEnvironment?.agy !== void 0 ? { workerEnv: options.workerEnvironment.agy } : {},
+        ...options.concurrencyCaps?.agy !== void 0 ? { concurrency: options.concurrencyCaps.agy } : {},
+        onEvent: options.onAgyEvent
       })
     ],
     // Commands before scopes: a command's scope is one of the manager's, and
     // the manager's close would report a survivor by unit alone, where the
     // containment names the command and judges how it was stopped.
     [workerCommands, ...ownsScopes ? [workerScopes] : []],
-    // The Codex app-server is shared and starts in the run base; Claude
-    // and opencode launch a process in each invocation's placement.
+    // The Codex app-server is shared and starts in the run base; Claude,
+    // opencode and agy launch a process in each invocation's placement.
     (engine, cwd) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], engine === "codex" ? options.cwd : cwd)
   );
 }
@@ -27396,7 +28570,7 @@ function promptWithFailureFeedback(prompt, failure) {
   }
   return `${prompt}
 
-A previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
+${previousFailureNotice(failure)}`;
 }
 
 // src/runtime.ts
@@ -27621,6 +28795,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #holdsCwd;
   #claudeSessionStaleAfterMs;
   #codexSessionStaleAfterMs;
+  #agySessionStaleAfterMs;
   constructor(options) {
     if (options.strip !== void 0) {
       assertValidStripOption(options.strip);
@@ -27651,6 +28826,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 36e5;
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 36e5;
+    this.#agySessionStaleAfterMs = options.agySessionStaleAfterMs ?? 3e5;
     this.#now = options.now ?? (() => Date.now());
     this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
     rejectBlankHoldScope(options.holdScope);
@@ -27735,6 +28911,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       onOpenCodeEvent: (event) => {
         runtime?.handleEngineEvent("opencode", event);
       },
+      onAgyEvent: (event) => {
+        runtime?.handleEngineEvent("agy", event);
+      },
       ...options.concurrencyCaps !== void 0 ? { concurrencyCaps: options.concurrencyCaps } : {}
     });
     runtime = new _EnsembleRuntime({
@@ -27755,7 +28934,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.effortPolicy !== void 0 ? { effortPolicy: options.effortPolicy } : {},
       ...options.modelFamilies !== void 0 ? { modelFamilies: options.modelFamilies } : {},
       ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : {},
-      ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {}
+      ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {},
+      ...options.agySessionStaleAfterMs !== void 0 ? { agySessionStaleAfterMs: options.agySessionStaleAfterMs } : {}
     });
     return runtime;
   }
@@ -28165,10 +29345,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       chain,
       remap,
       servingTarget: namedTarget?.name ?? null,
-      // The mark's threshold is per engine shape: Claude's is the cliff at
-      // its subscription cache TTL, Codex's the measured coin-flip
-      // idle point — both overridable as library-level runtime options.
-      stalenessThresholdMs: engine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs,
+      stalenessThresholdMs: this.#sessionStaleAfterMs(engine.name),
       markStaleness: sessionOptions.stalenessMark ?? true,
       engineSession: null,
       placement: null,
@@ -28316,7 +29493,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     state.engine = targetEngine;
     state.options = optionsForTarget(state.options, target);
     state.servingTarget = target.namedTarget;
-    state.stalenessThresholdMs = targetEngine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs;
+    state.stalenessThresholdMs = this.#sessionStaleAfterMs(targetEngine.name);
     const options = state.options;
     if (state.engineSession === null) {
       state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
@@ -29665,6 +30842,24 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const attempt = ++attempts.ledger.dispatched;
     this.progress.noteAttempt(agentId, attempt);
     return this.#recordThrownFailure(record, attempt, error, startedAt, attempts).refused;
+  }
+  /**
+   * The idle gap at which a held worker on `engine` reads stale. The
+   * threshold is per engine shape: Claude's is the cliff at its
+   * subscription cache TTL, Codex's the measured coin-flip idle point,
+   * agy's the five-minute cache lifetime its operator reports — each
+   * overridable as a library-level runtime option. opencode holds no
+   * sessions.
+   */
+  #sessionStaleAfterMs(engine) {
+    switch (engine) {
+      case "claude":
+        return this.#claudeSessionStaleAfterMs;
+      case "agy":
+        return this.#agySessionStaleAfterMs;
+      default:
+        return this.#codexSessionStaleAfterMs;
+    }
   }
   async #resolveEffortFor(record, engine, options) {
     record.effortResolution = null;
@@ -36405,9 +37600,9 @@ function validateWorkflowDefaults(value, openCodeModelRegistry) {
   }
   const defaults = {};
   for (const [engine, engineValue] of Object.entries(value)) {
-    if (engine !== "codex" && engine !== "claude" && engine !== "opencode") {
+    if (engine !== "codex" && engine !== "claude" && engine !== "opencode" && engine !== "agy") {
       throw new WorkflowScriptError(
-        `Workflow defaults key ${JSON.stringify(engine)} is not an engine; expected codex, claude, or opencode`
+        `Workflow defaults key ${JSON.stringify(engine)} is not an engine; expected codex, claude, opencode, or agy`
       );
     }
     if (typeof engineValue !== "object" || engineValue === null || Array.isArray(engineValue)) {
@@ -37245,7 +38440,7 @@ async function runEnsembleCli(argv, options = {}) {
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage(program));
     stdout.write(
-      "\nDispatches one worker on the named engine (--engine codex|claude|opencode), or\non the engine and model a named target binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure, answeredBy }.\n"
+      "\nDispatches one worker (--engine codex|claude|opencode|agy), or\non the engine and model a named target binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure, answeredBy }.\n"
     );
     return 0;
   }
@@ -37655,12 +38850,12 @@ async function runEnsembleCli(argv, options = {}) {
         const entry = typeof answeredBy?.entry === "number" ? answeredBy.entry : "?";
         const refusals = Array.isArray(event.params.refusals) ? event.params.refusals : [];
         const accounts = refusals.map((value) => {
-          const refusal = value;
-          const kind = typeof refusal.failure?.kind === "string" ? boundedEvidence(refusal.failure.kind) : "unknown";
-          const rule = typeof refusal.classification?.rule === "string" ? boundedEvidence(refusal.classification.rule) : "unmatched";
-          const raw = typeof refusal.failure?.message === "string" ? refusal.failure.message : "";
+          const refusal2 = value;
+          const kind = typeof refusal2.failure?.kind === "string" ? boundedEvidence(refusal2.failure.kind) : "unknown";
+          const rule = typeof refusal2.classification?.rule === "string" ? boundedEvidence(refusal2.classification.rule) : "unmatched";
+          const raw = typeof refusal2.failure?.message === "string" ? refusal2.failure.message : "";
           const message = boundedEvidence(raw.replace(/Recent stderr:/g, "Engine stderr context:"));
-          return `${targetName(refusal.target)} (${rule}): ${kind}: ${message}`;
+          return `${targetName(refusal2.target)} (${rule}): ${kind}: ${message}`;
         });
         stderr.write(
           `[${engine}] agent ${agentId}${label} answered by fallback entry ${entry} (${targetName(answeredBy)}) \u2014 refused targets: ${accounts.join("; ")}
@@ -37974,7 +39169,7 @@ function cliFlags(invocation) {
 }
 function runtimeConcurrencyOptions(settings) {
   const concurrencyCaps = {};
-  for (const engine of ["codex", "claude", "opencode"]) {
+  for (const engine of ["codex", "claude", "opencode", "agy"]) {
     const resolved = settings.concurrencyCaps[engine];
     if (resolved.layer !== "default") {
       concurrencyCaps[engine] = resolved.value;
@@ -37991,7 +39186,7 @@ function recordConcurrency(settings, progress) {
     return { agentCeiling: settings.agentCeiling, engines: settings.concurrencyCaps };
   }
   const engines = {};
-  for (const engine of ["codex", "claude", "opencode"]) {
+  for (const engine of ["codex", "claude", "opencode", "agy"]) {
     const cap = snapshot.engines[engine]?.cap;
     if (cap !== null && cap !== void 0) {
       engines[engine] = { value: cap, layer: settings.concurrencyCaps[engine].layer };
@@ -38001,7 +39196,7 @@ function recordConcurrency(settings, progress) {
 }
 function recordEffectiveSettings(invocation, injectedTimeoutMs) {
   const budgetCeilings = {};
-  for (const engine of ["codex", "claude", "opencode"]) {
+  for (const engine of ["codex", "claude", "opencode", "agy"]) {
     const flagged = invocation.budgetCeilings?.[engine];
     budgetCeilings[engine] = flagged !== void 0 ? { value: flagged, layer: "flag" } : { value: null, layer: "default" };
   }
@@ -38655,13 +39850,13 @@ function parseEngineMap(values, parseValue, flagName) {
   return result;
 }
 function parseEngineName(value, flagName) {
-  if (value === "codex" || value === "claude" || value === "opencode") {
+  if (value === "codex" || value === "claude" || value === "opencode" || value === "agy") {
     return value;
   }
   if (flagName === "--engine") {
-    throw new CliUsageError(`${flagName} must be codex, claude, or opencode; got ${value}`);
+    throw new CliUsageError(`${flagName} must be codex, claude, opencode, or agy; got ${value}`);
   }
-  throw new CliUsageError(`${flagName} engine must be codex, claude, or opencode; got ${value}`);
+  throw new CliUsageError(`${flagName} engine must be codex, claude, opencode, or agy; got ${value}`);
 }
 function parseBudgetCeiling(value) {
   const ceiling = Number(value);

@@ -44,6 +44,13 @@ import { isPreparedClaudeStrip } from "./claude-tool-surface.js";
 import { CLAUDE_TRANSCRIPT } from "./live-transcript.js";
 import { subtractUsage } from "./usage-summary.js";
 import { WhitespaceStream } from "./whitespace-stream.js";
+import {
+  WORKER_STANDING_INSTRUCTIONS,
+  inSessionCorrection,
+  laterTurnPrompt,
+  previousFailureNotice,
+  schemaContract
+} from "./worker-instructions.js";
 
 import { CLAUDE_ROSTER_ABSENCE_BOUND, CLAUDE_ROSTER_LOSS_REASON } from "./claude-control-plane.js";
 
@@ -148,16 +155,6 @@ let dispatchCounter = 0;
 // session will never say more — waiting longer is the silent stall this
 // bound exists to remove.
 const SETTLED_CONFIRMATION_POLLS = 5;
-
-/**
- * The worker's standing role, the same for every worker and every turn.
- * It is appended to Claude Code's default system prompt at launch rather
- * than leading the first message, which belongs to the task alone.
- */
-export const CLAUDE_WORKER_STANDING_INSTRUCTIONS = [
-  "You are an automated worker dispatched by the Ensemble orchestration harness.",
-  "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions — make a reasonable decision and finish the task."
-].join("\n");
 
 /**
  * The line that follows a task ending in whitespace when nothing else
@@ -601,7 +598,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // to the next entry of the call's fallback chain.
     const handle = await this.#controlPlane.dispatch({
       prompt,
-      appendSystemPrompt: CLAUDE_WORKER_STANDING_INSTRUCTIONS,
+      appendSystemPrompt: WORKER_STANDING_INSTRUCTIONS,
       name: this.#nextName(),
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
@@ -661,7 +658,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   ): Promise<TurnResult> {
     this.#collectionMark = fromIndex;
     this.#deliveryFailure = null;
-    const message = this.#correctionMessage(previousFailure);
+    const message = inSessionCorrection(previousFailure);
     await this.#deliver(handle, { message, mark: fromIndex, what: "the correction", carriesTurn: false }, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
@@ -1416,21 +1413,14 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   /**
    * A dispatch's opening message. It begins with the task, so a task whose
    * first word is `/<skill>` runs that skill exactly as an operator's typed
-   * message would, unless the worker is stripped of skills; the standing instructions reach the worker through the
-   * system prompt (`CLAUDE_WORKER_STANDING_INSTRUCTIONS`), and the turn's
+   * message would, unless the worker is stripped of skills; the standing instructions are appended to Claude Code's
+   * default system prompt at launch (`WORKER_STANDING_INSTRUCTIONS`), and the turn's
    * schema contract and any previous attempt's failure follow the task.
    */
   #buildDispatchPrompt(previousFailure: PreviousAttemptFailure | undefined): string {
     const after: string[] = [];
-    if (this.#turnSchema !== undefined) {
-      after.push(
-        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema)
-      );
-    }
-    if (previousFailure !== undefined) {
-      after.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
-    }
+    if (this.#turnSchema !== undefined) after.push(schemaContract(this.#turnSchema, "opening"));
+    if (previousFailure !== undefined) after.push(previousFailureNotice(previousFailure));
     // Native submission trims the message at both ends. A task ending in
     // whitespace keeps it by having a line follow it: the turn's contract
     // when there is one, otherwise a closing line saying where the task
@@ -1464,18 +1454,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * turn adds — its schema contract, when it has one, and its task.
    */
   #buildTurnMessage(): string {
-    const lines: string[] = [];
-    if (this.#turnSchema !== undefined) {
-      lines.push(
-        "For this reply, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema),
-        ""
-      );
-    }
     // Keep native command handling for tasks with no boundary whitespace.
     // Otherwise use the opening's literal boundary so native trimming is inert.
-    lines.push(this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask());
-    return lines.join("\n");
+    const task = this.#turnPrompt.trim() === this.#turnPrompt ? this.#turnPrompt : this.#framedTask();
+    return laterTurnPrompt({ task, ...(this.#turnSchema !== undefined ? { schema: this.#turnSchema } : {}) });
   }
 
   /**
@@ -1495,31 +1477,6 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       "",
       this.#acceptedTurnCopy
     ].join("\n");
-  }
-
-  #correctionMessage(previousFailure: PreviousAttemptFailure): string {
-    switch (previousFailure.kind) {
-      case "schema-validation":
-        return (
-          `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. ` +
-          "Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences."
-        );
-      case "invalid-json":
-        return (
-          "Your last final message was not valid JSON for the required schema. " +
-          "Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences."
-        );
-      case "empty-output":
-        return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
-      default:
-        // An operational or thrown failure carried into the correction (the
-        // one retry rule): the worker is told what the harness observed, as
-        // a fresh dispatch's prompt would tell it.
-        return (
-          `Your last turn did not complete (${previousFailure.kind}: ${previousFailure.message}). ` +
-          "Please complete the task and output your final answer now."
-        );
-    }
   }
 
   #blockedNudge(waitingFor: string | undefined): string {

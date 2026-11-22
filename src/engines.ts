@@ -26,11 +26,13 @@ import {
   partialWorkerTextOf,
   workerExitStatusOf
 } from "./errors.js";
+import { AgyEngineAdapter } from "./agy-engine.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation } from "./opencode-engine.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 import { createOpenCodeModelRegistry, defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
 import { normaliseForCodexOutputSchema } from "./schema.js";
+import { previousFailureNotice } from "./worker-instructions.js";
 import {
   defaultClaudeConcurrency,
   defaultCodexConcurrency,
@@ -130,7 +132,12 @@ export interface EngineAttemptFailure {
     | "claude-collection-error"
     | "claude-worker-diagnostic"
     | "opencode-run-error"
-    | "opencode-worker-lost";
+    | "opencode-worker-lost"
+    | "agy-stop-reason"
+    | "agy-sign-in-required"
+    | "agy-prompt-error"
+    | "agy-invalid-prompt-reply"
+    | "agy-worker-lost";
   message: string;
 }
 
@@ -651,7 +658,7 @@ class CodexWorkerSession implements EngineWorkerSession {
     const message =
       context.previousFailure === undefined
         ? prompt
-        : `A previous attempt failed (${context.previousFailure.kind}): ${context.previousFailure.message}. Correct it this time.`;
+        : previousFailureNotice(context.previousFailure);
     try {
       return await this.#transport.runTurn(threadId, message, {
         ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
@@ -1064,6 +1071,7 @@ export interface CreateDefaultEngineRegistryOptions {
   onEvent: (event: RuntimeEvent) => void;
   onClaudeEvent: (event: RuntimeEvent) => void;
   onOpenCodeEvent: (event: RuntimeEvent) => void;
+  onAgyEvent: (event: RuntimeEvent) => void;
 }
 
 export async function createDefaultEngineRegistry(
@@ -1129,14 +1137,23 @@ export async function createDefaultEngineRegistry(
           ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels ?? [], options.openCodeModelSource) }
           : {}),
         onEvent: options.onOpenCodeEvent
+      }),
+      new AgyEngineAdapter({
+        cwd: options.cwd,
+        commands: workerCommands,
+        clientInfo: { name: options.clientName, version: options.clientVersion },
+        requestTimeoutMs: options.requestTimeoutMs,
+        ...(options.workerEnvironment?.agy !== undefined ? { workerEnv: options.workerEnvironment.agy } : {}),
+        ...(options.concurrencyCaps?.agy !== undefined ? { concurrency: options.concurrencyCaps.agy } : {}),
+        onEvent: options.onAgyEvent
       })
     ],
     // Commands before scopes: a command's scope is one of the manager's, and
     // the manager's close would report a survivor by unit alone, where the
     // containment names the command and judges how it was stopped.
     [workerCommands, ...(ownsScopes ? [workerScopes] : [])],
-    // The Codex app-server is shared and starts in the run base; Claude
-    // and opencode launch a process in each invocation's placement.
+    // The Codex app-server is shared and starts in the run base; Claude,
+    // opencode and agy launch a process in each invocation's placement.
     (engine, cwd) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], engine === "codex" ? options.cwd : cwd)
   );
 }
@@ -1191,10 +1208,11 @@ function promptWithFailureFeedback(prompt: string, failure: PreviousAttemptFailu
   if (failure === undefined) {
     return prompt;
   }
-  return `${prompt}\n\nA previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
+  return `${prompt}\n\n${previousFailureNotice(failure)}`;
 }
 
 export {
+  defaultAgyConcurrency,
   defaultClaudeConcurrency,
   defaultCodexConcurrency,
   defaultOpenCodeConcurrency

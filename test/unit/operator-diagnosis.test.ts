@@ -361,7 +361,7 @@ function echoingRejection(): CodexSchemaSubsetUnsupportedError {
 test("a Codex schema rejection's remedy names engines the author can move to, not Codex", () => {
   for (const text of [presentTerminalError(echoingRejection(), noContext) ?? "", echoingRejection().message]) {
     const remedy = text.split(/(?<=\.)\s/).find((sentence) => sentence.includes("client-side")) ?? "";
-    assert.match(remedy, /'claude' or 'opencode'/);
+    assert.match(remedy, /'claude', 'opencode' or 'agy'/);
     assert.doesNotMatch(remedy, /run (?:\S+ )*on an engine that/);
   }
 });

@@ -27948,7 +27948,7 @@ var ZCodeEngineInvocation = class {
   }
   async runAttempt(context) {
     const settlement = runZCodeAttempt(this.#settings, {
-      prompt: workerPrompt(this.#prompt, this.#settings.options.schema, context.previousFailure),
+      prompt: openingRunPrompt(this.#prompt, this.#settings.options.schema, context.previousFailure),
       resume: void 0,
       signal: this.#abort.signal,
       context
@@ -27993,7 +27993,7 @@ var ZCodeWorkerSession = class {
     if (this.#lost !== null) return this.#lostResult();
     if (this.#closed) throw new EngineShutdownError("zcode");
     const resume = this.#sessionId ?? void 0;
-    const message = resume !== void 0 && context.previousFailure !== void 0 ? correctionLine(context.previousFailure) : workerPrompt(prompt, schema, resume === void 0 ? context.previousFailure : void 0);
+    const message = resume === void 0 ? openingRunPrompt(prompt, schema, context.previousFailure) : context.previousFailure !== void 0 ? inSessionCorrection(carriedFailure(context.previousFailure)) : laterTurnPrompt({ task: prompt, ...schema !== void 0 ? { schema } : {} });
     const settlement = runZCodeAttempt(this.#settings, {
       prompt: message,
       resume,
@@ -28050,34 +28050,23 @@ var sessionIdsOfFailures = /* @__PURE__ */ new WeakMap();
 function sessionIdOfFailure(error) {
   return error instanceof Error ? sessionIdsOfFailures.get(error) ?? null : null;
 }
-function workerPrompt(prompt, schema, previousFailure) {
-  const lines = [
-    "You are an automated worker dispatched by the Ensemble orchestration harness.",
-    "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions - make a reasonable decision and finish the task."
-  ];
-  if (schema !== void 0) {
-    lines.push(
-      "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-      JSON.stringify(schema)
-    );
-  }
-  if (previousFailure !== void 0) {
-    lines.push(correctionLine(previousFailure));
-  }
-  lines.push("", "Task:", prompt);
-  return lines.join("\n");
-}
 var CORRECTION_MESSAGE_CHARACTERS = 2e3;
-function correctionLine(failure) {
-  const message = failure.message.length > CORRECTION_MESSAGE_CHARACTERS ? `${failure.message.slice(0, CORRECTION_MESSAGE_CHARACTERS)}\u2026` : failure.message;
-  return `A previous attempt failed (${failure.kind}): ${message}. Correct it this time.`;
+var LONGEST_CARRIED_FAILURE = {
+  kind: "x".repeat(64),
+  message: "\uFFFF".repeat(CORRECTION_MESSAGE_CHARACTERS + 1)
+};
+function carriedFailure(failure) {
+  return failure.message.length > CORRECTION_MESSAGE_CHARACTERS ? { ...failure, message: `${failure.message.slice(0, CORRECTION_MESSAGE_CHARACTERS)}\u2026` } : failure;
+}
+function openingRunPrompt(task, schema, previousFailure) {
+  return openingPrompt({
+    task,
+    ...schema !== void 0 ? { schema } : {},
+    ...previousFailure !== void 0 ? { previousFailure: carriedFailure(previousFailure) } : {}
+  });
 }
 function assertZCodePromptFits(prompt, schema) {
-  const longest = workerPrompt(prompt, schema, {
-    kind: "x".repeat(64),
-    message: "\u{10FFFF}".repeat(CORRECTION_MESSAGE_CHARACTERS)
-  });
-  if (fitsOneArgument(`--prompt=${longest}`)) return;
+  if (fitsOneArgument(`--prompt=${openingRunPrompt(prompt, schema, LONGEST_CARRIED_FAILURE)}`)) return;
   throw new AgentPromptRejectedError(
     `the zcode engine cannot be given this prompt: zcode takes a prompt only as one command-line argument, which Linux bounds at ${MAX_ARGUMENT_BYTES} bytes (128 KiB), and this prompt is ${Buffer.byteLength(prompt, "utf8")} bytes${schema !== void 0 ? " before its schema" : ""}; shorten it, or dispatch it on an engine that takes longer prompts`
   );

@@ -17,6 +17,7 @@ import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { WhitespaceStream } from "../../src/whitespace-stream.js";
+import { laterTurnPrompt, openingPrompt, WORKER_STANDING_INSTRUCTIONS } from "../../src/worker-instructions.js";
 import {
   ZCodeEngineAdapter,
   assertZCodePromptFits,
@@ -491,8 +492,9 @@ test("a held zcode worker resumes its session on every later turn, and a retry c
     const schema = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
     assert.deepEqual(await session.send("second prompt", { schema }), { ok: true });
     assert.deepEqual(runner.runs.map((run) => run.resume), [undefined, "sess_held", "sess_held"]);
-    assert.match(runner.runs[1]!.prompt, /second prompt$/);
-    assert.match(runner.runs[2]!.prompt, /^A previous attempt failed \(invalid-json\)/);
+    assert.ok(runner.runs[0]!.prompt.startsWith(WORKER_STANDING_INSTRUCTIONS));
+    assert.equal(runner.runs[1]!.prompt, laterTurnPrompt({ task: "second prompt", schema }));
+    assert.match(runner.runs[2]!.prompt, /^Your last final message was not valid JSON for the required schema\./);
     await session.close();
   } finally {
     await runtime.close();
@@ -669,6 +671,49 @@ test("a prompt longer than one command-line argument can carry is refused before
     await runtime.close();
   }
   assert.doesNotThrow(() => assertZCodePromptFits("x".repeat(100 * 1024), undefined));
+});
+
+test("a zcode prompt is judged with room for the longest correction a retry adds, to the byte", async () => {
+  // A run takes `--prompt=<text>` as one argument of at most 131072 bytes,
+  // its terminating NUL included. The room kept is the opening prompt's
+  // growth when it carries the longest failure a retry repeats: 2000
+  // characters of message, three bytes each, cut with an ellipsis.
+  const argumentBytes = (text: string) => Buffer.byteLength(`--prompt=${text}`, "utf8") + 1;
+  const alone = argumentBytes(openingPrompt({ task: "" }));
+  const withRoom = argumentBytes(openingPrompt({
+    task: "",
+    previousFailure: { kind: "x".repeat(64), message: `${"\uFFFF".repeat(2_000)}…` }
+  }));
+  const largestTaken = 131_072 - withRoom;
+  const refused = "x".repeat(largestTaken + 1);
+  assert.ok(alone + refused.length <= 131_072, "the refused prompt fits one argument without the room");
+
+  assert.doesNotThrow(() => assertZCodePromptFits("x".repeat(largestTaken), undefined));
+  assert.throws(() => assertZCodePromptFits(refused, undefined), AgentPromptRejectedError);
+  const runner = new FakeZCodeRunner([]);
+  const { runtime } = runtimeWith(runner);
+  try {
+    await assert.rejects(runtime.agent(refused, { engine: "zcode", model: "gateway/gpt-6.2-sol" }), AgentPromptRejectedError);
+    assert.equal(runner.runs.length, 0);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a zcode retry repeats at most 2000 characters of the failure's message, in the words every engine's worker is given", async () => {
+  const runner = new FakeZCodeRunner([failedRun("sess_a", "y".repeat(5_000)), finishedRun("sess_b", "recovered")]);
+  const { runtime, records } = runtimeWith(runner);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "zcode", model: "gateway/gpt-6.2-sol" }), "recovered");
+    const failure = records.at(-1)!.attempts[0]!.failure!;
+    assert.ok(failure.message.length > 2_000);
+    assert.equal(runner.runs[1]!.prompt, openingPrompt({
+      task: "work",
+      previousFailure: { kind: failure.kind, message: `${failure.message.slice(0, 2_000)}…` }
+    }));
+  } finally {
+    await runtime.close();
+  }
 });
 
 test("a zcode turn that streams only whitespace, or passes its deadline, spends an attempt and keeps its text", async () => {

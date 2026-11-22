@@ -19,6 +19,7 @@ import {
 import { Scheduler } from "./scheduler.js";
 import { fitsOneArgument, MAX_ARGUMENT_BYTES, runStreamedCommand, type StreamedCommandResult } from "./streamed-command.js";
 import { subtractUsage } from "./usage-summary.js";
+import { inSessionCorrection, laterTurnPrompt, openingPrompt } from "./worker-instructions.js";
 import { DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
 import { parseZCodeModel, type ZCodeModelSelection } from "./zcode-model.js";
 import { defaultZCodeConcurrency } from "./concurrency-defaults.js";
@@ -422,7 +423,7 @@ class ZCodeEngineInvocation implements EngineInvocation {
 
   async runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     const settlement = runZCodeAttempt(this.#settings, {
-      prompt: workerPrompt(this.#prompt, this.#settings.options.schema, context.previousFailure),
+      prompt: openingRunPrompt(this.#prompt, this.#settings.options.schema, context.previousFailure),
       resume: undefined,
       signal: this.#abort.signal,
       context
@@ -479,9 +480,11 @@ class ZCodeWorkerSession implements EngineWorkerSession {
     if (this.#lost !== null) return this.#lostResult();
     if (this.#closed) throw new EngineShutdownError("zcode");
     const resume = this.#sessionId ?? undefined;
-    const message = resume !== undefined && context.previousFailure !== undefined
-      ? correctionLine(context.previousFailure)
-      : workerPrompt(prompt, schema, resume === undefined ? context.previousFailure : undefined);
+    const message = resume === undefined
+      ? openingRunPrompt(prompt, schema, context.previousFailure)
+      : context.previousFailure !== undefined
+        ? inSessionCorrection(carriedFailure(context.previousFailure))
+        : laterTurnPrompt({ task: prompt, ...(schema !== undefined ? { schema } : {}) });
     const settlement = runZCodeAttempt(this.#settings, {
       prompt: message,
       resume,
@@ -540,51 +543,53 @@ function sessionIdOfFailure(error: unknown): string | null {
   return error instanceof Error ? sessionIdsOfFailures.get(error) ?? null : null;
 }
 
-/** The text a run is sent: the harness's worker preamble, the schema it must answer in, any correction, then the task. */
-function workerPrompt(prompt: string, schema: JsonSchema | undefined, previousFailure: PreviousAttemptFailure | undefined): string {
-  const lines: string[] = [
-    "You are an automated worker dispatched by the Ensemble orchestration harness.",
-    "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions - make a reasonable decision and finish the task."
-  ];
-  if (schema !== undefined) {
-    lines.push(
-      "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-      JSON.stringify(schema)
-    );
-  }
-  if (previousFailure !== undefined) {
-    lines.push(correctionLine(previousFailure));
-  }
-  lines.push("", "Task:", prompt);
-  return lines.join("\n");
-}
-
 /**
- * The most characters of a failure's message a correction repeats. A
- * correction rides the same command-line argument as the prompt, so its
- * length is bounded for the prompt's own bound to hold on every attempt.
+ * The most UTF-16 code units of a failure's message a retry repeats to the
+ * worker, an ellipsis marking the cut. A run takes its prompt as one
+ * command-line argument, so a correction riding it is bounded for the
+ * prompt's own bound to hold on every attempt.
  */
 const CORRECTION_MESSAGE_CHARACTERS = 2_000;
 
-function correctionLine(failure: PreviousAttemptFailure): string {
-  const message = failure.message.length > CORRECTION_MESSAGE_CHARACTERS
-    ? `${failure.message.slice(0, CORRECTION_MESSAGE_CHARACTERS)}…`
-    : failure.message;
-  return `A previous attempt failed (${failure.kind}): ${message}. Correct it this time.`;
+/**
+ * The longest failure a retry can carry: the most characters of a message
+ * a correction repeats, each of them three bytes in UTF-8 (the most one
+ * UTF-16 code unit takes), with the ellipsis that marks the cut, under a
+ * kind longer than any the runtime or an engine names.
+ */
+const LONGEST_CARRIED_FAILURE: PreviousAttemptFailure = {
+  kind: "x".repeat(64),
+  message: "\uFFFF".repeat(CORRECTION_MESSAGE_CHARACTERS + 1)
+};
+
+/** The failure as a worker is told of it, its message cut to `CORRECTION_MESSAGE_CHARACTERS`. */
+function carriedFailure(failure: PreviousAttemptFailure): PreviousAttemptFailure {
+  return failure.message.length > CORRECTION_MESSAGE_CHARACTERS
+    ? { ...failure, message: `${failure.message.slice(0, CORRECTION_MESSAGE_CHARACTERS)}…` }
+    : failure;
+}
+
+/**
+ * A run that starts a worker's session: the shared opening prompt, with
+ * the failure of an earlier attempt the session never saw.
+ */
+function openingRunPrompt(task: string, schema: JsonSchema | undefined, previousFailure: PreviousAttemptFailure | undefined): string {
+  return openingPrompt({
+    task,
+    ...(schema !== undefined ? { schema } : {}),
+    ...(previousFailure !== undefined ? { previousFailure: carriedFailure(previousFailure) } : {})
+  });
 }
 
 /**
  * Refuses, before any worker spawns, a prompt zcode cannot be given. A run
  * takes its prompt only as one command-line argument (`--prompt=`), which
- * Linux bounds at 128 KiB; the bound is judged on the text a run is sent,
- * with room for the longest correction a retry adds.
+ * Linux bounds at 128 KiB; the bound is judged on the longest text a run is
+ * sent, the opening prompt with room for the longest failure a retry
+ * carries. A later turn's prompt and an in-session correction are shorter.
  */
 export function assertZCodePromptFits(prompt: string, schema: JsonSchema | undefined): void {
-  const longest = workerPrompt(prompt, schema, {
-    kind: "x".repeat(64),
-    message: "\u{10FFFF}".repeat(CORRECTION_MESSAGE_CHARACTERS)
-  });
-  if (fitsOneArgument(`--prompt=${longest}`)) return;
+  if (fitsOneArgument(`--prompt=${openingRunPrompt(prompt, schema, LONGEST_CARRIED_FAILURE)}`)) return;
   throw new AgentPromptRejectedError(
     `the zcode engine cannot be given this prompt: zcode takes a prompt only as one command-line argument, ` +
     `which Linux bounds at ${MAX_ARGUMENT_BYTES} bytes (128 KiB), and this prompt is ${Buffer.byteLength(prompt, "utf8")} bytes` +

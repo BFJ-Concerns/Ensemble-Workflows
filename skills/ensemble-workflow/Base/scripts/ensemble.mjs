@@ -17679,6 +17679,11 @@ async function resolveAbandonedAgentRecords(runDir, abandonment) {
   }
   return rewritten;
 }
+var LIVE_TRANSCRIPT_SOURCES = {
+  codex: "codex-app-server-events",
+  claude: "claude-session-jsonl",
+  zcode: "zcode --output-format stream-json"
+};
 async function reconcileAbandonedAgentRecord(runDir, record, abandonment) {
   const reconciled = structuredClone(record);
   const files = [];
@@ -17689,8 +17694,8 @@ async function reconcileAbandonedAgentRecord(runDir, record, abandonment) {
     attempts.push({ ...abandoned });
     if (abandoned.resolved_model !== null) reconciled.resolved_model = abandoned.resolved_model;
     if (abandoned.resolved_effort !== null) reconciled.resolved_effort = abandoned.resolved_effort;
-    if (live.transcript !== null && (live.target.engine === "codex" || live.target.engine === "claude")) {
-      const engine = live.target.engine;
+    const engine = live.target.engine;
+    if (live.transcript !== null && Object.hasOwn(LIVE_TRANSCRIPT_SOURCES, engine)) {
       const source = engine === "claude" ? live.transcript : path6.join(runDir, live.transcript);
       const content = await readFile4(source).catch(() => null);
       if (content !== null) {
@@ -17703,7 +17708,7 @@ async function reconcileAbandonedAgentRecord(runDir, record, abandonment) {
             attempt: live.attempt,
             path: relativePath,
             format: "jsonl",
-            source: engine === "claude" ? "claude-session-jsonl" : "codex-app-server-events",
+            source: LIVE_TRANSCRIPT_SOURCES[engine],
             partial: true,
             thread_id: null,
             session_id: null

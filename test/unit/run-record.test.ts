@@ -2961,7 +2961,7 @@ test("runtime abandonment during the dispatch write leaves unmeasured archive ti
   }
 });
 
-for (const engine of ["codex", "claude"] as const) {
+for (const engine of ["codex", "claude", "zcode"] as const) {
   for (const resumedSweep of [false, true]) {
     test(`${engine} abandonment retains served identity and partial transcript${resumedSweep ? " after a sweep dies" : ""}`, async () => {
       const scratch = await mkdtemp(path.join(tmpdir(), "abandoned-record-test-"));
@@ -2992,8 +2992,8 @@ for (const engine of ["codex", "claude"] as const) {
         assert.equal(liveLeaf.complete, false);
         assert.deepEqual(liveLeaf.unobserved, [{ agent: 2, attempt: 1, reason: "record-unsettled", measured: "none" }]);
         let expected: Buffer;
-        if (engine === "codex") {
-          const relative = await writer.appendLiveTranscript(2, 1, "transcript.codex.jsonl", { method: "turn/started" });
+        if (engine !== "claude") {
+          const relative = await writer.appendLiveTranscript(2, 1, `transcript.${engine}.jsonl`, { method: "turn/started" });
           assert.ok(relative);
           const file = path.join(writer.archiveDir, relative);
           expected = Buffer.from('{"method":"turn/started"}\n{"delta":"late append"}\n');

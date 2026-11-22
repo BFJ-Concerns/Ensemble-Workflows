@@ -1934,7 +1934,7 @@ async function resolveAbandonedAgentRecords(
  *   `transcripts` as `{ attempt, path, format: "jsonl", source, partial:
  *   true, thread_id: null, session_id: null }`, with `source` as the
  *   engine's settled capture names it, and `transcripts_unavailable`
- *   then reads null. A Codex path is already in the archive: its size and
+ *   then reads null. A Codex or zcode path is already in the archive: its size and
  *   digest are measured from disk, because a writer killed between an
  *   append and its manifest rewrite leaves the table's entry stale. A
  *   Claude path lies outside the archive: its file is copied in under the
@@ -1944,6 +1944,17 @@ async function resolveAbandonedAgentRecords(
  * - `usage`, `termination_cause`, `queued_ms` and `execution_ms` stand as
  *   the dead writer left them; nothing is inferred for them.
  */
+/**
+ * The engines whose live attempt can name a transcript, each with the
+ * `source` its settled capture records. Claude's lies outside the archive
+ * and is copied in; the others are appended inside it as events arrive.
+ */
+const LIVE_TRANSCRIPT_SOURCES: Partial<Record<EngineName, string>> = {
+  codex: "codex-app-server-events",
+  claude: "claude-session-jsonl",
+  zcode: "zcode --output-format stream-json"
+};
+
 export async function reconcileAbandonedAgentRecord(
   runDir: string,
   record: Record<string, unknown>,
@@ -1958,8 +1969,8 @@ export async function reconcileAbandonedAgentRecord(
     attempts.push({ ...abandoned });
     if (abandoned.resolved_model !== null) reconciled.resolved_model = abandoned.resolved_model;
     if (abandoned.resolved_effort !== null) reconciled.resolved_effort = abandoned.resolved_effort;
-    if (live.transcript !== null && (live.target.engine === "codex" || live.target.engine === "claude")) {
-      const engine = live.target.engine;
+    const engine = live.target.engine;
+    if (live.transcript !== null && Object.hasOwn(LIVE_TRANSCRIPT_SOURCES, engine)) {
       // Read before linking: absence must never assert a file exists. Claude's
       // session may have been removed; Codex's append may outdate its digest.
       const source = engine === "claude" ? live.transcript : path.join(runDir, live.transcript);
@@ -1974,7 +1985,7 @@ export async function reconcileAbandonedAgentRecord(
         if (!transcripts.some((entry) => entry.attempt === live.attempt && entry.path === relativePath)) {
           transcripts.push({
             attempt: live.attempt, path: relativePath, format: "jsonl",
-            source: engine === "claude" ? "claude-session-jsonl" : "codex-app-server-events",
+            source: LIVE_TRANSCRIPT_SOURCES[engine],
             partial: true, thread_id: null, session_id: null
           });
         }

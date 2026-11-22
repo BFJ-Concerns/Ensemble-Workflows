@@ -23550,6 +23550,81 @@ import { randomUUID as randomUUID7 } from "node:crypto";
 // src/app-server.ts
 import { spawn as spawn3 } from "node:child_process";
 import { createInterface } from "node:readline";
+
+// src/bounded-line-reader.ts
+function readBoundedLines(stream, options) {
+  const { maxLineBytes, oversizedPrefixBytes, onLine, onOversizedLine } = options;
+  let chunks = [];
+  let byteLength = 0;
+  let prefix = Buffer.alloc(0);
+  let discardingOversizedLine = false;
+  let oversizedLineByteLength = 0;
+  const resetLine = () => {
+    chunks = [];
+    byteLength = 0;
+    prefix = Buffer.alloc(0);
+    discardingOversizedLine = false;
+    oversizedLineByteLength = 0;
+  };
+  const retain = (chunk) => {
+    if (chunk.length === 0) {
+      return;
+    }
+    chunks.push(chunk);
+    byteLength += chunk.length;
+    if (prefix.length < oversizedPrefixBytes) {
+      prefix = Buffer.concat([prefix, chunk.subarray(0, oversizedPrefixBytes - prefix.length)]);
+    }
+  };
+  const reportOversizedLine = () => {
+    const reportedByteLength = oversizedLineByteLength;
+    const reportedPrefix = prefix.toString("utf8");
+    resetLine();
+    onOversizedLine(reportedByteLength, reportedPrefix);
+  };
+  const deliverRetainedLine = () => {
+    const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+    resetLine();
+    onLine(line);
+  };
+  stream.on("data", (chunk) => {
+    let offset2 = 0;
+    while (offset2 < chunk.length) {
+      const newline = chunk.indexOf(10, offset2);
+      const end = newline === -1 ? chunk.length : newline;
+      const segment = chunk.subarray(offset2, end);
+      if (discardingOversizedLine) {
+        oversizedLineByteLength += segment.length;
+        if (newline !== -1) {
+          reportOversizedLine();
+        }
+      } else if (byteLength + segment.length <= maxLineBytes) {
+        retain(segment);
+        if (newline !== -1) {
+          deliverRetainedLine();
+        }
+      } else {
+        const retainedBytes = Math.max(0, maxLineBytes - byteLength);
+        retain(segment.subarray(0, retainedBytes));
+        discardingOversizedLine = true;
+        oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
+        if (newline !== -1) {
+          reportOversizedLine();
+        }
+      }
+      offset2 = newline === -1 ? chunk.length : newline + 1;
+    }
+  });
+  stream.once("end", () => {
+    if (discardingOversizedLine) {
+      reportOversizedLine();
+    } else if (byteLength > 0) {
+      deliverRetainedLine();
+    }
+  });
+}
+
+// src/app-server.ts
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
@@ -24088,73 +24163,13 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     });
   }
   #wireReader() {
-    let chunks = [];
-    let byteLength = 0;
-    let prefix = Buffer.alloc(0);
-    let discardingOversizedLine = false;
-    let oversizedLineByteLength = 0;
-    const resetLine = () => {
-      chunks = [];
-      byteLength = 0;
-      prefix = Buffer.alloc(0);
-      discardingOversizedLine = false;
-      oversizedLineByteLength = 0;
-    };
-    const retain = (chunk) => {
-      if (chunk.length === 0) {
-        return;
-      }
-      chunks.push(chunk);
-      byteLength += chunk.length;
-      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
-        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
-      }
-    };
-    const reportOversizedLine = () => {
-      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
-    };
-    const handleRetainedLine = () => {
-      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-      resetLine();
-      this.#handleLine(line);
-    };
-    this.#process.stdout.on("data", (chunk) => {
-      let offset2 = 0;
-      while (offset2 < chunk.length) {
-        const newline = chunk.indexOf(10, offset2);
-        const end = newline === -1 ? chunk.length : newline;
-        const segment = chunk.subarray(offset2, end);
-        if (discardingOversizedLine) {
-          oversizedLineByteLength += segment.length;
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
-          retain(segment);
-          if (newline !== -1) {
-            handleRetainedLine();
-          }
-        } else {
-          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
-          retain(segment.subarray(0, retainedBytes));
-          discardingOversizedLine = true;
-          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        }
-        offset2 = newline === -1 ? chunk.length : newline + 1;
-      }
+    readBoundedLines(this.#process.stdout, {
+      maxLineBytes: MAX_APP_SERVER_STDOUT_LINE_BYTES,
+      oversizedPrefixBytes: DECODE_FAILURE_BUFFER_PREFIX_BYTES,
+      onLine: (line) => this.#handleLine(line),
+      onOversizedLine: (byteLength, prefix) => this.#reportDecodeFailure(byteLength, prefix)
     });
     this.#process.stdout.once("end", () => {
-      if (discardingOversizedLine) {
-        reportOversizedLine();
-        resetLine();
-      } else if (byteLength > 0) {
-        handleRetainedLine();
-      }
       if (this.#hasExited) {
         return;
       }

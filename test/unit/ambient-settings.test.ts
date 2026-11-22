@@ -30,7 +30,8 @@ test("caller identity has a named environment route without widening ambient set
       "singleFamilyNotice",
       "statusDir",
       "workerEnvironment",
-      "workerScope"
+      "workerScope",
+      "zcodeSessionStaleAfterMs"
     ]);
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -386,6 +387,47 @@ test("model_families and single_family_notice fail loud on malformed values", as
     { config: { model_families: { m: "" } }, pattern: /model_families\.m .*non-empty string/ },
     { config: { model_families: { m: 1 } }, pattern: /model_families\.m .*non-empty string/ },
     { config: { single_family_notice: "off" }, pattern: /single_family_notice.*must be a boolean/ }
+  ];
+  for (const entry of cases) {
+    const fixture = await configFixture({ schema_version: 1, ...entry.config });
+    try {
+      assert.throws(
+        () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }),
+        entry.pattern
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test("zcode_providers declares each provider's staleness threshold in minutes, and none by default", async () => {
+  const empty = await configFixture({ schema_version: 1 });
+  const declared = await configFixture({
+    schema_version: 1,
+    zcode_providers: { gateway: { stale_after_minutes: 60 }, nanogpt: {} },
+    concurrency: { zcode: 4 }
+  });
+  try {
+    const defaults = resolveAmbientSettings({ env: { XDG_CONFIG_HOME: empty.configHome }, cwd: empty.cwd });
+    assert.deepEqual(defaults.zcodeSessionStaleAfterMs, {});
+    assert.deepEqual(defaults.concurrencyCaps.zcode, { value: 12, layer: "default" });
+    const settings = resolveAmbientSettings({ env: { XDG_CONFIG_HOME: declared.configHome }, cwd: declared.cwd });
+    assert.deepEqual(settings.zcodeSessionStaleAfterMs, { gateway: 3_600_000 });
+    assert.deepEqual(settings.concurrencyCaps.zcode, { value: 4, layer: "config-file" });
+  } finally {
+    await empty.cleanup();
+    await declared.cleanup();
+  }
+});
+
+test("zcode_providers fails loud on malformed values", async () => {
+  const cases: Array<{ config: Record<string, unknown>; pattern: RegExp }> = [
+    { config: { zcode_providers: [] }, pattern: /zcode_providers.*JSON object of zcode provider ids/ },
+    { config: { zcode_providers: { "a/b": {} } }, pattern: /zcode_providers.*hold no "\/"/ },
+    { config: { zcode_providers: { gateway: 5 } }, pattern: /zcode_providers\.gateway .*JSON object/ },
+    { config: { zcode_providers: { gateway: { stale_after_minutes: 0 } } }, pattern: /zcode_providers\.gateway\.stale_after_minutes .*at least 1/ },
+    { config: { zcode_providers: { gateway: { stale_after: 5 } } }, pattern: /Unknown machine configuration key zcode_providers\.gateway\.stale_after/ }
   ];
   for (const entry of cases) {
     const fixture = await configFixture({ schema_version: 1, ...entry.config });

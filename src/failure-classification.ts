@@ -108,11 +108,17 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
     /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|\bAPI key is missing\b|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
     const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude"
-      ? "Run `claude auth login`." : "Run `opencode auth login` for the provider you selected.";
+      ? "Run `claude auth login`." : engine === "zcode"
+        ? "Configure the provider's credentials in ZCode for the provider the model names."
+        : "Run `opencode auth login` for the provider you selected.";
     return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${failure.message}` };
   }
   if (engine === "codex" && appServerDiagnostic?.code === "modelNotFound") {
     return { kind: "model-not-found", message: `Codex modelNotFound: choose a model available to your account (run \`codex\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
+  }
+  if (engine === "zcode" && failure.kind === "zcode-run-error" &&
+      /^zcode run failed: Unknown (?:model|provider) "/.test(failure.message)) {
+    return { kind: "model-not-found", message: `ZCode does not list the model: name a provider and model as \`zcode models\` prints them, spelt provider/model. Engine diagnostic: ${failure.message}` };
   }
   if (engine === "claude" && failure.kind === "claude-worker-diagnostic" &&
       (status == null || status === 400 || status === 404) &&
@@ -234,6 +240,51 @@ const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);
 
+/**
+ * ZCode reports why a turn failed in its `turn.failed` event, whose error
+ * carries the model layer's code and the attribution's reason (read from
+ * the fork's contracts at 0.17.1: `ModelErrorCode`, `ModelFailureReason`).
+ * The engine records both under `diagnostics.zcode.turn_error`. ZCode has
+ * already spent its own request retries before a turn fails on any of
+ * these, so a rate limit or overload here outlasted them.
+ */
+const ZCODE_AVAILABILITY_REASONS = new Map<string, string>([
+  ["rate_limited", "zcode.rate-limit"],
+  ["provider_overloaded", "zcode.overloaded"],
+  ["server_error", "zcode.provider-internal-error"],
+  ["network_error", "zcode.provider-unreachable"],
+  ["auth_failed", "zcode.authentication-failure"],
+  ["provider_not_configured", "zcode.provider-not-configured"]
+]);
+const ZCODE_AVAILABILITY_CODES = new Map<string, string>([
+  ["model_rate_limited", "zcode.rate-limit"],
+  ["model_request_auth_missing", "zcode.authentication-failure"],
+  ["provider_not_configured", "zcode.provider-not-configured"],
+  ["insufficient_quota", "zcode.quota"]
+]);
+
+const ZCODE_FAILURE_KINDS = new Map<string, FailureClassification>([
+  // The installed zcode cannot be driven (missing, or lacking per-run model
+  // selection or its model listing): refused before any worker existed.
+  ["ZCodeSubstrateRefusedError", { class: "availability", rule: "zcode.substrate-refused" }],
+  ["zcode-run-error", { class: "unclassified", rule: "zcode.run-error" }],
+  ["TurnTimeoutError", { class: "unclassified", rule: "zcode.deadline" }]
+]);
+
+function classifyZCodeFailure(kind: string, diagnostics: JsonObject | undefined): FailureClassification {
+  if (kind === "zcode-run-error") {
+    const turnError = objectField(diagnostics?.zcode, "turn_error");
+    const reason = objectField(turnError, "reason");
+    const code = objectField(turnError, "code");
+    const rule = (typeof reason === "string" ? ZCODE_AVAILABILITY_REASONS.get(reason) : undefined) ??
+      (typeof code === "string" ? ZCODE_AVAILABILITY_CODES.get(code) : undefined);
+    if (rule !== undefined) {
+      return { class: "availability", rule };
+    }
+  }
+  return ZCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
+}
+
 // The opencode runner's failure kinds: a run that exited in error, and the
 // harness's own per-turn deadline ending the subprocess.
 const OPENCODE_FAILURE_KINDS = new Map<string, FailureClassification>([
@@ -289,6 +340,8 @@ export function classifyAttemptFailure(evidence: AttemptFailureEvidence): Failur
       return classifyClaudeFailure(kind, evidence.diagnostics);
     case "opencode":
       return OPENCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
+    case "zcode":
+      return classifyZCodeFailure(kind, evidence.diagnostics);
   }
 }
 
@@ -390,6 +443,11 @@ function isEffortRejection(message: string): boolean {
 /** Only request-refusal envelopes are evidence of a provider rejecting effort. */
 function isProviderEffortRejection(evidence: AttemptFailureEvidence): boolean {
   const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
+  // ZCode refuses a reasoning level its listing does not hold before any
+  // request, in its own words, and a retry sends the same level.
+  if (engine === "zcode") {
+    return failure.kind === "zcode-run-error" && /^zcode run failed: Unsupported reasoning level "/.test(failure.message);
+  }
   if (engine === "claude" && failure.kind === "claude-worker-diagnostic") {
     const api = claudeApiErrorOf(diagnostics);
     return api !== null &&

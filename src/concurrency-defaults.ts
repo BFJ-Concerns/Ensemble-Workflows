@@ -4,7 +4,7 @@
 // derived from the CPU count would limit local builds rather than remote
 // turns; the machine's own load is governed elsewhere and by better means.
 //
-// Codex and Claude share one default.
+// Codex, Claude and ZCode share one default.
 
 export function defaultCodexConcurrency(): number {
   return 12;
@@ -16,4 +16,8 @@ export function defaultClaudeConcurrency(): number {
 
 export function defaultOpenCodeConcurrency(): number {
   return 2;
+}
+
+export function defaultZCodeConcurrency(): number {
+  return 12;
 }

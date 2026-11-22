@@ -1026,9 +1026,11 @@ test("built CLI keeps the complete engine map and gives mapped flags their own i
         "--budget=codex=11",
         "--budget=claude=22",
         "--budget=opencode=33",
+        "--budget=zcode=44",
         "--concurrency=codex=2",
         "--concurrency=claude=3",
         "--concurrency=opencode=4",
+        "--concurrency=zcode=5",
         fixture.script
       ],
       { ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: recordStore }
@@ -1043,19 +1045,21 @@ test("built CLI keeps the complete engine map and gives mapped flags their own i
     assert.deepEqual(manifest.budget_ceilings, {
       codex: { value: 11, layer: "flag" },
       claude: { value: 22, layer: "flag" },
-      opencode: { value: 33, layer: "flag" }
+      opencode: { value: 33, layer: "flag" },
+      zcode: { value: 44, layer: "flag" }
     });
     assert.deepEqual(manifest.concurrency.engines, {
       codex: { value: 2, layer: "flag" },
       claude: { value: 3, layer: "flag" },
-      opencode: { value: 4, layer: "flag" }
+      opencode: { value: 4, layer: "flag" },
+      zcode: { value: 5, layer: "flag" }
     });
 
     for (const flag of ["--budget", "--concurrency"]) {
       const rejected = await fixture.runArgs([`${flag}=unknown=1`, fixture.script]);
       assert.equal(rejected.code, 2);
       assert.equal(rejected.stdout, "");
-      assert.equal(rejected.stderr, `No run was started and nothing was recorded. ${flag} engine must be codex, claude, or opencode; got unknown\n`);
+      assert.equal(rejected.stderr, `No run was started and nothing was recorded. ${flag} engine must be codex, claude, opencode, or zcode; got unknown\n`);
     }
   } finally {
     await fixture.cleanup();

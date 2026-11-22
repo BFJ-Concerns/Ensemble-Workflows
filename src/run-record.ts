@@ -831,8 +831,8 @@ export class RunRecordWriter {
   #agentBatch: AgentPublicationBatch | null = null;
   #sealed = false;
   #currentAttempts = new Map<number, LiveAttemptRecord>();
-  #liveCodex = new Map<string, string>();
-  #liveCodexHashes = new Map<string, { hash: Hash; size: number }>();
+  #liveTranscripts = new Map<string, string>();
+  #liveTranscriptHashes = new Map<string, { hash: Hash; size: number }>();
 
   private constructor(archiveDir: string, cwd: string, manifest: Manifest) {
     this.archiveDir = archiveDir;
@@ -1211,24 +1211,29 @@ export class RunRecordWriter {
     });
   }
 
-  /** Append an event before publishing its archive reference. */
-  async appendCodexTranscript(id: number, attempt: number, event: unknown): Promise<string | null> {
+  /**
+   * Append one event of an engine's live stream (Codex app-server frames,
+   * zcode's stream-json events) to the attempt's transcript, named
+   * `filename` as the settled artefact will be, before publishing its
+   * archive reference.
+   */
+  async appendLiveTranscript(id: number, attempt: number, filename: string, event: unknown): Promise<string | null> {
     const content = `${JSON.stringify(event)}\n`;
     return await this.#serialise(async () => {
       if (this.#sealed) return null;
       const current = this.#currentAttempts.get(id);
       if (current?.attempt !== attempt) return null;
-      const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-transcript.codex.jsonl`;
+      const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-${safeName(filename, "jsonl")}`;
       await mkdir(path.dirname(path.join(this.archiveDir, relativePath)), { recursive: true });
       await appendFile(path.join(this.archiveDir, relativePath), content);
-      const digest = this.#liveCodexHashes.get(relativePath) ?? { hash: createHash("sha256"), size: 0 };
+      const digest = this.#liveTranscriptHashes.get(relativePath) ?? { hash: createHash("sha256"), size: 0 };
       digest.hash.update(content);
       digest.size += Buffer.byteLength(content);
-      this.#liveCodexHashes.set(relativePath, digest);
+      this.#liveTranscriptHashes.set(relativePath, digest);
       this.#files.set(relativePath, {
         path: relativePath, size: digest.size, sha256: digest.hash.copy().digest("hex")
       });
-      this.#liveCodex.set(`${id}:${attempt}`, relativePath);
+      this.#liveTranscripts.set(`${id}:${attempt}`, relativePath);
       if (current.transcript !== relativePath) {
         current.transcript = relativePath;
         await this.#publishCurrentAttempt(id);
@@ -1341,7 +1346,7 @@ export class RunRecordWriter {
         const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
         const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
         const liveFile = this.#files.get(relativePath);
-        const liveMatches = this.#liveCodex.get(`${record.id}:${attempt.attempt}`) === relativePath &&
+        const liveMatches = this.#liveTranscripts.get(`${record.id}:${attempt.attempt}`) === relativePath &&
           liveFile?.sha256 === sha256(transcript.content) &&
           (await stat(path.join(this.archiveDir, relativePath)).catch(() => null))?.size === liveFile.size;
         if (liveMatches) {
@@ -2064,7 +2069,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isEngineName(value: unknown): value is EngineName {
-  return value === "codex" || value === "claude" || value === "opencode";
+  return value === "codex" || value === "claude" || value === "opencode" || value === "zcode";
 }
 
 function isAgentStatus(value: unknown): value is AgentStatus {
@@ -2147,13 +2152,14 @@ async function findHarnessRoot(): Promise<string | null> {
 }
 
 async function toolVersions(archiveDir: string): Promise<Record<string, string | null>> {
-  const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
+  const [gitVersion, codexVersion, claudeVersion, openCodeVersion, zcodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
     commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
-    queryOpenCodeVersion(archiveDir)
+    queryOpenCodeVersion(archiveDir),
+    commandVersion("zcode", ["--version"])
   ]);
-  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
+  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion, zcode: zcodeVersion };
 }
 
 /**

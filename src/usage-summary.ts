@@ -99,6 +99,11 @@ export function subtractUsage(total: TokenUsageBreakdown, previous: TokenUsageBr
  *   the upstream fields themselves is judgement, reconciled the same
  *   way); cache
  *   creation is separable only when the stream carried a cache object.
+ * - **zcode** reports `inputTokens` *including* the cached share and a
+ *   total of input plus output (measured 2026-11-22 on zcode 0.17.1:
+ *   32011 input with 15872 cache reads, 36 output, 32047 total), and
+ *   reasoning as `reasoningTokens`, taken as part of the output by the
+ *   OpenAI usage-field convention its gateway provider follows (judgement).
  */
 const ENGINE_INCLUSION_RULES: Record<
   EngineName,
@@ -106,7 +111,8 @@ const ENGINE_INCLUSION_RULES: Record<
 > = {
   codex: { cachedWithinInput: true, reasoningWithinOutput: true },
   claude: { cachedWithinInput: false, reasoningWithinOutput: true },
-  opencode: { cachedWithinInput: false, reasoningWithinOutput: false }
+  opencode: { cachedWithinInput: false, reasoningWithinOutput: false },
+  zcode: { cachedWithinInput: true, reasoningWithinOutput: true }
 };
 
 /**

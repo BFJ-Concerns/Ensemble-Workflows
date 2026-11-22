@@ -413,7 +413,8 @@ interface WorkerSessionState {
    * it, as they run on that target.
    */
   servingTarget: string | null;
-  stalenessThresholdMs: number;
+  /** Null where the session's engine and model have no threshold: it is never marked. */
+  stalenessThresholdMs: number | null;
   markStaleness: boolean;
   engineSession: EngineWorkerSession | null;
   placement: AgentPlacement | null;
@@ -497,7 +498,7 @@ export class WorkerSession<Identified extends boolean = false> {
    */
   get stale(): boolean {
     const state = this.#state;
-    if (!state.markStaleness || state.lastTurnEndedAt === null || state.inFlight) {
+    if (!state.markStaleness || state.stalenessThresholdMs === null || state.lastTurnEndedAt === null || state.inFlight) {
       return false;
     }
     return this.#now() - state.lastTurnEndedAt >= state.stalenessThresholdMs;
@@ -604,6 +605,7 @@ export class EnsembleRuntime {
   #holdsCwd: string;
   #claudeSessionStaleAfterMs: number;
   #codexSessionStaleAfterMs: number;
+  #zcodeSessionStaleAfterMs: Readonly<Record<string, number>>;
 
   constructor(options: {
     engines?: EngineRegistry;
@@ -622,6 +624,7 @@ export class EnsembleRuntime {
     modelFamilies?: ModelFamilyAssignments;
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
+    zcodeSessionStaleAfterMs?: Readonly<Record<string, number>>;
     holdsDir?: string;
     holdScope?: string;
     holdPollIntervalMs?: number;
@@ -662,6 +665,7 @@ export class EnsembleRuntime {
     // equal, semantically distinct knobs.
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 3_600_000;
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
+    this.#zcodeSessionStaleAfterMs = options.zcodeSessionStaleAfterMs ?? {};
     this.#now = options.now ?? (() => Date.now());
     this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
     rejectBlankHoldScope(options.holdScope);
@@ -760,6 +764,9 @@ export class EnsembleRuntime {
       onOpenCodeEvent: (event) => {
         runtime?.handleEngineEvent("opencode", event);
       },
+      onZCodeEvent: (event) => {
+        runtime?.handleEngineEvent("zcode", event);
+      },
       ...(options.concurrencyCaps !== undefined ? { concurrencyCaps: options.concurrencyCaps } : {})
     });
 
@@ -784,6 +791,9 @@ export class EnsembleRuntime {
         : {}),
       ...(options.codexSessionStaleAfterMs !== undefined
         ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs }
+        : {}),
+      ...(options.zcodeSessionStaleAfterMs !== undefined
+        ? { zcodeSessionStaleAfterMs: options.zcodeSessionStaleAfterMs }
         : {})
     });
 
@@ -1306,11 +1316,7 @@ export class EnsembleRuntime {
       namedTarget,
       chain,
       servingTarget: namedTarget?.name ?? null,
-      // The mark's threshold is per engine shape: Claude's is the cliff at
-      // its subscription cache TTL, Codex's the measured coin-flip
-      // idle point — both overridable as library-level runtime options.
-      stalenessThresholdMs:
-        engine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs,
+      stalenessThresholdMs: this.#sessionStaleAfterMs(engine.name, sessionOptions.model),
       markStaleness: sessionOptions.stalenessMark ?? true,
       engineSession: null,
       placement: null,
@@ -1493,8 +1499,7 @@ export class EnsembleRuntime {
     state.engine = targetEngine;
     state.options = optionsForTarget(state.options, target);
     state.servingTarget = target.namedTarget;
-    state.stalenessThresholdMs =
-      targetEngine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs;
+    state.stalenessThresholdMs = this.#sessionStaleAfterMs(targetEngine.name, state.options.model);
     const options = state.options;
     if (state.engineSession === null) {
       state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
@@ -2239,9 +2244,9 @@ export class EnsembleRuntime {
           attemptSpend += event.last.totalTokens;
           this.progress.noteAgentSpend(agentId, previousSpend + attemptSpend);
         },
-        ...(engine === "codex" && recorder !== null ? {
+        ...((engine === "codex" || engine === "zcode") && recorder !== null ? {
           onTranscriptEvent: (event: unknown) => enqueue(async () => {
-            const path = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            const path = await recorder.appendLiveTranscript(agentId, context.attempt, `transcript.${engine}.jsonl`, event);
             if (path != null) this.progress.noteAgentTranscript(agentId, path);
           })
         } : engine === "claude" ? {
@@ -3176,6 +3181,29 @@ export class EnsembleRuntime {
     const attempt = ++attempts.ledger.dispatched;
     this.progress.noteAttempt(agentId, attempt);
     return this.#recordThrownFailure(record, attempt, error, startedAt, attempts).refused;
+  }
+
+  /**
+   * The idle gap at which a held worker on this engine and model reads
+   * stale, or null where none applies. Claude's is the cliff at its
+   * subscription cache TTL and Codex's the measured coin-flip idle point;
+   * opencode holds no sessions; zcode's is the threshold declared for the
+   * model's provider, and a provider with none leaves its workers unmarked.
+   */
+  #sessionStaleAfterMs(engine: EngineName, model: string | undefined): number | null {
+    switch (engine) {
+      case "claude":
+        return this.#claudeSessionStaleAfterMs;
+      case "codex":
+      case "opencode":
+        return this.#codexSessionStaleAfterMs;
+      case "zcode": {
+        const provider = model?.slice(0, Math.max(0, model.indexOf("/")));
+        return provider !== undefined && provider.length > 0 && Object.hasOwn(this.#zcodeSessionStaleAfterMs, provider)
+          ? this.#zcodeSessionStaleAfterMs[provider] ?? null
+          : null;
+      }
+    }
   }
 
   async #resolveEffortFor(record: RuntimeAgentRecord, engine: EngineAdapter, options: Partial<AgentOptions>): Promise<EffortResolution | null> {

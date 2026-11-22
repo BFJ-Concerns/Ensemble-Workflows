@@ -4953,7 +4953,7 @@ for (const structured of [false, true]) {
       recordAgent: async (record: RuntimeAgentRecord) => { snapshots.push(structuredClone(record)); },
       recordAttemptEnd: ignoreAttemptEnd,
       recordAttemptStart: async (id: number, { attempt, startedAt: at }: LiveAttemptStart) => { starts.push({ id, attempt, at }); },
-      appendCodexTranscript: async (id: number, attempt: number, event: unknown) => {
+      appendLiveTranscript: async (id: number, attempt: number, _filename: string, event: unknown) => {
         await new Promise<void>((resolve) => setImmediate(resolve));
         writes.push({ id, attempt, event });
       }
@@ -4990,7 +4990,7 @@ test("live archive write failures report the agent and preserve its answer", asy
     recordAgent: async () => undefined,
     recordAttemptEnd: ignoreAttemptEnd,
     recordAttemptStart: async () => { throw new Error("start unavailable"); },
-    appendCodexTranscript: async () => { throw new Error("append unavailable"); }
+    appendLiveTranscript: async () => { throw new Error("append unavailable"); }
   } as unknown as RunRecordWriter);
   try {
     assert.equal(await runtime.agent("answer", { engine: "codex" }), "yes");
@@ -5023,7 +5023,7 @@ test("runtime drains pending transcript writes before shutdown settlement", asyn
     recordAgent: async (record: RuntimeAgentRecord) => { if (record.status !== "in-progress") settled = true; },
     recordAttemptEnd: ignoreAttemptEnd,
     recordAttemptStart: async () => undefined,
-    appendCodexTranscript: async () => pendingWrite
+    appendLiveTranscript: async () => pendingWrite
   } as unknown as RunRecordWriter);
   const call = runtime.agent("work", { engine: "codex" });
   void call.catch(() => undefined);
@@ -5069,7 +5069,7 @@ test("fallback targets publish their own transcript and reject callbacks from th
     recordAgent: async () => undefined,
     recordAttemptEnd: ignoreAttemptEnd,
     recordAttemptStart: async (id: number, { attempt }: LiveAttemptStart) => { starts.push([id, attempt]); },
-    appendCodexTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); },
+    appendLiveTranscript: async (id: number, attempt: number, _filename: string, event: unknown) => { writes.push([id, attempt, event]); },
     recordClaudeTranscript: async (id: number, attempt: number, file: string) => { writes.push([id, attempt, file]); }
   } as unknown as RunRecordWriter);
   try {

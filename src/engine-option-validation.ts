@@ -11,6 +11,7 @@ import {
 import { assertValidStripOption } from "./capability-stripping.js";
 import { CANONICAL_EFFORT_DOMAIN, isCanonicalEffort } from "./effort-resolution.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
+import { parseZCodeModel } from "./zcode-model.js";
 
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type { AgentOptions, EngineName, FallbackTarget, LiteralWorkerSessionOptions } from "./types.js";
@@ -279,7 +280,7 @@ export function assertValidFallbackOption(value: unknown): asserts value is Fall
  * A fallback chain is judged whole, pre-spawn, wherever it is declared — a
  * call site, a session, an engine's `defaults` block, or a named target's
  * binding: an array of targets, each either a full literal target naming an
- * engine and a model, Codex or Claude only (opencode is held at its existing
+ * engine and a model, Codex, Claude or ZCode only (opencode is held at its existing
  * surface and skips new capability by default, so an opencode entry throws
  * here rather than failing unnoticed on the day the chain first advances),
  * or a named target, whose binding is judged where the bindings are known
@@ -323,8 +324,8 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
     if (target.engine === "opencode") {
       throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
     }
-    if (target.engine !== "codex" && target.engine !== "claude") {
-      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex" or "claude", got ${JSON.stringify(target.engine)}`);
+    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "zcode") {
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude" or "zcode", got ${JSON.stringify(target.engine)}`);
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
@@ -355,6 +356,11 @@ export function validateEngineDefaults(
     // A bad static declaration fails before the body runs, not at the
     // first paid dispatch — the same canonical domain agent() enforces.
     assertCanonicalEffortSupported(defaults.effort);
+  }
+  if (engine === "zcode" && defaults.model !== undefined) {
+    // zcode, not Ensemble, judges whether it lists the model; the spelling
+    // that names its provider is Ensemble's to read.
+    parseZCodeModel(defaults.model);
   }
   if (engine === "opencode" && defaults.model !== undefined) {
     const model = requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);

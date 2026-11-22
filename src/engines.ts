@@ -27,6 +27,7 @@ import {
   workerExitStatusOf
 } from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation } from "./opencode-engine.js";
+import { ZCodeCliRunner, ZCodeEngineAdapter } from "./zcode-engine.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 import { createOpenCodeModelRegistry, defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
@@ -129,7 +130,8 @@ export interface EngineAttemptFailure {
     | "claude-transcript-error"
     | "claude-collection-error"
     | "claude-worker-diagnostic"
-    | "opencode-run-error";
+    | "opencode-run-error"
+    | "zcode-run-error";
   message: string;
 }
 
@@ -1045,6 +1047,7 @@ export interface CreateDefaultEngineRegistryOptions {
   cwd: string;
   codexBin: string;
   openCodeBin?: string;
+  zcodeBin?: string;
   requestTimeoutMs: number;
   retryPromiseSilenceTimeoutMs?: number;
   firstOutputTimeoutMs?: number;
@@ -1072,6 +1075,7 @@ export interface CreateDefaultEngineRegistryOptions {
   onEvent: (event: RuntimeEvent) => void;
   onClaudeEvent: (event: RuntimeEvent) => void;
   onOpenCodeEvent: (event: RuntimeEvent) => void;
+  onZCodeEvent: (event: RuntimeEvent) => void;
 }
 
 export async function createDefaultEngineRegistry(
@@ -1137,14 +1141,23 @@ export async function createDefaultEngineRegistry(
           ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels ?? [], options.openCodeModelSource) }
           : {}),
         onEvent: options.onOpenCodeEvent
+      }),
+      new ZCodeEngineAdapter({
+        cwd: options.cwd,
+        runner: new ZCodeCliRunner(options.zcodeBin, {
+          commands: workerCommands,
+          ...(options.workerEnvironment?.zcode !== undefined ? { workerEnv: options.workerEnvironment.zcode } : {})
+        }),
+        ...(options.concurrencyCaps?.zcode !== undefined ? { concurrency: options.concurrencyCaps.zcode } : {}),
+        onEvent: options.onZCodeEvent
       })
     ],
     // Commands before scopes: a command's scope is one of the manager's, and
     // the manager's close would report a survivor by unit alone, where the
     // containment names the command and judges how it was stopped.
     [workerCommands, ...(ownsScopes ? [workerScopes] : [])],
-    // The Codex app-server is shared and starts in the run base; Claude
-    // and opencode launch a process in each invocation's placement.
+    // The Codex app-server is shared and starts in the run base; Claude,
+    // opencode and zcode launch a process in each invocation's placement.
     (engine, cwd) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], engine === "codex" ? options.cwd : cwd)
   );
 }
@@ -1205,5 +1218,6 @@ function promptWithFailureFeedback(prompt: string, failure: PreviousAttemptFailu
 export {
   defaultClaudeConcurrency,
   defaultCodexConcurrency,
-  defaultOpenCodeConcurrency
+  defaultOpenCodeConcurrency,
+  defaultZCodeConcurrency
 } from "./concurrency-defaults.js";

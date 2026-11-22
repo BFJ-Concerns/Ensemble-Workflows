@@ -252,7 +252,7 @@ export function appServerDiagnosticOf(error: unknown): AppServerDiagnostic | nul
  * refused.
  */
 export const CODEX_SCHEMA_REJECTION_REMEDY =
-  "Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude' or 'opencode', which validate the full JSON Schema client-side.";
+  "Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude', 'opencode' or 'zcode', which validate the full JSON Schema client-side.";
 
 /**
  * The diagnostic's payload with every string that restates the diagnostic's
@@ -516,13 +516,13 @@ export class BudgetExceededError extends EnsembleError {
 
 export class MissingEngineError extends AgentOptionRejectedError {
   constructor() {
-    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'");
+    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', engine: 'opencode', or engine: 'zcode'");
   }
 }
 
 export class UnknownEngineError extends AgentOptionRejectedError {
   constructor(engine: unknown) {
-    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', or 'opencode'`);
+    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', 'opencode', or 'zcode'`);
   }
 }
 
@@ -580,6 +580,17 @@ export class CodexSubstrateRefusedError extends SubstrateRefusedError {
     super(`Codex app-server could not serve a thread${cwd === undefined ? "" : ` in ${cwd}`}: ${detail}`, { cause });
   }
 }
+
+/**
+ * The installed `zcode` cannot serve the `zcode` engine: it could not be
+ * run, or it lacks an ability the engine drives it through — choosing a
+ * run's provider, model and reasoning level (`--provider`, `--model`,
+ * `--reasoning-level`) or printing its model listing (`zcode models`). No
+ * worker existed, so it is a substrate refusal: the call advances its
+ * chain where an entry remains and otherwise fails the run, naming what
+ * the installed zcode lacks.
+ */
+export class ZCodeSubstrateRefusedError extends SubstrateRefusedError {}
 
 export class ClaudeWorkerLostError extends ClaudeWorkerError {}
 
@@ -661,6 +672,21 @@ export class ClaudeWorkerDiagnosticError extends ClaudeWorkerError {}
 export class OpenCodeModelRequiredError extends AgentOptionRejectedError {
   constructor(registry: OpenCodeModelRegistry) {
     super(`agent({ engine:'opencode' }) requires a model from the opencode registry; ${registeredOpenCodeModels(registry)}`);
+  }
+}
+
+/**
+ * A zcode call names its model as zcode's listing does, provider first:
+ * `<provider>/<model>`, split at the first `/`, so a model id that itself
+ * holds `/` or `:` (`nanogpt/z-ai/glm-5.3-flash`) keeps its spelling.
+ * Raised before any worker spawns for a call with no model, or one whose
+ * model names no provider.
+ */
+export class ZCodeModelRequiredError extends AgentOptionRejectedError {
+  constructor(model: string | undefined) {
+    super(model === undefined
+      ? "agent({ engine:'zcode' }) requires a model: name a provider and one of its models as `zcode models` lists them, spelt provider/model (gateway/claude-opus-5-5), or declare defaults.zcode.model"
+      : `zcode model ${JSON.stringify(model)} names no provider: spell it provider/model as \`zcode models\` lists them (gateway/claude-opus-5-5)`);
   }
 }
 

@@ -13,9 +13,12 @@ import type { OpenCodeModelRegistryEntry } from "../../src/opencode-model-regist
  *   the model (at `low` effort) every other Codex leg takes when it is set.
  * - `ENSEMBLE_LIVE_OPENCODE_MODEL`: a key from the machine configuration's
  *   `opencode_models`; opencode has no default, so every opencode leg needs it.
+ * - `ENSEMBLE_LIVE_ZCODE_MODEL`: a zcode model spelt provider/model as
+ *   `zcode models` lists it; zcode has no default, so every zcode leg needs it.
  */
 export const liveCodexModel = nonEmpty(process.env.ENSEMBLE_LIVE_CODEX_MODEL);
 export const liveOpenCodeModel = nonEmpty(process.env.ENSEMBLE_LIVE_OPENCODE_MODEL);
+export const liveZCodeModel = nonEmpty(process.env.ENSEMBLE_LIVE_ZCODE_MODEL);
 
 /** The Codex model options a leg passes: the pinned model at `low` effort, or none for the engine default. */
 export function liveCodexOptions(): { model?: string; effort?: "low" } {

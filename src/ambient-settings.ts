@@ -7,7 +7,8 @@ import path from "node:path";
 import {
   defaultClaudeConcurrency,
   defaultCodexConcurrency,
-  defaultOpenCodeConcurrency
+  defaultOpenCodeConcurrency,
+  defaultZCodeConcurrency
 } from "./concurrency-defaults.js";
 
 import { assertValidFallbackChain } from "./engine-option-validation.js";
@@ -124,6 +125,13 @@ export interface AmbientSettings {
    */
   modelFamilies: ModelFamilyAssignments;
   /**
+   * The idle gap, per zcode provider, at which a held zcode worker on that
+   * provider reads stale (the config file's `zcode_providers` section,
+   * declared in minutes). Config-file only, like `workerEnvironment`; a
+   * provider with no threshold leaves its workers unmarked.
+   */
+  zcodeSessionStaleAfterMs: Record<string, number>;
+  /**
    * Whether a run whose workers all resolved onto one model family says so
    * at its end (the config file's `single_family_notice`). On unless the
    * file turns it off.
@@ -163,7 +171,12 @@ interface MachineConfig {
   fallback?: FallbackMap;
   effort?: EffortSection;
   model_families?: Record<string, string>;
+  zcode_providers?: Record<string, ZCodeProviderDeclaration>;
   single_family_notice?: boolean;
+}
+
+interface ZCodeProviderDeclaration {
+  stale_after_minutes?: number;
 }
 
 type OpenCodeBillingMode = NonNullable<OpenCodeModelRegistryEntry["billing"]>["mode"];
@@ -180,7 +193,7 @@ interface OpenCodeModelDeclaration {
 const OPENCODE_MODEL_DECLARATION_KEYS = ["provider_model", "display_name", "family", "vision", "billing", "variants"];
 const OPENCODE_BILLING_MODES: readonly OpenCodeBillingMode[] = ["pay-as-you-go", "self-hosted"];
 
-const ENGINES = ["codex", "claude", "opencode"] as const satisfies readonly EngineName[];
+const ENGINES = ["codex", "claude", "opencode", "zcode"] as const satisfies readonly EngineName[];
 const DISABLED_VALUES = new Set(["0", "off", "false", "no"]);
 const ENABLED_VALUES = new Set(["1", "on", "true", "yes"]);
 
@@ -194,7 +207,8 @@ export function resolveAmbientSettings(input: {
   const defaults: Record<EngineName, number> = {
     codex: defaultCodexConcurrency(),
     claude: defaultClaudeConcurrency(),
-    opencode: defaultOpenCodeConcurrency()
+    opencode: defaultOpenCodeConcurrency(),
+    zcode: defaultZCodeConcurrency()
   };
 
   return {
@@ -235,6 +249,7 @@ export function resolveAmbientSettings(input: {
     machineFallback: { chains: config?.fallback ?? {}, source: configFile },
     effortPolicy: { section: config?.effort ?? {}, source: configFile },
     modelFamilies: config?.model_families ?? {},
+    zcodeSessionStaleAfterMs: zcodeStaleThresholds(config?.zcode_providers),
     singleFamilyNotice: config?.single_family_notice ?? true
   };
 }
@@ -282,7 +297,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   if (!newer) {
     assertKnownKeys(
       parsed,
-      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "fallback", "effort", "model_families", "single_family_notice"],
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "fallback", "effort", "model_families", "zcode_providers", "single_family_notice"],
       configFile
     );
   }
@@ -302,6 +317,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
   validateModelFamilies(parsed, configFile);
+  validateZCodeProviders(parsed, configFile);
   if (parsed.single_family_notice !== undefined && typeof parsed.single_family_notice !== "boolean") {
     throw fileValueError(configFile, "single_family_notice", "must be a boolean");
   }
@@ -409,6 +425,38 @@ function validateModelFamilies(root: Record<string, unknown>, configFile: string
       throw fileValueError(configFile, `model_families.${model}`, "must be a non-empty string");
     }
   }
+}
+
+/**
+ * `zcode_providers` maps zcode provider ids — an open set, as `zcode
+ * models` lists them — to what the machine declares about each: so far the
+ * idle gap, in whole minutes, at which a held worker on that provider's
+ * models reads stale.
+ */
+function validateZCodeProviders(root: Record<string, unknown>, configFile: string): void {
+  const section = root.zcode_providers;
+  if (section === undefined) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "zcode_providers", "must be a JSON object of zcode provider ids to { stale_after_minutes? }");
+  }
+  for (const [provider, declaration] of Object.entries(section)) {
+    if (provider.trim().length === 0 || provider.includes("/")) {
+      throw fileValueError(configFile, "zcode_providers", "provider ids must be non-empty and hold no \"/\"");
+    }
+    const qualified = `zcode_providers.${provider}`;
+    if (!isObject(declaration) || Array.isArray(declaration)) {
+      throw fileValueError(configFile, qualified, "must be a JSON object carrying stale_after_minutes");
+    }
+    assertKnownKeys(declaration, ["stale_after_minutes"], configFile, qualified);
+    validateOptionalPositiveInteger(declaration, "stale_after_minutes", configFile, qualified);
+  }
+}
+
+function zcodeStaleThresholds(section: Record<string, ZCodeProviderDeclaration> | undefined): Record<string, number> {
+  return Object.fromEntries(Object.entries(section ?? {}).flatMap(([provider, declaration]) =>
+    declaration.stale_after_minutes === undefined ? [] : [[provider, declaration.stale_after_minutes * 60_000]]));
 }
 
 /**

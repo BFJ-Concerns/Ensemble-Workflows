@@ -451,6 +451,14 @@ export class AppServerFirstOutputTimeoutError extends EnsembleError {
   }
 }
 
+export class WhitespaceStreamError extends EnsembleError {
+  constructor() {
+    super("worker streamed only whitespace for two minutes");
+  }
+}
+
+export class ClaudeHeldWhitespaceStreamError extends WhitespaceStreamError {}
+
 export class AppServerStartupTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
@@ -572,6 +580,8 @@ export class CodexSubstrateRefusedError extends SubstrateRefusedError {
     super(`Codex app-server could not serve a thread${cwd === undefined ? "" : ` in ${cwd}`}: ${detail}`, { cause });
   }
 }
+
+export class ClaudeWorkerLostError extends ClaudeWorkerError {}
 
 export class ClaudePollTimeoutError extends ClaudeWorkerError {}
 

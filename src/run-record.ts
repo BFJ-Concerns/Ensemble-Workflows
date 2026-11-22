@@ -24,6 +24,9 @@ import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 import {
   REFUSED_BEFORE_WORKER_KINDS,
   buildCostRollup,
+  isWorkerLossFailureKind,
+  isWhitespaceStreamFailureKind,
+  type UnobservedSpendReason,
   type CostRollup,
   type RollupAgentView,
   type RollupAttemptView
@@ -1647,8 +1650,7 @@ function transcriptAbsenceReason(
 function agentUsage(
   record: RuntimeAgentRecord
 ): { summary: UsageSummary } | {
-  unavailable: "record-unsettled" | "no-attempt-ran" | "engine-reported-no-usage"
-    | "substrate-never-started" | "worker-interrupted" | "worker-timed-out";
+  unavailable: UnobservedSpendReason | "no-attempt-ran" | "substrate-never-started";
 } {
   // Summed attempt by attempt under each attempt's own engine: a fallback
   // chain can put one agent's attempts on two engines, and each engine's
@@ -1678,6 +1680,12 @@ function agentUsage(
   }
   if (record.status === "timed-out") {
     return { unavailable: "worker-timed-out" };
+  }
+  if (record.attempts.some((attempt) => isWorkerLossFailureKind(attempt.failure?.kind))) {
+    return { unavailable: "worker-lost" };
+  }
+  if (record.attempts.some((attempt) => isWhitespaceStreamFailureKind(attempt.failure?.kind))) {
+    return { unavailable: "whitespace-stream-stopped" };
   }
   return { unavailable: "engine-reported-no-usage" };
 }

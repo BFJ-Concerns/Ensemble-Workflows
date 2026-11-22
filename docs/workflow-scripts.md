@@ -962,6 +962,19 @@ expired, because the remedies differ: the call's own `timeoutMs` (raise it or
 narrow the work), or the Codex transport's request deadline (where raising
 `timeoutMs` will not help).
 
+### Whitespace streams
+
+Once a turn streams whitespace, Ensemble ends the attempt if two minutes
+have passed since the turn began or last produced non-whitespace text, tool
+activity or reasoning. This fixed bound applies to Codex app-server events,
+Claude transcript entries and opencode run events. The attempt spends one
+of the call's attempts, retains the text it produced and records an output
+failure. A turn that has emitted nothing does not start a whitespace stream.
+
+Ensemble stops a Claude worker to end a stuck stream. If the worker belonged
+to a held session, that session is lost and the attempt settles immediately.
+Later sends to that session return the usual `session-lost` failure.
+
 ### Failure classes
 
 Every failed attempt is classified from its failure evidence, usually the
@@ -973,11 +986,13 @@ engine's own diagnostic:
   retries (`responseTooManyFailedAttempts`) on a 429 or 5xx, or an app-server
   that died or never started; a Claude API refusal carrying a 429, 503, or 529, a dispatch
   Claude Code refused, a dispatch the daemon never registered, or a session
-  that never showed life. On any engine, this includes missing or rejected
+  that never showed life, or a one-shot Claude worker that left the roster
+  before answering. On any engine, this includes missing or rejected
   credentials (`<engine>.authentication-failure`) and a directory the engine
   needs that the launching process cannot use (`preflight.resource-denied`).
   Only this class advances a fallback chain.
-- **output** — the worker answered badly: empty, unparseable, or off-schema.
+- **output** — the worker gave empty, unparseable or off-schema output, or
+  streamed only whitespace past the bound.
 - **unclassified** — anything else, including a deadline, a Codex schema
   rejection, a provider request rejection, and a client error about a bad
   model name. Codex forwards a provider JSON `invalid_request_error` as

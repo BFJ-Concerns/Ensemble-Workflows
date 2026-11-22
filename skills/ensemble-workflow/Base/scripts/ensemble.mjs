@@ -14413,6 +14413,13 @@ var AppServerFirstOutputTimeoutError = class extends EnsembleError {
     super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
   }
 };
+var WhitespaceStreamError = class extends EnsembleError {
+  constructor() {
+    super("worker streamed only whitespace for two minutes");
+  }
+};
+var ClaudeHeldWhitespaceStreamError = class extends WhitespaceStreamError {
+};
 var AppServerStartupTimeoutError = class extends EnsembleError {
   constructor(timeoutMs) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
@@ -14474,6 +14481,8 @@ var CodexSubstrateRefusedError = class extends SubstrateRefusedError {
   constructor(cwd, cause, detail = cause.message) {
     super(`Codex app-server could not serve a thread${cwd === void 0 ? "" : ` in ${cwd}`}: ${detail}`, { cause });
   }
+};
+var ClaudeWorkerLostError = class extends ClaudeWorkerError {
 };
 var ClaudePollTimeoutError = class extends ClaudeWorkerError {
 };
@@ -16574,6 +16583,8 @@ var TOKEN_ABSENCE_PRECEDENCE = [
   "record-unsettled",
   "worker-interrupted",
   "worker-timed-out",
+  "worker-lost",
+  "whitespace-stream-stopped",
   "engine-reported-no-usage"
 ];
 function leafTokenAbsence(unobserved) {
@@ -16621,11 +16632,25 @@ function attemptEnding(attempt) {
   if (isTimeoutFailureKind(kind)) {
     return "timed-out";
   }
+  if (isWorkerLossFailureKind(kind)) {
+    return "lost";
+  }
+  if (isWhitespaceStreamFailureKind(kind)) {
+    return "whitespace-stream-stopped";
+  }
   return "settled";
+}
+function isWhitespaceStreamFailureKind(kind) {
+  return kind === "WhitespaceStreamError" || kind === "ClaudeHeldWhitespaceStreamError";
+}
+function isWorkerLossFailureKind(kind) {
+  return kind === "claude-worker-lost" || kind === "session-lost";
 }
 var UNOBSERVED_REASON = {
   interrupted: "worker-interrupted",
   "timed-out": "worker-timed-out",
+  lost: "worker-lost",
+  "whitespace-stream-stopped": "whitespace-stream-stopped",
   unsettled: "record-unsettled"
 };
 function buildCostRollup(agents) {
@@ -17485,6 +17510,12 @@ function agentUsage(record) {
   }
   if (record.status === "timed-out") {
     return { unavailable: "worker-timed-out" };
+  }
+  if (record.attempts.some((attempt) => isWorkerLossFailureKind(attempt.failure?.kind))) {
+    return { unavailable: "worker-lost" };
+  }
+  if (record.attempts.some((attempt) => isWhitespaceStreamFailureKind(attempt.failure?.kind))) {
+    return { unavailable: "whitespace-stream-stopped" };
   }
   return { unavailable: "engine-reported-no-usage" };
 }
@@ -19380,6 +19411,8 @@ var SETTLING_FAILURE_KINDS = /* @__PURE__ */ new Set([
   "effort-rejected",
   // The held worker no longer exists, and a retry would address the same absent session.
   SESSION_LOST_KIND,
+  // The engine had to stop the native session to end its whitespace stream.
+  "ClaudeHeldWhitespaceStreamError",
   // Claude Code ran no skill for the command the task opens with, and a retry sends the same opening.
   "claude-command-not-skill"
 ]);
@@ -19415,7 +19448,13 @@ function diagnoseAttemptFailure(evidence) {
   }
   return failure;
 }
-var OUTPUT_FAILURE_KINDS = /* @__PURE__ */ new Set(["empty-output", "invalid-json", "schema-validation"]);
+var OUTPUT_FAILURE_KINDS = /* @__PURE__ */ new Set([
+  "empty-output",
+  "invalid-json",
+  "schema-validation",
+  "WhitespaceStreamError",
+  "ClaudeHeldWhitespaceStreamError"
+]);
 var CODEX_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
   ["usageLimitExceeded", "codex.usage-limit"],
   ["rateLimitExceeded", "codex.rate-limit"],
@@ -19472,6 +19511,7 @@ var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["claude-registration-timeout", { class: "availability", rule: "claude.no-registration" }],
   // The session registered but never produced a transcript: a dead worker.
   ["claude-first-life-timeout", { class: "availability", rule: "claude.no-first-life" }],
+  ["claude-worker-lost", { class: "availability", rule: "claude.worker-lost" }],
   ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],
   ["claude-blocked", { class: "unclassified", rule: "claude.blocked" }],
   ["claude-valve-error", { class: "unclassified", rule: "claude.valve" }],
@@ -20496,6 +20536,27 @@ function finalAssistantText(entries, fromIndex = 0) {
   }
   return null;
 }
+function* streamOutputSince(entries, fromIndex) {
+  for (const entry of entries.slice(fromIndex)) {
+    const content = entry.message?.content;
+    if (entry.type === "user" && Array.isArray(content) && content.some((block) => asRecord(block)?.type === "tool_result")) {
+      yield null;
+    }
+    if (entry.type !== "assistant" || entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER) continue;
+    if (typeof content === "string") {
+      yield content;
+    } else if (Array.isArray(content)) {
+      for (const block of content) {
+        const part = asRecord(block);
+        if (part?.type === "text" && typeof part.text === "string") {
+          yield part.text;
+        } else if (part?.type === "thinking" || part?.type === "redacted_thinking" || part?.type === "tool_use" || part?.type === "server_tool_use") {
+          yield null;
+        }
+      }
+    }
+  }
+}
 var SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>";
 function endsInSyntheticReply(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -20971,6 +21032,42 @@ function enforcementDetail(derived, capability, confirmation) {
     ...capability === "skills" ? ["follow-up slash-command expansion is not covered; a leading /skill line can still load a skill"] : []
   ].join("; ");
 }
+
+// src/whitespace-stream.ts
+var WHITESPACE_STREAM_LIMIT_MS = 12e4;
+var WhitespaceStream = class {
+  #lastActivityAt;
+  #streamingWhitespace = false;
+  #timer;
+  #onExpiry;
+  constructor(startedAt, onExpiry) {
+    this.#lastActivityAt = startedAt;
+    this.#onExpiry = onExpiry;
+  }
+  observeText(text) {
+    if (text.length === 0) return;
+    if (text.trim().length > 0) {
+      this.observeActivity();
+    } else if (!this.#streamingWhitespace) {
+      this.#streamingWhitespace = true;
+      if (this.#onExpiry !== void 0) {
+        this.#timer = setTimeout(this.#onExpiry, Math.max(0, this.expiresAt() - Date.now()));
+      }
+    }
+  }
+  observeActivity() {
+    this.#lastActivityAt = Date.now();
+    this.clear();
+  }
+  expiresAt() {
+    return this.#streamingWhitespace ? this.#lastActivityAt + WHITESPACE_STREAM_LIMIT_MS : Infinity;
+  }
+  clear() {
+    clearTimeout(this.#timer);
+    this.#timer = void 0;
+    this.#streamingWhitespace = false;
+  }
+};
 
 // src/claude-control-plane.ts
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -22489,6 +22586,17 @@ var ClaudeEngineInvocation = class {
           } }
         }));
       }
+      if (error instanceof WhitespaceStreamError) {
+        if (error instanceof ClaudeHeldWhitespaceStreamError && this.#handle !== null) {
+          this.#noteLost({
+            nativeSession: this.#handle.sessionId,
+            reason: "the worker was stopped after streaming only whitespace",
+            observedAt: Date.now()
+          });
+        }
+        await this.#teardown();
+        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
+      }
       if (error instanceof ClaudeWorkerError) {
         if (this.#multiTurn && !this.#nativeLifeObserved && error instanceof ClaudeFirstLifeTimeoutError) {
           await this.#teardown();
@@ -22525,7 +22633,7 @@ var ClaudeEngineInvocation = class {
   }
   #lostResult(evidence = null, fromIndex = 0) {
     const message = this.#lost?.reason ?? "the held Claude worker is gone";
-    const error = new ClaudePollTimeoutError(message);
+    const error = new ClaudeWorkerLostError(message);
     if (evidence !== null) this.#attachWorkerText(error, evidence, fromIndex);
     return {
       ...failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)),
@@ -22602,7 +22710,7 @@ var ClaudeEngineInvocation = class {
    * pending.
    */
   async #deliver(handle, submission, observers) {
-    if (this.#lost !== null) throw new ClaudePollTimeoutError(this.#lost.reason);
+    if (this.#lost !== null) throw new ClaudeWorkerLostError(this.#lost.reason);
     if (submission.carriesTurn) this.#collectionMark = submission.mark;
     const outcome = await this.#controlPlane.steer(handle, submission.message);
     if (!outcome.submitted) {
@@ -22829,8 +22937,12 @@ var ClaudeEngineInvocation = class {
    * live worker.
    */
   async #runToCompletion(handle, fromIndex, observers, opening) {
-    const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
-    const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
+    const startedAt = Date.now();
+    const deadline = startedAt + (this.#options.timeoutMs ?? Infinity);
+    const firstLifeDeadline = startedAt + this.#firstLifeTimeoutMs;
+    const whitespace = new WhitespaceStream(startedAt);
+    let observedEntries = fromIndex;
+    let observedText = "";
     let sawLife = fromIndex > 0;
     let absences = 0;
     let settledPolls = 0;
@@ -22887,6 +22999,15 @@ var ClaudeEngineInvocation = class {
         if (turnComplete(transcript.entries, fromIndex) && !awaitingTask) {
           return transcript;
         }
+        for (const output of streamOutputSince(transcript.entries, observedEntries)) {
+          if (output === null) {
+            whitespace.observeActivity();
+          } else {
+            whitespace.observeText(output);
+            observedText += output;
+          }
+        }
+        observedEntries = transcript.entries.length;
       }
       if (!sawLife && Date.now() >= firstLifeDeadline) {
         throw this.#firstLifeFailure(
@@ -22907,12 +23028,17 @@ var ClaudeEngineInvocation = class {
           if (!sawLife && opening !== void 0) {
             throw this.#firstLifeFailure(handle, "worker left the roster before writing an opening transcript");
           }
-          throw new ClaudePollTimeoutError("worker left the roster before completing");
+          throw new ClaudeWorkerLostError("worker left the roster before completing");
         }
         await this.#pollDelay();
         continue;
       }
       absences = 0;
+      const whitespaceDeadline = whitespace.expiresAt();
+      if (Date.now() >= whitespaceDeadline && whitespaceDeadline < deadline) {
+        const error = this.#multiTurn ? new ClaudeHeldWhitespaceStreamError() : new WhitespaceStreamError();
+        throw attachPartialWorkerText(error, observedText);
+      }
       if (!sawLife && opening !== void 0 && openingCommandName !== null) {
         const replaced = await this.#commandInReplacingSession(handle, status, openingCommandName);
         if (replaced !== null) {
@@ -22963,7 +23089,7 @@ var ClaudeEngineInvocation = class {
       if (Date.now() >= deadline) {
         throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
       }
-      await this.#pollDelay();
+      await this.#pollDelay(whitespaceDeadline - Date.now());
     }
   }
   /**
@@ -22989,11 +23115,11 @@ var ClaudeEngineInvocation = class {
     return current2 === void 0 ? null : { kind: "background-task", taskId: current2.taskId, description: current2.description, sinceMs: Date.parse(current2.observedAt) };
   }
   /** A poll gap that ends early — by rejecting — the moment close() aborts. */
-  #pollDelay() {
+  #pollDelay(maxMs = Infinity) {
     return delay2(
-      this.#pollIntervalMs,
+      Math.max(0, Math.min(this.#pollIntervalMs, maxMs)),
       AbortSignal.any([this.#abortController.signal, this.#lossController.signal]),
-      () => this.#closed || this.#lost === null ? new EngineShutdownError("claude") : new ClaudePollTimeoutError(this.#lost.reason)
+      () => this.#closed || this.#lost === null ? new EngineShutdownError("claude") : new ClaudeWorkerLostError(this.#lost.reason)
     );
   }
   #assertOpen() {
@@ -23328,6 +23454,12 @@ function failedTurnResult(error, evidence, usageEvent) {
   };
 }
 function claudeAttemptFailure(error) {
+  if (error instanceof WhitespaceStreamError) {
+    return { kind: error instanceof ClaudeHeldWhitespaceStreamError ? "ClaudeHeldWhitespaceStreamError" : "WhitespaceStreamError", message: error.message };
+  }
+  if (error instanceof ClaudeWorkerLostError) {
+    return { kind: "claude-worker-lost", message: error.message };
+  }
   if (error instanceof ClaudeFirstLifeTimeoutError) {
     return { kind: "claude-first-life-timeout", message: error.message };
   }
@@ -24052,6 +24184,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         const turn = this.#turnCorrelatedBy(requestParams);
         if (turn !== void 0) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
+          turn.whitespace.observeActivity();
           this.#disarmFirstOutputDeadline(turn);
           this.#noteTurnFirstOutput(turn);
           try {
@@ -24120,6 +24253,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }
     }
     const now = Date.now();
+    if (speaksForTurn && isToolOrReasoningActivity(method, params)) {
+      turn.whitespace.observeActivity();
+    }
     if (isTurnProgressNotification(method)) {
       turn.consecutiveRetryPromises = 0;
     }
@@ -24150,6 +24286,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }
       if (typeof params.delta === "string") {
         turn.deltaText += params.delta;
+        if (speaksForTurn) turn.whitespace.observeText(params.delta);
       }
       return;
     }
@@ -24158,6 +24295,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       const itemType = itemTypeFromItem(item);
       if (itemType === "agentMessage" && typeof item?.text === "string") {
         turn.itemText = item.text;
+        if (speaksForTurn) turn.whitespace.observeText(item.text);
       }
       return;
     }
@@ -24391,6 +24529,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#transcripts.delete(threadId);
     this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
+    turn.whitespace.clear();
     this.#disarmRetryPromiseSilenceDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
@@ -24401,12 +24540,13 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }).catch(() => {
       });
     }
-    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
+    turn.reject(attachPartialWorkerText(error, error instanceof WhitespaceStreamError && turn.deltaText.length > 0 ? turn.deltaText : turn.itemText ?? turn.deltaText));
   }
   #completeTurn(threadId, turn) {
     this.#turns.delete(threadId);
     this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
+    turn.whitespace.clear();
     this.#disarmRetryPromiseSilenceDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
@@ -24470,10 +24610,12 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       resolveTurn = resolve;
       rejectTurn = reject;
     });
+    const startedAt = Date.now();
     const state = {
+      whitespace: new WhitespaceStream(startedAt, () => this.#rejectTurn(threadId, state, new WhitespaceStreamError())),
       threadId,
       turnId: void 0,
-      startedAt: Date.now(),
+      startedAt,
       firstDeltaAt: null,
       firstOutputSeen: false,
       progress: {},
@@ -24632,6 +24774,27 @@ function renderPayloadSafely(payload) {
   } catch (error) {
     return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
   }
+}
+var TOOL_OR_REASONING_ITEMS = /* @__PURE__ */ new Set([
+  "reasoning",
+  "plan",
+  "commandExecution",
+  "fileChange",
+  "functionCallOutput",
+  "mcpToolCall",
+  "dynamicToolCall",
+  "collabAgentToolCall",
+  "subAgentActivity",
+  "webSearch",
+  "imageView",
+  "imageGeneration",
+  "sleep"
+]);
+function isToolOrReasoningActivity(method, params) {
+  if (method === "item/started" || method === "item/completed") {
+    return TOOL_OR_REASONING_ITEMS.has(itemTypeFromItem(asJsonObject(params.item)));
+  }
+  return method === "turn/plan/updated" || method === "turn/diff/updated" || method.startsWith("item/") && !method.startsWith("item/agentMessage/");
 }
 function isTurnProgressNotification(method) {
   return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || // MCP progress is a tool saying it is alive, not the response stream
@@ -24929,25 +25092,26 @@ var OpenCodeEngineInvocation = class {
       signal: this.#abortController.signal
     });
     const parsedRun = parseRunEvents(run.stdout);
-    const fallback = fallbackText(parsedRun.events);
+    const fallback = run.whitespaceLimitReached ? parsedRun.events.map(runTextPart).join("") : fallbackText(parsedRun.events);
     if (this.#abortController.signal.aborted) {
       throw attachWorkerExitStatus(
         attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
         { exitCode: run.exitCode, signal: run.signal }
       );
     }
-    if (run.deadlineExpired === true && this.#options.timeoutMs !== void 0) {
+    const timeoutMs = run.deadlineExpired ? this.#options.timeoutMs : void 0;
+    if (run.whitespaceLimitReached || timeoutMs !== void 0) {
       const workerExit = { exitCode: run.exitCode, signal: run.signal };
-      const timeout = new TurnTimeoutError(
-        `opencode turn timed out after ${this.#options.timeoutMs}ms: ${openCodeFailureMessage(run, parsedRun.events)}`,
+      const error = timeoutMs === void 0 ? new WhitespaceStreamError() : new TurnTimeoutError(
+        `opencode turn timed out after ${timeoutMs}ms: ${openCodeFailureMessage(run, parsedRun.events)}`,
         {
           kind: "turn",
-          timeoutMs: this.#options.timeoutMs,
+          timeoutMs,
           threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
         }
       );
       const evidence = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, null);
-      attachFailedTurnResult(timeout, {
+      attachFailedTurnResult(error, {
         text: fallback,
         resolvedModel: this.#providerModel,
         workerExit,
@@ -24957,7 +25121,7 @@ var OpenCodeEngineInvocation = class {
         items: {},
         ...evidence
       });
-      throw attachWorkerExitStatus(attachPartialWorkerText(timeout, fallback), workerExit);
+      throw attachWorkerExitStatus(attachPartialWorkerText(error, fallback), workerExit);
     }
     let exportData = null;
     let exportDiagnostic;
@@ -25159,7 +25323,7 @@ async function runProcess(file, args, cwd, env, commands, timeoutMs, killGraceMs
       env,
       stdio: ["ignore", "pipe", "pipe"]
     });
-    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop);
+    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, args[0] === "run", abortSignal, onFirstData, onData, onCommandStop);
   } finally {
     if (scopes !== void 0) {
       try {
@@ -25170,7 +25334,7 @@ async function runProcess(file, args, cwd, env, commands, timeoutMs, killGraceMs
     }
   }
 }
-function collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop) {
+function collectProcess(command, startedAt, timeoutMs, killGraceMs, watchWhitespace, abortSignal, onFirstData, onData, onCommandStop) {
   return new Promise((resolve, reject) => {
     const child = command.child;
     const stdout = [];
@@ -25180,15 +25344,20 @@ function collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal,
     let closed = exited && (child.stdout?.closed ?? true) && (child.stderr?.closed ?? true);
     let stopped = false;
     let deadlineExpired = false;
+    let whitespaceLimitReached = false;
     let stopping;
     let drainTimer;
     let processError;
     let exitCode = child.exitCode;
     let exitSignal = child.signalCode;
+    let streamBuffer = "";
+    const whitespace = watchWhitespace ? new WhitespaceStream(startedAt, () => {
+      whitespaceLimitReached = true;
+      stop();
+    }) : null;
     const settle = () => {
       if (settled || !stopped || !closed) return;
       settled = true;
-      clearTimeout(timeout);
       clearTimeout(drainTimer);
       abortSignal?.removeEventListener("abort", terminate);
       child.stdout?.destroy();
@@ -25203,11 +25372,14 @@ function collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal,
           stdout: stdout.join(""),
           stderr: stderr.join(""),
           durationMs: Date.now() - startedAt,
-          deadlineExpired
+          deadlineExpired,
+          whitespaceLimitReached
         });
       }
     };
     const stop = () => {
+      whitespace?.clear();
+      clearTimeout(timeout);
       stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then((observation) => {
         onCommandStop?.(observation);
         stopped = true;
@@ -25244,26 +25416,37 @@ function collectProcess(command, startedAt, timeoutMs, killGraceMs, abortSignal,
       } catch {
       }
       stdout.push(chunk);
+      if (whitespace !== null && stopping === void 0) {
+        streamBuffer += chunk;
+        const lines = streamBuffer.split(/\r?\n/);
+        streamBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const event = parseRunEvent(line);
+          const text = runTextPart(event);
+          if (text !== null) {
+            whitespace.observeText(text);
+          } else if (isRecord(event) && (event.type === "tool_use" || event.type === "reasoning")) {
+            whitespace.observeActivity();
+          }
+        }
+      }
     });
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {
       processError = error;
-      clearTimeout(timeout);
       stop();
     });
     child.on("exit", (code, signal) => {
       exited = true;
       exitCode = code;
       exitSignal = signal;
-      clearTimeout(timeout);
       stop();
     });
     child.on("close", (code, signal) => {
       closed = true;
       exitCode = code;
       exitSignal = signal;
-      clearTimeout(timeout);
       stop();
       settle();
     });
@@ -25276,22 +25459,22 @@ function parseRunEvents(stdout) {
   const events = [];
   let sessionId = null;
   for (const line of stdout.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) {
-      continue;
-    }
-    try {
-      const event = JSON.parse(trimmed);
-      events.push(event);
-      const candidate = sessionIdFromEvent(event);
-      if (candidate !== null) {
-        sessionId = candidate;
-      }
-    } catch {
-      events.push({ type: "raw", text: line });
-    }
+    const event = parseRunEvent(line);
+    if (event === void 0) continue;
+    events.push(event);
+    const candidate = sessionIdFromEvent(event);
+    if (candidate !== null) sessionId = candidate;
   }
   return { events, sessionId };
+}
+function parseRunEvent(line) {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return void 0;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return { type: "raw", text: line };
+  }
 }
 function sessionIdFromEvent(event) {
   if (!isRecord(event)) {
@@ -25336,6 +25519,10 @@ function finalAssistantText2(exportData) {
   }
   return "";
 }
+function runTextPart(event) {
+  if (!isRecord(event) || event.type !== "text" || !isRecord(event.part)) return null;
+  return event.part.type === "text" && typeof event.part.text === "string" ? event.part.text : null;
+}
 function fallbackText(events) {
   let currentStepText = null;
   let finalStoppedStepText = "";
@@ -25347,12 +25534,13 @@ function fallbackText(events) {
       currentStepText = [];
       continue;
     }
-    if (event.type === "text" && event.part.type === "text" && typeof event.part.text === "string") {
+    const text = runTextPart(event);
+    if (text !== null) {
       if (currentStepText === null && finalStoppedStepText.length > 0) {
         continue;
       }
       currentStepText ??= [];
-      currentStepText.push(event.part.text);
+      currentStepText.push(text);
       continue;
     }
     if (event.type === "step_finish" && event.part.type === "step-finish") {

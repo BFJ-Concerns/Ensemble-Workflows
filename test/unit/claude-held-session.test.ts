@@ -281,6 +281,7 @@ test("Claude loss after the opening transcript settles the creating send once an
     assert.equal(held.lost, true);
     assert.equal(records.at(-1)?.attempts.length, 1);
     assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "session-lost");
+    assert.equal(records.at(-1)?.status, "failed");
     assert.equal(records.at(-1)?.rawOutput, "opening partial answer");
     assert.equal(await held.send("second"), null);
     assert.equal(records.at(-1)?.attempts.length, 1);

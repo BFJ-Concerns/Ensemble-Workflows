@@ -746,6 +746,14 @@ test("unmetered cut-short turns and refused substrates name why usage was not ob
         assert.equal((await archive(measured)).usage.summary?.totalTokens, 0);
       }
     }
+    const whitespaceStop = agentRecord(++id, "claude", null, 0);
+    whitespaceStop.status = "failed";
+    const stoppedAttempt = whitespaceStop.attempts[0]!;
+    stoppedAttempt.status = "failed";
+    stoppedAttempt.failure = { kind: "ClaudeHeldWhitespaceStreamError", message: "worker streamed only whitespace" };
+    stoppedAttempt.tokenUsageEvents = [];
+    assert.deepEqual((await archive(whitespaceStop)).usage, { unavailable: "whitespace-stream-stopped" });
+
     for (const [engine, kind] of [
       ["claude", "ClaudeDispatchError"], ["codex", "CodexSubstrateRefusedError"],
       ["codex", "SubstrateRefusedError"], ["claude", "SubstrateRefusedError"], ["opencode", "SubstrateRefusedError"]

@@ -85,6 +85,9 @@ export interface UnobservedSpend {
  *   flight, or a body that failed with it in flight.
  * - `worker-timed-out`: a run or turn deadline the runtime enforced cut it
  *   short.
+ * - `whitespace-stream-stopped`: the whitespace bound ended the attempt
+ *   before final usage was observed.
+ * - `worker-lost`: the native worker disappeared before reporting final usage.
  * - `engine-reported-no-usage`: the attempt settled on its engine's own
  *   account and that account carried no usage.
  */
@@ -92,6 +95,8 @@ export type UnobservedSpendReason =
   | "record-unsettled"
   | "worker-interrupted"
   | "worker-timed-out"
+  | "worker-lost"
+  | "whitespace-stream-stopped"
   | "engine-reported-no-usage";
 
 /**
@@ -108,8 +113,9 @@ export type TokenAbsenceReason = UnobservedSpendReason | "substrate-never-starte
 /**
  * Which reason a leaf with no figures publishes when its attempts ended in
  * different ways, most uncertain first. The leaf states the least it
- * knows: unknown spend (`record-unsettled`, then the two kinds of cut-short
- * attempt) outranks an engine's own account of no usage, so the leaf reads
+ * knows. An unsettled attempt, a cut-short turn or a lost worker can have
+ * unobserved spend, so those reasons outrank an engine's own account of no
+ * usage. The leaf reads
  * `engine-reported-no-usage` only when every attempt with spend to account
  * for settled on its engine's account without usage. The order otherwise
  * follows the agent record's own reasons. The full account stays in
@@ -119,6 +125,8 @@ const TOKEN_ABSENCE_PRECEDENCE: readonly UnobservedSpendReason[] = [
   "record-unsettled",
   "worker-interrupted",
   "worker-timed-out",
+  "worker-lost",
+  "whitespace-stream-stopped",
   "engine-reported-no-usage"
 ];
 
@@ -145,9 +153,11 @@ export function leafTokenAbsence(unobserved: readonly UnobservedSpend[]): TokenA
  *   is no spend to observe.
  * - `interrupted`: the run's ending cut it short.
  * - `timed-out`: a run or worker deadline cut it short.
+ * - `lost`: the worker disappeared before answering.
+ * - `whitespace-stream-stopped`: the runtime stopped a whitespace stream.
  * - `unsettled`: no outcome observed (running, or abandoned).
  */
-export type AttemptEnding = "settled" | "refused" | "interrupted" | "timed-out" | "unsettled";
+export type AttemptEnding = "settled" | "refused" | "interrupted" | "timed-out" | "lost" | "whitespace-stream-stopped" | "unsettled";
 
 /**
  * Failure kinds raised when a substrate refused an attempt before any
@@ -275,8 +285,8 @@ export interface RollupAttemptView {
  * interrupted one can end with every attempt settled, its last refused or
  * failed attempt already over while the call waited for re-admission on
  * the next fallback target. An attempt was cut short only when its own
- * failure says so — a run-ending kind the run's close wrote on it, or a
- * worker deadline's kind.
+ * failure names a run ending, a worker deadline, a worker loss or a
+ * whitespace stop.
  */
 export function attemptEnding(attempt: RollupAttemptView): AttemptEnding {
   if (!attempt.settled) {
@@ -295,12 +305,28 @@ export function attemptEnding(attempt: RollupAttemptView): AttemptEnding {
   if (isTimeoutFailureKind(kind)) {
     return "timed-out";
   }
+  if (isWorkerLossFailureKind(kind)) {
+    return "lost";
+  }
+  if (isWhitespaceStreamFailureKind(kind)) {
+    return "whitespace-stream-stopped";
+  }
   return "settled";
+}
+
+export function isWhitespaceStreamFailureKind(kind: string | undefined): boolean {
+  return kind === "WhitespaceStreamError" || kind === "ClaudeHeldWhitespaceStreamError";
+}
+
+export function isWorkerLossFailureKind(kind: string | undefined): boolean {
+  return kind === "claude-worker-lost" || kind === "session-lost";
 }
 
 const UNOBSERVED_REASON: Record<Exclude<AttemptEnding, "settled" | "refused">, UnobservedSpendReason> = {
   interrupted: "worker-interrupted",
   "timed-out": "worker-timed-out",
+  lost: "worker-lost",
+  "whitespace-stream-stopped": "whitespace-stream-stopped",
   unsettled: "record-unsettled"
 };
 

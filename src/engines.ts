@@ -114,8 +114,11 @@ export interface EngineAttemptFailure {
     | "empty-output"
     | "invalid-json"
     | "schema-validation"
+    | "WhitespaceStreamError"
+    | "ClaudeHeldWhitespaceStreamError"
     | "session-lost"
     | "claude-worker-error"
+    | "claude-worker-lost"
     | "claude-poll-timeout"
     | "claude-first-life-timeout"
     | "claude-registration-timeout"
@@ -186,8 +189,8 @@ export interface EngineSessionTurn {
  * One held worker on one engine, alive across turns. `beginTurn`
  * returns the invocation the runtime's shared bounded-retry loop drives for
  * that turn — turn invocations never own the session's lifetime, so they
- * carry no `close`; only the session's own `close()` (or the adapter's)
- * tears the held worker down. Engine, model, and effort were fixed at
+ * carry no `close`. The session or adapter owns teardown, including when
+ * the engine must terminate a stuck worker. Engine, model, and effort were fixed at
  * creation; the turn brings only its prompt and schema.
  *
  * A held worker can be lost: gone for good while its session was still

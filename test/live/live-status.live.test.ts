@@ -26,7 +26,8 @@ for (const engine of ["claude", "codex"] as const) {
     const repo = path.join(directory, "repo");
     const probes: HeldProbe[] = ["first", "queued", "held-first", "held-second"].map((name) => ({
       paths: probePaths(directory, name), evidence: { kind: "marker", content: `${name}_${randomUUID()}` },
-      token: `RELEASED_${randomUUID()}`
+      token: `RELEASED_${randomUUID()}`,
+      holdLimitSeconds: 120
     }));
     let reader: Promise<ProcessResult> | undefined;
     let testFailed = false;

@@ -1792,12 +1792,84 @@ test("a worker that never shows life fails fast with a distinct recorded failure
     const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
     assert.equal(result, null);
     assert.ok(Date.now() - startedAt < 500, "mute worker should not consume the full turn timeout");
+    assert.equal(records.at(-1)?.status, "failed");
     assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "claude-first-life-timeout");
     assert.match(records.at(-1)?.attempts[0]?.failure?.message ?? "", /no sign of life/);
   } finally {
     await runtime.close();
   }
 });
+
+test("a vanished one-shot Claude worker is archived as lost with its partial answer and usage", async () => {
+  await withControlPlane([{ assistant: {
+    text: "partial answer", stop: null, model: "served-model", input: 10, output: 3
+  } }], async (plane) => {
+    plane.poll = async () => ({ status: "absent", state: "unknown", present: false });
+    const store = await mkdtemp(path.join(tmpdir(), "ensemble-claude-loss-"));
+    const runtime = makeRuntime(plane, { maxAttempts: 1 });
+    try {
+      const writer = await RunRecordWriter.start({
+        storeDir: store, cwd: store, runUuid: "claude-loss",
+        workflowPath: path.join(store, "workflow.js"), workflowSource: "return true;",
+        args: [], cliFlags: { jsonArgs: false }
+      });
+      runtime.setRunRecorder(writer);
+      assert.equal(await runtime.agent("answer", { engine: "claude" }), null);
+      assert.equal(plane.stopCount, 1);
+      await writer.finish({ status: "complete", exitCode: 0, result: null });
+
+      const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+      assert.equal(record.status, "failed");
+      assert.equal(record.termination_cause, null);
+      assert.equal(record.attempts[0]?.failure?.kind, "claude-worker-lost");
+      assert.equal(record.attempts[0]?.classification?.rule, "claude.worker-lost");
+      assert.equal(record.attempts[0]?.raw_output, "partial answer");
+      const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8"));
+      assert.deepEqual(manifest.cost_rollup.claude["served-model"].unobserved, [
+        { agent: 1, attempt: 1, reason: "worker-lost", measured: "partial" }
+      ]);
+    } finally {
+      await runtime.close();
+      await rm(store, { recursive: true, force: true });
+    }
+  });
+});
+
+for (const held of [false, true]) {
+  test(`Claude stops an unfinished whitespace stream in a ${held ? "held" : "one-shot"} turn`, async (t) => {
+    await withControlPlane([{ assistant: { text: " \t\n", stop: null } }], async (plane) => {
+      t.mock.timers.enable({ apis: ["Date"], now: 20_000 });
+      let polls = 0;
+      plane.poll = async () => {
+        polls += 1;
+        t.mock.timers.tick(polls === 1 ? 119_999 : 1);
+        return { status: "busy", state: "working", present: true };
+      };
+      const runtime = makeRuntime(plane, { maxAttempts: held ? 2 : 1, turnTimeoutMs: 240_000 });
+      const session = held ? runtime.createWorkerSession({ engine: "claude" }) : null;
+      try {
+        assert.equal(await (session === null ? runtime.agent("answer", { engine: "claude" }) : session.send("answer")), null);
+        const record = runtime.lastAgentRecord();
+        assert.equal(polls, 2);
+        assert.equal(record?.status, "failed");
+        assert.equal(record.attempts.length, 1);
+        assert.equal(record.attempts[0]?.failure?.kind, held ? "ClaudeHeldWhitespaceStreamError" : "WhitespaceStreamError");
+        assert.deepEqual(record.attempts[0]?.classification, { class: "output", rule: "output" });
+        assert.equal(record.attempts[0]?.rawOutput, " \t\n");
+        assert.equal(plane.stopCount, 1);
+        if (session !== null) {
+          assert.equal(session.lost, true);
+          assert.equal(await session.send("another turn"), null);
+          assert.equal(runtime.lastAgentRecord()?.attempts[0]?.failure?.kind, "session-lost");
+          assert.equal(plane.dispatchCount, 1);
+        }
+      } finally {
+        t.mock.timers.reset();
+        await runtime.close();
+      }
+    });
+  });
+}
 
 for (const mode of ["one-shot", "held-chain", "held-retry"] as const) {
   test(`a worker gone before its opening transcript retains first-life availability, ${mode}`, async () => {
@@ -2856,6 +2928,13 @@ test("a dispatch the daemon took but never registered degrades to a failed turn 
       assert.equal(result.attemptFailure?.kind, "claude-registration-timeout");
       assert.match(result.attemptFailure?.message ?? "", /did not register within 30000ms/);
       assert.equal(controlPlane.dispatchCount, 1);
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+      try {
+        assert.equal(await runtime.agent("slow daemon", { engine: "claude" }), null);
+        const record = runtime.lastAgentRecord();
+        assert.equal(record?.status, "failed");
+        assert.equal(record.attempts[0]?.failure?.kind, "claude-registration-timeout");
+      } finally { await runtime.close(); }
       await adapter.close();
     },
     { registrationTimeout: "dispatched session 'w' in /fake/scratch did not register within 30000ms" }

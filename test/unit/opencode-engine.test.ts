@@ -507,6 +507,63 @@ test("an opencode deadline keeps the engine diagnostic in the failure record", a
   }
 });
 
+test("opencode bounds whitespace across chunks and resets on content, tool use and reasoning", async (t) => {
+  const child = new ChildProcess();
+  const stdout = new PassThrough();
+  Object.assign(child, { stdout, stderr: new PassThrough() });
+  const commands = new CommandContainment(new NoWorkerScopes());
+  const stop = t.mock.fn(async () => {
+    await Promise.resolve();
+    child.emit("exit", null, "SIGTERM");
+    child.emit("close", null, "SIGTERM");
+    return { outcome: { kind: "stopped" as const }, attemptAccount: null };
+  });
+  t.mock.method(commands, "contain", async () => ({ child, reach: { kind: "scope", unit: "fixture.scope" }, stop }));
+  const runtime = new EnsembleRuntime({
+    defaultMaxAttempts: 1,
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({
+      runner: new OpenCodeCliRunner(undefined, { commands }),
+      modelRegistry: testOpenCodeModelRegistry
+    })])
+  });
+  const emit = (type: string, part: object): void => {
+    stdout.write(JSON.stringify({ type, sessionID: "whitespace", part }) + "\n");
+  };
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  try {
+    const pending = runtime.agent("answer", {
+      engine: "opencode", model: "glm-5.2", timeoutMs: 600_000, maxAttempts: 1
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    for (const [type, part] of [
+      ["text", { type: "text", text: "partial answer" }],
+      ["tool_use", { type: "tool", tool: "bash" }],
+      ["reasoning", { type: "reasoning", text: "thinking" }]
+    ] as const) {
+      emit("text", { type: "text", text: " " });
+      t.mock.timers.tick(110_000);
+      emit(type, part);
+    }
+    const line = JSON.stringify({ type: "text", sessionID: "whitespace", part: { type: "text", text: "\t\n" } }) + "\n";
+    stdout.write(line.slice(0, 20));
+    stdout.write(line.slice(20));
+    t.mock.timers.tick(119_999);
+    assert.equal(stop.mock.callCount(), 0);
+    t.mock.timers.tick(1);
+    assert.equal(await pending, null);
+    assert.equal(stop.mock.callCount(), 1, "the whitespace bound stops the run without exporting");
+    const record = runtime.lastAgentRecord();
+    assert.equal(record?.status, "failed");
+    assert.equal(record.attempts.length, 1);
+    assert.equal(record.attempts[0]?.failure?.kind, "WhitespaceStreamError");
+    assert.deepEqual(record.attempts[0]?.classification, { class: "output", rule: "output" });
+    assert.equal(record.attempts[0]?.rawOutput, " partial answer  \t\n");
+  } finally {
+    t.mock.timers.reset();
+    await runtime.close();
+  }
+});
+
 test("an opencode process that exited before its streams close is not timed out", async (t) => {
   const child = new ChildProcess();
   Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });

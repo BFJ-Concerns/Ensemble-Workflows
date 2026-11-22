@@ -1,10 +1,10 @@
 # Ensemble
 
 Ensemble is a TypeScript/Node runtime that runs JavaScript workflow scripts over
-AI coding agents on three engines: Codex (`codex app-server`), Claude
-(`claude --bg` background sessions), and opencode (`opencode run`). `agent()`
-requires an explicit `engine`, so one model family can check another's work in
-a single run. `README.md` gives the overview; `docs/` is the usage reference.
+AI coding agents on four engines: Codex (`codex app-server`), Claude
+(`claude --bg` background sessions), opencode (`opencode run`), and ZCode
+(one headless `zcode` run per turn). `agent()` requires an explicit `engine`,
+so one model family can check another's work in a single run. `README.md` gives the overview; `docs/` is the usage reference.
 
 ## Commands
 
@@ -16,8 +16,9 @@ a single run. `README.md` gives the overview; `docs/` is the usage reference.
   runs this same recipe, so a new check belongs in the justfile rather than in
   a workflow file.
 - `just test-live` runs the live tests against real engines and is outside the
-  gate. Legs that need a model read `ENSEMBLE_LIVE_CODEX_MODEL` or
-  `ENSEMBLE_LIVE_OPENCODE_MODEL` and skip while it is unset.
+  gate. Legs that need a model read `ENSEMBLE_LIVE_CODEX_MODEL`,
+  `ENSEMBLE_LIVE_OPENCODE_MODEL` or `ENSEMBLE_LIVE_ZCODE_MODEL` (a zcode
+  `provider/model`) and skip while it is unset.
 
 `scripts/run-test-suite.mjs` runs every compiled test pattern it is given
 (the whole suite by default) and refuses to start if any pattern names no

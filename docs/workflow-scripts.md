@@ -82,7 +82,7 @@ constrain what a worker does, not what it can do.
 ### `agent()`
 
 `agent(prompt, options)` runs one worker on `options.engine` — `"codex"`,
-`"claude"`, or `"opencode"` — or on the engine a named target binds
+`"claude"`, `"opencode"`, or `"zcode"` — or on the engine a named target binds
 (`options.target`, see [Named targets](#named-targets)). There is no default
 engine. The prompt must be a non-empty string.
 
@@ -97,7 +97,7 @@ See [Failures](#failures). A Claude call with no `model` is flagged on stderr.
 ### Fallback chains
 
 `fallback` declares an ordered chain of other targets for a call —
-`[{ engine, model, effort? }, …]`, each a Codex or Claude target, or
+`[{ engine, model, effort? }, …]`, each a Codex, Claude or zcode target, or
 `{ target, effort? }` naming a [named target](#named-targets). A named entry
 takes its binding's engine and model — never the binding's own chain — and a
 binding without a model takes the script's `defaults` model for that engine,
@@ -145,7 +145,7 @@ call's own chain still takes precedence over `fallback: false` in defaults.
   worker spawns. A named entry the configuration does not bind, or one naming
   a `target` beside an `engine` or `model`, throws `NamedTargetRejectedError`;
   in a `defaults` chain, either fails the run before the script body runs.
-  An opencode call may declare a chain of Codex and Claude targets.
+  An opencode call may declare a chain of Codex, Claude and zcode targets.
 
 Every step is a dispatch Ensemble makes and records itself. The run record
 shows each attempt's target and which entry answered, and stderr says when a
@@ -214,7 +214,7 @@ A literal call is answered the same way, so
 for Claude. An unbound `target` answers `bound: false` where the call itself
 would throw. Any other option the call would refuse before spawning — a
 `target` beside an `engine` or `model`, a missing or unknown engine, an
-opencode call with no model, a fallback entry naming an unbound target, a
+opencode or zcode call with no model, a fallback entry naming an unbound target, a
 `strip` or `lean` a target cannot honour, a schema that cannot compile, or
 a `cwd` that is not an existing directory — throws the same error from the
 lookup, judged on the whole fallback chain in force as well as the first
@@ -308,8 +308,8 @@ else the one the call asked for, else `null`; `family` is the
 
 A model family is the group a model belongs to by the name it commonly goes
 by. It belongs to the model, never to the engine: a Claude model is in the
-`claude` family whether Claude Code, opencode or a gateway behind Codex runs
-it. The dispatch lookup, an identified call's `answeredBy` and the run's
+`claude` family whether Claude Code, opencode, zcode or a gateway behind
+Codex runs it. The dispatch lookup, an identified call's `answeredBy` and the run's
 [single-family notice](configuration.md#single_family_notice) all report the
 same family.
 
@@ -399,6 +399,10 @@ ceiling, counts every token class an engine reports, cached input included:
   tokens.
 - **opencode** counts input, cache reads and writes, output and reasoning,
   plus any total a step reports without a breakdown.
+- **zcode** counts the run's own `totalTokens`: input, which includes cached
+  input, plus output, which includes reasoning. Each model request's usage
+  is counted as the request completes, and the run's closing result settles
+  the attempt's total.
 
 Set a Claude ceiling with that in mind. The run record's
 [token usage](run-records.md#token-usage-and-cost) shows each class
@@ -433,7 +437,7 @@ the parsed value of `--json-args` (a JSON `null` arrives as an empty array).
 
 ## `agent()` options
 
-`engine` is required — `"codex"`, `"claude"`, or `"opencode"` — unless
+`engine` is required — `"codex"`, `"claude"`, `"opencode"`, or `"zcode"` — unless
 `target` names a binding instead. A call with neither, or with an unknown
 engine, throws before any worker spawns.
 
@@ -469,16 +473,16 @@ lists the accepted type names, and invalid `properties` asks for a JSON object.
 
 ### Per-engine behaviour
 
-| | Codex | Claude | opencode |
-|---|---|---|---|
-| `model` | Optional; without one the engine's default is used and noted on stderr | Optional; without one a warning is printed on stderr | **Required**: a key or route declared in [`opencode_models`](configuration.md#opencode_models) |
-| `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` |
-| `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
-| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess |
-| `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Not supported: throws before the worker spawns |
-| `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Not supported: throws before the worker spawns |
-| `fallback` entry | Yes | Yes | No |
-| `session()` | Yes | Yes | No: throws before the worker spawns |
+| | Codex | Claude | opencode | zcode |
+|---|---|---|---|---|
+| `model` | Optional; without one the engine's default is used and noted on stderr | Optional; without one a warning is printed on stderr | **Required**: a key or route declared in [`opencode_models`](configuration.md#opencode_models) | **Required**: a provider and one of its models as `zcode models` lists them, spelt `provider/model` (see [zcode](#zcode)) |
+| `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` | Resolved per model against the reasoning levels zcode lists for it |
+| `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
+| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess | Kills the subprocess |
+| `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Not supported: throws before the worker spawns | Enforced by withholding zcode's tools for the run |
+| `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Not supported: throws before the worker spawns | Not supported: throws before the worker spawns |
+| `fallback` entry | Yes | Yes | No | Yes |
+| `session()` | Yes | Yes | No: throws before the worker spawns | Yes |
 
 Effort resolves for each dispatch target, including a fallback entry and a
 held session's first turn. Capability discovery passes the engine's resource
@@ -497,28 +501,63 @@ The run record shows what each engine actually served: `resolved_model` and
 `resolved_effort` come from the engine's own report — Codex's answer when the
 thread starts, Claude Code's transcript — and are `null` when it reports none.
 opencode reports no served model, so its `resolved_model` is the configured
-`provider_model`.
+`provider_model`. zcode names the provider and model each model request went
+to, recorded as `provider/model`; it reports no served reasoning level, so
+its `resolved_effort` is `null`.
 
 Codex supports only a subset of JSON Schema for backend enforcement. A schema
 outside that subset is rejected before generation: the call returns `null`
 after one thread start, without retrying or advancing a fallback chain, and
-the error names `claude` and `opencode` as engines that check the full JSON
-Schema themselves.
+the error names `claude`, `opencode` and `zcode` as engines that check the
+full JSON Schema themselves.
 
-On Claude and opencode, the worker is asked for a conforming JSON value and
+On Claude, opencode and zcode, the worker is asked for a conforming JSON value and
 may surround it with prose or a Markdown fence. A candidate value is the whole
 reply, any balanced `{…}` or `[…]` region in it, or a line holding nothing but
 one JSON scalar (`null`, `false`, `0`, `""`, fenced or not); a scalar
 mentioned mid-sentence is prose. When a reply offers more than one candidate,
 the last one that validates is the answer.
 
+### zcode
+
+The `zcode` engine drives a ZCode that can be told one run's provider, model
+and reasoning level (`--provider`, `--model`, `--reasoning-level`) and that
+prints its model listing (`zcode models`), as the owner's fork of ZCode does
+from 0.17.1; upstream ZCode does neither. Before its first dispatch in a run,
+Ensemble reads `zcode --help` and `zcode models`; a ZCode that cannot be run
+or lacks either ability is refused before any worker spawns
+(`ZCodeSubstrateRefusedError`), the error naming what it lacks. The refusal
+is an availability failure, so a remaining fallback entry runs instead.
+
+- `model` names a provider and one of its models as `zcode models` lists
+  them, spelt `provider/model` and split at the first `/`:
+  `gateway/claude-opus-5-5[1m]`, `nanogpt/z-ai/glm-5.3-flash`. zcode, not
+  Ensemble, refuses a name it does not list; a model naming no provider is
+  refused before the worker spawns. Ensemble keeps no list of zcode models.
+- `effort` clamps to the levels zcode lists for the model, keeping only
+  canonical levels (a gateway's `ultra` is left out). A call with no
+  `effort` runs at the model's highest canonical listed level, zcode's own
+  choice for a model picked without one; a model listing only `disabled` and
+  `enabled` runs at the last of those.
+- Each attempt is one headless run, `zcode --prompt=<text> --output-format
+  stream-json`, in the worker's `cwd`. A held worker's later turns resume
+  the ZCode session its first run created (`--resume`); if zcode no longer
+  finds that session, the session is lost.
+- zcode prints its listing and exits 1 when one provider's listing fails (a
+  NanoGPT listing that timed out, say); that listing still serves, and the
+  next dispatch reads it again.
+- zcode finds its settings, providers and sessions under `.zcode` in
+  `ZCODE_DATA_BASE_DIR`, else the home directory; declare either in the
+  [worker environment](configuration.md#worker_environment) to move them.
+
 ### Permissions and `strip`
 
 Every worker runs unrestricted: it can read and write anywhere the user
 running Ensemble can, and can reach the network. Codex workers are given this
 full-access mode explicitly on every turn, and Ensemble does not turn off
-Codex's backend web search; Claude and opencode workers run without any
-containment from Ensemble.
+Codex's backend web search; Claude, opencode and zcode workers run without
+any containment from Ensemble. zcode runs a headless prompt in its own `yolo`
+permission mode, which approves every tool call.
 
 Ensemble starts opencode with `--auto`, approving permissions that opencode
 would otherwise ask about, including shell access outside the worker's cwd.
@@ -581,6 +620,12 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   `permission.skill=deny` and `permission.task=deny`, but the live workers
   timed out before demonstrating that these denies took effect. This is
   historical configuration evidence, not proof about the installed version.
+- **zcode** withholds whole tools for the run with `--disallowed-tools`: a
+  `skills` strip withholds the `Skill` tool, an `agents` strip the `Agent`
+  subagent tool and the `CreateWorkflow` dynamic-workflow tool. A withheld
+  tool is not offered to the model; on zcode 0.17.1 a run's offered tool
+  count fell from 47 to 45 with `Skill` and `Agent` withheld. A stripped
+  worker's shell can still run `zcode` itself.
 
 Each agent record lists the requested strips and how each was enforced.
 
@@ -599,7 +644,7 @@ call cannot lift a run-wide `--lean` by setting `lean: false`.
   authentication, permissions and Ensemble's per-dispatch settings remain
   enabled. This route is measured on Claude Code 2.1.322. Capability strips
   prepare against the same context mode as their worker.
-- **Codex** and **opencode** have no supported route: a lean request refuses
+- **Codex**, **opencode** and **zcode** have no supported route: a lean request refuses
   before a worker spawns, naming the engine. Each fallback target is checked
   before the first dispatch too, so a chain cannot silently lose lean mode.
 
@@ -836,7 +881,8 @@ attempt that fails is retried, up to `maxAttempts`, with the failure fed
 back to the worker. Claude corrects in the same session through the prompt
 editor. If tmux becomes unavailable, a one-shot correction starts a fresh session, whose
 opening delivery also requires tmux.
-Codex and opencode retry with the failure appended to the prompt.
+Codex and opencode retry with the failure appended to the prompt, as a
+one-shot zcode call does; a held zcode worker corrects in its resumed session.
 
 An opencode model absent from the machine registry, a missing model, or an
 unsupported registry variant is refused before worker admission: the call
@@ -845,22 +891,26 @@ throws, leaves no agent record, and adds nothing to the worker tally.
 Missing or rejected credentials advance the chain if an entry remains. With
 no entry left, the usual attempt bound applies. The attempt records
 `authentication-failure`, the engine's diagnostic and a sign-in step
-(`codex login`, `claude auth login` or `opencode auth login`). An explicit
+(`codex login`, `claude auth login` or `opencode auth login`; on zcode,
+configuring the provider's credentials in ZCode). An explicit
 provider HTTP 401 identifies an authentication failure even when Codex's
 retry-promise bound ends the turn. A dead or unstartable substrate retains its
 own availability rule if its diagnostic merely quotes a credential error.
-Codex `modelNotFound` errors record `model-not-found` with a hint to choose an
-available model and retain the normal attempt bound.
+Codex `modelNotFound` errors, and zcode's refusal of a provider or model its
+listing lacks, record `model-not-found` with a hint to choose an available
+model and retain the normal attempt bound. zcode's refusal of a reasoning
+level it does not hold for the model settles the call like any provider
+refusal of a level.
 
 Operational failures — a Claude session that never registered or died, a
-transcript that could not be read, an opencode subprocess killed at its
-deadline or exiting non-zero, a Codex turn deadline, first-output deadline, or
+transcript that could not be read, an opencode or zcode subprocess killed at
+its deadline or exiting non-zero, a Codex turn deadline, first-output deadline, or
 failed thread — are failed attempts like any other. They consume an attempt
 and keep the worker's partial text, exit status, and the engine's diagnostic
 on the attempt record. A call whose deadline should end it outright sets
 `maxAttempts: 1`.
 
-Each opencode run and session-export command starts inside its own run-owned
+Each opencode run and session-export command, and each zcode run, starts inside its own run-owned
 systemd scope before it can start descendants. Cancellation, an attempt deadline,
 and the command's own exit stop that containment, including shell commands
 that start another session or become reparented. Stop uses SIGTERM, a two-second
@@ -1107,7 +1157,8 @@ worker's output. See [How a run ends](cli.md#how-a-run-ends).
 
 ## Multi-turn sessions
 
-`session(options)` creates a persistent worker on `"claude"` or `"codex"` and
+`session(options)` creates a persistent worker on `"claude"`, `"codex"` or
+`"zcode"` and
 returns a handle whose `send(prompt, { schema? })` runs one turn against the
 same worker each time. A follow-up turn reaches a worker that still holds the
 context of its earlier turns, rather than a fresh worker that has to be
@@ -1158,12 +1209,16 @@ await builder.close();
   figures, which reflect the engine's reported reads and writes.
 - **Staleness:** `handle.stale` becomes `true` once the idle time since the
   last turn reaches the threshold — one idle hour on Claude, 60 idle minutes on
-  Codex — and `handle.idleMs` gives the idle time. It is advisory: a send to a
+  Codex, and on zcode the threshold the machine configuration declares for
+  the model's provider in
+  [`zcode_providers`](configuration.md#zcode_providers), with no mark where
+  it declares none — and `handle.idleMs` gives the idle time. It is advisory: a send to a
   stale session still runs, and the script decides whether to pay for the
   re-read or start a fresh worker. `stalenessMark: false` turns the mark off
   for that session. `handle.stalenessMark` reports whether the mark is enabled,
   including before the first turn. `handle.staleAfterMs` gives the active
-  threshold, or `null` when marking is disabled. A Claude session below this
+  threshold, or `null` when marking is disabled or the engine has no
+  threshold for the session's model. A Claude session below this
   idle threshold may still miss the prompt cache.
 - **Claude idle lifetime:** Ensemble keeps a private, input-free attach
   client for the held worker's lifetime and repairs that attachment if the
@@ -1202,6 +1257,8 @@ await builder.close();
   script is left waiting on nothing live, the run ends failed with
   `WorkflowUnsettledError`; neither a lost session nor `--timeout` keeps it
   alive. The archive is settled and the completion sentinel is written.
+  On zcode, a session is lost when a turn's resume finds it gone (`Session
+  not found`); nothing runs between turns, so loss is observed at a send.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.

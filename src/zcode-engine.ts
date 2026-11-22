@@ -6,6 +6,7 @@ import { CANONICAL_EFFORT_DOMAIN, isCanonicalEffort } from "./effort-resolution.
 import { launchEnvironment } from "./engine-environment.js";
 import {
   AgentPromptRejectedError,
+  CapabilityStripUnsupportedError,
   EngineShutdownError,
   SubstrateRefusedError,
   TurnTimeoutError,
@@ -25,7 +26,7 @@ import { DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
 import { parseZCodeModel, type ZCodeModelSelection } from "./zcode-model.js";
 import { defaultZCodeConcurrency } from "./concurrency-defaults.js";
 
-import type { EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";
+import { resolveStripEnforcement, type EngineCapabilityTable, type PreparedStrip, type StrippableCapability } from "./capability-stripping.js";
 import type { EngineEffortReport } from "./effort-resolution.js";
 import type {
   EngineAdapter,
@@ -249,9 +250,6 @@ export interface ZCodeEngineAdapterOptions {
   onEvent?: (event: RuntimeEvent) => void;
 }
 
-/** What the installed zcode can do, read once per run from its help and listing. */
-type ZCodeAbilities = { listing: ZCodeListing };
-
 export class ZCodeEngineAdapter implements EngineAdapter {
   readonly name = "zcode" satisfies EngineName;
   readonly concurrency: number;
@@ -272,7 +270,8 @@ export class ZCodeEngineAdapter implements EngineAdapter {
   #cwd: string;
   #runner: ZCodeRunner;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
-  #abilities: Promise<ZCodeAbilities> | null = null;
+  #usage: Promise<string> | null = null;
+  #listing: Promise<ZCodeListing> | null = null;
   #inspectionAbort = new AbortController();
   #active = new Set<{ close(): Promise<void> }>();
   #closed = false;
@@ -299,19 +298,31 @@ export class ZCodeEngineAdapter implements EngineAdapter {
   async effortReport(model: string | undefined): Promise<EngineEffortReport | null> {
     if (model === undefined) return null;
     let selection: ZCodeModelSelection;
-    let abilities: ZCodeAbilities;
+    let listing: ZCodeListing;
     try {
       selection = parseZCodeModel(model);
-      abilities = await this.#readAbilities();
+      listing = await this.#readListing();
     } catch {
       // The dispatch itself refuses a bad spelling or an unusable zcode,
       // naming why; a missing report only leaves the level to pass through.
       return null;
     }
-    const listed = abilities.listing.levels(selection);
+    const listed = listing.levels(selection);
     if (listed === undefined) return null;
     const levels = Object.fromEntries(listed.filter(isCanonicalEffort).map((level) => [level, level]));
     return { identity: null, levels: Object.keys(levels).length === 0 ? null : levels };
+  }
+
+  async prepareStrip(strip: readonly StrippableCapability[]): Promise<PreparedStrip> {
+    await this.#checkStrip(strip);
+    return { engine: this.name, requested: strip, enforcement: resolveStripEnforcement(this.name, this.capabilities, strip) };
+  }
+
+  async #checkStrip(strip: readonly StrippableCapability[] | undefined): Promise<void> {
+    const capability = strip?.[0];
+    if (capability !== undefined && !/(?:^|[\s,])--disallowed-tools(?=[\s=,]|$)/.test(await this.#readUsage())) {
+      throw new CapabilityStripUnsupportedError(this.name, capability, `zcode at ${this.#runner.bin} does not offer --disallowed-tools`);
+    }
   }
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
@@ -334,7 +345,8 @@ export class ZCodeEngineAdapter implements EngineAdapter {
     const shutdown = new EngineShutdownError(this.name);
     this.#scheduler.close(shutdown);
     this.#inspectionAbort.abort(shutdown);
-    await Promise.allSettled([this.#abilities, ...[...this.#active].map(async (worker) => worker.close())]);
+    const workers = [...this.#active].map(async (worker) => worker.close());
+    await Promise.allSettled([this.#usage, this.#listing, ...workers]);
   }
 
   #turnSettings(options: EngineTurnOptions): ZCodeTurnSettings {
@@ -344,40 +356,46 @@ export class ZCodeEngineAdapter implements EngineAdapter {
       options,
       cwd: options.cwd ?? this.#cwd,
       runner: this.#runner,
-      abilities: () => this.#readAbilities(),
+      listing: async () => {
+        // Direct adapter callers can dispatch without runtime preparation.
+        await this.#checkStrip(options.strip);
+        return this.#readListing();
+      },
       onEvent: this.#onEvent
     };
   }
 
-  /**
-   * Reads, once per run, whether the installed zcode can be told a run's
-   * provider, model and reasoning level and can print its model listing,
-   * and keeps the listing for the run, a listing that lacked a provider
-   * included: reading it again would wait on that provider again, for
-   * every dispatch and every retry. Single-flight and not failure-memoised:
-   * a zcode that could not be read is asked again by the next dispatch.
-   */
-  #readAbilities(): Promise<ZCodeAbilities> {
-    const reading = this.#abilities ??= readZCodeAbilities(this.#runner, this.#inspectionAbort.signal).catch((error: unknown) => {
-      if (this.#abilities === reading) this.#abilities = null;
+  #readUsage(): Promise<string> {
+    return this.#usage ??= readZCodeUsage(this.#runner, this.#inspectionAbort.signal).catch((error: unknown) => {
+      this.#usage = null;
       throw error;
     });
-    return reading;
+  }
+
+  /** Keep even an incomplete listing so each dispatch does not wait on the same provider. */
+  #readListing(): Promise<ZCodeListing> {
+    return this.#listing ??= this.#readUsage()
+      .then(() => readZCodeListing(this.#runner, this.#inspectionAbort.signal))
+      .catch((error: unknown) => {
+        this.#listing = null;
+        throw error;
+      });
   }
 }
 
-async function readZCodeAbilities(runner: ZCodeRunner, signal: AbortSignal): Promise<ZCodeAbilities> {
+function zcodeRefusal(runner: ZCodeRunner, detail: string): ZCodeSubstrateRefusedError {
+  return new ZCodeSubstrateRefusedError(`zcode at ${runner.bin} cannot serve the zcode engine: ${detail}`);
+}
+
+async function readZCodeUsage(runner: ZCodeRunner, signal: AbortSignal): Promise<string> {
   signal.throwIfAborted();
-  const refuse = (detail: string): never => {
-    throw new ZCodeSubstrateRefusedError(`zcode at ${runner.bin} cannot serve the zcode engine: ${detail}`);
-  };
   let help: StreamedCommandResult;
   try {
     help = await runner.inspect(["--help"], signal);
   } catch (error) {
     signal.throwIfAborted();
     if (!(error instanceof SubstrateRefusedError)) throw error;
-    return refuse(`it could not be run (${error.message})`);
+    throw zcodeRefusal(runner, `it could not be run (${error.message})`);
   }
   signal.throwIfAborted();
   const usage = `${help.stdout}\n${help.stderr}`;
@@ -388,23 +406,28 @@ async function readZCodeAbilities(runner: ZCodeRunner, signal: AbortSignal): Pro
     ...(/^\s+models\s/m.test(usage) ? [] : ["a model listing (zcode models)"])
   ];
   if (lacks.length > 0) {
-    return refuse(`it lacks ${lacks.join(" and ")}; the engine needs a ZCode that has both`);
+    throw zcodeRefusal(runner, `it lacks ${lacks.join(" and ")}; the engine needs a ZCode that has both`);
   }
+  return usage;
+}
+
+async function readZCodeListing(runner: ZCodeRunner, signal: AbortSignal): Promise<ZCodeListing> {
+  signal.throwIfAborted();
   let listed: StreamedCommandResult;
   try {
     listed = await runner.inspect(["models"], signal);
   } catch (error) {
     signal.throwIfAborted();
     if (!(error instanceof SubstrateRefusedError)) throw error;
-    return refuse(`its model listing could not be read (${error.message})`);
+    throw zcodeRefusal(runner, `its model listing could not be read (${error.message})`);
   }
   signal.throwIfAborted();
   const listing = parseZCodeListing(listed.stdout);
   if (listing === null) {
     const stderr = listed.stderr.trim();
-    return refuse(`its model listing (zcode models) did not print the expected JSON${stderr.length > 0 ? `: ${stderr}` : ""}`);
+    throw zcodeRefusal(runner, `its model listing (zcode models) did not print the expected JSON${stderr.length > 0 ? `: ${stderr}` : ""}`);
   }
-  return { listing };
+  return listing;
 }
 
 /** What every turn of one dispatch shares. */
@@ -413,7 +436,7 @@ interface ZCodeTurnSettings {
   options: EngineTurnOptions;
   cwd: string;
   runner: ZCodeRunner;
-  abilities: () => Promise<ZCodeAbilities>;
+  listing: () => Promise<ZCodeListing>;
   onEvent: ((event: RuntimeEvent) => void) | undefined;
 }
 
@@ -672,7 +695,7 @@ async function runZCodeTurn(
   const { selection, options } = settings;
   const { context } = request;
   // Refused before any worker exists: a zcode that cannot be driven.
-  const { listing } = await settings.abilities();
+  const listing = await settings.listing();
   if (request.signal.aborted) throw new EngineShutdownError("zcode");
   const requested = requestedReasoningLevel(options);
   const launch = async (reasoningLevel: string, earlier?: { stream: ZCodeStream; durationMs: number }) => {

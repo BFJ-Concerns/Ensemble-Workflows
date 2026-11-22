@@ -27958,7 +27958,8 @@ var ZCodeEngineAdapter = class {
   #cwd;
   #runner;
   #onEvent;
-  #abilities = null;
+  #usage = null;
+  #listing = null;
   #inspectionAbort = new AbortController();
   #active = /* @__PURE__ */ new Set();
   #closed = false;
@@ -27981,17 +27982,27 @@ var ZCodeEngineAdapter = class {
   async effortReport(model) {
     if (model === void 0) return null;
     let selection;
-    let abilities;
+    let listing;
     try {
       selection = parseZCodeModel(model);
-      abilities = await this.#readAbilities();
+      listing = await this.#readListing();
     } catch {
       return null;
     }
-    const listed = abilities.listing.levels(selection);
+    const listed = listing.levels(selection);
     if (listed === void 0) return null;
     const levels2 = Object.fromEntries(listed.filter(isCanonicalEffort).map((level) => [level, level]));
     return { identity: null, levels: Object.keys(levels2).length === 0 ? null : levels2 };
+  }
+  async prepareStrip(strip) {
+    await this.#checkStrip(strip);
+    return { engine: this.name, requested: strip, enforcement: resolveStripEnforcement(this.name, this.capabilities, strip) };
+  }
+  async #checkStrip(strip) {
+    const capability = strip?.[0];
+    if (capability !== void 0 && !/(?:^|[\s,])--disallowed-tools(?=[\s=,]|$)/.test(await this.#readUsage())) {
+      throw new CapabilityStripUnsupportedError(this.name, capability, `zcode at ${this.#runner.bin} does not offer --disallowed-tools`);
+    }
   }
   createInvocation(prompt, options) {
     if (this.#closed) throw new EngineShutdownError(this.name);
@@ -28011,7 +28022,8 @@ var ZCodeEngineAdapter = class {
     const shutdown = new EngineShutdownError(this.name);
     this.#scheduler.close(shutdown);
     this.#inspectionAbort.abort(shutdown);
-    await Promise.allSettled([this.#abilities, ...[...this.#active].map(async (worker) => worker.close())]);
+    const workers = [...this.#active].map(async (worker) => worker.close());
+    await Promise.allSettled([this.#usage, this.#listing, ...workers]);
   }
   #turnSettings(options) {
     const selection = parseZCodeModel(options.model);
@@ -28020,38 +28032,39 @@ var ZCodeEngineAdapter = class {
       options,
       cwd: options.cwd ?? this.#cwd,
       runner: this.#runner,
-      abilities: () => this.#readAbilities(),
+      listing: async () => {
+        await this.#checkStrip(options.strip);
+        return this.#readListing();
+      },
       onEvent: this.#onEvent
     };
   }
-  /**
-   * Reads, once per run, whether the installed zcode can be told a run's
-   * provider, model and reasoning level and can print its model listing,
-   * and keeps the listing for the run, a listing that lacked a provider
-   * included: reading it again would wait on that provider again, for
-   * every dispatch and every retry. Single-flight and not failure-memoised:
-   * a zcode that could not be read is asked again by the next dispatch.
-   */
-  #readAbilities() {
-    const reading = this.#abilities ??= readZCodeAbilities(this.#runner, this.#inspectionAbort.signal).catch((error) => {
-      if (this.#abilities === reading) this.#abilities = null;
+  #readUsage() {
+    return this.#usage ??= readZCodeUsage(this.#runner, this.#inspectionAbort.signal).catch((error) => {
+      this.#usage = null;
       throw error;
     });
-    return reading;
+  }
+  /** Keep even an incomplete listing so each dispatch does not wait on the same provider. */
+  #readListing() {
+    return this.#listing ??= this.#readUsage().then(() => readZCodeListing(this.#runner, this.#inspectionAbort.signal)).catch((error) => {
+      this.#listing = null;
+      throw error;
+    });
   }
 };
-async function readZCodeAbilities(runner, signal) {
+function zcodeRefusal(runner, detail) {
+  return new ZCodeSubstrateRefusedError(`zcode at ${runner.bin} cannot serve the zcode engine: ${detail}`);
+}
+async function readZCodeUsage(runner, signal) {
   signal.throwIfAborted();
-  const refuse = (detail) => {
-    throw new ZCodeSubstrateRefusedError(`zcode at ${runner.bin} cannot serve the zcode engine: ${detail}`);
-  };
   let help;
   try {
     help = await runner.inspect(["--help"], signal);
   } catch (error) {
     signal.throwIfAborted();
     if (!(error instanceof SubstrateRefusedError)) throw error;
-    return refuse(`it could not be run (${error.message})`);
+    throw zcodeRefusal(runner, `it could not be run (${error.message})`);
   }
   signal.throwIfAborted();
   const usage2 = `${help.stdout}
@@ -28061,23 +28074,27 @@ ${help.stderr}`;
     .../^\s+models\s/m.test(usage2) ? [] : ["a model listing (zcode models)"]
   ];
   if (lacks.length > 0) {
-    return refuse(`it lacks ${lacks.join(" and ")}; the engine needs a ZCode that has both`);
+    throw zcodeRefusal(runner, `it lacks ${lacks.join(" and ")}; the engine needs a ZCode that has both`);
   }
+  return usage2;
+}
+async function readZCodeListing(runner, signal) {
+  signal.throwIfAborted();
   let listed;
   try {
     listed = await runner.inspect(["models"], signal);
   } catch (error) {
     signal.throwIfAborted();
     if (!(error instanceof SubstrateRefusedError)) throw error;
-    return refuse(`its model listing could not be read (${error.message})`);
+    throw zcodeRefusal(runner, `its model listing could not be read (${error.message})`);
   }
   signal.throwIfAborted();
   const listing = parseZCodeListing(listed.stdout);
   if (listing === null) {
     const stderr = listed.stderr.trim();
-    return refuse(`its model listing (zcode models) did not print the expected JSON${stderr.length > 0 ? `: ${stderr}` : ""}`);
+    throw zcodeRefusal(runner, `its model listing (zcode models) did not print the expected JSON${stderr.length > 0 ? `: ${stderr}` : ""}`);
   }
-  return { listing };
+  return listing;
 }
 var ZCodeEngineInvocation = class {
   #prompt;
@@ -28253,7 +28270,7 @@ async function runZCodeAttempt(settings, request) {
 async function runZCodeTurn(settings, request, onCommandStop) {
   const { selection, options } = settings;
   const { context } = request;
-  const { listing } = await settings.abilities();
+  const listing = await settings.listing();
   if (request.signal.aborted) throw new EngineShutdownError("zcode");
   const requested = requestedReasoningLevel(options);
   const launch = async (reasoningLevel, earlier) => {

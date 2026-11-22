@@ -8,6 +8,7 @@ import { EngineRegistry } from "../../src/engines.js";
 import { ChainEngine } from "./chain-engine-fakes.js";
 import {
   AgentPromptRejectedError,
+  CapabilityStripUnsupportedError,
   EngineShutdownError,
   LeanStartUnsupportedError,
   ZCodeModelRequiredError,
@@ -44,7 +45,8 @@ const FORK_HELP = [
   "  models     Print the available models and their limits and reasoning levels as JSON",
   "Options:",
   "  -p, --prompt <text>  Run a single prompt without opening the TUI",
-  "  --provider <id> --model <id> --reasoning-level <level>  Select the model for this interactive or headless run"
+  "  --provider <id> --model <id> --reasoning-level <level>  Select the model for this interactive or headless run",
+  "  --disallowed-tools <tools...>  Withhold tools for this run"
 ].join("\n");
 
 /** Upstream ZCode's help: no per-run model flags and no listing. */
@@ -513,6 +515,27 @@ test("a zcode strip withholds the tools by name, and a lean start is refused", a
     assert.equal(records.at(-1)?.strip?.enforcement.skills?.route, "config");
     await assert.rejects(runtime.agent("go", { engine: "zcode", model: "gateway/gpt-6.2-sol", lean: true }), LeanStartUnsupportedError);
     assert.equal(runner.runs.length, 1);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("zcode refuses a requested strip when the CLI does not advertise the flag", async () => {
+  const help = FORK_HELP.replace("--disallowed-tools ", "--disallowed-tools-extra ");
+  const runner = new FakeZCodeRunner([finishedRun("sess_unstripped", "ok")], { help });
+  const { runtime, records } = runtimeWith(runner);
+  const target = { engine: "zcode", model: "gateway/gpt-6.2-sol" } as const;
+  try {
+    await assert.rejects(runtime.agent("go", { ...target, strip: ["skills"] }), {
+      name: CapabilityStripUnsupportedError.name, message: /does not offer --disallowed-tools/
+    });
+    const session = runtime.createWorkerSession({ ...target, strip: ["agents"] });
+    await assert.rejects(session.send("go"), CapabilityStripUnsupportedError);
+    await session.close();
+    assert.deepEqual(runner.inspections, [["--help"]]);
+    assert.equal(runner.runs.length, 0);
+    assert.ok(records.every((record) => record.attempts.length === 0));
+    assert.equal(await runtime.agent("go", target), "ok");
   } finally {
     await runtime.close();
   }

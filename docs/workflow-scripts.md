@@ -723,7 +723,9 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   subagent tool and the `CreateWorkflow` dynamic-workflow tool. A withheld
   tool is not offered to the model; on zcode 0.17.1 a run's offered tool
   count fell from 47 to 45 with `Skill` and `Agent` withheld. A stripped
-  worker's shell can still run `zcode` itself.
+  worker's shell can still run `zcode` itself. The dispatch refuses a strip
+  before launching the worker if the installed ZCode does not advertise
+  `--disallowed-tools` in its help.
 
 Each agent record lists the requested strips and how each was enforced.
 

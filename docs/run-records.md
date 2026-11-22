@@ -1040,14 +1040,16 @@ The fields present throughout a record's lifetime are:
     `{ task_id, description, observed_at, ended_at }`
     (`ended_at` is `null` where the attempt ended before the task woke the
     session); empty for engines without background tasks.
-- `classification` on a failed attempt: `{ class, rule }`. `class` is
-  `"availability"` (the engine refused or lost the worker before it answered:
-  allowance exhausted, provider overload past its own retry, an engine process
-  that died or never started — the one class that advances a fallback chain,
-  consuming no attempt when it does), `"output"` (the worker answered badly: empty,
-  unparseable, off-schema — retried in place), or `"unclassified"` (including
-  rejected credentials and a Codex rejection of the authored schema before
-  generation). Codex provider request rejections forwarded as `other` with
+- `classification` on a failed attempt holds `{ class, rule }`. The
+  `"availability"` class includes missing or rejected credentials, an
+  exhausted allowance, provider overload past its own retry, and an engine
+  process that died or never started. Only this class advances a fallback
+  chain, consuming no attempt when it does. The `"output"` class covers
+  empty, unparseable or off-schema answers and streams stopped by the
+  whitespace bound. Output failures retry in place except when the bound
+  stops a held Claude worker. The `"unclassified"` class includes a Codex
+  rejection of the authored schema before generation. Codex provider
+  request rejections forwarded as `other` with
   a JSON `invalid_request_error` cause use rule
   `codex.provider-request-rejected`: recognised, retried in place, and never
   an availability failure. A recognised schema rejection retains

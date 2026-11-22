@@ -14,7 +14,6 @@ import { defaultAgyConcurrency } from "./concurrency-defaults.js";
 import { isCanonicalEffort, type EngineEffortReport, type ServedEffortLevels } from "./effort-resolution.js";
 import { launchEnvironment } from "./engine-environment.js";
 import {
-  AcpExitedError,
   AcpProtocolError,
   AcpRequestError,
   AgySubstrateRefusedError,
@@ -298,6 +297,8 @@ interface AgyTurn {
     | { kind: "rejected"; error: AcpRequestError }
     | { kind: "invalid-reply"; error: AcpProtocolError }
     | { kind: "lost"; error: Error };
+  /** An RPC error received after cancellation, kept alongside the stop reason. */
+  cancellationError?: AcpRequestError;
   /** The message text after the turn's last tool call. */
   finalText: string;
   /** Every message chunk of the turn, in order. */
@@ -361,12 +362,15 @@ async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | u
     turn.transcript.push(JSON.stringify({ type: "reply", at: new Date().toISOString(), reply: reply.reply }));
     turn.ending = stopping === null ? { kind: "replied", reply } : { kind: stopping, reply };
   } catch (error) {
-    if (stopping !== null && error instanceof AcpExitedError) {
+    if (error instanceof AcpProtocolError) {
+      turn.transcript.push(JSON.stringify({ type: "invalid-reply", at: new Date().toISOString(), message: error.message }));
+    }
+    if (stopping !== null) {
       turn.ending = { kind: stopping, reply: null };
+      if (error instanceof AcpRequestError) turn.cancellationError = error;
     } else if (error instanceof AcpRequestError) {
       turn.ending = { kind: "rejected", error };
     } else if (error instanceof AcpProtocolError) {
-      turn.transcript.push(JSON.stringify({ type: "invalid-reply", at: new Date().toISOString(), message: error.message }));
       turn.ending = { kind: "invalid-reply", error };
     } else {
       turn.ending = { kind: "lost", error: error instanceof Error ? error : new Error(String(error)) };
@@ -458,6 +462,7 @@ function turnEvidence(worker: AgyWorker, turn: AgyTurn, context: EngineAttemptCo
   const ending = turn.ending;
   const reply = ending.kind === "replied" || ending.kind === "deadline" || ending.kind === "whitespace" ? ending.reply : null;
   const usageEvent = worker.account.usage(worker, reply, context);
+  const requestError = ending.kind === "rejected" ? ending.error : turn.cancellationError;
   const transcript: EngineTranscriptArtifact = {
     filename: "transcript.agy.jsonl",
     format: "jsonl",
@@ -481,7 +486,7 @@ function turnEvidence(worker: AgyWorker, turn: AgyTurn, context: EngineAttemptCo
       agy: {
         session_id: worker.session.id,
         stop_reason: reply?.stopReason ?? null,
-        ...(ending.kind === "rejected" ? { error: { code: ending.error.code ?? null, message: ending.error.message } } : {})
+        ...(requestError !== undefined ? { error: { code: requestError.code ?? null, message: requestError.message } } : {})
       },
       ...unestablishedStopDiagnostics(turn.stops)
     }
@@ -677,7 +682,10 @@ class AgyWorkerSession implements EngineWorkerSession {
           const exit = await worker.client.exited;
           this.#noteLost(worker, ran.ending.kind === "lost" ? ran.ending.error.message : "it did not end a cancelled turn and was stopped", exit);
           const lost = this.#lostResult();
-          return { ...evidence, attemptFailure: lost.attemptFailure!, ...(lost.workerExit !== undefined ? { workerExit: lost.workerExit } : {}) };
+          if (lost.workerExit !== undefined) evidence.workerExit = lost.workerExit;
+          if (ran.ending.kind !== "deadline" && ran.ending.kind !== "whitespace") {
+            return { ...evidence, attemptFailure: lost.attemptFailure! };
+          }
         }
         return settleTurn(evidence, ran, worker.session.id, this.#options.options.timeoutMs);
       }

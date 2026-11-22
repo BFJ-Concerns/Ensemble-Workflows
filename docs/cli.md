@@ -114,7 +114,7 @@ the prompt.
 | `--effort <effort>` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; resolved against known served levels and [machine bounds](configuration.md#effort). On opencode, a declared raw variant is also accepted when no machine bound applies |
 | `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed. A schema Ensemble cannot compile is a usage error (exit 2), naming the inline argument or resolved file path, the invalid location and a correction |
 | `--identity` | Print the identified result `{ label, phase, output, failure, answeredBy }` instead of the bare output |
-| `--fallback '<json>'`, `--fallback @file` | Ordered fallback chain, as in `agent()`: an array of `{ engine, model, effort? }` or `{ target, effort? }` entries. Invalid chains are refused before any worker starts |
+| `--fallback '<json>'`, `--fallback @file` | An ordered array of `{ engine, model, effort? }` or `{ target, effort? }` entries, or `false` to disable fallback. Invalid values are refused before any worker starts |
 | `--timeout-ms ms` | Per-agent deadline, as `timeoutMs` in a script; a positive integer at most 2147483647, separate from the whole-run `--timeout` |
 | `--max-attempts N` | Attempt bound (default 3), as `maxAttempts` in a script |
 | `--cwd <path>` | Working directory for the worker; must be an existing directory |
@@ -130,7 +130,10 @@ The option semantics match `agent()` in a script; see
 [`agent()` options](workflow-scripts.md#agent-options). For example,
 `--fallback '[{"engine":"claude","model":"sonnet"}]'` retries an availability
 failure on that target; `--fallback @chain.json` reads the same array from a
-file relative to the invocation directory. With `--isolation worktree`
+file relative to the invocation directory. Use `--fallback=false` to disable
+fallback for this invocation.
+
+With `--isolation worktree`
 stderr reports `[worktree] <phrase> <path> (<branch>)`. The phrase is
 `uncommitted` when the branch still points at its base, `committed` when
 all work is committed, `committed with uncommitted edits` when files still

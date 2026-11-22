@@ -37340,7 +37340,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   }
   const fallback = parsed.values.fallback === void 0 ? void 0 : await parseJsonValue(parsed.values.fallback, cwd, "--fallback");
   try {
-    assertValidFallbackChain(fallback);
+    assertValidFallbackOption(fallback);
   } catch (error) {
     throw new CliUsageError(`--fallback: ${error instanceof Error ? error.message : String(error)}`);
   }

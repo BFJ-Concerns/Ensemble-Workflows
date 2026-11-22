@@ -1240,7 +1240,7 @@ test("built CLI recovers a later answer after prose with an unmatched brace", as
   }
 });
 
-test("built CLI uses the machine fallback map and honours a script's opt-out", async (t) => {
+test("built CLI uses the machine fallback map and honours both opt-outs", async (t) => {
   const fixture = await createProcessFixture("machine-fallback", "backup answered");
   t.after(() => fixture.cleanup());
   const directory = path.dirname(fixture.script);
@@ -1280,6 +1280,18 @@ test("built CLI uses the machine fallback map and honours a script's opt-out", a
   assert.deepEqual(agent.attempts.map((attempt: { target: { model: string } }) => attempt.target.model), ["primary", "backup"]);
   assert.deepEqual(agent.attempts[0].classification, { class: "availability", rule: "codex.authentication-failure" });
   assert.equal(agent.attempts[0].chain_decision, "advanced");
+
+  const directOptOutStore = path.join(directory, "direct-opt-out-records");
+  const directOptOut = await fixture.runArgsWithEnv(
+    ["agent", "--engine=codex", "--model=primary", "--max-attempts=1", "--fallback=false", "hello"],
+    { ...env, ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: directOptOutStore }
+  );
+  assert.equal(directOptOut.code, 1, directOptOut.stderr);
+  assert.match(directOptOut.stderr, /codex login/);
+  const directRecord = JSON.parse(await readFile(await findOnlyFile(directOptOutStore, "agent.json"), "utf8"));
+  assert.deepEqual(directRecord.fallback_source, { kind: "switched-off", by: "call" });
+  assert.equal(directRecord.fallback, null);
+  assert.equal(directRecord.attempts.length, 1);
 
   await writeFile(fixture.script, `
     export const meta = { name: "machine-fallback-opt-out" };

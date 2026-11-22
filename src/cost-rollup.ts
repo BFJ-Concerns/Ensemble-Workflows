@@ -173,9 +173,10 @@ export const REFUSED_BEFORE_WORKER_KINDS: ReadonlySet<string> = new Set([
 /**
  * The recorded failure kinds that mean a deadline the runtime enforced
  * ended the worker's turn: a thrown turn or request deadline
- * (`TurnTimeoutError`, raised for Codex and opencode), Codex's
- * first-output deadline (`AppServerFirstOutputTimeoutError`), and a Claude
- * turn that outran its poll deadline (`claude-poll-timeout`). A Claude
+ * (`TurnTimeoutError`), Codex's first-output deadline
+ * (`AppServerFirstOutputTimeoutError`), agy's background silence bound
+ * (`agy-background-silence`), or a Claude poll deadline
+ * (`claude-poll-timeout`). A Claude
  * worker that never registered or never came to life
  * (`claude-registration-timeout`, `claude-first-life-timeout`) is an
  * availability failure, not a deadline on a running turn, and is absent.
@@ -183,6 +184,7 @@ export const REFUSED_BEFORE_WORKER_KINDS: ReadonlySet<string> = new Set([
 const DEADLINE_FAILURE_KINDS: ReadonlySet<string> = new Set([
   "TurnTimeoutError",
   "AppServerFirstOutputTimeoutError",
+  "agy-background-silence",
   "claude-poll-timeout"
 ]);
 

@@ -82,6 +82,9 @@ const CANCEL_GRACE_MS = 10_000;
 /** agy can send a usage update immediately before announcing another tool call. */
 const FOLLOW_UP_SETTLE_MS = 250;
 
+/** Bound on silence after the prompt replies with outstanding shell commands. */
+const FOLLOW_UP_SILENCE_MS = 15 * 60_000;
+
 /** A model id whose last segment names a canonical level: how a model with a single level spells it (`gpt-oss-120b-medium`). */
 const SOLE_LEVEL_SUFFIX = /-(none|minimal|low|medium|high|xhigh|max)$/;
 
@@ -296,12 +299,17 @@ async function readCatalogue(launch: AgyLaunch, cwd: string): Promise<AgyModelCa
   }
 }
 
+/** Why the harness cancelled the turn. */
+type AgyTurnStop =
+  | { kind: "deadline" }
+  | { kind: "whitespace" }
+  | { kind: "background-silence"; commands: string[] };
+
 /** How one turn ended, with everything it showed on the way. */
 interface AgyTurn {
   ending:
+    | AgyTurnStop
     | { kind: "replied"; reply: AcpPromptResult }
-    | { kind: "deadline" }
-    | { kind: "whitespace" }
     | { kind: "rejected"; error: AcpRequestError }
     | { kind: "invalid-reply"; error: AcpProtocolError }
     | { kind: "lost"; error: Error };
@@ -334,7 +342,8 @@ function trackCommand(commands: Set<string>, { name, toolCallId, status }: JsonO
 
 /**
  * Holds the attempt open across agy's out-of-turn command updates and
- * automatic response. The deadline and whitespace bound apply to both.
+ * automatic response. The deadline and whitespace bound still apply, and
+ * silence after the prompt reply has a bound of its own.
  */
 async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | undefined, context: EngineAttemptContext): Promise<AgyTurn> {
   const startedAt = Date.now();
@@ -344,20 +353,26 @@ async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | u
     transcript: [JSON.stringify({ type: "prompt", at: new Date(startedAt).toISOString(), text: message })],
     stops: []
   };
-  let stopping: "deadline" | "whitespace" | null = null;
+  let stopping: AgyTurnStop | null = null;
   let grace: NodeJS.Timeout | undefined;
   let settleFollowUp: NodeJS.Timeout | undefined;
-  const stop = (reason: "deadline" | "whitespace"): void => {
+  let silence: NodeJS.Timeout | undefined;
+  const stop = (reason: AgyTurnStop): void => {
     if (stopping !== null) return;
     stopping = reason;
     clearTimeout(settleFollowUp);
+    clearTimeout(silence);
     worker.session.cancel();
     // The stop is the caller's to account: it finds the worker closed.
     grace = setTimeout(() => { void worker.close(); }, CANCEL_GRACE_MS);
   };
-  const whitespace = new WhitespaceStream(startedAt, () => stop("whitespace"));
-  const deadline = timeoutMs === undefined ? undefined : setTimeout(() => stop("deadline"), timeoutMs);
+  const whitespace = new WhitespaceStream(startedAt, () => stop({ kind: "whitespace" }));
+  const deadline = timeoutMs === undefined ? undefined : setTimeout(() => stop({ kind: "deadline" }), timeoutMs);
   const commands = new Set<string>();
+  const resetSilence = (): void => {
+    clearTimeout(silence);
+    silence = setTimeout(() => stop({ kind: "background-silence", commands: [...commands] }), FOLLOW_UP_SILENCE_MS);
+  };
   const followUp = Promise.withResolvers<AcpExit | null>();
   let waiting = false;
   let seen = false;
@@ -388,6 +403,7 @@ async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | u
       clearTimeout(settleFollowUp);
       settleFollowUp = setTimeout(() => followUp.resolve(null), FOLLOW_UP_SETTLE_MS);
     }
+    if (waiting && stopping === null) resetSilence();
     safely(() => context.onOutput?.());
   }, (exit) => followUp.resolve(exit));
   try {
@@ -397,6 +413,7 @@ async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | u
       if (stopping === null && reply.stopReason === "end_turn" && commands.size > 0) {
         turn.finalText = "";
         waiting = true;
+        resetSilence();
       }
     });
     if (waiting) {
@@ -406,13 +423,13 @@ async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | u
         throw attachWorkerExitStatus(error, { exitCode: exit.exitCode, signal: exit.signal });
       }
     }
-    turn.ending = stopping === null ? { kind: "replied", reply } : { kind: stopping };
+    turn.ending = stopping ?? { kind: "replied", reply };
   } catch (error) {
     if (error instanceof AcpProtocolError) {
       turn.transcript.push(JSON.stringify({ type: "invalid-reply", at: new Date().toISOString(), message: error.message }));
     }
     if (stopping !== null) {
-      turn.ending = { kind: stopping };
+      turn.ending = stopping;
       if (error instanceof AcpRequestError) turn.cancellationError = error;
     } else if (error instanceof AcpRequestError) {
       turn.ending = { kind: "rejected", error };
@@ -425,6 +442,7 @@ async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | u
     clearTimeout(deadline);
     clearTimeout(grace);
     clearTimeout(settleFollowUp);
+    clearTimeout(silence);
     whitespace.clear();
     worker.listen(null);
     turn.endedAt = Date.now();
@@ -559,6 +577,16 @@ function settleTurn(evidence: EngineAttemptResult, turn: AgyTurn, sessionId: str
     }
     case "whitespace":
       throw attachPartialWorkerText(attachFailedTurnResult(new WhitespaceStreamError(), evidence), turn.allText);
+    case "background-silence": {
+      const waitingFor = ending.commands.length > 0
+        ? `background tool calls ${ending.commands.join(", ")}`
+        : "the automatic follow-up";
+      evidence.attemptFailure = {
+        kind: "agy-background-silence",
+        message: `agy sent no session updates for ${FOLLOW_UP_SILENCE_MS / 60_000} minutes while waiting for ${waitingFor}`
+      };
+      return evidence;
+    }
     case "rejected":
       evidence.attemptFailure = ending.error.code === AGY_AUTHENTICATION_REQUIRED
         ? { kind: "agy-sign-in-required", message: `agy refused the prompt for want of a sign-in (run \`agy\` and sign in): ${ending.error.message}` }
@@ -588,7 +616,11 @@ function shutdownWithEvidence(turn: AgyTurn, evidence: EngineAttemptResult): Eng
 /** Whether the turn received a result or the harness stopped it. */
 function delivered(turn: AgyTurn): boolean {
   return turn.ending.kind === "replied" || turn.ending.kind === "invalid-reply"
-    || turn.ending.kind === "deadline" || turn.ending.kind === "whitespace";
+    || harnessStopped(turn.ending);
+}
+
+function harnessStopped(ending: AgyTurn["ending"]): ending is AgyTurnStop {
+  return ending.kind === "deadline" || ending.kind === "whitespace" || ending.kind === "background-silence";
 }
 
 interface AgyInvocationOptions {
@@ -730,7 +762,7 @@ class AgyWorkerSession implements EngineWorkerSession {
           this.#noteLost(worker, ran.ending.kind === "lost" ? ran.ending.error.message : "it did not end a cancelled turn and was stopped", exit);
           const lost = this.#lostResult();
           if (lost.workerExit !== undefined) evidence.workerExit = lost.workerExit;
-          if (ran.ending.kind !== "deadline" && ran.ending.kind !== "whitespace") {
+          if (!harnessStopped(ran.ending)) {
             return { ...evidence, attemptFailure: lost.attemptFailure! };
           }
         }

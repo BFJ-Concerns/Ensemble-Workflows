@@ -269,7 +269,7 @@ test("a retried attempt that timed out before reporting usage measured none of i
 });
 
 test("every recorded deadline spelling ends its own attempt as timed out", () => {
-  for (const failureKind of ["TurnTimeoutError", "AppServerFirstOutputTimeoutError", "claude-poll-timeout"]) {
+  for (const failureKind of ["TurnTimeoutError", "AppServerFirstOutputTimeoutError", "agy-background-silence", "claude-poll-timeout"]) {
     const rollup = buildCostRollup([
       agent(1, [
         attempt(1, { failureKind, tokenUsageEvents: [] }),

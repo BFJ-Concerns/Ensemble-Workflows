@@ -1199,7 +1199,10 @@ signed in to, and the `agy` binary is found on the worker environment's
   agy returns `end_turn` while its shell commands are running, Ensemble keeps
   the worker open until agy reports that those commands have ended and the
   automatic follow-up has settled. The follow-up is the answer. The
-  attempt's delta text includes the interim messages.
+  attempt's delta text includes the interim messages. If agy sends no
+  session updates for 15 minutes during this wait, Ensemble cancels the
+  attempt and records `agy.background-silence`. The call's own deadline
+  still applies.
 - **Retries:** a one-shot call's worker is stopped when each attempt
   ends, so what that stop could not establish rides the attempt's
   `unestablishedStops`; a retry opens a fresh worker whose opening prompt

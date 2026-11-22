@@ -16670,6 +16670,7 @@ var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
 var DEADLINE_FAILURE_KINDS = /* @__PURE__ */ new Set([
   "TurnTimeoutError",
   "AppServerFirstOutputTimeoutError",
+  "agy-background-silence",
   "claude-poll-timeout"
 ]);
 function isTimeoutFailureKind(kind) {
@@ -19896,6 +19897,7 @@ var AGY_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["agy-invalid-prompt-reply", { class: "output", rule: "agy.invalid-prompt-reply" }],
   // agy ended the turn as a refusal, at a token or request limit, or cancelled it itself.
   ["agy-stop-reason", { class: "unclassified", rule: "agy.stop-reason" }],
+  ["agy-background-silence", { class: "unclassified", rule: "agy.background-silence" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "agy.deadline" }]
 ]);
 function classifyAttemptFailure(evidence) {
@@ -25905,6 +25907,7 @@ var Scheduler = class {
 var AGY_ACP = "agy acp";
 var CANCEL_GRACE_MS = 1e4;
 var FOLLOW_UP_SETTLE_MS = 250;
+var FOLLOW_UP_SILENCE_MS = 15 * 6e4;
 var SOLE_LEVEL_SUFFIX = /-(none|minimal|low|medium|high|xhigh|max)$/;
 var AGY_AUTHENTICATION_REQUIRED = -32e3;
 var AGY_INVALID_PARAMS = -32602;
@@ -26092,18 +26095,24 @@ async function runTurn(worker, message, timeoutMs, context) {
   let stopping = null;
   let grace;
   let settleFollowUp;
+  let silence;
   const stop = (reason) => {
     if (stopping !== null) return;
     stopping = reason;
     clearTimeout(settleFollowUp);
+    clearTimeout(silence);
     worker.session.cancel();
     grace = setTimeout(() => {
       void worker.close();
     }, CANCEL_GRACE_MS);
   };
-  const whitespace = new WhitespaceStream(startedAt, () => stop("whitespace"));
-  const deadline = timeoutMs === void 0 ? void 0 : setTimeout(() => stop("deadline"), timeoutMs);
+  const whitespace = new WhitespaceStream(startedAt, () => stop({ kind: "whitespace" }));
+  const deadline = timeoutMs === void 0 ? void 0 : setTimeout(() => stop({ kind: "deadline" }), timeoutMs);
   const commands = /* @__PURE__ */ new Set();
+  const resetSilence = () => {
+    clearTimeout(silence);
+    silence = setTimeout(() => stop({ kind: "background-silence", commands: [...commands] }), FOLLOW_UP_SILENCE_MS);
+  };
   const followUp = Promise.withResolvers();
   let waiting = false;
   let seen = false;
@@ -26132,6 +26141,7 @@ async function runTurn(worker, message, timeoutMs, context) {
       clearTimeout(settleFollowUp);
       settleFollowUp = setTimeout(() => followUp.resolve(null), FOLLOW_UP_SETTLE_MS);
     }
+    if (waiting && stopping === null) resetSilence();
     safely(() => context.onOutput?.());
   }, (exit) => followUp.resolve(exit));
   try {
@@ -26141,6 +26151,7 @@ async function runTurn(worker, message, timeoutMs, context) {
       if (stopping === null && reply2.stopReason === "end_turn" && commands.size > 0) {
         turn.finalText = "";
         waiting = true;
+        resetSilence();
       }
     });
     if (waiting) {
@@ -26150,13 +26161,13 @@ async function runTurn(worker, message, timeoutMs, context) {
         throw attachWorkerExitStatus(error, { exitCode: exit.exitCode, signal: exit.signal });
       }
     }
-    turn.ending = stopping === null ? { kind: "replied", reply } : { kind: stopping };
+    turn.ending = stopping ?? { kind: "replied", reply };
   } catch (error) {
     if (error instanceof AcpProtocolError) {
       turn.transcript.push(JSON.stringify({ type: "invalid-reply", at: (/* @__PURE__ */ new Date()).toISOString(), message: error.message }));
     }
     if (stopping !== null) {
-      turn.ending = { kind: stopping };
+      turn.ending = stopping;
       if (error instanceof AcpRequestError) turn.cancellationError = error;
     } else if (error instanceof AcpRequestError) {
       turn.ending = { kind: "rejected", error };
@@ -26169,6 +26180,7 @@ async function runTurn(worker, message, timeoutMs, context) {
     clearTimeout(deadline);
     clearTimeout(grace);
     clearTimeout(settleFollowUp);
+    clearTimeout(silence);
     whitespace.clear();
     worker.listen(null);
     turn.endedAt = Date.now();
@@ -26286,6 +26298,14 @@ function settleTurn(evidence, turn, sessionId, timeoutMs) {
     }
     case "whitespace":
       throw attachPartialWorkerText(attachFailedTurnResult(new WhitespaceStreamError(), evidence), turn.allText);
+    case "background-silence": {
+      const waitingFor = ending.commands.length > 0 ? `background tool calls ${ending.commands.join(", ")}` : "the automatic follow-up";
+      evidence.attemptFailure = {
+        kind: "agy-background-silence",
+        message: `agy sent no session updates for ${FOLLOW_UP_SILENCE_MS / 6e4} minutes while waiting for ${waitingFor}`
+      };
+      return evidence;
+    }
     case "rejected":
       evidence.attemptFailure = ending.error.code === AGY_AUTHENTICATION_REQUIRED ? { kind: "agy-sign-in-required", message: `agy refused the prompt for want of a sign-in (run \`agy\` and sign in): ${ending.error.message}` } : { kind: "agy-prompt-error", message: ending.error.message };
       return evidence;
@@ -26304,7 +26324,10 @@ function shutdownWithEvidence(turn, evidence) {
   return attachPartialWorkerText(attachFailedTurnResult(new EngineShutdownError("agy"), evidence), turn.allText);
 }
 function delivered(turn) {
-  return turn.ending.kind === "replied" || turn.ending.kind === "invalid-reply" || turn.ending.kind === "deadline" || turn.ending.kind === "whitespace";
+  return turn.ending.kind === "replied" || turn.ending.kind === "invalid-reply" || harnessStopped(turn.ending);
+}
+function harnessStopped(ending) {
+  return ending.kind === "deadline" || ending.kind === "whitespace" || ending.kind === "background-silence";
 }
 var AgyEngineInvocation = class {
   #options;
@@ -26399,7 +26422,7 @@ var AgyWorkerSession = class {
           this.#noteLost(worker, ran.ending.kind === "lost" ? ran.ending.error.message : "it did not end a cancelled turn and was stopped", exit);
           const lost = this.#lostResult();
           if (lost.workerExit !== void 0) evidence.workerExit = lost.workerExit;
-          if (ran.ending.kind !== "deadline" && ran.ending.kind !== "whitespace") {
+          if (!harnessStopped(ran.ending)) {
             return { ...evidence, attemptFailure: lost.attemptFailure };
           }
         }

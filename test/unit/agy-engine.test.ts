@@ -519,6 +519,62 @@ test("an agy attempt waits for every background command and uses the automatic f
   assert.equal(agent.stops(), 1);
 });
 
+test("a silent background command cancels the agy attempt even without a turn deadline", async (t) => {
+  const agent = inProcessAgent(t, { ignoreCancel: true });
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const invocation = adapter.createInvocation("start command", { cwd: process.cwd() });
+  const pending = invocation.runAttempt({ attempt: 1 });
+  void pending.catch(() => undefined);
+  await until(() => agent.prompts.length === 1);
+  agent.update({ sessionUpdate: "tool_call", toolCallId: "quiet", name: "run_command", status: "in_progress" });
+  agent.update(say("Started.").update);
+  agent.prompts[0]?.answer("end_turn", { totalTokens: 42 });
+  await flush();
+
+  t.mock.timers.tick(15 * 60_000 - 1);
+  assert.equal(agent.cancels(), 0);
+  t.mock.timers.tick(1);
+  assert.equal(agent.cancels(), 1);
+  assert.equal(agent.stops(), 0);
+  t.mock.timers.tick(10_000);
+  const result = await pending;
+  assert.equal(result.attemptFailure?.kind, "agy-background-silence");
+  assert.match(result.attemptFailure?.message ?? "", /quiet/);
+  assert.equal(result.deltaText, "Started.");
+  assert.equal(result.tokenUsageEvents[0]?.last.totalTokens, 42);
+  assert.equal(result.transcripts?.[0]?.partial, true);
+  assert.equal(agent.stops(), 1);
+});
+
+test("command completion resets the silence bound before a missing automatic follow-up", async (t) => {
+  const agent = inProcessAgent(t, { ignoreCancel: true });
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const session = adapter.createSession({ cwd: process.cwd() }, { onLost: () => undefined });
+  const pending = session.beginTurn("start command", {}).runAttempt({ attempt: 1 });
+  void pending.catch(() => undefined);
+  await until(() => agent.prompts.length === 1);
+  agent.update({ sessionUpdate: "tool_call", toolCallId: "quiet", name: "run_command", status: "in_progress" });
+  agent.prompts[0]?.answer("end_turn");
+  await flush();
+
+  t.mock.timers.tick(10 * 60_000);
+  agent.update({ sessionUpdate: "tool_call_update", toolCallId: "quiet", status: "completed" });
+  await flush();
+  t.mock.timers.tick(15 * 60_000 - 1);
+  assert.equal(agent.cancels(), 0);
+  t.mock.timers.tick(1);
+  assert.equal(agent.cancels(), 1);
+  t.mock.timers.tick(10_000);
+  const result = await pending;
+  assert.equal(result.attemptFailure?.kind, "agy-background-silence");
+  assert.match(result.attemptFailure?.message ?? "", /automatic follow-up/);
+  assert.equal((await session.beginTurn("next", {}).runAttempt({ attempt: 1 })).attemptFailure?.kind, "session-lost");
+});
+
 test("a held agy turn's deadline still applies after the prompt reply", async (t) => {
   const agent = inProcessAgent(t, { ignoreCancel: true });
   const adapter = new AgyEngineAdapter({ commands: agent.commands });

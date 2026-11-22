@@ -1188,6 +1188,7 @@ on the same target.
 | `agy.invalid-prompt-reply` | `output` | agy returned a malformed prompt result |
 | `agy.worker-lost` | `availability` | A one-shot agy worker's process ended before its turn did |
 | `agy.stop-reason` | `unclassified` | agy ended the turn other than normally: a refusal, a token or request limit, or a cancel it made itself |
+| `agy.background-silence` | `unclassified` | agy sent no session updates for 15 minutes while Ensemble waited for a background command or its automatic follow-up |
 | `agy.deadline` | `unclassified` | The call's `timeoutMs` cancelled the turn |
 | `null` | `unclassified` | No rule recognised the failure |
 

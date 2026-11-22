@@ -203,8 +203,8 @@ see [CLI](docs/cli.md).
 
 ## Configuration
 
-Codex, Claude and agy workers need no Ensemble configuration file. Claude needs
-the [one-time bypass-permissions consent](docs/workflow-scripts.md#claude-dispatch)
+Codex, Claude, agy and ZCode workers need no Ensemble configuration file. Claude
+needs the [one-time bypass-permissions consent](docs/workflow-scripts.md#claude-dispatch)
 before its first dispatch. An optional file at
 `~/.config/ensemble/config.json` sets concurrency caps, a run-wide agent
 ceiling, worker scope grouping (`worker_scope`), where run records and status

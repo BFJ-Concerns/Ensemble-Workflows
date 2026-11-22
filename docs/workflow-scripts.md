@@ -132,13 +132,14 @@ call's own chain still takes precedence over `fallback: false` in defaults.
 - Each step re-dispatches the same prompt, schema, placement, strip and
   lean settings on the next target. Ensemble checks that each target
   offers the requested strip or lean route before the first dispatch.
-  Opencode verifies its resolved configuration only when its entry is
-  reached. If that verification refuses a strip or lean start, the call
-  throws before launching that opencode worker, even if an earlier
-  target already ran. An uncaught refusal fails the run.
+  When a chain reaches an opencode entry, Ensemble verifies its resolved
+  configuration. When it reaches a ZCode entry with a strip, Ensemble checks
+  the installed CLI's help for `--disallowed-tools`. If verification refuses
+  a strip or lean start, the call throws before launching that worker. An
+  uncaught refusal fails the run.
 - An entry with no `effort` inherits the call's effort. If the call uses a raw
-  opencode variant name, a Codex, Claude or agy entry uses its engine's
-  default.
+  opencode variant name, a Codex, Claude, agy or ZCode entry uses its
+  engine's default.
   An opencode entry inherits that variant, and Ensemble refuses the chain
   before any worker spawns if the entry's model does not declare it.
 - `maxAttempts` counts answered attempts across the whole chain; a refusal

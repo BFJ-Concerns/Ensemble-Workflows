@@ -150,14 +150,14 @@ test("documented status file schema stays in sync with published snapshots", asy
     assert.deepEqual(["claude", "codex", "opencode"], sortedKeys(snapshot.engines));
     assert.deepEqual(
       documentedNestedFields(section, "engines")
-        .filter((field) => !["codex", "claude", "opencode"].includes(field))
+        .filter((field) => !["codex", "claude", "opencode", "agy"].includes(field))
         .filter((field) => field !== "null")
         .sort(),
       sortedKeys(snapshot.engines.codex ?? {})
     );
     assert.deepEqual(
       documentedNestedFields(section, "agents")
-        .filter((field) => !["codex", "claude", "opencode", "queued", "running", "done", "failed"].includes(field))
+        .filter((field) => !["codex", "claude", "opencode", "agy", "queued", "running", "done", "failed"].includes(field))
         .filter((field) => field !== "null")
         .sort(),
       sortedKeys(snapshot.agents[0] ?? {})

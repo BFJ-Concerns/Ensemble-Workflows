@@ -6,7 +6,8 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { CLAUDE_TASK_END_LINE, CLAUDE_WORKER_STANDING_INSTRUCTIONS } from "../../src/claude-engine.js";
+import { CLAUDE_TASK_END_LINE } from "../../src/claude-engine.js";
+import { WORKER_STANDING_INSTRUCTIONS } from "../../src/worker-instructions.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import {
   ClaudeDispatchError,
@@ -377,7 +378,7 @@ for (const [label, task] of [
           assert.equal((await invocation.runAttempt({ attempt: 1 })).text, "PINEAPPLE");
           const opening = controlPlane.dispatched[0]!.prompt;
           assert.equal(opening.trim(), opening, "native boundary trimming must be a no-op");
-          assert.equal(controlPlane.dispatched[0]!.appendSystemPrompt, CLAUDE_WORKER_STANDING_INSTRUCTIONS);
+          assert.equal(controlPlane.dispatched[0]!.appendSystemPrompt, WORKER_STANDING_INSTRUCTIONS);
           assert.equal(opening.includes("automated worker dispatched"), false, "the standing instructions ride the system prompt");
           const framed = task === "" || task.trimStart() !== task;
           let taskEnd: number;
@@ -422,7 +423,7 @@ test("a task led by a skill invocation opens the dispatch message, its contract 
         assert.deepEqual(await runtime.agent(task, { engine: "claude", schema: okSchema }), { ok: true });
         assert.equal(controlPlane.dispatchCount, 2);
         for (const dispatched of controlPlane.dispatched) {
-          assert.equal(dispatched.appendSystemPrompt, CLAUDE_WORKER_STANDING_INSTRUCTIONS);
+          assert.equal(dispatched.appendSystemPrompt, WORKER_STANDING_INSTRUCTIONS);
           assert.ok(dispatched.prompt.startsWith(`${task}\n\nWhen finished, include in your FINAL message a JSON value`));
         }
         assert.equal(controlPlane.dispatched[0]!.prompt.includes("A previous attempt failed"), false);

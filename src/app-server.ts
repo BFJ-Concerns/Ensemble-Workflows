@@ -34,6 +34,7 @@ import type {
   TurnResult,
   TurnStartOptions
 } from "./types.js";
+import { readBoundedLines } from "./bounded-line-reader.js";
 import { tokenUsageEventFromParams } from "./budget.js";
 import { launchEnvironment } from "./engine-environment.js";
 import { WhitespaceStream } from "./whitespace-stream.js";
@@ -801,84 +802,15 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   #wireReader(): void {
-    let chunks: Buffer[] = [];
-    let byteLength = 0;
-    let prefix = Buffer.alloc(0);
-    let discardingOversizedLine = false;
-    let oversizedLineByteLength = 0;
-
-    const resetLine = (): void => {
-      chunks = [];
-      byteLength = 0;
-      prefix = Buffer.alloc(0);
-      discardingOversizedLine = false;
-      oversizedLineByteLength = 0;
-    };
-    const retain = (chunk: Buffer): void => {
-      if (chunk.length === 0) {
-        return;
-      }
-      chunks.push(chunk);
-      byteLength += chunk.length;
-      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
-        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
-      }
-    };
-    const reportOversizedLine = (): void => {
-      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
-    };
-    const handleRetainedLine = (): void => {
-      // Match readline's CRLF treatment while applying the byte limit before
-      // decoding or JSON parsing.
-      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-      resetLine();
-      this.#handleLine(line);
-    };
-
-    this.#process.stdout.on("data", (chunk: Buffer) => {
-      let offset = 0;
-      while (offset < chunk.length) {
-        const newline = chunk.indexOf(0x0a, offset);
-        const end = newline === -1 ? chunk.length : newline;
-        const segment = chunk.subarray(offset, end);
-
-        if (discardingOversizedLine) {
-          oversizedLineByteLength += segment.length;
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
-          retain(segment);
-          if (newline !== -1) {
-            handleRetainedLine();
-          }
-        } else {
-          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
-          retain(segment.subarray(0, retainedBytes));
-          // Discard through the newline so one hostile frame cannot retain
-          // more memory or poison the following valid frame. Count the
-          // discarded bytes as we go: decode diagnostics retain the
-          // incumbent field's meaning even for a bounded frame.
-          discardingOversizedLine = true;
-          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        }
-        offset = newline === -1 ? chunk.length : newline + 1;
-      }
+    readBoundedLines(this.#process.stdout, {
+      maxLineBytes: MAX_APP_SERVER_STDOUT_LINE_BYTES,
+      oversizedPrefixBytes: DECODE_FAILURE_BUFFER_PREFIX_BYTES,
+      onLine: (line) => this.#handleLine(line),
+      onOversizedLine: (byteLength, prefix) => this.#reportDecodeFailure(byteLength, prefix)
     });
+    // Attached after the reader's own listener, so a final unterminated
+    // line is handled before the end of the stream is.
     this.#process.stdout.once("end", () => {
-      // readline flushes a final unterminated line on EOF. Keep that
-      // diagnostic/decoding behaviour at this replacement boundary.
-      if (discardingOversizedLine) {
-        reportOversizedLine();
-        resetLine();
-      } else if (byteLength > 0) {
-        handleRetainedLine();
-      }
       if (this.#hasExited) {
         return;
       }

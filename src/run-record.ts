@@ -2132,7 +2132,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isEngineName(value: unknown): value is EngineName {
-  return value === "codex" || value === "claude" || value === "opencode";
+  return value === "codex" || value === "claude" || value === "opencode" || value === "agy";
 }
 
 function isAgentStatus(value: unknown): value is AgentStatus {
@@ -2215,13 +2215,14 @@ async function findHarnessRoot(): Promise<string | null> {
 }
 
 async function toolVersions(archiveDir: string): Promise<Record<string, string | null>> {
-  const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
+  const [gitVersion, codexVersion, claudeVersion, openCodeVersion, agyVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
     commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
-    queryOpenCodeVersion(archiveDir)
+    queryOpenCodeVersion(archiveDir),
+    commandVersion("agy", ["--version"])
   ]);
-  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
+  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion, agy: agyVersion };
 }
 
 /**

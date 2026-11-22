@@ -1286,7 +1286,47 @@ test("a blocked worker is recovered with a bounded nudge through the valve", asy
         assert.equal(controlPlane.dispatchCount, 1);
         // One nudge steer recovered it; no extra dispatch.
         assert.equal(controlPlane.steerCount, 1);
-        assert.match(controlPlane.steered[0] ?? "", /waiting for input/);
+        // The valve closed the prompt before this arrived, and Claude Code
+        // answered the held tool call as a refusal: the nudge says who
+        // closed it, what it was waiting for, and that nobody refused.
+        assert.equal(
+          controlPlane.steered[0],
+          "Ensemble closed a prompt you were waiting on (Claude Code reported it as waiting for: input), " +
+            "because nobody is present to answer prompts in this session. " +
+            "Nobody refused the action: a tool result saying the user doesn't want to proceed came from that close, not from a person. " +
+            "Carry on without asking: reach what you need another way where you can, make a reasonable decision where you must, and output your final answer."
+        );
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
+test("a blocked worker the roster names no prompt for is nudged without a claim that one was closed", async () => {
+  await withControlPlane(
+    [
+      { outcome: "blocked" },
+      { busyPolls: 1, assistant: { text: '{"ok":true}' } }
+    ],
+    async (controlPlane) => {
+      // The valve cancels a dialog only when the roster names its input
+      // request, so with none named nothing was closed and nothing refused.
+      const poll = controlPlane.poll.bind(controlPlane);
+      controlPlane.poll = async () => {
+        const status = await poll();
+        delete status.waitingFor;
+        return status;
+      };
+      const runtime = makeRuntime(controlPlane, { blockedRecoveryBound: 2 });
+      try {
+        assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
+        assert.equal(controlPlane.steerCount, 1);
+        assert.equal(
+          controlPlane.steered[0],
+          "You appear to be waiting for input. " +
+            "Proceed autonomously without asking — make a reasonable decision, complete the task, and output your final answer."
+        );
       } finally {
         await runtime.close();
       }
@@ -1421,7 +1461,7 @@ for (const held of [false, true]) {
           assert.equal(controlPlane.dispatchCount, 1, "refusing a nudge must not restart the task");
           assert.equal(controlPlane.steerCount, 1);
           assert.equal(controlPlane.steered[0], refused, "the retry must send the same nudge");
-          assert.match(refused ?? "", /waiting for input/);
+          assert.match(refused ?? "", /^Ensemble closed a prompt you were waiting on/);
           assert.equal(records.at(-1)?.attempts.length, 2);
           assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "claude-valve-error");
           assert.equal(records.at(-1)?.attempts[1]?.failure, null);

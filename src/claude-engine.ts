@@ -1479,11 +1479,23 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     ].join("\n");
   }
 
+  /**
+   * The message that recovers a blocked worker. A worker the roster reports
+   * waiting on a native prompt has that prompt closed by the valve before
+   * this arrives, and Claude Code answers the held tool call as though a
+   * person had refused it; the message says who closed it and why, so the
+   * worker does not report a refusal nobody made.
+   */
   #blockedNudge(waitingFor: string | undefined): string {
-    const context = waitingFor !== undefined ? ` (waiting for: ${waitingFor})` : "";
+    if (waitingFor === undefined) {
+      return "You appear to be waiting for input. " +
+        "Proceed autonomously without asking — make a reasonable decision, complete the task, and output your final answer.";
+    }
     return (
-      `You appear to be waiting for input${context}. ` +
-      "Proceed autonomously without asking — make a reasonable decision, complete the task, and output your final answer."
+      `Ensemble closed a prompt you were waiting on (Claude Code reported it as waiting for: ${waitingFor}), ` +
+      "because nobody is present to answer prompts in this session. " +
+      "Nobody refused the action: a tool result saying the user doesn't want to proceed came from that close, not from a person. " +
+      "Carry on without asking: reach what you need another way where you can, make a reasonable decision where you must, and output your final answer."
     );
   }
 

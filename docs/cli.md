@@ -47,16 +47,16 @@ Usage: node /opt/ensemble.mjs [run options] <script.js> [args...]
 Run options (before the script path):
   --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N
   --agent-ceiling N|null  --timeout ms  --strip capability
-  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run
-  --lean
+  --caller-identity <identity>  --hold-scope <scope>  --remap key=engine[:model]
+  --worker-scope worker|run  --lean
 Agent options (after agent, before the prompt):
   --model <model>  --effort <effort>  --label <label>  --phase <phase>
   --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'
   --fallback '<json>|@file'  --timeout-ms ms
   --max-attempts N  --task <identity>  --strip capability  --budget engine=N
   --agent-ceiling N|null  --concurrency engine=N  --timeout ms
-  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run
-  --lean
+  --caller-identity <identity>  --hold-scope <scope>  --remap key=engine[:model]
+  --worker-scope worker|run  --lean
 The prompt is the one positional argument, or stdin when omitted.
 Run `node /opt/ensemble.mjs --help` for orientation;
   each subcommand answers --help.
@@ -89,6 +89,7 @@ a script argument spelled like a run option, put `--` before the script path:
 | `--caller-identity <identity>` | Opaque identity of the invoking session, recorded in the run record. Overrides `ENSEMBLE_CALLER_IDENTITY` |
 | `--worker-scope worker\|run` | Systemd scope grouping for Claude and Codex; overrides environment and configuration (see [Configuration](configuration.md)) |
 | `--hold-scope <scope>` | Scope for decision holds raised during the run. Overrides `ENSEMBLE_HOLD_SCOPE` |
+| `--remap key=engine[:model]` | Repeatable [dispatch remap](workflow-scripts.md#dispatch-remap) rule. The flag list overrides `ENSEMBLE_DISPATCH_REMAP` |
 | `--lean` | Start every worker in the run without the operator's interactive context; an engine that cannot arrange it refuses the dispatch before the worker spawns (see [Lean workers](workflow-scripts.md#lean-workers)) |
 
 Only `--budget`, `--concurrency`, and `--strip` may be repeated; every other
@@ -123,7 +124,7 @@ the prompt.
 | `--task <identity>` | Grouping identity copied into the run record |
 
 The run options `--budget`, `--concurrency`, `--agent-ceiling`, `--timeout`,
-`--strip`, `--lean`, `--caller-identity`, `--hold-scope`, and
+`--strip`, `--lean`, `--caller-identity`, `--hold-scope`, `--remap`, and
 `--worker-scope` apply here too.
 
 The option semantics match `agent()` in a script; see

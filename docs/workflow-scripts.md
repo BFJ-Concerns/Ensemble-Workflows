@@ -899,8 +899,8 @@ Claude corrects in the same session through the prompt editor while the
 session and tmux are available. If a one-shot worker has stopped or tmux
 is unavailable for an in-session correction, Ensemble dispatches a fresh
 session. Opening delivery also requires tmux.
-Codex and opencode retry with the failure appended to the prompt.
-agy corrects in the same session while its worker lives (see
+Codex, opencode and one-shot agy calls retry with the failure appended to
+the prompt; a held agy session corrects in place while its worker lives (see
 [agy workers](#agy-workers)).
 
 An opencode model absent from the machine registry, a missing model, or an
@@ -1165,9 +1165,11 @@ signed in to, and the `agy` binary is found on the worker environment's
   per run from an agy session it never prompts.
 - **The answer** is the message text after the turn's last tool call; the
   whole turn's text is kept as the attempt's delta text.
-- **Retries:** a retry corrects in the session that failed while its
-  process lives, naming only the failure. A worker whose process ended is
-  replaced, and the new session's opening prompt says what failed.
+- **Retries:** a one-shot call's worker is stopped when each attempt
+  ends, so what that stop could not establish rides the attempt's
+  `unestablishedStops`; a retry opens a fresh worker whose opening prompt
+  says what failed. A held session's retry corrects in the same session
+  while its process lives, naming only the failure.
 - **The deadline** cancels the turn (`agy.deadline`, unclassified); a turn
   still running ten seconds after the cancel has its worker stopped.
 - **Failures agy returns:** a prompt refused for want of a sign-in

@@ -26023,9 +26023,8 @@ function delivered(turn) {
 }
 var AgyEngineInvocation = class {
   #options;
+  /** The attempt in flight's worker, for a close that cuts it short. */
   #worker = null;
-  /** Whether the live worker's session holds the task: its opening prompt was delivered. */
-  #holdsTask = false;
   #closed = false;
   #settlement = null;
   constructor(options) {
@@ -26039,28 +26038,25 @@ var AgyEngineInvocation = class {
   async #runAttempt(context) {
     if (this.#closed) throw new EngineShutdownError("agy");
     const options = this.#options.options;
-    if (this.#worker === null) {
-      this.#worker = await AgyWorker.open(this.#options.launch, workerSettings(this.#options.cwd, options));
-      this.#holdsTask = false;
+    const worker = await AgyWorker.open(this.#options.launch, workerSettings(this.#options.cwd, options));
+    this.#worker = worker;
+    try {
+      if (this.#closed) throw new EngineShutdownError("agy");
+      const message = openingPrompt({
+        task: this.#options.prompt,
+        ...options.schema !== void 0 ? { schema: options.schema } : {},
+        ...context.previousFailure !== void 0 ? { previousFailure: context.previousFailure } : {}
+      });
+      safely(() => context.onIdentity?.({ resolvedModel: worker.model, resolvedEffort: worker.effort }));
+      const turn = await runTurn(worker, message, options.timeoutMs, context);
+      turn.stops.push(await worker.close());
+      const evidence = turnEvidence(worker, turn, context);
+      if (this.#closed) throw shutdownWithEvidence(turn, evidence);
+      return settleTurn(evidence, turn, worker.session.id, options.timeoutMs);
+    } finally {
+      await worker.close();
+      if (this.#worker === worker) this.#worker = null;
     }
-    const worker = this.#worker;
-    if (this.#closed) throw new EngineShutdownError("agy");
-    const message = this.#holdsTask && context.previousFailure !== void 0 ? inSessionCorrection(context.previousFailure) : openingPrompt({
-      task: this.#options.prompt,
-      ...options.schema !== void 0 ? { schema: options.schema } : {},
-      ...context.previousFailure !== void 0 ? { previousFailure: context.previousFailure } : {}
-    });
-    safely(() => context.onIdentity?.({ resolvedModel: worker.model, resolvedEffort: worker.effort }));
-    const turn = await runTurn(worker, message, options.timeoutMs, context);
-    if (delivered(turn)) this.#holdsTask = true;
-    if (turn.ending.kind === "lost" || worker.closed) {
-      this.#worker = null;
-      const stop = await worker.close();
-      if (!this.#closed) turn.stops.push(stop);
-    }
-    const evidence = turnEvidence(worker, turn, context);
-    if (this.#closed) throw shutdownWithEvidence(turn, evidence);
-    return settleTurn(evidence, turn, worker.session.id, options.timeoutMs);
   }
   async close() {
     if (this.#closed) return;
@@ -26110,7 +26106,7 @@ var AgyWorkerSession = class {
           this.#opened = true;
         }
         const gone = ran.ending.kind === "lost" || worker.closed;
-        if (gone && !this.#closed) ran.stops.push(await worker.close());
+        if (gone) ran.stops.push(await worker.close());
         const evidence = turnEvidence(worker, ran, context);
         if (this.#closed) throw shutdownWithEvidence(ran, evidence);
         if (gone) {

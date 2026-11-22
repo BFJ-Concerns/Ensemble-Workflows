@@ -61,10 +61,12 @@ import type { EngineTranscriptArtifact, JsonObject, JsonSchema, RuntimeEvent, To
  * - **The schema rides the prompt.** agy takes no JSON Schema, so the turn's
  *   contract goes in the message (`worker-instructions.ts`) and the
  *   runtime's own check judges the answer.
- * - **A retry stays in the session that failed** while it is alive: the
+ * - **A one-shot worker lives for one attempt**: it is stopped when its
+ *   turn ends, so the stop is that attempt's to account, and a retry opens a
+ *   fresh worker told of the failure it never saw.
+ * - **A held session corrects in place** while its worker lives: the
  *   session holds the task and the failed reply, so the correction names
- *   only the failure. A worker whose process ended is replaced, and the new
- *   session is told of the failure it never saw.
+ *   only the failure.
  * - **The answer is the final message**: the message text that follows the
  *   turn's last tool call. The whole turn's text is kept as `deltaText`.
  */
@@ -537,15 +539,16 @@ interface AgyInvocationOptions {
 }
 
 /**
- * One one-shot worker. Its first attempt opens a worker; a later attempt
- * corrects in that worker's session while it lives, and opens a new one,
- * told of the failure, once it has gone.
+ * One one-shot worker: each attempt opens its own `agy acp` worker and
+ * stops it when the turn ends, so the stop — and anything it could not
+ * establish within its reach — is that attempt's to disclose. A retry's
+ * fresh session is told of the failure it never saw, as a one-shot Codex or
+ * opencode retry is.
  */
 export class AgyEngineInvocation implements EngineInvocation {
   #options: AgyInvocationOptions;
+  /** The attempt in flight's worker, for a close that cuts it short. */
   #worker: AgyWorker | null = null;
-  /** Whether the live worker's session holds the task: its opening prompt was delivered. */
-  #holdsTask = false;
   #closed = false;
   #settlement: Promise<unknown> | null = null;
 
@@ -562,31 +565,28 @@ export class AgyEngineInvocation implements EngineInvocation {
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     if (this.#closed) throw new EngineShutdownError("agy");
     const options = this.#options.options;
-    if (this.#worker === null) {
-      this.#worker = await AgyWorker.open(this.#options.launch, workerSettings(this.#options.cwd, options));
-      this.#holdsTask = false;
-    }
-    const worker = this.#worker;
-    if (this.#closed) throw new EngineShutdownError("agy");
-    const message = this.#holdsTask && context.previousFailure !== undefined
-      ? inSessionCorrection(context.previousFailure)
-      : openingPrompt({
+    const worker = await AgyWorker.open(this.#options.launch, workerSettings(this.#options.cwd, options));
+    this.#worker = worker;
+    try {
+      // A close that ran while the worker was opening found nothing to stop.
+      if (this.#closed) throw new EngineShutdownError("agy");
+      const message = openingPrompt({
         task: this.#options.prompt,
         ...(options.schema !== undefined ? { schema: options.schema } : {}),
         ...(context.previousFailure !== undefined ? { previousFailure: context.previousFailure } : {})
       });
-    safely(() => context.onIdentity?.({ resolvedModel: worker.model, resolvedEffort: worker.effort }));
-    const turn = await runTurn(worker, message, options.timeoutMs, context);
-    if (delivered(turn)) this.#holdsTask = true;
-    if (turn.ending.kind === "lost" || worker.closed) {
-      this.#worker = null;
-      // A stop made by closing the invocation is the run's teardown, reported by the containment's close.
-      const stop = await worker.close();
-      if (!this.#closed) turn.stops.push(stop);
+      safely(() => context.onIdentity?.({ resolvedModel: worker.model, resolvedEffort: worker.effort }));
+      const turn = await runTurn(worker, message, options.timeoutMs, context);
+      // The containment says whose stop this is: one the run's ending
+      // made carries no account for the attempt.
+      turn.stops.push(await worker.close());
+      const evidence = turnEvidence(worker, turn, context);
+      if (this.#closed) throw shutdownWithEvidence(turn, evidence);
+      return settleTurn(evidence, turn, worker.session.id, options.timeoutMs);
+    } finally {
+      await worker.close();
+      if (this.#worker === worker) this.#worker = null;
     }
-    const evidence = turnEvidence(worker, turn, context);
-    if (this.#closed) throw shutdownWithEvidence(turn, evidence);
-    return settleTurn(evidence, turn, worker.session.id, options.timeoutMs);
   }
 
   async close(): Promise<void> {
@@ -659,7 +659,7 @@ class AgyWorkerSession implements EngineWorkerSession {
           this.#opened = true;
         }
         const gone = ran.ending.kind === "lost" || worker.closed;
-        if (gone && !this.#closed) ran.stops.push(await worker.close());
+        if (gone) ran.stops.push(await worker.close());
         const evidence = turnEvidence(worker, ran, context);
         if (this.#closed) throw shutdownWithEvidence(ran, evidence);
         if (gone) {

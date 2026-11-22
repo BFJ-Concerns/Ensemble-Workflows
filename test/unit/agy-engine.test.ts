@@ -14,7 +14,7 @@ import { AgySubstrateRefusedError, EngineShutdownError, InvalidAgentOptionValueE
 import { assertValidFallbackOption } from "../../src/engine-option-validation.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { summariseUsage } from "../../src/usage-summary.js";
-import { inSessionCorrection, openingPrompt, previousFailureNotice, laterTurnPrompt } from "../../src/worker-instructions.js";
+import { openingPrompt, previousFailureNotice, laterTurnPrompt } from "../../src/worker-instructions.js";
 import { NoWorkerScopes } from "../../src/worker-scopes.js";
 
 import type { TokenUsageEvent } from "../../src/types.js";
@@ -154,16 +154,16 @@ test("agy with no sign-in is a substrate refusal, classed as availability", asyn
   assert.deepEqual(attempt?.classification, { class: "availability", rule: "agy.substrate-refused" });
 });
 
-test("a schema answer that fails the check is corrected in the same session", async (t) => {
-  const { runtime } = await scriptedRuntime(t, { turns: [[say("not json")], [ECHO, say('\n{"ok": true}')]] });
+test("a one-shot schema answer that fails the check is retried on a fresh worker told of the failure", async (t) => {
+  const { dir } = await scriptedAgy(t);
+  const { runtime } = await scriptedRuntime(t, { counter: path.join(dir, "turns"), turns: [[say("not json")], [ECHO, say('\n{"ok": true}')]] });
   const schema = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
   assert.deepEqual(await runtime.agent("check it", { engine: "agy", schema }), { ok: true });
   const record = runtime.lastAgentRecord();
   assert.equal(record?.attempts.length, 2);
   assert.equal(record?.attempts[0]?.failure?.kind, "invalid-json");
-  const second = String(record?.attempts[1]?.rawOutput);
-  assert.ok(second.startsWith(inSessionCorrection({ kind: "invalid-json", message: String(record?.attempts[0]?.failure?.message) })),
-    "the correction alone is sent: the session already holds the task and the schema");
+  const previousFailure = { kind: "invalid-json", message: String(record?.attempts[0]?.failure?.message) };
+  assert.ok(String(record?.attempts[1]?.rawOutput).startsWith(openingPrompt({ task: "check it", schema, previousFailure })));
 });
 
 test("the opening prompt carries the standing instructions, the schema contract and the task", async (t) => {
@@ -197,14 +197,15 @@ test("a worker whose process ends mid-turn is replaced, and the new session is t
   assert.ok(String(answer).includes(previousFailureNotice({ kind: "agy-worker-lost", message: String(first?.failure?.message) })));
 });
 
-test("a turn past its deadline is cancelled, classed as agy's deadline, and corrected in the session it ran in", async (t) => {
-  const { runtime } = await scriptedRuntime(t, { turns: [[say("working"), { untilCancelled: true }], [ECHO]] }, 2);
+test("a turn past its deadline is cancelled, classed as agy's deadline, and retried on a fresh worker told of it", async (t) => {
+  const { dir } = await scriptedAgy(t);
+  const { runtime } = await scriptedRuntime(t, { counter: path.join(dir, "turns"), turns: [[say("working"), { untilCancelled: true }], [ECHO]] }, 2);
   const answer = await runtime.agent("slow task", { engine: "agy", timeoutMs: 300 });
   const record = runtime.lastAgentRecord();
   const first = record?.attempts[0];
   assert.equal(first?.failure?.kind, "TurnTimeoutError");
   assert.deepEqual(first?.classification, { class: "unclassified", rule: "agy.deadline" });
-  assert.equal(answer, inSessionCorrection({ kind: "TurnTimeoutError", message: String(first?.failure?.message) }));
+  assert.equal(answer, openingPrompt({ task: "slow task", previousFailure: { kind: "TurnTimeoutError", message: String(first?.failure?.message) } }));
 });
 
 test("the turn deadline throws with the turn's evidence attached", async (t) => {
@@ -275,57 +276,83 @@ test("agy refuses a capability strip and a lean start before any worker spawns",
 });
 
 /**
- * An `agy acp` held in this process, for timing the whitespace bound under
- * mocked timers: it answers `initialize`, `session/new` and a model
- * setting at once, and leaves each prompt to the test.
+ * `agy acp` held in this process, for timing under mocked timers and for
+ * observing stops: every worker gets a fresh process that answers
+ * `initialize` (held back with `holdOpen` until `releaseOpen()`),
+ * `session/new` and a model setting at once, and leaves each prompt to the
+ * test. Each stop reports `stopAccount` as its attempt account.
  */
-function inProcessAgent(t: TestContext): {
+function inProcessAgent(t: TestContext, options: { holdOpen?: boolean; stopAccount?: { owner: string; reason: string } } = {}): {
   commands: CommandContainment;
   update: (body: Record<string, unknown>) => void;
   prompts: { text: string; answer: (stopReason: string) => void }[];
   cancels: () => number;
+  stops: () => number;
+  started: () => number;
+  releaseOpen: () => void;
 } {
-  const child = new ChildProcess();
-  const stdin = new PassThrough();
-  const stdout = new PassThrough();
-  Object.assign(child, { stdin, stdout, stderr: new PassThrough() });
   const commands = new CommandContainment(new NoWorkerScopes());
-  t.mock.method(commands, "contain", async () => ({
-    child, reach: { kind: "scope", unit: "fixture.scope" },
-    stop: async () => {
-      child.emit("exit", null, "SIGTERM");
-      child.emit("close", null, "SIGTERM");
-      return { outcome: { kind: "stopped" as const }, attemptAccount: null };
-    }
-  }));
-  const send = (value: object): void => { stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...value })}\n`); };
   const prompts: { text: string; answer: (stopReason: string) => void }[] = [];
   let cancels = 0;
-  let buffer = "";
-  stdin.on("data", (chunk: Buffer) => {
-    buffer += chunk.toString();
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      const { id, method, params } = JSON.parse(line) as { id?: number; method: string; params: { prompt?: { text: string }[] } };
-      if (method === "initialize") send({ id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } });
-      if (method === "session/new") {
-        send({ id, result: { sessionId: "held", configOptions: [{ id: "model", category: "model", type: "select", currentValue: "m", options: [{ value: "m" }] }] } });
+  let stops = 0;
+  let started = 0;
+  let send: (value: object) => void = () => undefined;
+  const heldOpen: (() => void)[] = [];
+  let released = options.holdOpen !== true;
+  t.mock.method(commands, "contain", async () => {
+    started += 1;
+    const child = new ChildProcess();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    Object.assign(child, { stdin, stdout, stderr: new PassThrough() });
+    const write = (value: object): void => { stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...value })}\n`); };
+    send = write;
+    let buffer = "";
+    stdin.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const { id, method, params } = JSON.parse(line) as { id?: number; method: string; params: { prompt?: { text: string }[] } };
+        if (method === "initialize") {
+          const answer = (): void => write({ id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } });
+          if (released) answer(); else heldOpen.push(answer);
+        }
+        if (method === "session/new") {
+          write({ id, result: { sessionId: "held", configOptions: [{ id: "model", category: "model", type: "select", currentValue: "m", options: [{ value: "m" }] }] } });
+        }
+        if (method === "session/prompt") {
+          prompts.push({ text: params.prompt?.[0]?.text ?? "", answer: (stopReason) => write({ id, result: { stopReason } }) });
+        }
+        if (method === "session/cancel") {
+          cancels += 1;
+          prompts.at(-1)?.answer("cancelled");
+        }
       }
-      if (method === "session/prompt") {
-        prompts.push({ text: params.prompt?.[0]?.text ?? "", answer: (stopReason) => send({ id, result: { stopReason } }) });
-      }
-      if (method === "session/cancel") {
-        cancels += 1;
-        prompts.at(-1)?.answer("cancelled");
-      }
-    }
+    });
+    let stopped: Promise<{ outcome: { kind: "stopped" }; attemptAccount: { owner: string; reason: string } | null }> | undefined;
+    return {
+      child, reach: { kind: "scope", unit: "fixture.scope" },
+      stop: () => stopped ??= (async () => {
+        stops += 1;
+        await Promise.resolve();
+        child.emit("exit", null, "SIGTERM");
+        child.emit("close", null, "SIGTERM");
+        return { outcome: { kind: "stopped" as const }, attemptAccount: options.stopAccount ?? null };
+      })()
+    };
   });
   return {
     commands,
     update: (body) => send({ method: "session/update", params: { sessionId: "held", update: body } }),
     prompts,
-    cancels: () => cancels
+    cancels: () => cancels,
+    stops: () => stops,
+    started: () => started,
+    releaseOpen: () => {
+      released = true;
+      for (const answer of heldOpen.splice(0)) answer();
+    }
   };
 }
 
@@ -336,7 +363,7 @@ async function until(condition: () => boolean): Promise<void> {
   assert.ok(condition(), "the condition was never met");
 }
 
-test("agy's whitespace bound is reset by text, tool activity and thought, and a stop spends one attempt and is corrected in-session", async (t) => {
+test("agy's whitespace bound is reset by text, tool activity and thought, and a stop spends one attempt and is retried", async (t) => {
   const agent = inProcessAgent(t);
   const runtime = new EnsembleRuntime({
     defaultMaxAttempts: 2,
@@ -366,8 +393,10 @@ test("agy's whitespace bound is reset by text, tool activity and thought, and a 
   assert.equal(agent.cancels(), 0, "the bound has not passed");
   t.mock.timers.tick(1);
   await until(() => agent.prompts.length === 2);
-  assert.equal(agent.cancels(), 1, "the bound cancels the turn and keeps the session");
-  assert.equal(agent.prompts[1]?.text, inSessionCorrection({ kind: "WhitespaceStreamError", message: "worker streamed only whitespace for two minutes" }));
+  assert.equal(agent.cancels(), 1, "the bound cancels the turn");
+  assert.equal(agent.prompts[1]?.text, openingPrompt({
+    task: "answer", previousFailure: { kind: "WhitespaceStreamError", message: "worker streamed only whitespace for two minutes" }
+  }));
   agent.update(chunk("the answer"));
   await flush();
   agent.prompts[1]?.answer("end_turn");
@@ -459,4 +488,38 @@ test("a worker that replaces a dead one accounts its session's usage from zero",
   assert.equal(replaced?.last.totalTokens, 110);
   assert.equal(replaced?.total.totalTokens, 110, "the new session's total starts at its own first turn");
   assert.match(String(replaced?.turnId), /:agy-1$/);
+});
+
+test("a one-shot agy worker is stopped when its attempt ends, and the stop's account rides that attempt", async (t) => {
+  const stopAccount = { owner: "agy acp", reason: "the process group's end could not be established" };
+  const agent = inProcessAgent(t, { stopAccount });
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  const invocation = adapter.createInvocation("answer", { cwd: process.cwd() });
+  const pending = invocation.runAttempt({ attempt: 1 });
+  await until(() => agent.prompts.length === 1);
+  agent.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } });
+  await flush();
+  agent.prompts[0]?.answer("end_turn");
+  const result = await pending;
+  assert.equal(result.text, "done");
+  assert.equal(agent.stops(), 1, "the worker is stopped before the attempt settles");
+  assert.deepEqual(result.diagnostics?.unestablishedStops, [stopAccount]);
+  await invocation.close?.();
+  assert.equal(agent.stops(), 1);
+});
+
+test("a one-shot agy worker that finishes opening after its invocation closed is stopped", async (t) => {
+  const agent = inProcessAgent(t, { holdOpen: true });
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  const invocation = adapter.createInvocation("answer", { cwd: process.cwd() });
+  const pending = invocation.runAttempt({ attempt: 1 }).catch((error: unknown) => error);
+  await until(() => agent.started() === 1);
+  const closing = invocation.close?.();
+  agent.releaseOpen();
+  assert.ok((await pending) instanceof EngineShutdownError);
+  await closing;
+  assert.equal(agent.stops(), 1, "the worker the close raced is not left running");
+  assert.equal(agent.prompts.length, 0, "nothing was prompted");
 });

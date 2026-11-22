@@ -313,6 +313,27 @@ test("a lost worker has unobserved spend even when it reported partial usage", (
   ]);
 });
 
+test("a whitespace stop leaves spend incomplete with or without usage", () => {
+  for (const failureKind of ["WhitespaceStreamError", "ClaudeHeldWhitespaceStreamError"]) {
+    for (const measured of ["partial", "none"] as const) {
+      const events = measured === "partial" ? [usage] : [];
+      const rollup = buildCostRollup([agent(1, [
+        attempt(1, { failureKind, tokenUsageEvents: events })
+      ])]);
+      const leaf = rollup.codex?.["gpt-6-luna"];
+      assert.equal(leaf?.complete, false);
+      assert.deepEqual(leaf?.unobserved, [
+        { agent: 1, attempt: 1, reason: "whitespace-stream-stopped", measured }
+      ]);
+      if (measured === "none") {
+        assert.deepEqual(leaf?.tokens, { unavailable: "whitespace-stream-stopped" });
+      } else {
+        assert.equal(leaf?.tokens && "totalTokens" in leaf.tokens ? leaf.tokens.totalTokens : null, 14);
+      }
+    }
+  }
+});
+
 test("a run deadline marks only the attempt it cut short timed out", () => {
   const rollup = buildCostRollup([
     agent(1, [

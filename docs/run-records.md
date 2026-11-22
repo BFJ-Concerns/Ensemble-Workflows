@@ -924,7 +924,8 @@ The fields present throughout a record's lifetime are:
   existed, including a resource-preflight refusal), `"worker-interrupted"` or
   `"worker-timed-out"` (the run cut the
   worker short before usage was reported), `"worker-lost"` (the worker was
-  gone before final usage), or `"engine-reported-no-usage"`
+  gone before final usage), `"whitespace-stream-stopped"` (the whitespace
+  bound stopped the attempt before final usage), or `"engine-reported-no-usage"`
   (a settled worker supplied no usage). Any usage the engine did report,
   including zero tokens, is retained as a summary instead of an absence reason.
 - `queued_ms`, `execution_ms`: time spent waiting for admission and time
@@ -1214,8 +1215,9 @@ Each leaf has four fields:
   booked under the leaf reported usage. It is never a zero summary. The reason
   is a word of the agent record's `usage.unavailable`, taken from the leaf's
   `unobserved` entries: the first of `record-unsettled`, `worker-interrupted`,
-  `worker-timed-out`, `worker-lost` and `engine-reported-no-usage` that any entry names, so
-  spend that may exist outranks an engine's account of none. A leaf with no
+  `worker-timed-out`, `worker-lost`, `whitespace-stream-stopped` and
+  `engine-reported-no-usage` that any entry names, so spend that may exist
+  outranks an engine's account of none. A leaf with no
   `unobserved` entries holds only refused attempts and reads
   `substrate-never-started`. Read `unobserved` for each attempt's own reason.
 - `cost`: `{ amount, currency, source: "provider-reported" }` — Ensemble never
@@ -1250,12 +1252,13 @@ Each leaf has four fields:
   | `worker-interrupted` | was cut short by the run ending with it in flight: the run's interrupt (SIGINT or SIGTERM), or a script body that returned or failed |
   | `worker-timed-out` | was cut short by a run or turn deadline the runtime enforced, including a timed-out attempt the runtime then retried, so an agent whose record reads `complete` can still name one here |
   | `worker-lost` | lost its worker before final usage, or addressed a session whose worker was already gone |
+  | `whitespace-stream-stopped` | was stopped by the whitespace bound before final usage |
   | `engine-reported-no-usage` | settled on its engine's own account, which carried no usage |
 
 Each attempt is judged by its own entry, never by the agent's status. The run
-cut an attempt short only when that attempt's `failure.kind` says so:
-`run-interrupted`, `run-failed` or `run-timed-out`, which the run's close
-writes on the attempt it tears down, or a deadline's kind. An agent that reads
+records an attempt as cut short when its `failure.kind` names a run ending
+(`run-interrupted`, `run-failed` or `run-timed-out`), a worker deadline,
+worker loss or a whitespace stop. An agent that reads
 `interrupted` because the run ended while it waited between attempts — queued
 for its next fallback target, say — has no attempt cut short, and the spend of
 the attempts it settled is booked as complete.

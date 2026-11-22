@@ -16535,6 +16535,7 @@ var TOKEN_ABSENCE_PRECEDENCE = [
   "worker-interrupted",
   "worker-timed-out",
   "worker-lost",
+  "whitespace-stream-stopped",
   "engine-reported-no-usage"
 ];
 function leafTokenAbsence(unobserved) {
@@ -16585,7 +16586,13 @@ function attemptEnding(attempt) {
   if (isWorkerLossFailureKind(kind)) {
     return "lost";
   }
+  if (isWhitespaceStreamFailureKind(kind)) {
+    return "whitespace-stream-stopped";
+  }
   return "settled";
+}
+function isWhitespaceStreamFailureKind(kind) {
+  return kind === "WhitespaceStreamError" || kind === "ClaudeHeldWhitespaceStreamError";
 }
 function isWorkerLossFailureKind(kind) {
   return kind === "claude-worker-lost" || kind === "session-lost";
@@ -16594,6 +16601,7 @@ var UNOBSERVED_REASON = {
   interrupted: "worker-interrupted",
   "timed-out": "worker-timed-out",
   lost: "worker-lost",
+  "whitespace-stream-stopped": "whitespace-stream-stopped",
   unsettled: "record-unsettled"
 };
 function buildCostRollup(agents) {
@@ -17452,6 +17460,9 @@ function agentUsage(record) {
   }
   if (record.attempts.some((attempt) => isWorkerLossFailureKind(attempt.failure?.kind))) {
     return { unavailable: "worker-lost" };
+  }
+  if (record.attempts.some((attempt) => isWhitespaceStreamFailureKind(attempt.failure?.kind))) {
+    return { unavailable: "whitespace-stream-stopped" };
   }
   return { unavailable: "engine-reported-no-usage" };
 }

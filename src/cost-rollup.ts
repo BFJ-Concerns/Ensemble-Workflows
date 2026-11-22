@@ -85,6 +85,8 @@ export interface UnobservedSpend {
  *   flight, or a body that failed with it in flight.
  * - `worker-timed-out`: a run or turn deadline the runtime enforced cut it
  *   short.
+ * - `whitespace-stream-stopped`: the whitespace bound ended the attempt
+ *   before final usage was observed.
  * - `worker-lost`: the native worker disappeared before reporting final usage.
  * - `engine-reported-no-usage`: the attempt settled on its engine's own
  *   account and that account carried no usage.
@@ -94,6 +96,7 @@ export type UnobservedSpendReason =
   | "worker-interrupted"
   | "worker-timed-out"
   | "worker-lost"
+  | "whitespace-stream-stopped"
   | "engine-reported-no-usage";
 
 /**
@@ -123,6 +126,7 @@ const TOKEN_ABSENCE_PRECEDENCE: readonly UnobservedSpendReason[] = [
   "worker-interrupted",
   "worker-timed-out",
   "worker-lost",
+  "whitespace-stream-stopped",
   "engine-reported-no-usage"
 ];
 
@@ -150,9 +154,10 @@ export function leafTokenAbsence(unobserved: readonly UnobservedSpend[]): TokenA
  * - `interrupted`: the run's ending cut it short.
  * - `timed-out`: a run or worker deadline cut it short.
  * - `lost`: the worker disappeared before answering.
+ * - `whitespace-stream-stopped`: the runtime stopped a whitespace stream.
  * - `unsettled`: no outcome observed (running, or abandoned).
  */
-export type AttemptEnding = "settled" | "refused" | "interrupted" | "timed-out" | "lost" | "unsettled";
+export type AttemptEnding = "settled" | "refused" | "interrupted" | "timed-out" | "lost" | "whitespace-stream-stopped" | "unsettled";
 
 /**
  * Failure kinds raised when a substrate refused an attempt before any
@@ -280,8 +285,8 @@ export interface RollupAttemptView {
  * interrupted one can end with every attempt settled, its last refused or
  * failed attempt already over while the call waited for re-admission on
  * the next fallback target. An attempt was cut short only when its own
- * failure says so — a run-ending kind the run's close wrote on it, or a
- * worker deadline's kind.
+ * failure names a run ending, a worker deadline, a worker loss or a
+ * whitespace stop.
  */
 export function attemptEnding(attempt: RollupAttemptView): AttemptEnding {
   if (!attempt.settled) {
@@ -303,7 +308,14 @@ export function attemptEnding(attempt: RollupAttemptView): AttemptEnding {
   if (isWorkerLossFailureKind(kind)) {
     return "lost";
   }
+  if (isWhitespaceStreamFailureKind(kind)) {
+    return "whitespace-stream-stopped";
+  }
   return "settled";
+}
+
+export function isWhitespaceStreamFailureKind(kind: string | undefined): boolean {
+  return kind === "WhitespaceStreamError" || kind === "ClaudeHeldWhitespaceStreamError";
 }
 
 export function isWorkerLossFailureKind(kind: string | undefined): boolean {
@@ -314,6 +326,7 @@ const UNOBSERVED_REASON: Record<Exclude<AttemptEnding, "settled" | "refused">, U
   interrupted: "worker-interrupted",
   "timed-out": "worker-timed-out",
   lost: "worker-lost",
+  "whitespace-stream-stopped": "whitespace-stream-stopped",
   unsettled: "record-unsettled"
 };
 

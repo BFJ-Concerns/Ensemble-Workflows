@@ -13,10 +13,12 @@ import { createWorkerScopes, NoWorkerScopes, waitUntil } from "../../src/worker-
 import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
 import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
 import { testOpenCodeModelRegistry, testOpenCodeModels } from "../fixtures/opencode/models.js";
+import { waitForRunListeners } from "../fixtures/opencode/runner.js";
 
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
   BudgetExceededError,
+  CapabilityStripUnsupportedError,
   EngineShutdownError,
   InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
@@ -29,6 +31,7 @@ import { runWorkflowScript } from "../../src/script-runner.js";
 import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
+import type { AgentOptions } from "../../src/types.js";
 
 import type {
   OpenCodeRunOptions,
@@ -315,6 +318,54 @@ test("a worker killed by signal leaves its exit evidence in the attempt record",
   }
 });
 
+test("opencode worker loss records unobserved spend with and without stream usage", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-loss-"));
+  const stream = JSON.stringify({
+    type: "step_finish",
+    sessionID: "ses_killed",
+    part: { type: "step-finish", reason: "tool-calls", tokens: { input: 3, output: 2, reasoning: 1 } }
+  });
+  const runner = new FakeOpenCodeRunner({
+    runResult: { exitCode: null, signal: "SIGKILL" },
+    runResults: [{ stdout: "" }, { stdout: stream }],
+    exportText: null
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd: dir, runner, modelRegistry: testOpenCodeModelRegistry })]),
+    defaultMaxAttempts: 1
+  });
+  try {
+    const writer = await RunRecordWriter.start({
+      storeDir: dir,
+      cwd: dir,
+      runUuid: "run-opencode-loss",
+      workflowPath: path.join(dir, "workflow.js"),
+      workflowSource: "export const meta = { name: 'opencode-loss' };",
+      args: [],
+      cliFlags: { jsonArgs: false }
+    });
+    runtime.setRunRecorder(writer);
+    for (const prompt of ["die before reporting usage", "die after reporting usage"]) {
+      assert.equal(await runtime.agent(prompt, { engine: "opencode", model: "glm-5.2" }), null);
+      assert.equal(runtime.lastAgentRecord()?.attempts[0]?.failure?.kind, "opencode-worker-lost");
+    }
+    await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+    const first = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+    assert.deepEqual(first.usage, { unavailable: "worker-lost" });
+    const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8"));
+    const spend = manifest.cost_rollup.opencode["openrouter/z-ai/glm-5.2"];
+    assert.equal(spend.complete, false);
+    assert.deepEqual(spend.unobserved, [
+      { agent: 1, attempt: 1, reason: "worker-lost", measured: "none" },
+      { agent: 2, attempt: 1, reason: "worker-lost", measured: "partial" }
+    ]);
+  } finally {
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("an opencode subprocess stopped by its turn deadline records a timeout", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-deadline-"));
   const bin = path.join(directory, "opencode");
@@ -376,6 +427,7 @@ test("an opencode subprocess stopped by its turn deadline records a timeout", as
 for (const signal of ["SIGTERM", "SIGKILL"] as const) {
   test(`an opencode turn deadline retains ${signal} after contained stop settles`, async (t) => {
     const child = new ChildProcess();
+    const started = waitForRunListeners(child);
     Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
     const commands = new CommandContainment(new NoWorkerScopes());
     let releaseStop!: () => void;
@@ -404,7 +456,7 @@ for (const signal of ["SIGTERM", "SIGKILL"] as const) {
       const pending = runtime.agent("outlast the deadline", {
         engine: "opencode", model: "glm-5.2", timeoutMs: 50, maxAttempts: 1
       }).then((result) => { settled = true; return result; });
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await started;
       t.mock.timers.tick(49);
       assert.equal(stop.mock.callCount(), 0);
       t.mock.timers.tick(1);
@@ -511,6 +563,7 @@ test("an opencode deadline keeps the engine diagnostic in the failure record", a
 
 test("opencode resets the whitespace bound on activity and retries a one-shot stop", async (t) => {
   const child = new ChildProcess();
+  const started = waitForRunListeners(child);
   const stdout = new PassThrough();
   Object.assign(child, { stdout, stderr: new PassThrough() });
   const commands = new CommandContainment(new NoWorkerScopes());
@@ -554,7 +607,7 @@ test("opencode resets the whitespace bound on activity and retries a one-shot st
     const pending = runtime.agent("answer", {
       engine: "opencode", model: "glm-5.2", timeoutMs: 600_000, maxAttempts: 2
     });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await started;
     for (const [type, part] of [
       ["text", { type: "text", text: "partial answer" }],
       ["tool_use", { type: "tool", tool: "bash" }],
@@ -589,6 +642,7 @@ test("opencode resets the whitespace bound on activity and retries a one-shot st
 
 test("an opencode process that exited before its streams close is not timed out", async (t) => {
   const child = new ChildProcess();
+  const started = waitForRunListeners(child);
   Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
   const commands = new CommandContainment(new NoWorkerScopes());
   const stop = t.mock.fn(async () => ({ outcome: { kind: "stopped" as const }, attemptAccount: null }));
@@ -598,7 +652,7 @@ test("an opencode process that exited before its streams close is not timed out"
     const pending = new OpenCodeCliRunner(undefined, { commands }).run({
       prompt: "finish", cwd: process.cwd(), providerModel: "fixture/model", timeoutMs: 100
     });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await started;
     child.emit("exit", 0, null);
     // Deterministically separate exit from close: the process has finished,
     // but a pipe is still open when the former deadline would have fired.
@@ -966,6 +1020,92 @@ test("opencode dispatches the effective strip and lean requests and records both
     assert.equal(record?.lean?.route, "config");
   } finally {
     await runtime.close();
+  }
+});
+
+test("opencode launches with verified strip or lean settings and refuses an unverified strip before spawn", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-dispatch-config-"));
+  const bin = path.join(dir, "opencode");
+  const observation = path.join(dir, "worker.json");
+  const rejectStrip = path.join(dir, "reject-strip");
+  const provider = { openrouter: { options: { baseURL: "https://example.invalid" } } };
+  const original = { provider, instructions: ["operator.md"], permission: { "*": "allow" } };
+  const dataHome = path.join(dir, "auth");
+  const runner = new OpenCodeCliRunner(bin, {
+    workerEnv: {
+      OPENCODE_CONFIG: path.join(dir, "operator.json"),
+      OPENCODE_CONFIG_CONTENT: "{}",
+      OPENCODE_PERMISSION: '{"*":"allow"}',
+      OPENCODE_TEST_HOME: "",
+      XDG_DATA_HOME: dataHome
+    }
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd: dir, runner, modelRegistry: testOpenCodeModelRegistry })]),
+    defaultMaxAttempts: 1
+  });
+  try {
+    await writeFile(bin, `#!/usr/bin/env node
+      import { existsSync, readFileSync, writeFileSync } from "node:fs";
+      const env = process.env;
+      const original = ${JSON.stringify(original)};
+      const content = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}");
+      const profile = () => JSON.parse(readFileSync(env.OPENCODE_CONFIG, "utf8"));
+      switch (process.argv[2]) {
+        case "debug":
+          console.log(JSON.stringify(env.OPENCODE_TEST_HOME ? profile() :
+            existsSync(${JSON.stringify(rejectStrip)}) ? original : { ...original, ...content }));
+          break;
+        case "models":
+          console.log("openrouter/z-ai/glm-5.2");
+          break;
+        case "run":
+          writeFileSync(${JSON.stringify(observation)}, JSON.stringify({
+            content,
+            permission: env.OPENCODE_PERMISSION === undefined ? null : JSON.parse(env.OPENCODE_PERMISSION),
+            profile: env.OPENCODE_TEST_HOME ? profile() : null,
+            config: env.OPENCODE_CONFIG,
+            configDir: env.OPENCODE_CONFIG_DIR,
+            configHome: env.XDG_CONFIG_HOME,
+            dataHome: env.XDG_DATA_HOME,
+            pure: env.OPENCODE_PURE,
+            disableProjectConfig: env.OPENCODE_DISABLE_PROJECT_CONFIG
+          }));
+          console.log(JSON.stringify({ type: "text", part: { type: "text", text: "configured answer" } }));
+          break;
+        default:
+          process.exitCode = 1;
+      }
+    `, { mode: 0o700 });
+    const options: AgentOptions = { engine: "opencode", model: "glm-5.2", strip: ["skills", "agents"] };
+
+    assert.equal(await runtime.agent("stripped worker", options), "configured answer");
+    const stripped = JSON.parse(await readFile(observation, "utf8"));
+    assert.deepEqual(stripped.permission, { "*": "allow", skill: "deny", task: "deny" });
+    assert.deepEqual(stripped.content.permission, stripped.permission);
+    assert.equal(stripped.profile, null);
+
+    assert.equal(await runtime.agent("lean and stripped worker", { ...options, lean: true }), "configured answer");
+    const lean = JSON.parse(await readFile(observation, "utf8"));
+    assert.equal(lean.permission, null);
+    assert.deepEqual(lean.content, {});
+    assert.deepEqual(lean.profile.permission, stripped.permission);
+    assert.deepEqual(lean.profile.provider, provider);
+    assert.equal(lean.profile.instructions, undefined);
+    assert.equal(lean.configDir, path.dirname(lean.config));
+    assert.equal(lean.configHome, lean.configDir);
+    assert.equal(lean.dataHome, dataHome);
+    assert.equal(lean.pure, "1");
+    assert.equal(lean.disableProjectConfig, "1");
+    await assert.rejects(access(lean.configDir), { code: "ENOENT" });
+
+    await rm(observation);
+    await writeFile(rejectStrip, "");
+    await assert.rejects(runtime.agent("refused worker", options), CapabilityStripUnsupportedError);
+    await assert.rejects(access(observation), { code: "ENOENT" });
+  } finally {
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

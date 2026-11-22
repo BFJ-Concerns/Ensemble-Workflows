@@ -313,11 +313,15 @@ it. The dispatch lookup, an identified call's `answeredBy` and the run's
 [single-family notice](configuration.md#single_family_notice) all report the
 same family.
 
-Ensemble groups a model by the last `/`-separated segment of its name,
-ignoring case, so a provider route groups as the bare name does. The family
-names a script will see are:
+Ensemble takes the last `/`-separated segment of the model name, ignores
+case and discards any tag starting with `:`. It tries the bare name first,
+then tries again after removing a single dotted vendor prefix, such as
+`anthropic.` in `anthropic.claude-sonnet-5-5`. A listed name matches on its
+own or before a hyphen. Qwen and Llama match by prefix, GLM also accepts
+version digits immediately after `glm` (as in `glm4:9b`), and Claude names
+and aliases also accept a bracketed context suffix such as `[1m]`.
 
-| Family | Models whose names begin |
+| Family | Recognised names |
 |---|---|
 | `claude` | `claude`, and Claude Code's aliases `opus`, `sonnet`, `haiku` and `fable` |
 | `gpt` | `gpt`, `chatgpt`, `codex`, and OpenAI's `o1` to `o9` series |
@@ -829,13 +833,19 @@ as text, put something before it.
 
 ### Retries
 
-Except for Codex output-schema rejections, a session's lost worker
-(`session-lost`), and a Claude task opening with a command that runs no skill
-(`claude-command-not-skill`), each
-attempt that fails is retried, up to `maxAttempts`, with the failure fed
-back to the worker. Claude corrects in the same session through the prompt
-editor. If tmux becomes unavailable, a one-shot correction starts a fresh session, whose
-opening delivery also requires tmux.
+Failed attempts are retried up to `maxAttempts`, with the failure fed back
+to the worker. These failures settle the call immediately:
+
+- Codex rejects the output schema.
+- The provider rejects the reasoning level (`effort-rejected`).
+- A held session loses its worker (`session-lost`).
+- The whitespace bound stops a held Claude worker (`ClaudeHeldWhitespaceStreamError`).
+- A Claude task opens with a command that runs no skill (`claude-command-not-skill`).
+
+Claude corrects in the same session through the prompt editor while the
+session and tmux are available. If a one-shot worker has stopped or tmux
+is unavailable for an in-session correction, Ensemble dispatches a fresh
+session. Opening delivery also requires tmux.
 Codex and opencode retry with the failure appended to the prompt.
 
 An opencode model absent from the machine registry, a missing model, or an
@@ -987,7 +997,9 @@ engine's own diagnostic:
   that died or never started; a Claude API refusal carrying a 429, 503, or 529, a dispatch
   Claude Code refused, a dispatch the daemon never registered, or a session
   that never showed life, or a one-shot Claude worker that left the roster
-  before answering. On any engine, this includes missing or rejected
+  before answering (`claude.worker-lost`). A held worker's loss after it has
+  shown life is `session-lost`, listed below. On any engine, availability
+  includes missing or rejected
   credentials (`<engine>.authentication-failure`) and a directory the engine
   needs that the launching process cannot use (`preflight.resource-denied`).
   Only this class advances a fallback chain.

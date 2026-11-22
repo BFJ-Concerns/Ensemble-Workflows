@@ -25677,12 +25677,15 @@ var AgyWorker = class _AgyWorker {
   session;
   /** The level the model runs at, where it has one to report. */
   effort;
+  /** This worker's session usage: a replacement worker starts its own. */
+  account;
   #listener = null;
   #stop = null;
-  constructor(client, session, effort, route) {
+  constructor(client, session, effort, account, route) {
     this.client = client;
     this.session = session;
     this.effort = effort;
+    this.account = account;
     route(this);
   }
   /**
@@ -25718,7 +25721,7 @@ var AgyWorker = class _AgyWorker {
     try {
       const session = await client.newSession({ cwd: settings.cwd, onUpdate: (update) => deliver(update) });
       const effort = await applySettings(session, settings);
-      return new _AgyWorker(client, session, effort, (worker) => {
+      return new _AgyWorker(client, session, effort, new AgyAccount(launch.onEvent), (worker) => {
         deliver = (update) => worker.#listener?.(update);
       });
     } catch (error) {
@@ -25953,10 +25956,10 @@ var AgyAccount = class {
     return event;
   }
 };
-function turnEvidence(worker, turn, account, context) {
+function turnEvidence(worker, turn, context) {
   const ending = turn.ending;
   const reply = ending.kind === "replied" || ending.kind === "deadline" || ending.kind === "whitespace" ? ending.reply : null;
-  const usageEvent = account.usage(worker, reply, context);
+  const usageEvent = worker.account.usage(worker, reply, context);
   const transcript = {
     filename: "transcript.agy.jsonl",
     format: "jsonl",
@@ -26012,6 +26015,9 @@ function settleTurn(evidence, turn, sessionId, timeoutMs) {
     }
   }
 }
+function shutdownWithEvidence(turn, evidence) {
+  return attachPartialWorkerText(attachFailedTurnResult(new EngineShutdownError("agy"), evidence), turn.allText);
+}
 function delivered(turn) {
   return turn.ending.kind === "replied" || turn.ending.kind === "deadline" || turn.ending.kind === "whitespace";
 }
@@ -26020,12 +26026,10 @@ var AgyEngineInvocation = class {
   #worker = null;
   /** Whether the live worker's session holds the task: its opening prompt was delivered. */
   #holdsTask = false;
-  #account;
   #closed = false;
   #settlement = null;
   constructor(options) {
     this.#options = options;
-    this.#account = new AgyAccount(options.launch.onEvent);
   }
   runAttempt(context) {
     const settlement = this.#runAttempt(context);
@@ -26051,12 +26055,12 @@ var AgyEngineInvocation = class {
     if (delivered(turn)) this.#holdsTask = true;
     if (turn.ending.kind === "lost" || worker.closed) {
       this.#worker = null;
-      turn.stops.push(await worker.close());
+      const stop = await worker.close();
+      if (!this.#closed) turn.stops.push(stop);
     }
-    if (this.#closed) {
-      throw attachPartialWorkerText(new EngineShutdownError("agy"), turn.allText);
-    }
-    return settleTurn(turnEvidence(worker, turn, this.#account, context), turn, worker.session.id, options.timeoutMs);
+    const evidence = turnEvidence(worker, turn, context);
+    if (this.#closed) throw shutdownWithEvidence(turn, evidence);
+    return settleTurn(evidence, turn, worker.session.id, options.timeoutMs);
   }
   async close() {
     if (this.#closed) return;
@@ -26083,13 +26087,11 @@ var AgyWorkerSession = class {
   #opening = null;
   /** Whether any turn's message has reached the session, so a later turn is not its first. */
   #opened = false;
-  #account;
   #lost = null;
   #lostExit = null;
   #closed = false;
   constructor(options) {
     this.#options = options;
-    this.#account = new AgyAccount(options.launch.onEvent);
   }
   beginTurn(prompt, turn) {
     let turnDelivered = false;
@@ -26107,10 +26109,10 @@ var AgyWorkerSession = class {
           turnDelivered = true;
           this.#opened = true;
         }
-        if (this.#closed) throw attachPartialWorkerText(new EngineShutdownError("agy"), ran.allText);
         const gone = ran.ending.kind === "lost" || worker.closed;
-        if (gone) ran.stops.push(await worker.close());
-        const evidence = turnEvidence(worker, ran, this.#account, context);
+        if (gone && !this.#closed) ran.stops.push(await worker.close());
+        const evidence = turnEvidence(worker, ran, context);
+        if (this.#closed) throw shutdownWithEvidence(ran, evidence);
         if (gone) {
           const exit = await worker.client.exited;
           this.#noteLost(worker, ran.ending.kind === "lost" ? ran.ending.error.message : "it did not end a cancelled turn and was stopped", exit);

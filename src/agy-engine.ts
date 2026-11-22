@@ -115,13 +115,16 @@ class AgyWorker {
   readonly session: AcpSession;
   /** The level the model runs at, where it has one to report. */
   readonly effort: string | null;
+  /** This worker's session usage: a replacement worker starts its own. */
+  readonly account: AgyAccount;
   #listener: ((update: AcpSessionUpdate) => void) | null = null;
   #stop: Promise<CommandStop> | null = null;
 
-  private constructor(client: AcpClient, session: AcpSession, effort: string | null, route: (worker: AgyWorker) => void) {
+  private constructor(client: AcpClient, session: AcpSession, effort: string | null, account: AgyAccount, route: (worker: AgyWorker) => void) {
     this.client = client;
     this.session = session;
     this.effort = effort;
+    this.account = account;
     route(this);
   }
 
@@ -158,7 +161,7 @@ class AgyWorker {
     try {
       const session = await client.newSession({ cwd: settings.cwd, onUpdate: (update) => deliver(update) });
       const effort = await applySettings(session, settings);
-      return new AgyWorker(client, session, effort, (worker) => {
+      return new AgyWorker(client, session, effort, new AgyAccount(launch.onEvent), (worker) => {
         deliver = (update) => worker.#listener?.(update);
       });
     } catch (error) {
@@ -408,7 +411,8 @@ function addUsage(total: TokenUsageBreakdown | null, last: TokenUsageBreakdown):
 
 /**
  * What one worker's turns are accounted under: its session's usage, summed
- * across turns, and the identity every attempt result carries.
+ * across its turns. Each worker holds its own, so the totals of a session
+ * that replaced a dead one start from that session's first turn.
  */
 class AgyAccount {
   #total: TokenUsageBreakdown | null = null;
@@ -443,10 +447,10 @@ class AgyAccount {
  * its usage (accounted and reported here), its transcript and agy's own
  * diagnostics.
  */
-function turnEvidence(worker: AgyWorker, turn: AgyTurn, account: AgyAccount, context: EngineAttemptContext): EngineAttemptResult {
+function turnEvidence(worker: AgyWorker, turn: AgyTurn, context: EngineAttemptContext): EngineAttemptResult {
   const ending = turn.ending;
   const reply = ending.kind === "replied" || ending.kind === "deadline" || ending.kind === "whitespace" ? ending.reply : null;
-  const usageEvent = account.usage(worker, reply, context);
+  const usageEvent = worker.account.usage(worker, reply, context);
   const transcript: EngineTranscriptArtifact = {
     filename: "transcript.agy.jsonl",
     format: "jsonl",
@@ -510,6 +514,15 @@ function settleTurn(evidence: EngineAttemptResult, turn: AgyTurn, sessionId: str
   }
 }
 
+/**
+ * The shutdown a turn cut short by the run's ending throws, carrying what
+ * the turn had shown — its text, usage and transcript — so the interrupted
+ * attempt keeps them.
+ */
+function shutdownWithEvidence(turn: AgyTurn, evidence: EngineAttemptResult): EngineShutdownError {
+  return attachPartialWorkerText(attachFailedTurnResult(new EngineShutdownError("agy"), evidence), turn.allText);
+}
+
 /** Whether the turn's message reached the session: a reply of any stop reason, or a stop the harness made of it. */
 function delivered(turn: AgyTurn): boolean {
   return turn.ending.kind === "replied" || turn.ending.kind === "deadline" || turn.ending.kind === "whitespace";
@@ -533,13 +546,11 @@ export class AgyEngineInvocation implements EngineInvocation {
   #worker: AgyWorker | null = null;
   /** Whether the live worker's session holds the task: its opening prompt was delivered. */
   #holdsTask = false;
-  #account: AgyAccount;
   #closed = false;
   #settlement: Promise<unknown> | null = null;
 
   constructor(options: AgyInvocationOptions) {
     this.#options = options;
-    this.#account = new AgyAccount(options.launch.onEvent);
   }
 
   runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
@@ -569,12 +580,13 @@ export class AgyEngineInvocation implements EngineInvocation {
     if (delivered(turn)) this.#holdsTask = true;
     if (turn.ending.kind === "lost" || worker.closed) {
       this.#worker = null;
-      turn.stops.push(await worker.close());
+      // A stop made by closing the invocation is the run's teardown, reported by the containment's close.
+      const stop = await worker.close();
+      if (!this.#closed) turn.stops.push(stop);
     }
-    if (this.#closed) {
-      throw attachPartialWorkerText(new EngineShutdownError("agy"), turn.allText);
-    }
-    return settleTurn(turnEvidence(worker, turn, this.#account, context), turn, worker.session.id, options.timeoutMs);
+    const evidence = turnEvidence(worker, turn, context);
+    if (this.#closed) throw shutdownWithEvidence(turn, evidence);
+    return settleTurn(evidence, turn, worker.session.id, options.timeoutMs);
   }
 
   async close(): Promise<void> {
@@ -619,14 +631,12 @@ class AgyWorkerSession implements EngineWorkerSession {
   #opening: Promise<AgyWorker> | null = null;
   /** Whether any turn's message has reached the session, so a later turn is not its first. */
   #opened = false;
-  #account: AgyAccount;
   #lost: EngineSessionLoss | null = null;
   #lostExit: WorkerExitStatus | null = null;
   #closed = false;
 
   constructor(options: AgySessionOptions) {
     this.#options = options;
-    this.#account = new AgyAccount(options.launch.onEvent);
   }
 
   beginTurn(prompt: string, turn: EngineSessionTurn): EngineInvocation {
@@ -648,10 +658,10 @@ class AgyWorkerSession implements EngineWorkerSession {
           turnDelivered = true;
           this.#opened = true;
         }
-        if (this.#closed) throw attachPartialWorkerText(new EngineShutdownError("agy"), ran.allText);
         const gone = ran.ending.kind === "lost" || worker.closed;
-        if (gone) ran.stops.push(await worker.close());
-        const evidence = turnEvidence(worker, ran, this.#account, context);
+        if (gone && !this.#closed) ran.stops.push(await worker.close());
+        const evidence = turnEvidence(worker, ran, context);
+        if (this.#closed) throw shutdownWithEvidence(ran, evidence);
         if (gone) {
           // The worker went with the turn, or would not end it and was
           // stopped: the session is gone, and the turn's evidence rides the loss.

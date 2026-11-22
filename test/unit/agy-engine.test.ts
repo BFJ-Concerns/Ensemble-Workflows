@@ -10,7 +10,7 @@ import { AgyEngineAdapter } from "../../src/agy-engine.js";
 import { CommandContainment } from "../../src/contained-command.js";
 import { DispatchRemap } from "../../src/dispatch-remap.js";
 import { EngineRegistry, type EngineAttemptResult } from "../../src/engines.js";
-import { AgySubstrateRefusedError, InvalidAgentOptionValueError, TurnTimeoutError, failedTurnResultOf } from "../../src/errors.js";
+import { AgySubstrateRefusedError, EngineShutdownError, InvalidAgentOptionValueError, TurnTimeoutError, failedTurnResultOf } from "../../src/errors.js";
 import { assertValidFallbackOption } from "../../src/engine-option-validation.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { summariseUsage } from "../../src/usage-summary.js";
@@ -407,4 +407,56 @@ test("a dispatch remap routes a call to agy and records the move", async (t) => 
   const record = runtime.lastAgentRecord();
   assert.equal(record?.resolvedModel, "tiered-model");
   assert.deepEqual(record?.attempts[0]?.remap, { key: "codex", requested: { engine: "codex", model: "gpt-6.2-sol" } });
+});
+
+test("a one-shot agy turn cut short by its invocation closing keeps its text, usage and transcript on the shutdown", async (t) => {
+  const { adapter, dir } = await scriptedAdapter(t, { turns: [[say("partial-evidence"), { untilCancelled: true }]] });
+  const invocation = adapter.createInvocation("long task", { cwd: dir });
+  let seen!: () => void;
+  const output = new Promise<void>((resolve) => (seen = resolve));
+  const pending = invocation.runAttempt({ attempt: 1, onOutput: () => seen() }).catch((error: unknown) => error);
+  await output;
+  await invocation.close?.();
+  const failure = await pending;
+  assert.ok(failure instanceof EngineShutdownError);
+  const result = failedTurnResultOf(failure) as EngineAttemptResult;
+  assert.equal(result.text, "partial-evidence");
+  assert.match(result.transcripts![0]!.content, /partial-evidence/);
+  assert.equal(result.transcripts![0]!.partial, true);
+});
+
+test("a held agy turn cut short by its session closing keeps its transcript on the shutdown", async (t) => {
+  const { adapter, dir } = await scriptedAdapter(t, { turns: [[say("partial-evidence"), { untilCancelled: true }]] });
+  const session = adapter.createSession({ cwd: dir }, { onLost: () => assert.fail("closing a session is not a loss") });
+  let seen!: () => void;
+  const output = new Promise<void>((resolve) => (seen = resolve));
+  const pending = session.beginTurn("long task", {}).runAttempt({ attempt: 1, onOutput: () => seen() }).catch((error: unknown) => error);
+  await output;
+  await session.close();
+  const failure = await pending;
+  assert.ok(failure instanceof EngineShutdownError);
+  assert.match((failedTurnResultOf(failure) as EngineAttemptResult).transcripts![0]!.content, /partial-evidence/);
+});
+
+test("a worker that replaces a dead one accounts its session's usage from zero", async (t) => {
+  const { bin, dir } = await scriptedAgy(t);
+  const commands = new CommandContainment(new NoWorkerScopes());
+  const adapter = new AgyEngineAdapter({
+    bin, cwd: dir, commands,
+    workerEnv: { SCRIPTED_ACP_AGENT: JSON.stringify({ counter: path.join(dir, "turns"), turns: [[say("not a number")], [{ exit: 1 }], [say("7")]] }) }
+  });
+  const runtime = new EnsembleRuntime({ defaultMaxAttempts: 3, cwd: dir, engines: new EngineRegistry([adapter]) });
+  t.after(async () => {
+    await runtime.close();
+    await commands.close();
+  });
+  assert.equal(await runtime.agent("count", { engine: "agy", schema: { type: "number" } }), 7);
+  const attempts = runtime.lastAgentRecord()!.attempts;
+  assert.equal(attempts.length, 3);
+  const [first] = attempts[0]!.tokenUsageEvents;
+  const [replaced] = attempts[2]!.tokenUsageEvents;
+  assert.equal(first?.total.totalTokens, 110);
+  assert.equal(replaced?.last.totalTokens, 110);
+  assert.equal(replaced?.total.totalTokens, 110, "the new session's total starts at its own first turn");
+  assert.match(String(replaced?.turnId), /:agy-1$/);
 });

@@ -160,17 +160,17 @@ export function leafTokenAbsence(unobserved: readonly UnobservedSpend[]): TokenA
 export type AttemptEnding = "settled" | "refused" | "interrupted" | "timed-out" | "lost" | "whitespace-stream-stopped" | "unsettled";
 
 /**
- * Failure kinds raised when a substrate refused an attempt before any
- * worker process existed. Such an attempt spent nothing.
+ * Whether a recorded failure kind means a substrate refused the attempt
+ * before any worker process existed, so it spent nothing. A refusal is
+ * recorded under the name of its error class, and every such class extends
+ * `SubstrateRefusedError` and is named for it: `SubstrateRefusedError`
+ * itself, an engine's own `<Engine>SubstrateRefusedError`,
+ * `ResourcePreflightRefusedError`. `ClaudeDispatchError` is the one
+ * refusal named otherwise, and is named here.
  */
-export const REFUSED_BEFORE_WORKER_KINDS: ReadonlySet<string> = new Set([
-  "SubstrateRefusedError",
-  "ResourcePreflightRefusedError",
-  "CodexSubstrateRefusedError",
-  "ClaudeDispatchError"
-]);
-
-/**
+export function isRefusedBeforeWorkerKind(kind: string | undefined): boolean {
+  return kind !== undefined && (kind.endsWith("RefusedError") || kind === "ClaudeDispatchError");
+}/**
  * The recorded failure kinds that mean a deadline the runtime enforced
  * ended the worker's turn: a thrown turn or request deadline
  * (`TurnTimeoutError`, raised for Codex and opencode), Codex's
@@ -296,7 +296,7 @@ export function attemptEnding(attempt: RollupAttemptView): AttemptEnding {
   if (kind === null) {
     return "settled";
   }
-  if (REFUSED_BEFORE_WORKER_KINDS.has(kind)) {
+  if (isRefusedBeforeWorkerKind(kind)) {
     return "refused";
   }
   if (isRunEndingFailureKind(kind)) {
@@ -318,8 +318,13 @@ export function isWhitespaceStreamFailureKind(kind: string | undefined): boolean
   return kind === "WhitespaceStreamError" || kind === "ClaudeHeldWhitespaceStreamError";
 }
 
+/**
+ * Whether a recorded failure kind means the worker disappeared before it
+ * answered: a held session lost (`session-lost`), or an engine's worker
+ * lost mid-turn, which every engine records as `<engine>-worker-lost`.
+ */
 export function isWorkerLossFailureKind(kind: string | undefined): boolean {
-  return kind === "claude-worker-lost" || kind === "session-lost";
+  return kind !== undefined && (kind === "session-lost" || kind.endsWith("-worker-lost"));
 }
 
 const UNOBSERVED_REASON: Record<Exclude<AttemptEnding, "settled" | "refused">, UnobservedSpendReason> = {

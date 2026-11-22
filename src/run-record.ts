@@ -23,8 +23,8 @@ import { LIVE_TRANSCRIPTS, transcriptLine } from "./live-transcript.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 import {
-  REFUSED_BEFORE_WORKER_KINDS,
   buildCostRollup,
+  isRefusedBeforeWorkerKind,
   isWorkerLossFailureKind,
   isWhitespaceStreamFailureKind,
   type UnobservedSpendReason,
@@ -1759,7 +1759,7 @@ function agentUsage(
 /** Every recorded attempt was refused before a worker existed. */
 function substratesNeverStarted(record: RuntimeAgentRecord): boolean {
   return record.attempts.length > 0 && record.attempts.every((attempt) =>
-    attempt.failure !== null && REFUSED_BEFORE_WORKER_KINDS.has(attempt.failure.kind)
+    isRefusedBeforeWorkerKind(attempt.failure?.kind)
   );
 }
 

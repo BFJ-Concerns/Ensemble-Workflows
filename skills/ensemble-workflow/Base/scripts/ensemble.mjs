@@ -16716,12 +16716,9 @@ var TOKEN_ABSENCE_PRECEDENCE = [
 function leafTokenAbsence(unobserved) {
   return TOKEN_ABSENCE_PRECEDENCE.find((reason) => unobserved.some((entry) => entry.reason === reason)) ?? "substrate-never-started";
 }
-var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
-  "SubstrateRefusedError",
-  "ResourcePreflightRefusedError",
-  "CodexSubstrateRefusedError",
-  "ClaudeDispatchError"
-]);
+function isRefusedBeforeWorkerKind(kind) {
+  return kind !== void 0 && (kind.endsWith("RefusedError") || kind === "ClaudeDispatchError");
+}
 var DEADLINE_FAILURE_KINDS = /* @__PURE__ */ new Set([
   "TurnTimeoutError",
   "AppServerFirstOutputTimeoutError",
@@ -16749,7 +16746,7 @@ function attemptEnding(attempt) {
   if (kind === null) {
     return "settled";
   }
-  if (REFUSED_BEFORE_WORKER_KINDS.has(kind)) {
+  if (isRefusedBeforeWorkerKind(kind)) {
     return "refused";
   }
   if (isRunEndingFailureKind(kind)) {
@@ -16770,7 +16767,7 @@ function isWhitespaceStreamFailureKind(kind) {
   return kind === "WhitespaceStreamError" || kind === "ClaudeHeldWhitespaceStreamError";
 }
 function isWorkerLossFailureKind(kind) {
-  return kind === "claude-worker-lost" || kind === "session-lost";
+  return kind !== void 0 && (kind === "session-lost" || kind.endsWith("-worker-lost"));
 }
 var UNOBSERVED_REASON = {
   interrupted: "worker-interrupted",
@@ -17692,7 +17689,7 @@ function agentUsage(record) {
 }
 function substratesNeverStarted(record) {
   return record.attempts.length > 0 && record.attempts.every(
-    (attempt) => attempt.failure !== null && REFUSED_BEFORE_WORKER_KINDS.has(attempt.failure.kind)
+    (attempt) => isRefusedBeforeWorkerKind(attempt.failure?.kind)
   );
 }
 async function resolveRunDirectory(storeDir, cwd, runUuid) {

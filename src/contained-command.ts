@@ -7,13 +7,16 @@ import path from "node:path";
 import type { Writable } from "node:stream";
 
 import { EnsembleError, StopUnconfirmedError, type UnestablishedStop } from "./errors.js";
+import { enterScopeSubgroup } from "./scope-subgroup.js";
 import type { JsonObject } from "./types.js";
 import {
   DEFAULT_STOP_BOUNDS,
+  RUN_SCOPE_GROUP,
   waitUntil,
   type ScopePlacement,
   type StopBounds,
   type StopOutcome,
+  type WorkerScopeGrouping,
   type WorkerScopes
 } from "./worker-scopes.js";
 
@@ -130,21 +133,27 @@ export function unestablishedStopsOf(diagnostics: JsonObject | undefined): Unest
  * How far a contained command's ownership reaches, fixed when `contain()`
  * resolves.
  *
- * - `scope`: the command runs in a scope of its own, created around it
+ * - `scope`: the command runs in a cgroup of its own, arranged around it
  *   before its first instruction, so every process it ever starts is born
  *   there and stays there — reparented, in a new session or a new process
- *   group alike — and a confirmed stop means none of them is left.
- * - `process-group`: no scope could be had, and `reason` says why (no user
- *   manager answers, or the manager refused or did not confirm the scope).
- *   The command leads a process group of its own and a stop ends that
- *   group. A descendant that starts a session or group of its own leaves the
- *   run's reach, and nothing here can see it go.
+ *   group alike — and a confirmed stop means none of them is left. `unit`
+ *   is the scope that holds it. Under `worker` grouping the scope is the
+ *   command's alone. Under `run` grouping it is the scope every worker of
+ *   the run shares, and `subgroup` names the command's own cgroup below it
+ *   (scope-subgroup.ts).
+ * - `process-group`: no cgroup of its own could be had, and `reason` says
+ *   why (no user manager answers, the manager refused or did not confirm
+ *   the scope, or the run's scope gave the command no subgroup). The
+ *   command leads a process group of its own and a stop ends that group. A
+ *   descendant that starts a session or group of its own leaves the
+ *   attempt's reach, and nothing here can see it go.
  *
- * Each command takes a scope of its own under either worker scope grouping,
+ * Either grouping gives each command a cgroup no other worker is in,
  * because a deadline or a cancellation stops one attempt's command without
- * touching another worker's processes.
+ * touching another worker's processes: a stop never signals the scope a
+ * run's workers share.
  */
-export type ContainmentReach = { kind: "scope"; unit: string } | { kind: "process-group"; reason: string };
+export type ContainmentReach = { kind: "scope"; unit: string; subgroup?: string } | { kind: "process-group"; reason: string };
 
 /** Where one standard stream of a contained command goes. */
 export type ContainedStream = "ignore" | "pipe" | "inherit";
@@ -159,6 +168,13 @@ export interface ContainOptions {
 export interface CommandContainmentOptions {
   /** The bounds `close()` stops each remaining command within. */
   stopBounds?: StopBounds;
+  /**
+   * The run's worker scope grouping, as the other engines are given it.
+   * `worker`, the default, gives each command a scope of its own. `run`
+   * places each command in the scope every worker of the run shares
+   * (`RUN_SCOPE_GROUP`), in a subgroup of its own there.
+   */
+  grouping?: WorkerScopeGrouping;
 }
 
 /**
@@ -170,6 +186,7 @@ export interface CommandContainmentOptions {
 export class CommandContainment {
   #scopes: WorkerScopes;
   #stopBounds: StopBounds;
+  #grouping: WorkerScopeGrouping;
   /** Distinguishes this run's command groups on a manager another run may share. */
   #label = randomUUID().slice(0, 8);
   #count = 0;
@@ -183,6 +200,7 @@ export class CommandContainment {
   constructor(scopes: WorkerScopes, options: CommandContainmentOptions = {}) {
     this.#scopes = scopes;
     this.#stopBounds = options.stopBounds ?? DEFAULT_STOP_BOUNDS;
+    this.#grouping = options.grouping ?? "worker";
   }
 
   /**
@@ -191,8 +209,8 @@ export class CommandContainment {
    * Resolves once the command is running inside its reach. Rejects only when
    * the command cannot start — its executable does not resolve (an error
    * shaped like Node's own spawn failure, `code` ENOENT or EACCES), or the
-   * containment is closed — and then nothing ran. A manager that cannot
-   * give the command a scope still starts it, at `process-group` reach.
+   * containment is closed — and then nothing ran. A command that cannot be
+   * given a cgroup of its own still starts, at `process-group` reach.
    */
   async contain(name: string, file: string, args: readonly string[], options: ContainOptions): Promise<ContainedCommand> {
     if (this.#closing !== null) {
@@ -212,51 +230,79 @@ export class CommandContainment {
     const gated = await spawnGated(file, args, options);
     const pid = gated.child.pid!;
     this.#count += 1;
-    const group = `command-${this.#label}-${this.#count}`;
+    const own = `command-${this.#label}-${this.#count}`;
     // The command is blocked at its gate and cannot have started anything,
-    // so the scope is created around it alone, and the placement confirms
-    // the move from the process's own cgroup line before the gate opens.
-    let placement: ScopePlacement;
+    // so its cgroup is arranged around it alone, and the move is confirmed
+    // from the process's own cgroup line before the gate opens.
+    let held: Held;
     try {
-      placement = await this.#scopes.place(group, [pid]);
+      held = this.#grouping === "run" ? await this.#joinRunScope(own, pid) : await this.#takeOwnScope(own, pid);
     } catch (error) {
-      // Placement never rejects by contract. A manager that breaks it must
-      // not leave a shell waiting at a gate nobody will open.
+      // Neither arrangement rejects by contract. A manager that breaks it
+      // must not leave a shell waiting at a gate nobody will open.
       gated.child.kill("SIGKILL");
       throw error;
-    }
-    let reach: ContainmentReach;
-    let stopper: Stopper;
-    // The manager keeps a scope it could not confirm empty and stops it
-    // afresh when asked again, so one call serves both passes.
-    const stopScope = (bounds: StopBounds): Promise<StopOutcome> => this.#scopes.stop(group, bounds);
-    if (placement.kind === "placed") {
-      reach = { kind: "scope", unit: placement.unit };
-      stopper = { stop: stopScope, stopAgain: stopScope };
-    } else {
-      reach = {
-        kind: "process-group",
-        reason: placement.kind === "unavailable" ? "no systemd user manager is reachable" : `the manager gave the command no scope: ${placement.reason}`
-      };
-      // A refusal can follow a scope the manager accepted and had not yet
-      // filled, so the stop covers the group's scope as well as the process
-      // group; a group the manager holds no scope for costs it nothing.
-      stopper = {
-        stop: async (bounds) => worstOf(await Promise.all([stopProcessGroup(pid, bounds), stopScope(bounds)])),
-        stopAgain: async (bounds) => worstOf(await Promise.all([processGroupEnded(pid, bounds), stopScope(bounds)]))
-      };
     }
     const command = new Contained(
       name,
       gated.child,
-      reach,
-      stopper,
+      held.reach,
+      held.stopper,
       () => (this.#runEnding ? "run-ending" : "attempt"),
       (stopped) => this.#owned.delete(stopped)
     );
     this.#owned.add(command);
     gated.open();
     return command;
+  }
+
+  /** `worker` grouping: a scope the manager creates around the command alone, stopped as a whole. */
+  async #takeOwnScope(group: string, pid: number): Promise<Held> {
+    const placement = await this.#scopes.place(group, [pid]);
+    // The manager keeps a scope it could not confirm empty and stops it
+    // afresh when asked again, so one call serves both passes.
+    const stopScope = (bounds: StopBounds): Promise<StopOutcome> => this.#scopes.stop(group, bounds);
+    if (placement.kind === "placed") {
+      return { reach: { kind: "scope", unit: placement.unit }, stopper: { stop: stopScope, stopAgain: stopScope } };
+    }
+    // A refusal can follow a scope the manager accepted and had not yet
+    // filled, so the stop covers the group's scope as well as the process
+    // group; a group the manager holds no scope for costs it nothing.
+    return {
+      reach: { kind: "process-group", reason: withoutScope(placement) },
+      stopper: {
+        stop: async (bounds) => worstOf(await Promise.all([stopProcessGroup(pid, bounds), stopScope(bounds)])),
+        stopAgain: async (bounds) => worstOf(await Promise.all([processGroupEnded(pid, bounds), stopScope(bounds)]))
+      }
+    };
+  }
+
+  /**
+   * `run` grouping: the command joins the scope every worker of the run
+   * shares, then enters a subgroup of its own there, and a stop ends that
+   * subgroup. The scope itself is never stopped for a command — it holds
+   * the run's other workers — so a command left without a subgroup is
+   * stopped by its process group alone; whatever of it stays behind in the
+   * scope ends when the manager closes the scope with the run.
+   */
+  async #joinRunScope(subgroup: string, pid: number): Promise<Held> {
+    const placement = await this.#scopes.place(RUN_SCOPE_GROUP, [pid]);
+    let reason: string;
+    if (placement.kind === "placed") {
+      const entry = await enterScopeSubgroup(placement.unit, subgroup, pid);
+      if (entry.kind === "entered") {
+        // A subgroup holds only what is the command's own, whenever it is asked.
+        const stopSubgroup = (bounds: StopBounds): Promise<StopOutcome> => entry.subgroup.stop(bounds);
+        return { reach: { kind: "scope", unit: placement.unit, subgroup }, stopper: { stop: stopSubgroup, stopAgain: stopSubgroup } };
+      }
+      reason = `the run's scope gave the command no subgroup: ${entry.reason}`;
+    } else {
+      reason = withoutScope(placement);
+    }
+    return {
+      reach: { kind: "process-group", reason },
+      stopper: { stop: (bounds) => stopProcessGroup(pid, bounds), stopAgain: (bounds) => processGroupEnded(pid, bounds) }
+    };
   }
 
   /**
@@ -305,6 +351,17 @@ export class CommandContainment {
   }
 }
 
+/** Why a placement left a command without a scope. */
+function withoutScope(placement: Exclude<ScopePlacement, { kind: "placed" }>): string {
+  return placement.kind === "unavailable" ? "no systemd user manager is reachable" : `the manager gave the command no scope: ${placement.reason}`;
+}
+
+/** What a command is held in once its cgroup is arranged: how far that reaches, and how it is stopped. */
+interface Held {
+  reach: ContainmentReach;
+  stopper: Stopper;
+}
+
 /**
  * How a command's reach is stopped. `stop` ends everything within reach and
  * confirms the end. `stopAgain` is the run's close returning to a command
@@ -348,9 +405,12 @@ class Contained implements ContainedCommand {
     this.#release = release;
   }
 
-  /** How the operator finds the command's processes: its scope, or its process group. */
+  /** How the operator finds the command's processes: its scope and any subgroup there, or its process group. */
   get owner(): string {
-    return `${this.#name} in ${this.reach.kind === "scope" ? this.reach.unit : `process group ${this.child.pid ?? "unknown"}`}`;
+    if (this.reach.kind === "process-group") {
+      return `${this.#name} in process group ${this.child.pid ?? "unknown"}`;
+    }
+    return `${this.#name} in ${this.reach.unit}${this.reach.subgroup === undefined ? "" : `/${this.reach.subgroup}`}`;
   }
 
   stop(bounds: StopBounds = DEFAULT_STOP_BOUNDS): Promise<CommandStop> {

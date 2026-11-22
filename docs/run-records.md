@@ -160,7 +160,8 @@ unobserved, not zero. Identity and paths are producer-supplied evidence, never
 inferred. Requested identity describes the original call and is present from
 the first snapshot listing the worker; resolved identity names what was
 served. Transcript paths match the running agent record's current attempt:
-archive-relative for Codex, absolute native paths for Claude. Resolve relative paths against archiveDir. A settled Claude record
+archive-relative for Codex and opencode, absolute native paths for Claude.
+Resolve relative paths against `archiveDir`. A settled Claude record
 archives a copy of the native transcript; the status entry retains its
 live path. Evidence timestamps advance when output is observed, which each
 engine allows at a different grain. Codex reports each notification of the
@@ -527,9 +528,9 @@ before the death:
 - The record's `resolved_model` and `resolved_effort` take that attempt's
   served identity where the engine had reported one.
 - That attempt's partial transcript is linked in `transcripts` with
-  `partial: true`. A Codex transcript is already in the archive and its
-  files-table entry is re-measured; a Claude transcript is copied into the
-  archive when it is still readable. `transcripts_unavailable` names a reason
+  `partial: true`. Codex and opencode transcripts are already in the archive, and their
+  files-table entries are re-measured. A Claude transcript is copied into
+  the archive when it is still readable. `transcripts_unavailable` names a reason
   only when no transcript is linked.
 - `cost_rollup` is recomputed from the reconciled records, so the abandoned
   attempt is booked under the model that served it and marks its leaf
@@ -771,7 +772,6 @@ While an attempt executes, on any engine, the record also has
 - `effort_resolution`: dispatch provenance, present when the runtime resolved
   a canonical effort; the shape matches a settled attempt below.
 - `transcript`: a path once a readable file exists, otherwise `null`.
-  opencode has no live transcript, so its value stays `null`.
 - `resolved_model` and `resolved_effort`: the served identity the engine has
   reported for this attempt so far, written as it is reported, and `null`
   until then. A held session's attempts start with the identity its worker
@@ -787,13 +787,16 @@ lists settled attempts only. The running attempt is `current_attempt`.
 
 Claude's live path is absolute and points to the session's own JSONL file
 under `~/.claude/projects/`. A held session uses that same file across its
-turns, so the live file includes the conversation. Codex's live path is
-relative to the run's archive directory and belongs to that agent and
-attempt. Each captured app-server event is appended as it arrives. The
-same path appears in `transcripts` at settlement, with its final size and
-digest in the manifest's files table. A failed live write is reported as
-`runRecord/writeFailed`; settlement repairs an incomplete Codex file from
-the engine's captured transcript when that capture is available.
+turns, so the live file includes the conversation. Codex and opencode
+write live JSONL files relative to the archive directory, one per attempt.
+Ensemble appends each event as it arrives. For opencode it also appends the
+session export when available. The same path appears in `transcripts`
+at settlement, with its final size and digest in the manifest's files table.
+A failed live write is reported as `runRecord/writeFailed`. Settlement
+repairs an incomplete file from the engine's captured transcript when
+available. An attempt
+that settles without a captured transcript keeps the live file as it stands:
+it is linked in `transcripts` with `partial: true`.
 
 Readers should reopen the atomically replaced `agent.json` as they poll.
 Live transcripts grow independently of the record and can end with a
@@ -1099,8 +1102,9 @@ The fields present throughout a record's lifetime are:
   run's own ending.
 - `transcripts`: array; each entry has `attempt`, `path`, `format`, `source`,
   `session_id`, `thread_id`, and `partial` (`true` when the turn ended before
-  completion, and always on an abandoned attempt's transcript). Empty when
-  none were archived.
+  completion, always on an abandoned attempt's transcript, and on a live
+  file kept because the attempt settled without a captured transcript).
+  Empty when none were archived.
 - `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise
   why it is empty: `"record-unsettled"`, `"no-attempt-ran"`,
   `"worker-interrupted"`, `"worker-timed-out"`, `"substrate-never-started"`
@@ -1165,6 +1169,10 @@ on the same target.
 | `claude.command-not-skill` | `unclassified` | The task opened with a `/<name>` Claude Code took as a command, and no skill by that name ran; *settles* |
 | `claude.transcript` | `unclassified` | The session's transcript could not be found or read |
 | `claude.collection` | `unclassified` | The session settled, but its transcript holds no completed turn or final text to collect |
+| `opencode.worker-lost` | `availability` | The process died by signal before reporting an answer or a failure |
+| `opencode.usage-limit` | `availability` | The provider reported HTTP 402 |
+| `opencode.rate-limit` | `availability` | The provider reported HTTP 429 |
+| `opencode.provider-internal-error` | `availability` | The provider reported HTTP 5xx |
 | `opencode.run-error` | `unclassified` | `opencode run` exited in error |
 | `opencode.deadline` | `unclassified` | The call's `timeoutMs` ended the run |
 | `null` | `unclassified` | No rule recognised the failure |

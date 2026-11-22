@@ -279,13 +279,8 @@ export function assertValidFallbackOption(value: unknown): asserts value is Fall
  * A fallback chain is judged whole, pre-spawn, wherever it is declared — a
  * call site, a session, an engine's `defaults` block, or a named target's
  * binding: an array of targets, each either a full literal target naming an
- * engine and a model, Codex or Claude only (opencode is held at its existing
- * surface and skips new capability by default, so an opencode entry throws
- * here rather than failing unnoticed on the day the chain first advances),
- * or a named target, whose binding is judged where the bindings are known
- * (`settleChain`); either with any effort in the canonical vocabulary. The
- * chain's own engine is never consulted: a Codex block may name a Claude
- * target — that cross-family step is the motivating case.
+ * engine and a model, or a named target, whose binding is judged where the
+ * bindings are known. Effort may be canonical or a raw opencode variant.
  */
 export function assertValidFallbackChain(chain: unknown): asserts chain is FallbackTarget[] | undefined {
   if (chain === undefined) {
@@ -309,9 +304,7 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
         );
       }
     }
-    if (target.effort !== undefined && !isCanonicalEffort(target.effort)) {
-      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
-    }
+    assertValidFallbackEffort(target.effort, target.target === undefined ? target.engine : undefined, index);
     if (target.target !== undefined) {
       // A target beside a literal engine or model is refused where the
       // file whose binding would supply them can be named (`settleChain`).
@@ -320,16 +313,22 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
       }
       return;
     }
-    if (target.engine === "opencode") {
-      throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
-    }
-    if (target.engine !== "codex" && target.engine !== "claude") {
-      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex" or "claude", got ${JSON.stringify(target.engine)}`);
+    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "opencode") {
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude" or "opencode", got ${JSON.stringify(target.engine)}`);
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
     }
   });
+}
+
+export function assertValidFallbackEffort(effort: unknown, engine: unknown, index: number): void {
+  if (effort === undefined || isCanonicalEffort(effort)) return;
+  if ((engine === undefined || engine === "opencode") &&
+      typeof effort === "string" && effort.trim().length > 0 && effort !== "ultra") return;
+  throw new FallbackTargetRejectedError(
+    `entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(effort)}`
+  );
 }
 
 export function requireRegisteredOpenCodeModel(

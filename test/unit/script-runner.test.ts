@@ -1479,9 +1479,8 @@ test("defaults with an unsupported option key fail loudly", async () => {
 
 test("a malformed fallback chain in defaults fails before the body runs", async () => {
   // The chain is judged whole at load, by the same validator every
-  // call site uses. An opencode entry (the engine takes no chain entries) is
-  // the one that must fail here rather than on the day the chain first
-  // advances.
+  // call site uses. An unknown engine must fail here, before the chain
+  // first advances.
   const logs: string[] = [];
   let agentCalls = 0;
   const countingRuntime: WorkflowRuntime = {
@@ -1495,19 +1494,19 @@ test("a malformed fallback chain in defaults fails before the body runs", async 
   await assert.rejects(
     () =>
       runWorkflowScript({
-        filename: "opencode-fallback-default.js",
+        filename: "unknown-fallback-default.js",
         runtime: countingRuntime,
         log: (message) => logs.push(message),
         source: `
-          export const meta = { name: "opencode-fallback-default" };
-          export const defaults = { codex: { fallback: [{ engine: "opencode", model: "glm-5.2" }] } };
+          export const meta = { name: "unknown-fallback-default" };
+          export const defaults = { codex: { fallback: [{ engine: "unknown", model: "glm-5.2" }] } };
           log("body ran");
           return await agent("never", { engine: "codex" });
         `
       }),
     (error: unknown) => {
       assert.ok(error instanceof FallbackTargetRejectedError);
-      assert.match(error.message, /entry 0 names the opencode engine/);
+      assert.match(error.message, /entry 0 must name engine/);
       return true;
     }
   );

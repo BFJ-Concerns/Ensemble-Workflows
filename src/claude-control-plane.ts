@@ -10,6 +10,7 @@ import { claudeConfigDirectory, claudeValveDirectory, temporaryDirectory } from 
 import { launchEnvironment, SANDBOXED_WORKSPACE_VARIABLE } from "./engine-environment.js";
 import { attachFailedTurnResult, ClaudeDispatchError, ClaudeRegistrationTimeoutError, EngineShutdownError, SubstrateRefusedError } from "./errors.js";
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
+import { CLAUDE_TRANSCRIPT } from "./live-transcript.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
 import { claudeToolSurfaceProbePrompt, readClaudeToolSurface, type ClaudeToolSurface } from "./claude-tool-surface.js";
@@ -804,7 +805,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           text: "", deltaText: "", durationMs: null, firstDeltaMs: null, items: {}, tokenUsageEvents: [],
           diagnostics,
           ...(transcript === null ? {} : { transcripts: [{
-            filename: "transcript.claude.jsonl", format: "jsonl", source: "claude-session-jsonl",
+            filename: CLAUDE_TRANSCRIPT.filename, format: "jsonl", source: CLAUDE_TRANSCRIPT.source,
             sessionId: registered!.sessionId, content: transcript, partial: true
           }] })
         });

@@ -1448,7 +1448,7 @@ test("held turns publish separate live records and ignore prior-turn callbacks",
     recordAgent: async () => undefined,
     recordAttemptEnd: ignoreAttemptEnd,
     recordAttemptStart: async (id: number, { attempt }: LiveAttemptStart) => { starts.push([id, attempt]); },
-    appendCodexTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); }
+    appendLiveTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); }
   } as unknown as RunRecordWriter);
   const session = runtime.createWorkerSession({ engine: "codex" });
   try {

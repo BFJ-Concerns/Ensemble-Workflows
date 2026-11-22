@@ -85,9 +85,9 @@ a script argument spelled like a run option, put `--` before the script path:
 | `--concurrency engine=N` | Maximum parallel workers on one engine. Repeatable, one engine each |
 | `--agent-ceiling N` | Maximum parallel workers across every engine. `--agent-ceiling null` lifts a ceiling set in the environment or configuration file for this run |
 | `--timeout ms` | Whole-run deadline, at most 2147483647. Distinct from an `agent()` call's own `timeoutMs` |
-| `--strip capability` | Remove a tool-surface capability (`skills` or `agents`) from every worker in the run; an opencode worker refuses any strip (see [Permissions](workflow-scripts.md#permissions-and-strip)). Repeatable |
+| `--strip capability` | Remove a tool-surface capability (`skills` or `agents`) from every worker in the run (see [Permissions](workflow-scripts.md#permissions-and-strip)). Repeatable |
 | `--caller-identity <identity>` | Opaque identity of the invoking session, recorded in the run record. Overrides `ENSEMBLE_CALLER_IDENTITY` |
-| `--worker-scope worker\|run` | Systemd scope grouping for Claude and Codex; overrides environment and configuration (see [Configuration](configuration.md)) |
+| `--worker-scope worker\|run` | Systemd scope grouping for workers. Overrides environment and configuration (see [Configuration](configuration.md)) |
 | `--hold-scope <scope>` | Scope for decision holds raised during the run. Overrides `ENSEMBLE_HOLD_SCOPE` |
 | `--remap key=engine[:model]` | Repeatable [dispatch remap](workflow-scripts.md#dispatch-remap) rule. The flag list overrides `ENSEMBLE_DISPATCH_REMAP` |
 | `--lean` | Start every worker in the run without the operator's interactive context; an engine that cannot arrange it refuses the dispatch before the worker spawns (see [Lean workers](workflow-scripts.md#lean-workers)) |

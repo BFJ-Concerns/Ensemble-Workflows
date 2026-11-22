@@ -8,6 +8,7 @@ import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
 import { effectiveLean, resolveLeanStart } from "./lean-start.js";
+import { LIVE_TRANSCRIPTS } from "./live-transcript.js";
 import type { DischargedLeanStart } from "./lean-start.js";
 import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
@@ -25,6 +26,7 @@ import type { DischargedEnforcement, PreparedStrip } from "./capability-strippin
 import type { MachineFallback, SelectedFallback } from "./fallback-source.js";
 import { harnessVersion } from "./harness-version.js";
 import {
+  assertCanonicalEffortSupported,
   assertValidAgentOptions,
   assertValidSessionTurnOptions,
   assertValidWorkerSessionOptions,
@@ -241,7 +243,7 @@ function chainTargets(
       entry: index,
       engine: target.engine,
       model: target.model,
-      effort: target.effort ?? options.effort,
+      effort: target.effort ?? (target.engine === "opencode" || isCanonicalEffort(options.effort) ? options.effort : undefined),
       namedTarget: target.namedTarget,
       ...(target.remap === undefined ? {} : { remap: target.remap })
     }))
@@ -977,7 +979,7 @@ export class EnsembleRuntime {
     const lean = effectiveLean(this.#lean, options.lean);
     const leanRoute = lean ? resolveLeanStart(engine.name, engine.leanStart) : null;
     for (const target of chain) {
-      const targetEngine = this.#chainEngineFor(target);
+      const targetEngine = this.#chainEngineFor(target, options.effort);
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
@@ -986,12 +988,7 @@ export class EnsembleRuntime {
       }
     }
     this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
-    if (engine instanceof OpenCodeEngineAdapter) {
-      if (options.model === undefined) {
-        throw new OpenCodeModelRequiredError(engine.modelRegistry);
-      }
-      validateEngineDefaults(engine.name, options, engine.modelRegistry);
-    }
+    this.#validateOpenCodeTarget(engine, options);
     const dispatchOptions = strip.length === 0 && !lean ? options :
       withOptionOverrides(options, { ...(strip.length > 0 ? { strip } : {}), ...(lean ? { lean: true } : {}) });
     // The per-engine budget is an admission boundary, judged once per
@@ -1179,7 +1176,7 @@ export class EnsembleRuntime {
     // Judge the strip and lean start on every target, as a call does.
     const strip = effectiveStrip(this.#strip, resolved.strip);
     const lean = effectiveLean(this.#lean, resolved.lean);
-    const targets = [engine, ...chain.map((entry) => this.#chainEngineFor(entry))];
+    const targets = [engine, ...chain.map((entry) => this.#chainEngineFor(entry, resolved.effort))];
     for (const target of targets) {
       if (strip.length > 0) {
         resolveStripEnforcement(target.name, target.capabilities, strip);
@@ -1188,12 +1185,7 @@ export class EnsembleRuntime {
         resolveLeanStart(target.name, target.leanStart);
       }
     }
-    if (engine instanceof OpenCodeEngineAdapter) {
-      if (resolved.model === undefined) {
-        throw new OpenCodeModelRequiredError(engine.modelRegistry);
-      }
-      validateEngineDefaults(engine.name, resolved, engine.modelRegistry);
-    }
+    this.#validateOpenCodeTarget(engine, resolved);
     const model = resolved.model ?? null;
     return { target: name, bound: true, engine: engine.name, model, family: this.modelFamilyOf({ engine: engine.name, requested: model, served: null }) };
   }
@@ -1245,12 +1237,17 @@ export class EnsembleRuntime {
   /**
    * Judge a declared chain's named entries against this run's bindings
    * before anything spawns, as a dispatch settling it would: an unbound
-   * name, a target beside a literal engine or model, and a target bound to
-   * opencode throw. The script runner uses it on `defaults` chains so a
-   * static declaration fails before the body runs.
+   * name or a target beside a literal engine or model throws. The script
+   * runner uses it on `defaults` chains before the body runs.
    */
   settleFallbackChain(chain: readonly FallbackTarget[]): void {
-    settleChain(this.#namedTargets, chain, chain);
+    const targets = settleChain(this.#namedTargets, chain, chain);
+    // A remap can depend on the call's label and phase. Judge the registry
+    // at dispatch in that case, after the remap has settled each target.
+    if (this.#dispatchRemap !== undefined) return;
+    for (const target of targets) {
+      this.#validateOpenCodeTarget(this.#engines.get(target.engine), target);
+    }
   }
 
   /**
@@ -1294,7 +1291,7 @@ export class EnsembleRuntime {
     // each must hold sessions, enforce the strip and arrange the lean
     // start, judged now.
     for (const target of chain) {
-      const targetEngine = this.#chainEngineFor(target);
+      const targetEngine = this.#chainEngineFor(target, options.effort);
       if (targetEngine.createSession === undefined) {
         throw new MultiTurnUnsupportedError(targetEngine.name);
       }
@@ -2226,6 +2223,7 @@ export class EnsembleRuntime {
     let observedEffort: string | null = null;
     let result: EngineAttemptResult | undefined;
     let active = true;
+    const liveTranscript = LIVE_TRANSCRIPTS[engine];
     let transcriptPath: string | undefined;
     const pending = new Set<Promise<void>>();
     const enqueue = (write: () => Promise<void>): void => {
@@ -2275,12 +2273,14 @@ export class EnsembleRuntime {
           attemptSpend += event.last.totalTokens;
           this.progress.noteAgentSpend(agentId, previousSpend + attemptSpend);
         },
-        ...(engine === "codex" && recorder !== null ? {
+        // The engine's row in LIVE_TRANSCRIPTS says which observer it is
+        // handed; an engine with no row has no live transcript.
+        ...(liveTranscript?.held === "archive" && recorder !== null ? {
           onTranscriptEvent: (event: unknown) => enqueue(async () => {
-            const path = await recorder.appendCodexTranscript(agentId, context.attempt, event);
+            const path = await recorder.appendLiveTranscript(agentId, context.attempt, event);
             if (path != null) this.progress.noteAgentTranscript(agentId, path);
           })
-        } : engine === "claude" ? {
+        } : liveTranscript?.held === "engine" ? {
           onTranscriptPath: (path: string) => {
             if (path === transcriptPath || !active) return;
             transcriptPath = path;
@@ -2290,7 +2290,7 @@ export class EnsembleRuntime {
             }
             enqueue(async () => {
               try {
-                await recorder.recordClaudeTranscript(agentId, context.attempt, path);
+                await recorder.referenceEngineTranscript(agentId, context.attempt, path);
                 this.progress.noteAgentTranscript(agentId, path);
               } catch (error) {
                 transcriptPath = undefined;
@@ -3425,23 +3425,27 @@ export class EnsembleRuntime {
     return adapter;
   }
 
-  /**
-   * Validate the effective chain target before any worker spawns. A remap
-   * can send a declared entry to opencode, whose model must be registered.
-   */
-  #chainEngineFor(target: SettledChainEntry): EngineAdapter {
+  /** Validate an effective chain target before any worker spawns. */
+  #chainEngineFor(target: SettledChainEntry, inheritedEffort?: string): EngineAdapter {
     const adapter = this.#engines.get(target.engine);
     if (adapter === undefined) {
       throw new FallbackTargetRejectedError(`the ${target.engine} engine is not available to this run`);
     }
-    if (adapter instanceof OpenCodeEngineAdapter) {
-      if (target.model === undefined) throw new OpenCodeModelRequiredError(adapter.modelRegistry);
-      validateEngineDefaults(adapter.name, {
-        model: target.model,
-        ...(target.effort === undefined ? {} : { effort: target.effort })
-      }, adapter.modelRegistry);
-    }
+    this.#validateOpenCodeTarget(adapter, { model: target.model, effort: target.effort ?? inheritedEffort });
+    if (adapter.name !== "opencode") assertCanonicalEffortSupported(target.effort);
     return adapter;
+  }
+
+  #validateOpenCodeTarget(
+    engine: EngineAdapter | undefined,
+    options: { model?: string | undefined; effort?: string | undefined }
+  ): void {
+    if (!(engine instanceof OpenCodeEngineAdapter)) return;
+    if (options.model === undefined) throw new OpenCodeModelRequiredError(engine.modelRegistry);
+    validateEngineDefaults(engine.name, {
+      model: options.model,
+      ...(options.effort === undefined ? {} : { effort: options.effort })
+    }, engine.modelRegistry);
   }
 
   #engineTurnOptions(options: Partial<AgentOptions>, cwd: string): EngineTurnOptions {

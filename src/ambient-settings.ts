@@ -10,7 +10,7 @@ import {
   defaultOpenCodeConcurrency
 } from "./concurrency-defaults.js";
 
-import { assertValidFallbackChain } from "./engine-option-validation.js";
+import { assertValidFallbackChain, assertValidFallbackEffort } from "./engine-option-validation.js";
 import { AgentOptionRejectedError } from "./errors.js";
 import { HOLD_SCOPE_ENV } from "./holds.js";
 import { createOpenCodeModelRegistry } from "./opencode-model-registry.js";
@@ -557,9 +557,11 @@ function validateConfiguredChain(chain: unknown, targets: unknown, configFile: s
     if (named === undefined) {
       throw fileValueError(configFile, key, `entry ${index} names target ${JSON.stringify(entry.target)}, which this file does not bind`);
     }
-    if (isObject(named) && named.engine === "opencode") {
-      throw fileValueError(configFile, key,
-        `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which takes no chain entries`);
+    try {
+      if (isObject(named)) assertValidFallbackEffort(entry.effort, named.engine, index);
+    } catch (error) {
+      if (error instanceof AgentOptionRejectedError) throw fileValueError(configFile, key, error.message);
+      throw error;
     }
   }
 }

@@ -1249,13 +1249,14 @@ test("built CLI uses the machine fallback map and honours a script's opt-out", a
   const recordStore = path.join(directory, "records");
   await mkdir(path.dirname(configFile), { recursive: true });
   const chain = [{ target: "backup" }];
+  const chains = {
+    "codex:primary": chain,
+    codex: [{ engine: "codex", model: "engine-backup" }]
+  };
   await writeFile(configFile, JSON.stringify({
     schema_version: 1,
     targets: { backup: { engine: "codex", model: "backup" } },
-    fallback: {
-      "codex:primary": chain,
-      codex: [{ engine: "codex", model: "engine-backup" }]
-    }
+    fallback: chains
   }));
   const refusal = {
     error: {
@@ -1271,6 +1272,8 @@ test("built CLI uses the machine fallback map and honours a script's opt-out", a
     ENSEMBLE_RUN_RECORD_DIR: recordStore
   });
   assert.equal(result.code, 0, result.stderr);
+  const manifest = JSON.parse(await readFile(await findOnlyFile(recordStore, "manifest.json"), "utf8"));
+  assert.deepEqual(manifest.machine_fallback, { source: configFile, chains });
   const agent = JSON.parse(await readFile(await findOnlyFile(recordStore, "agent.json"), "utf8"));
   assert.deepEqual(agent.fallback_source, { kind: "map", key: "codex:primary" });
   assert.deepEqual(agent.fallback, chain);

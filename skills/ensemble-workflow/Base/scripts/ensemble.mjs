@@ -16817,6 +16817,7 @@ var RunRecordWriter = class _RunRecordWriter {
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       named_targets: namedTargetsRecord(options.namedTargets),
+      machine_fallback: options.machineFallback === void 0 ? null : structuredClone(options.machineFallback),
       effort: options.effortPolicy ?? null,
       git: {
         start: gitStart,
@@ -36558,7 +36559,8 @@ async function runEnsembleCli(argv, options = {}) {
         workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
         effortPolicy: ambientSettings.effortPolicy,
-        namedTargets: ambientSettings.namedTargets
+        namedTargets: ambientSettings.namedTargets,
+        machineFallback: ambientSettings.machineFallback
       });
       runtime.setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);

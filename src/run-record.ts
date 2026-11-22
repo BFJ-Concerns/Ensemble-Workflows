@@ -35,7 +35,7 @@ import type { OwnerGoneReason, ProcessOwnerRecord } from "./process-owner-eviden
 import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
 import type { AppServerDiagnostic } from "./errors.js";
 import type { FailureClassification } from "./failure-classification.js";
-import type { FallbackSource } from "./fallback-source.js";
+import type { FallbackSource, MachineFallback } from "./fallback-source.js";
 import type { NamedTargetResolution, NamedTargets } from "./named-targets.js";
 import type { UsageSummary } from "./usage-summary.js";
 import type { WorktreeState } from "./worktree-isolation.js";
@@ -96,6 +96,7 @@ export interface RunRecordStartOptions {
   effectiveSettings?: EffectiveRunSettingsRecord;
   /** The named targets in force, for the manifest's `named_targets`; omitted, the run had none. */
   namedTargets?: NamedTargets;
+  machineFallback?: MachineFallback;
   effortPolicy?: EffortPolicy;
   /** Opaque identity supplied by the process that invoked this run, if any. */
   callerIdentity?: string;
@@ -627,6 +628,7 @@ interface Manifest {
    * and chain null where the binding names none.
    */
   named_targets: NamedTargetsRecord;
+  machine_fallback: MachineFallback | null;
   effort: EffortPolicy | null;
   git: {
     start: GitState;
@@ -892,6 +894,7 @@ export class RunRecordWriter {
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       named_targets: namedTargetsRecord(options.namedTargets),
+      machine_fallback: options.machineFallback === undefined ? null : structuredClone(options.machineFallback),
       effort: options.effortPolicy ?? null,
       git: {
         start: gitStart,

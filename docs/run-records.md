@@ -618,6 +618,12 @@ families; their versions are listed in [Schema versions](#schema-versions).
   library caller (`null` for a library run given none), and `bindings`, each name's
   `{ engine, model, fallback }` with `model` and `fallback` `null` where the
   binding names none. A file with no `targets` section records `{}`.
+- `machine_fallback`: the machine fallback policy in force at run start.
+  `source` names the configuration file and `chains` holds every configured
+  `engine:model` or `engine` chain, including chains the run did not select.
+  The CLI records empty `chains` when the file declares no map. A library
+  writer given no policy records `null`. Earlier version-7 manifests may
+  omit this field, which leaves the policy unrecorded.
 - `workflow_invocations`: the root workflow and every child it invoked through
   `workflow()`, in the order they were recorded — call order, except that
   concurrent `workflow()` calls are recorded as each one resolves. Each entry carries an ordinal (0 for the root),

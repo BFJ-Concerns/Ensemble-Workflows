@@ -479,7 +479,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         workerScope: ambientSettings.workerScope,
         effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
         effortPolicy: ambientSettings.effortPolicy,
-        namedTargets: ambientSettings.namedTargets
+        namedTargets: ambientSettings.namedTargets,
+        machineFallback: ambientSettings.machineFallback
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);

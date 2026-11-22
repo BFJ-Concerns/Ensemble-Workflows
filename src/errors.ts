@@ -444,6 +444,63 @@ export class AppServerRetryPromiseBrokenError extends AppServerRequestError {}
 /** A terminal app-server status with no protocol-level retryability signal. */
 export class AppServerSystemError extends AppServerRequestError {}
 
+/**
+ * An Agent Client Protocol agent answered a request with a JSON-RPC error.
+ * `code` is the agent's own and is what tells one refusal from another: a
+ * parameter it rejects (-32602: a model it does not list, a thought level
+ * the model does not offer), a method it lacks (-32601), or a code of the
+ * agent's own range (-32000, a missing sign-in on Antigravity's server).
+ * The message names the agent's command and the method refused, and keeps
+ * the agent's words and any `data` beside them.
+ */
+export class AcpRequestError extends EnsembleError {
+  readonly method: string;
+  readonly code: number | undefined;
+  readonly data?: unknown;
+
+  constructor(agent: string, method: string, error: { code: number | undefined; message: string | undefined; data?: unknown }) {
+    const code = error.code === undefined ? "" : ` (${error.code})`;
+    const data = error.data === undefined ? "" : `; data: ${renderDiagnostic(error.data)}`;
+    super(`${agent}: ${method} failed${code}: ${error.message ?? "the agent gave no message"}${data}`, { cause: error });
+    this.method = method;
+    this.code = error.code;
+    this.data = error.data;
+  }
+}
+
+/**
+ * An Agent Client Protocol agent's process is gone: it exited, its pipes
+ * closed, or the harness stopped it. Every request it had not answered
+ * rejects with this, and so does one made afterwards. How the process
+ * died rides the error (`workerExitStatusOf`) where it was observed.
+ */
+export class AcpExitedError extends EnsembleError {}
+
+/**
+ * An Agent Client Protocol agent left a control request unanswered past the
+ * client's own bound: `initialize`, `session/new`, a setting. A prompt is
+ * never bounded this way, since a turn's deadline is the call's `timeoutMs`
+ * and the engine's to keep.
+ */
+export class AcpRequestTimeoutError extends EnsembleError {
+  readonly method: string;
+  readonly timeoutMs: number;
+
+  constructor(agent: string, method: string, timeoutMs: number) {
+    super(`${agent}: ${method} went unanswered for ${timeoutMs}ms`);
+    this.method = method;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
+ * An Agent Client Protocol agent answered in a way the client cannot use:
+ * another protocol version, or a reply without the field the method exists
+ * to return. Distinct from `AcpRequestError`, where the agent itself said
+ * the request failed.
+ */
+export class AcpProtocolError extends EnsembleError {}
+
 /** A started turn that produced no output-bearing frame before its transport deadline. */
 export class AppServerFirstOutputTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {

@@ -14,6 +14,7 @@ import { defaultAgyConcurrency } from "./concurrency-defaults.js";
 import { isCanonicalEffort, type EngineEffortReport, type ServedEffortLevels } from "./effort-resolution.js";
 import { launchEnvironment } from "./engine-environment.js";
 import {
+  AcpExitedError,
   AcpProtocolError,
   AcpRequestError,
   AgySubstrateRefusedError,
@@ -67,8 +68,9 @@ import type { EngineTranscriptArtifact, JsonObject, JsonSchema, RuntimeEvent, To
  * - **A held session corrects in place** while its worker lives: the
  *   session holds the task and the failed reply, so the correction names
  *   only the failure.
- * - **The answer is the final message**: the message text that follows the
- *   turn's last tool call. The whole turn's text is kept as `deltaText`.
+ * - **The answer is the final message**, including agy's automatic follow-up
+ *   when shell commands outlive the prompt reply. The whole attempt's text
+ *   is kept as `deltaText`.
  */
 
 /** The command an operator knows the server by: it names the worker in errors and teardown reports. */
@@ -76,6 +78,9 @@ const AGY_ACP = "agy acp";
 
 /** How long a cancelled turn may take to end before its worker is stopped. */
 const CANCEL_GRACE_MS = 10_000;
+
+/** agy can send a usage update immediately before announcing another tool call. */
+const FOLLOW_UP_SETTLE_MS = 250;
 
 /** A model id whose last segment names a canonical level: how a model with a single level spells it (`gpt-oss-120b-medium`). */
 const SOLE_LEVEL_SUFFIX = /-(none|minimal|low|medium|high|xhigh|max)$/;
@@ -120,6 +125,7 @@ class AgyWorker {
   /** This worker's session usage: a replacement worker starts its own. */
   readonly account: AgyAccount;
   #listener: ((update: AcpSessionUpdate) => void) | null = null;
+  #exitListener: ((exit: AcpExit) => void) | undefined;
   #stop: Promise<CommandStop> | null = null;
 
   private constructor(client: AcpClient, session: AcpSession, effort: string | null, account: AgyAccount, route: (worker: AgyWorker) => void) {
@@ -128,6 +134,7 @@ class AgyWorker {
     this.effort = effort;
     this.account = account;
     route(this);
+    void client.exited.then((exit) => this.#exitListener?.(exit));
   }
 
   /**
@@ -181,9 +188,10 @@ class AgyWorker {
     return this.session.model?.current ?? null;
   }
 
-  /** Receives this worker's updates; one turn listens at a time. */
-  listen(listener: ((update: AcpSessionUpdate) => void) | null): void {
+  /** Receives this worker's updates and exit; one turn listens at a time. */
+  listen(listener: ((update: AcpSessionUpdate) => void) | null, onExit?: (exit: AcpExit) => void): void {
     this.#listener = listener;
+    this.#exitListener = onExit;
   }
 
   /** Stops the process; every call shares the one stop. */
@@ -292,11 +300,13 @@ async function readCatalogue(launch: AgyLaunch, cwd: string): Promise<AgyModelCa
 interface AgyTurn {
   ending:
     | { kind: "replied"; reply: AcpPromptResult }
-    | { kind: "deadline"; reply: AcpPromptResult | null }
-    | { kind: "whitespace"; reply: AcpPromptResult | null }
+    | { kind: "deadline" }
+    | { kind: "whitespace" }
     | { kind: "rejected"; error: AcpRequestError }
     | { kind: "invalid-reply"; error: AcpProtocolError }
     | { kind: "lost"; error: Error };
+  /** The original prompt's reply, which may precede the end of the attempt. */
+  reply: AcpPromptResult | null;
   /** An RPC error received after cancellation, kept alongside the stop reason. */
   cancellationError?: AcpRequestError;
   /** The message text after the turn's last tool call. */
@@ -312,30 +322,44 @@ interface AgyTurn {
   stops: CommandStop[];
 }
 
+/** Track agy's shell commands by tool-call ID, including updates that only name the ID. */
+function trackCommand(commands: Set<string>, { name, toolCallId, status }: JsonObject): void {
+  if (typeof toolCallId !== "string") return;
+  if (status === "completed" || status === "failed") {
+    commands.delete(toolCallId);
+  } else if (name === "run_command" && (status === "pending" || status === "in_progress")) {
+    commands.add(toolCallId);
+  }
+}
+
 /**
- * Runs one prompt on a worker, bounded by the turn deadline and the
- * whitespace bound: either ends the turn with `session/cancel`, and a turn
- * that does not end within the grace is ended by stopping the worker.
+ * Holds the attempt open across agy's out-of-turn command updates and
+ * automatic response. The deadline and whitespace bound apply to both.
  */
 async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | undefined, context: EngineAttemptContext): Promise<AgyTurn> {
   const startedAt = Date.now();
   const turn: AgyTurn = {
     ending: { kind: "lost", error: new Error("unsettled") },
-    finalText: "", allText: "", startedAt, firstDeltaAt: null, endedAt: startedAt,
+    reply: null, finalText: "", allText: "", startedAt, firstDeltaAt: null, endedAt: startedAt,
     transcript: [JSON.stringify({ type: "prompt", at: new Date(startedAt).toISOString(), text: message })],
     stops: []
   };
   let stopping: "deadline" | "whitespace" | null = null;
   let grace: NodeJS.Timeout | undefined;
+  let settleFollowUp: NodeJS.Timeout | undefined;
   const stop = (reason: "deadline" | "whitespace"): void => {
     if (stopping !== null) return;
     stopping = reason;
+    clearTimeout(settleFollowUp);
     worker.session.cancel();
     // The stop is the caller's to account: it finds the worker closed.
     grace = setTimeout(() => { void worker.close(); }, CANCEL_GRACE_MS);
   };
   const whitespace = new WhitespaceStream(startedAt, () => stop("whitespace"));
   const deadline = timeoutMs === undefined ? undefined : setTimeout(() => stop("deadline"), timeoutMs);
+  const commands = new Set<string>();
+  const followUp = Promise.withResolvers<AcpExit | null>();
+  let waiting = false;
   let seen = false;
   worker.listen((update) => {
     turn.transcript.push(JSON.stringify({ type: "update", at: new Date(update.receivedAt).toISOString(), update: update.body }));
@@ -345,28 +369,50 @@ async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | u
     }
     const text = update.kind === "agent_message_chunk" ? acpUpdateText(update) : null;
     if (text !== null) {
+      clearTimeout(settleFollowUp);
       turn.firstDeltaAt ??= update.receivedAt;
       turn.allText += text;
       turn.finalText += text;
       whitespace.observeText(text);
     } else if (update.kind === "tool_call" || update.kind === "tool_call_update") {
+      clearTimeout(settleFollowUp);
+      trackCommand(commands, update.body);
       turn.finalText = "";
       whitespace.observeActivity();
     } else if (update.kind === "agent_thought_chunk" || update.kind === "plan") {
+      clearTimeout(settleFollowUp);
       whitespace.observeActivity();
+    } else if (waiting && stopping === null && update.kind === "usage_update" && commands.size === 0 && turn.finalText.trim().length > 0) {
+      // The automatic response has no RPC reply. After its text and usage
+      // update, leave room for a tool announcement from the same model step.
+      clearTimeout(settleFollowUp);
+      settleFollowUp = setTimeout(() => followUp.resolve(null), FOLLOW_UP_SETTLE_MS);
     }
     safely(() => context.onOutput?.());
-  });
+  }, (exit) => followUp.resolve(exit));
   try {
-    const reply = await worker.session.prompt(message);
-    turn.transcript.push(JSON.stringify({ type: "reply", at: new Date().toISOString(), reply: reply.reply }));
-    turn.ending = stopping === null ? { kind: "replied", reply } : { kind: stopping, reply };
+    const reply = await worker.session.prompt(message, (reply) => {
+      turn.reply = reply;
+      turn.transcript.push(JSON.stringify({ type: "reply", at: new Date().toISOString(), reply: reply.reply }));
+      if (stopping === null && reply.stopReason === "end_turn" && commands.size > 0) {
+        turn.finalText = "";
+        waiting = true;
+      }
+    });
+    if (waiting) {
+      const exit = await followUp.promise;
+      if (exit !== null) {
+        const error = new AcpExitedError(describeExit(exit));
+        throw attachWorkerExitStatus(error, { exitCode: exit.exitCode, signal: exit.signal });
+      }
+    }
+    turn.ending = stopping === null ? { kind: "replied", reply } : { kind: stopping };
   } catch (error) {
     if (error instanceof AcpProtocolError) {
       turn.transcript.push(JSON.stringify({ type: "invalid-reply", at: new Date().toISOString(), message: error.message }));
     }
     if (stopping !== null) {
-      turn.ending = { kind: stopping, reply: null };
+      turn.ending = { kind: stopping };
       if (error instanceof AcpRequestError) turn.cancellationError = error;
     } else if (error instanceof AcpRequestError) {
       turn.ending = { kind: "rejected", error };
@@ -378,6 +424,7 @@ async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | u
   } finally {
     clearTimeout(deadline);
     clearTimeout(grace);
+    clearTimeout(settleFollowUp);
     whitespace.clear();
     worker.listen(null);
     turn.endedAt = Date.now();
@@ -460,7 +507,7 @@ class AgyAccount {
  */
 function turnEvidence(worker: AgyWorker, turn: AgyTurn, context: EngineAttemptContext): EngineAttemptResult {
   const ending = turn.ending;
-  const reply = ending.kind === "replied" || ending.kind === "deadline" || ending.kind === "whitespace" ? ending.reply : null;
+  const reply = turn.reply;
   const usageEvent = worker.account.usage(worker, reply, context);
   const requestError = ending.kind === "rejected" ? ending.error : turn.cancellationError;
   const transcript: EngineTranscriptArtifact = {

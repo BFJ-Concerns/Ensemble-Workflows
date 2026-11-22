@@ -29,7 +29,7 @@ interface AgentScript {
   counter?: string;
 }
 
-const say = (text: string): Record<string, unknown> => ({ update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } });
+const say = (text: string) => ({ update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } });
 const tool = (toolCallId: string): Record<string, unknown> => ({ update: { sessionUpdate: "tool_call", toolCallId, title: "run", kind: "execute", status: "pending" } });
 const ECHO = { echo: true };
 
@@ -329,7 +329,7 @@ function inProcessAgent(t: TestContext, options: {
   commands: CommandContainment;
   children: ChildProcess[];
   update: (body: Record<string, unknown>) => void;
-  prompts: { text: string; answer: (stopReason: string) => void; reject: (error: { code: number; message: string }) => void }[];
+  prompts: { text: string; answer: (stopReason: string, usage?: { totalTokens: number }) => void; reject: (error: { code: number; message: string }) => void }[];
   cancels: () => number;
   stops: () => number;
   started: () => number;
@@ -337,7 +337,7 @@ function inProcessAgent(t: TestContext, options: {
 } {
   const commands = new CommandContainment(new NoWorkerScopes());
   const children: ChildProcess[] = [];
-  const prompts: { text: string; answer: (stopReason: string) => void; reject: (error: { code: number; message: string }) => void }[] = [];
+  const prompts: { text: string; answer: (stopReason: string, usage?: { totalTokens: number }) => void; reject: (error: { code: number; message: string }) => void }[] = [];
   let cancels = 0;
   let stops = 0;
   let started = 0;
@@ -370,7 +370,7 @@ function inProcessAgent(t: TestContext, options: {
         if (method === "session/prompt") {
           prompts.push({
             text: params.prompt?.[0]?.text ?? "",
-            answer: (stopReason) => write({ id, result: { stopReason } }),
+            answer: (stopReason, usage) => write({ id, result: { stopReason, usage } }),
             reject: (error) => write({ id, error })
           });
         }
@@ -441,6 +441,107 @@ test("ACP releases the child and its pipes when they outlive the drain deadline"
   assert.equal(child.stdout?.destroyed, true);
   assert.equal(child.stderr?.destroyed, true);
   assert.equal(unref.mock.callCount(), 1);
+});
+
+test("an agy attempt waits for every background command and uses the automatic follow-up as its answer", async (t) => {
+  const agent = inProcessAgent(t);
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const invocation = adapter.createInvocation("run commands", { cwd: process.cwd() });
+  const pending = invocation.runAttempt({ attempt: 1 });
+  await until(() => agent.prompts.length === 1);
+  const start = (id: string): void => agent.update({ sessionUpdate: "tool_call", name: "run_command", toolCallId: id, status: "in_progress" });
+  const finish = (id: string, status = "completed"): void => agent.update({ sessionUpdate: "tool_call_update", toolCallId: id, status });
+  const text = (value: string): void => agent.update(say(value).update);
+  const usage = (): void => agent.update({ sessionUpdate: "usage_update", used: 500, size: 1000 });
+
+  start("short");
+  start("long");
+  text("Command still running. ");
+  agent.prompts[0]?.answer("end_turn", { totalTokens: 42 });
+  // Frames after the reply can arrive in the same read.
+  finish("short");
+  text("Short command done. ");
+  usage();
+  await flush();
+  assert.equal(agent.stops(), 0);
+  t.mock.timers.tick(1_000);
+  await flush();
+  assert.equal(agent.stops(), 0, "the second command is still running");
+
+  finish("long", "failed");
+  usage();
+  await flush();
+  t.mock.timers.tick(1_000);
+  await flush();
+  assert.equal(agent.stops(), 0, "a usage update alone is not a follow-up answer");
+
+  text("Checking results. ");
+  usage();
+  await flush();
+  start("check");
+  await flush();
+  t.mock.timers.tick(1_000);
+  await flush();
+  assert.equal(agent.stops(), 0, "a new tool call supersedes the answer in progress");
+
+  finish("check");
+  text("Final ");
+  text("answer.");
+  usage();
+  await flush();
+  t.mock.timers.tick(1_000);
+  const result = await pending;
+  assert.equal(result.text, "Final answer.");
+  assert.equal(result.deltaText, "Command still running. Short command done. Checking results. Final answer.");
+  assert.equal(result.tokenUsageEvents[0]?.last.totalTokens, 42);
+  const transcript = result.transcripts?.[0]?.content ?? "";
+  assert.ok(transcript.indexOf('"type":"reply"') < transcript.indexOf("Short command done."));
+  assert.match(transcript, /"status":"failed"/);
+  assert.equal(agent.prompts.length, 1, "agy follows up without a new prompt");
+  assert.equal(agent.stops(), 1);
+});
+
+test("a held agy turn's deadline still applies after the prompt reply", async (t) => {
+  const agent = inProcessAgent(t, { ignoreCancel: true });
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const session = adapter.createSession({ cwd: process.cwd(), timeoutMs: 500 }, { onLost: () => undefined });
+  const pending = session.beginTurn("wait", {}).runAttempt({ attempt: 1 }).catch((error: unknown) => error);
+  await until(() => agent.prompts.length === 1);
+  agent.update({ sessionUpdate: "tool_call", toolCallId: "pending", name: "run_command", status: "in_progress" });
+  agent.prompts[0]?.answer("end_turn", { totalTokens: 42 });
+  await flush();
+  t.mock.timers.tick(500);
+  await flush();
+  assert.equal(agent.cancels(), 1);
+  t.mock.timers.tick(10_000);
+  const failure = await pending;
+  assert.ok(failure instanceof TurnTimeoutError);
+  assert.equal(failedTurnResultOf(failure)?.tokenUsageEvents[0]?.last.totalTokens, 42);
+  assert.equal((await session.beginTurn("next", {}).runAttempt({ attempt: 1 })).attemptFailure?.kind, "session-lost");
+});
+
+test("an agy worker that exits during its automatic follow-up keeps partial text and prompt usage", async (t) => {
+  const agent = inProcessAgent(t);
+  const adapter = new AgyEngineAdapter({ commands: agent.commands });
+  t.after(() => adapter.close());
+  const invocation = adapter.createInvocation("wait", { cwd: process.cwd() });
+  const pending = invocation.runAttempt({ attempt: 1 });
+  await until(() => agent.prompts.length === 1);
+  agent.update({ sessionUpdate: "tool_call", toolCallId: "pending", name: "run_command", status: "in_progress" });
+  agent.update(say("Started.").update);
+  agent.prompts[0]?.answer("end_turn", { totalTokens: 42 });
+  agent.children[0]?.emit("exit", 3, null);
+  agent.children[0]?.emit("close", 3, null);
+  const result = await pending;
+  assert.equal(result.attemptFailure?.kind, "agy-worker-lost");
+  assert.deepEqual(result.workerExit, { exitCode: 3, signal: null });
+  assert.equal(result.deltaText, "Started.");
+  assert.equal(result.tokenUsageEvents[0]?.last.totalTokens, 42);
+  assert.equal(result.transcripts?.[0]?.partial, true);
 });
 
 test("an agy worker that ignores cancel is stopped after ten seconds and its attempt accounts for one stop", async (t) => {

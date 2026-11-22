@@ -25758,15 +25758,18 @@ var AcpSession = class {
    * says what each means for the attempt. The turn's text, tool calls and
    * thoughts arrive through `onUpdate` before this resolves. There is no
    * deadline: the adapter ends a turn it will not wait for with `cancel()`.
+   * `onReply` runs as the reply is read, before any out-of-turn update.
    */
-  prompt(prompt) {
+  prompt(prompt, onReply) {
     const blocks = typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt;
     return this.#channel.request("session/prompt", { prompt: blocks }, (result) => {
       const reply = asObject(result);
       if (reply === null || typeof reply.stopReason !== "string") {
         throw new AcpProtocolError(`${this.#channel.name}: session/prompt answered without a stop reason`);
       }
-      return { stopReason: reply.stopReason, usage: usageOf(reply.usage), reply };
+      const parsed = { stopReason: reply.stopReason, usage: usageOf(reply.usage), reply };
+      onReply?.(parsed);
+      return parsed;
     }, false);
   }
   /**
@@ -25901,6 +25904,7 @@ var Scheduler = class {
 // src/agy-engine.ts
 var AGY_ACP = "agy acp";
 var CANCEL_GRACE_MS = 1e4;
+var FOLLOW_UP_SETTLE_MS = 250;
 var SOLE_LEVEL_SUFFIX = /-(none|minimal|low|medium|high|xhigh|max)$/;
 var AGY_AUTHENTICATION_REQUIRED = -32e3;
 var AGY_INVALID_PARAMS = -32602;
@@ -25913,6 +25917,7 @@ var AgyWorker = class _AgyWorker {
   /** This worker's session usage: a replacement worker starts its own. */
   account;
   #listener = null;
+  #exitListener;
   #stop = null;
   constructor(client, session, effort, account, route) {
     this.client = client;
@@ -25920,6 +25925,7 @@ var AgyWorker = class _AgyWorker {
     this.effort = effort;
     this.account = account;
     route(this);
+    void client.exited.then((exit) => this.#exitListener?.(exit));
   }
   /**
    * Start the server, open the session and apply the model and level.
@@ -25970,9 +25976,10 @@ var AgyWorker = class _AgyWorker {
   get model() {
     return this.session.model?.current ?? null;
   }
-  /** Receives this worker's updates; one turn listens at a time. */
-  listen(listener) {
+  /** Receives this worker's updates and exit; one turn listens at a time. */
+  listen(listener, onExit) {
     this.#listener = listener;
+    this.#exitListener = onExit;
   }
   /** Stops the process; every call shares the one stop. */
   close() {
@@ -26061,10 +26068,19 @@ async function readCatalogue(launch, cwd) {
     await worker.close();
   }
 }
+function trackCommand(commands, { name, toolCallId, status }) {
+  if (typeof toolCallId !== "string") return;
+  if (status === "completed" || status === "failed") {
+    commands.delete(toolCallId);
+  } else if (name === "run_command" && (status === "pending" || status === "in_progress")) {
+    commands.add(toolCallId);
+  }
+}
 async function runTurn(worker, message, timeoutMs, context) {
   const startedAt = Date.now();
   const turn = {
     ending: { kind: "lost", error: new Error("unsettled") },
+    reply: null,
     finalText: "",
     allText: "",
     startedAt,
@@ -26075,9 +26091,11 @@ async function runTurn(worker, message, timeoutMs, context) {
   };
   let stopping = null;
   let grace;
+  let settleFollowUp;
   const stop = (reason) => {
     if (stopping !== null) return;
     stopping = reason;
+    clearTimeout(settleFollowUp);
     worker.session.cancel();
     grace = setTimeout(() => {
       void worker.close();
@@ -26085,6 +26103,9 @@ async function runTurn(worker, message, timeoutMs, context) {
   };
   const whitespace = new WhitespaceStream(startedAt, () => stop("whitespace"));
   const deadline = timeoutMs === void 0 ? void 0 : setTimeout(() => stop("deadline"), timeoutMs);
+  const commands = /* @__PURE__ */ new Set();
+  const followUp = Promise.withResolvers();
+  let waiting = false;
   let seen = false;
   worker.listen((update) => {
     turn.transcript.push(JSON.stringify({ type: "update", at: new Date(update.receivedAt).toISOString(), update: update.body }));
@@ -26094,28 +26115,48 @@ async function runTurn(worker, message, timeoutMs, context) {
     }
     const text = update.kind === "agent_message_chunk" ? acpUpdateText(update) : null;
     if (text !== null) {
+      clearTimeout(settleFollowUp);
       turn.firstDeltaAt ??= update.receivedAt;
       turn.allText += text;
       turn.finalText += text;
       whitespace.observeText(text);
     } else if (update.kind === "tool_call" || update.kind === "tool_call_update") {
+      clearTimeout(settleFollowUp);
+      trackCommand(commands, update.body);
       turn.finalText = "";
       whitespace.observeActivity();
     } else if (update.kind === "agent_thought_chunk" || update.kind === "plan") {
+      clearTimeout(settleFollowUp);
       whitespace.observeActivity();
+    } else if (waiting && stopping === null && update.kind === "usage_update" && commands.size === 0 && turn.finalText.trim().length > 0) {
+      clearTimeout(settleFollowUp);
+      settleFollowUp = setTimeout(() => followUp.resolve(null), FOLLOW_UP_SETTLE_MS);
     }
     safely(() => context.onOutput?.());
-  });
+  }, (exit) => followUp.resolve(exit));
   try {
-    const reply = await worker.session.prompt(message);
-    turn.transcript.push(JSON.stringify({ type: "reply", at: (/* @__PURE__ */ new Date()).toISOString(), reply: reply.reply }));
-    turn.ending = stopping === null ? { kind: "replied", reply } : { kind: stopping, reply };
+    const reply = await worker.session.prompt(message, (reply2) => {
+      turn.reply = reply2;
+      turn.transcript.push(JSON.stringify({ type: "reply", at: (/* @__PURE__ */ new Date()).toISOString(), reply: reply2.reply }));
+      if (stopping === null && reply2.stopReason === "end_turn" && commands.size > 0) {
+        turn.finalText = "";
+        waiting = true;
+      }
+    });
+    if (waiting) {
+      const exit = await followUp.promise;
+      if (exit !== null) {
+        const error = new AcpExitedError(describeExit(exit));
+        throw attachWorkerExitStatus(error, { exitCode: exit.exitCode, signal: exit.signal });
+      }
+    }
+    turn.ending = stopping === null ? { kind: "replied", reply } : { kind: stopping };
   } catch (error) {
     if (error instanceof AcpProtocolError) {
       turn.transcript.push(JSON.stringify({ type: "invalid-reply", at: (/* @__PURE__ */ new Date()).toISOString(), message: error.message }));
     }
     if (stopping !== null) {
-      turn.ending = { kind: stopping, reply: null };
+      turn.ending = { kind: stopping };
       if (error instanceof AcpRequestError) turn.cancellationError = error;
     } else if (error instanceof AcpRequestError) {
       turn.ending = { kind: "rejected", error };
@@ -26127,6 +26168,7 @@ async function runTurn(worker, message, timeoutMs, context) {
   } finally {
     clearTimeout(deadline);
     clearTimeout(grace);
+    clearTimeout(settleFollowUp);
     whitespace.clear();
     worker.listen(null);
     turn.endedAt = Date.now();
@@ -26197,7 +26239,7 @@ var AgyAccount = class {
 };
 function turnEvidence(worker, turn, context) {
   const ending = turn.ending;
-  const reply = ending.kind === "replied" || ending.kind === "deadline" || ending.kind === "whitespace" ? ending.reply : null;
+  const reply = turn.reply;
   const usageEvent = worker.account.usage(worker, reply, context);
   const requestError = ending.kind === "rejected" ? ending.error : turn.cancellationError;
   const transcript = {

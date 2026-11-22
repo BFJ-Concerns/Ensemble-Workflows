@@ -267,6 +267,10 @@ const ZCODE_FAILURE_KINDS = new Map<string, FailureClassification>([
   // The installed zcode cannot be driven (missing, or lacking per-run model
   // selection or its model listing): refused before any worker existed.
   ["ZCodeSubstrateRefusedError", { class: "availability", rule: "zcode.substrate-refused" }],
+  // The run's process ended without zcode's closing result: killed, or
+  // crashed past zcode's own handling. The worker is gone, so the
+  // substrate died before it answered.
+  ["zcode-worker-lost", { class: "availability", rule: "zcode.worker-dead" }],
   ["zcode-run-error", { class: "unclassified", rule: "zcode.run-error" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "zcode.deadline" }]
 ]);

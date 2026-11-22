@@ -1163,6 +1163,7 @@ on the same target.
 | `claude.collection` | `unclassified` | The session settled, but its transcript holds no completed turn or final text to collect |
 | `opencode.run-error` | `unclassified` | `opencode run` exited in error |
 | `zcode.substrate-refused` | `availability` | The installed `zcode` could not be run, or lacks per-run model selection or its model listing; *pre-spawn* |
+| `zcode.worker-dead` | `availability` | The run's process ended without zcode's closing `result` line — killed by a signal, or crashed past zcode's own handling (kind `zcode-worker-lost`) |
 | `zcode.rate-limit` | `availability` | The turn failed on a rate limit (`turn.failed` reason `rate_limited` or code `model_rate_limited`) after zcode's own retries |
 | `zcode.overloaded` | `availability` | The turn failed with the provider overloaded (reason `provider_overloaded`) |
 | `zcode.provider-internal-error` | `availability` | The turn failed on a provider server error (reason `server_error`) |

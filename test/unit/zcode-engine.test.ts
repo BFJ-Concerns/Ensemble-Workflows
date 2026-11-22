@@ -60,7 +60,8 @@ const LISTING = {
 
 interface ScriptedRun {
   events: unknown[];
-  exitCode?: number;
+  exitCode?: number | null;
+  signal?: NodeJS.Signals;
   stderr?: string;
   deadlineExpired?: boolean;
   whitespaceLimitReached?: boolean;
@@ -100,8 +101,8 @@ class FakeZCodeRunner implements ZCodeRunner {
     options.onData?.(stdout.slice(0, middle));
     options.onData?.(stdout.slice(middle));
     return {
-      exitCode: scripted.exitCode ?? 0,
-      signal: null,
+      exitCode: scripted.exitCode === undefined ? 0 : scripted.exitCode,
+      signal: scripted.signal ?? null,
       stdout,
       stderr: scripted.stderr ?? "",
       durationMs: 7,
@@ -313,6 +314,28 @@ test("a provider refusal zcode could not outlast is an availability failure that
     assert.equal(output, "from the fallback");
     assert.deepEqual(runner.runs.map((run) => run.model), ["gpt-6.2-sol", "claude-opus-5-5[1m]"]);
     assert.deepEqual(records.at(-1)!.attempts[0]?.classification, { class: "availability", rule: "zcode.rate-limit" });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a zcode run killed before its closing result is a dead worker, and the chain takes the call", async () => {
+  const killed = finishedRun("sess_a", "partial");
+  const runner = new FakeZCodeRunner([
+    { events: killed.events.slice(0, 3), exitCode: null, signal: "SIGKILL" },
+    finishedRun("sess_b", "from the fallback", "claude-opus-5-5[1m]")
+  ]);
+  const { runtime, records } = runtimeWith(runner, { maxAttempts: 1 });
+  try {
+    const output = await runtime.agent("work", {
+      engine: "zcode", model: "gateway/gpt-6.2-sol", fallback: [{ engine: "zcode", model: "gateway/claude-opus-5-5[1m]" }]
+    });
+    assert.equal(output, "from the fallback");
+    const dead = records.at(-1)!.attempts[0]!;
+    assert.equal(dead.failure?.kind, "zcode-worker-lost");
+    assert.match(dead.failure?.message ?? "", /zcode was killed by SIGKILL before its closing result/);
+    assert.deepEqual(dead.classification, { class: "availability", rule: "zcode.worker-dead" });
+    assert.deepEqual(dead.workerExit, { exitCode: null, signal: "SIGKILL" });
   } finally {
     await runtime.close();
   }

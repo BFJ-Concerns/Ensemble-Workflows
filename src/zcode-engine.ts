@@ -657,9 +657,9 @@ async function runZCodeTurn(
   }
   const failure = evidence.failure(run);
   return {
-    result: failure === null ? base : { ...base, attemptFailure: { kind: "zcode-run-error", message: failure }, workerExit },
+    result: failure === null ? base : { ...base, attemptFailure: failure, workerExit },
     sessionId: evidence.sessionId,
-    sessionMissing: failure !== null && /^zcode run failed: Session not found\b/.test(failure)
+    sessionMissing: failure?.kind === "zcode-run-error" && /^zcode run failed: Session not found\b/.test(failure.message)
   };
 }
 
@@ -828,15 +828,28 @@ class ZCodeStream {
         signal: run.signal,
         ...(run.stderr.trim().length > 0 ? { stderr: run.stderr.trim().slice(-4_000) } : {})
       }),
-      /** Why the run failed, in zcode's own words; null for a run that finished. */
-      failure: (run: StreamedCommandResult): string | null => {
-        const outcome = result?.outcome;
+      /**
+       * Why the run failed; null for a run that finished. zcode closes every
+       * run it handles, a refused or failed one included, with its `result`
+       * line, so a process that ended without one died under the worker:
+       * killed, or crashed past zcode's own handling.
+       */
+      failure: (run: StreamedCommandResult): { kind: "zcode-run-error" | "zcode-worker-lost"; message: string } | null => {
+        const stderr = run.stderr.trim().replace(/^Error: /, "").split("\n")[0] ?? "";
+        if (result === null) {
+          const ending = run.signal !== null ? `was killed by ${run.signal}` : `exited with code ${run.exitCode ?? "unknown"}`;
+          return {
+            kind: "zcode-worker-lost",
+            message: `zcode ${ending} before its closing result${stderr.length > 0 ? `: ${stderr}` : ""}`
+          };
+        }
+        const outcome = result.outcome;
         if (outcome === "finished" && run.exitCode === 0) return null;
-        if (outcome === "cancelled") return "zcode run failed: the run was cancelled";
-        if (typeof result?.error === "string") return `zcode run failed: ${result.error}`;
-        const stderr = run.stderr.trim().replace(/^Error: /, "");
-        if (stderr.length > 0) return `zcode run failed: ${stderr.split("\n")[0]}`;
-        return `zcode run failed with ${run.exitCode !== null ? `exit code ${run.exitCode}` : `signal ${run.signal ?? "unknown"}`} and no result`;
+        const runError = (message: string) => ({ kind: "zcode-run-error" as const, message: `zcode run failed: ${message}` });
+        if (outcome === "cancelled") return runError("the run was cancelled");
+        if (typeof result.error === "string") return runError(result.error);
+        if (stderr.length > 0) return runError(stderr);
+        return runError(`exit code ${run.exitCode ?? "unknown"}${run.signal !== null ? `, signal ${run.signal}` : ""}`);
       }
     };
   }

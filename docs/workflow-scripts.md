@@ -547,6 +547,9 @@ is an availability failure, so a remaining fallback entry runs instead.
   stream-json`, in the worker's `cwd`. A held worker's later turns resume
   the ZCode session its first run created (`--resume`); if zcode no longer
   finds that session, the session is lost.
+- zcode closes every run it handles with a `result` line, so a run whose
+  process ends without one — killed, or crashed — is a dead worker: an
+  availability failure that advances a remaining fallback entry.
 - zcode prints its listing and exits 1 when one provider's listing fails (a
   NanoGPT listing that timed out, say); that listing still serves, and the
   next dispatch reads it again.

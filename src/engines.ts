@@ -131,7 +131,8 @@ export interface EngineAttemptFailure {
     | "claude-collection-error"
     | "claude-worker-diagnostic"
     | "opencode-run-error"
-    | "zcode-run-error";
+    | "zcode-run-error"
+    | "zcode-worker-lost";
   message: string;
 }
 

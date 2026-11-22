@@ -563,6 +563,47 @@ test("a held zcode worker resumes its session on every later turn, and a retry c
   }
 });
 
+test("a held zcode retry includes the task when the CLI failed before accepting that turn", async () => {
+  const runner = new FakeZCodeRunner([
+    finishedRun("sess_held", "first answer"),
+    failedRun("sess_held", "could not open the working directory"),
+    finishedRun("sess_held", '{"ok": true}')
+  ]);
+  const { runtime } = runtimeWith(runner);
+  try {
+    const session = runtime.createWorkerSession({ engine: "zcode", model: "gateway/gpt-6.2-sol" });
+    assert.equal(await session.send("first prompt"), "first answer");
+    const schema = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
+    assert.deepEqual(await session.send("second prompt", { schema }), { ok: true });
+    assert.deepEqual(runner.runs.map((run) => run.resume), [undefined, "sess_held", "sess_held"]);
+    const task = laterTurnPrompt({ task: "second prompt", schema });
+    assert.equal(runner.runs[1]!.prompt, task);
+    assert.match(runner.runs[2]!.prompt, /^A previous attempt failed .*could not open the working directory/);
+    assert.ok(runner.runs[2]!.prompt.endsWith(`\n\n${task}`));
+    await session.close();
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a held zcode retry delivers the opening instructions if only the session was created", async () => {
+  const runner = new FakeZCodeRunner([
+    failedRun("sess_new", "could not open the working directory"),
+    finishedRun("sess_new", "ok")
+  ]);
+  const { runtime } = runtimeWith(runner);
+  try {
+    const session = runtime.createWorkerSession({ engine: "zcode", model: "gateway/gpt-6.2-sol" });
+    assert.equal(await session.send("first prompt"), "ok");
+    assert.equal(runner.runs[1]!.resume, "sess_new");
+    assert.ok(runner.runs[1]!.prompt.startsWith(WORKER_STANDING_INSTRUCTIONS));
+    assert.ok(runner.runs[1]!.prompt.endsWith("Task:\nfirst prompt"));
+    await session.close();
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("a held zcode session zcode no longer finds is lost, and later turns submit nothing", async () => {
   const runner = new FakeZCodeRunner([
     finishedRun("sess_gone", "first answer"),

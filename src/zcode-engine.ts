@@ -21,7 +21,7 @@ import {
 import { Scheduler } from "./scheduler.js";
 import { fitsOneArgument, MAX_ARGUMENT_BYTES, runStreamedCommand, type StreamedCommandResult } from "./streamed-command.js";
 import { subtractUsage } from "./usage-summary.js";
-import { inSessionCorrection, laterTurnPrompt, openingPrompt } from "./worker-instructions.js";
+import { inSessionCorrection, laterTurnPrompt, openingPrompt, previousFailureNotice } from "./worker-instructions.js";
 import { DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
 import { parseZCodeModel, type ZCodeModelSelection } from "./zcode-model.js";
 import { defaultZCodeConcurrency } from "./concurrency-defaults.js";
@@ -486,15 +486,15 @@ class ZCodeEngineInvocation implements EngineInvocation {
 /**
  * One held zcode worker: a persisted ZCode session, created by its first
  * run and resumed by every later one, so the session's context and prompt
- * cache accumulate. A retry stays in the session where one exists: the
- * session already holds the turn's prompt, so the correction names only
- * the failure. The session is lost when zcode no longer finds it.
+ * cache accumulate. A retry sends only the correction if ZCode accepted
+ * the turn's prompt. The session is lost when ZCode no longer finds it.
  */
 class ZCodeWorkerSession implements EngineWorkerSession {
   #settings: ZCodeTurnSettings;
   #observer: EngineSessionObserver;
   #onClose: (session: ZCodeWorkerSession) => void;
   #sessionId: string | null = null;
+  #opened = false;
   #lost: EngineSessionLoss | null = null;
   #abort = new AbortController();
   #settlement: Promise<unknown> | null = null;
@@ -507,23 +507,38 @@ class ZCodeWorkerSession implements EngineWorkerSession {
   }
 
   beginTurn(prompt: string, turn: EngineSessionTurn): EngineInvocation {
-    return { runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context) };
+    let turnDelivered = false;
+    return {
+      runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context, turnDelivered, () => {
+        turnDelivered = true;
+        this.#opened = true;
+      })
+    };
   }
 
-  async #runTurnAttempt(prompt: string, schema: JsonSchema | undefined, context: EngineAttemptContext): Promise<EngineAttemptResult> {
+  async #runTurnAttempt(
+    prompt: string, schema: JsonSchema | undefined, context: EngineAttemptContext,
+    turnDelivered: boolean, onPromptDelivered: () => void
+  ): Promise<EngineAttemptResult> {
     if (this.#lost !== null) return this.#lostResult();
     if (this.#closed) throw new EngineShutdownError("zcode");
     const resume = this.#sessionId ?? undefined;
-    const message = resume === undefined
-      ? openingRunPrompt(prompt, schema, context.previousFailure)
-      : context.previousFailure !== undefined
-        ? inSessionCorrection(carriedFailure(context.previousFailure))
-        : laterTurnPrompt({ task: prompt, ...(schema !== undefined ? { schema } : {}) });
+    const failure = context.previousFailure === undefined ? undefined : carriedFailure(context.previousFailure);
+    let message: string;
+    if (!this.#opened || resume === undefined) {
+      message = openingRunPrompt(prompt, schema, context.previousFailure);
+    } else if (turnDelivered && failure !== undefined) {
+      message = inSessionCorrection(failure);
+    } else {
+      const task = laterTurnPrompt({ task: prompt, ...(schema !== undefined ? { schema } : {}) });
+      message = failure === undefined ? task : `${previousFailureNotice(failure)}\n\n${task}`;
+    }
     const settlement = runZCodeAttempt(this.#settings, {
       prompt: message,
       resume,
       signal: this.#abort.signal,
-      context
+      context,
+      onPromptDelivered
     });
     this.#settlement = settlement;
     try {
@@ -636,6 +651,7 @@ interface ZCodeAttemptRequest {
   resume: string | undefined;
   signal: AbortSignal;
   context: EngineAttemptContext;
+  onPromptDelivered?: () => void;
 }
 
 interface ZCodeAttemptOutcome {
@@ -699,7 +715,7 @@ async function runZCodeTurn(
   if (request.signal.aborted) throw new EngineShutdownError("zcode");
   const requested = requestedReasoningLevel(options);
   const launch = async (reasoningLevel: string, earlier?: { stream: ZCodeStream; durationMs: number }) => {
-    const stream = new ZCodeStream(settings, context, earlier?.stream);
+    const stream = new ZCodeStream(settings, context, request.onPromptDelivered, earlier?.stream);
     const run = await settings.runner.run({
       prompt: request.prompt,
       cwd: settings.cwd,
@@ -798,6 +814,7 @@ class ZCodeStream {
   readonly startedAt: number;
   #settings: ZCodeTurnSettings;
   #context: EngineAttemptContext;
+  #onPromptDelivered: (() => void) | undefined;
   /** Events of the attempt's earlier runs, which its transcript keeps before this run's. */
   #earlierEvents: readonly unknown[];
   #buffer = "";
@@ -816,9 +833,12 @@ class ZCodeStream {
   #turnError: Record<string, unknown> | null = null;
 
   /** `earlier` is the stream of a run the same attempt made before this one. */
-  constructor(settings: ZCodeTurnSettings, context: EngineAttemptContext, earlier?: ZCodeStream) {
+  constructor(
+    settings: ZCodeTurnSettings, context: EngineAttemptContext, onPromptDelivered: (() => void) | undefined, earlier?: ZCodeStream
+  ) {
     this.#settings = settings;
     this.#context = context;
+    this.#onPromptDelivered = onPromptDelivered;
     this.startedAt = earlier?.startedAt ?? Date.now();
     this.#earlierEvents = earlier === undefined ? [] : earlier.#allEvents();
   }
@@ -852,6 +872,9 @@ class ZCodeStream {
     observe(() => this.#context.onOutput?.());
     if (!isRecord(event)) return;
     if (typeof event.sessionId === "string") this.#sessionId = event.sessionId;
+    if (event.type === "turn.started" || (event.type === "result" && event.outcome === "finished")) {
+      this.#onPromptDelivered?.();
+    }
     if (event.type === "result") {
       this.#result = event;
       const usage = isRecord(event.usage) ? usageBreakdown(event.usage) : null;

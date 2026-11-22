@@ -1004,8 +1004,9 @@ unavailable for the correction. Opening delivery also requires tmux.
 
 Codex, opencode and one-shot agy and zcode calls retry with the failure
 appended to the prompt. A held agy session corrects in place while its worker
-lives (see [agy workers](#agy-workers)); a held zcode worker corrects in its
-resumed session.
+lives (see [agy workers](#agy-workers)). A held zcode worker retries in its
+resumed session. The retry includes the task and its schema, if any, when
+ZCode has yet to confirm the turn started.
 
 An opencode model absent from the machine registry, a missing model, or an
 unsupported registry variant is refused before worker admission: the call

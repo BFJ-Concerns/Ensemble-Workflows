@@ -28139,6 +28139,7 @@ var ZCodeWorkerSession = class {
   #observer;
   #onClose;
   #sessionId = null;
+  #opened = false;
   #lost = null;
   #abort = new AbortController();
   #settlement = null;
@@ -28149,18 +28150,36 @@ var ZCodeWorkerSession = class {
     this.#onClose = onClose;
   }
   beginTurn(prompt, turn) {
-    return { runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context) };
+    let turnDelivered = false;
+    return {
+      runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context, turnDelivered, () => {
+        turnDelivered = true;
+        this.#opened = true;
+      })
+    };
   }
-  async #runTurnAttempt(prompt, schema, context) {
+  async #runTurnAttempt(prompt, schema, context, turnDelivered, onPromptDelivered) {
     if (this.#lost !== null) return this.#lostResult();
     if (this.#closed) throw new EngineShutdownError("zcode");
     const resume = this.#sessionId ?? void 0;
-    const message = resume === void 0 ? openingRunPrompt(prompt, schema, context.previousFailure) : context.previousFailure !== void 0 ? inSessionCorrection(carriedFailure(context.previousFailure)) : laterTurnPrompt({ task: prompt, ...schema !== void 0 ? { schema } : {} });
+    const failure = context.previousFailure === void 0 ? void 0 : carriedFailure(context.previousFailure);
+    let message;
+    if (!this.#opened || resume === void 0) {
+      message = openingRunPrompt(prompt, schema, context.previousFailure);
+    } else if (turnDelivered && failure !== void 0) {
+      message = inSessionCorrection(failure);
+    } else {
+      const task = laterTurnPrompt({ task: prompt, ...schema !== void 0 ? { schema } : {} });
+      message = failure === void 0 ? task : `${previousFailureNotice(failure)}
+
+${task}`;
+    }
     const settlement = runZCodeAttempt(this.#settings, {
       prompt: message,
       resume,
       signal: this.#abort.signal,
-      context
+      context,
+      onPromptDelivered
     });
     this.#settlement = settlement;
     try {
@@ -28274,7 +28293,7 @@ async function runZCodeTurn(settings, request, onCommandStop) {
   if (request.signal.aborted) throw new EngineShutdownError("zcode");
   const requested = requestedReasoningLevel(options);
   const launch = async (reasoningLevel, earlier) => {
-    const stream2 = new ZCodeStream(settings, context, earlier?.stream);
+    const stream2 = new ZCodeStream(settings, context, request.onPromptDelivered, earlier?.stream);
     const run2 = await settings.runner.run({
       prompt: request.prompt,
       cwd: settings.cwd,
@@ -28356,6 +28375,7 @@ var ZCodeStream = class {
   startedAt;
   #settings;
   #context;
+  #onPromptDelivered;
   /** Events of the attempt's earlier runs, which its transcript keeps before this run's. */
   #earlierEvents;
   #buffer = "";
@@ -28373,9 +28393,10 @@ var ZCodeStream = class {
   #resolvedEffort = null;
   #turnError = null;
   /** `earlier` is the stream of a run the same attempt made before this one. */
-  constructor(settings, context, earlier) {
+  constructor(settings, context, onPromptDelivered, earlier) {
     this.#settings = settings;
     this.#context = context;
+    this.#onPromptDelivered = onPromptDelivered;
     this.startedAt = earlier?.startedAt ?? Date.now();
     this.#earlierEvents = earlier === void 0 ? [] : earlier.#allEvents();
   }
@@ -28404,6 +28425,9 @@ var ZCodeStream = class {
     observe(() => this.#context.onOutput?.());
     if (!isRecord2(event)) return;
     if (typeof event.sessionId === "string") this.#sessionId = event.sessionId;
+    if (event.type === "turn.started" || event.type === "result" && event.outcome === "finished") {
+      this.#onPromptDelivered?.();
+    }
     if (event.type === "result") {
       this.#result = event;
       const usage2 = isRecord2(event.usage) ? usageBreakdown(event.usage) : null;

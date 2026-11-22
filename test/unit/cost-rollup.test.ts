@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildCostRollup, type RollupAgentView, type RollupAttemptView } from "../../src/cost-rollup.js";
+import { attemptEnding, buildCostRollup, type RollupAgentView, type RollupAttemptView } from "../../src/cost-rollup.js";
+import * as errors from "../../src/errors.js";
+import * as resourcePreflight from "../../src/resource-preflight.js";
 import { rollupViewOfArchivedRecord } from "../../src/run-record.js";
 
 import type { TokenUsageEvent } from "../../src/types.js";
@@ -13,6 +15,12 @@ const usage: TokenUsageEvent = {
   total: { cachedInputTokens: 0, inputTokens: 10, outputTokens: 4, totalTokens: 14 },
   raw: {}
 };
+
+/** The name of every error class a substrate refusal is raised as, read from the modules that declare them. */
+const refusalClassNames = [...new Set([...Object.values(errors), ...Object.values(resourcePreflight)]
+  .filter((value): value is typeof errors.SubstrateRefusedError =>
+    typeof value === "function" && (value === errors.SubstrateRefusedError || value.prototype instanceof errors.SubstrateRefusedError))
+  .map((refusal) => refusal.name))];
 
 function attempt(number: number, overrides: Partial<RollupAttemptView> = {}): RollupAttemptView {
   return {
@@ -126,8 +134,8 @@ test("a leaf with no figures names the least certain way its attempts ended", ()
 });
 
 test("all pre-worker refusal kinds book complete absence on every engine", () => {
-  for (const engine of ["codex", "claude", "opencode"] as const) {
-    for (const failureKind of ["SubstrateRefusedError", "ResourcePreflightRefusedError", "CodexSubstrateRefusedError", "ClaudeDispatchError"]) {
+  for (const engine of ["codex", "claude", "opencode", "agy", "zcode"] as const) {
+    for (const failureKind of refusalClassNames) {
       const refused = attempt(1, { engine, failureKind, resolvedModel: null, tokenUsageEvents: [] });
       const allRefused = agent(1, [refused, { ...refused, attempt: 2 }]);
       assert.deepEqual(buildCostRollup([allRefused])[engine]?.unresolved, {
@@ -298,6 +306,21 @@ test("a Claude worker that never registered or came to life was not cut short by
       failureKind
     );
   }
+});
+
+test("every error class a substrate refusal is recorded under reads as refused before a worker existed", () => {
+  assert.ok(refusalClassNames.length >= 6, refusalClassNames.join(", "));
+  for (const name of refusalClassNames) {
+    assert.equal(attemptEnding(attempt(1, { failureKind: name })), "refused", name);
+  }
+  assert.equal(attemptEnding(attempt(1, { failureKind: "AgentPromptRejectedError" })), "settled");
+});
+
+test("every engine's lost worker reads as lost", () => {
+  for (const engine of ["codex", "claude", "opencode", "agy", "zcode"]) {
+    assert.equal(attemptEnding(attempt(1, { failureKind: `${engine}-worker-lost` })), "lost", engine);
+  }
+  assert.equal(attemptEnding(attempt(1, { failureKind: "session-lost" })), "lost");
 });
 
 test("a lost worker has unobserved spend even when it reported partial usage", () => {

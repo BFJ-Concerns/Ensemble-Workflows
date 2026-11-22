@@ -14311,7 +14311,7 @@ function appServerDiagnosticOf(error) {
   }
   return null;
 }
-var CODEX_SCHEMA_REJECTION_REMEDY = "Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude', 'opencode' or 'agy', which validate the full JSON Schema client-side.";
+var CODEX_SCHEMA_REJECTION_REMEDY = "Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude', 'opencode', 'agy' or 'zcode', which validate the full JSON Schema client-side.";
 function payloadBesideMessage(diagnostic) {
   let parsed;
   try {
@@ -14479,12 +14479,12 @@ var BudgetExceededError = class extends EnsembleError {
 };
 var MissingEngineError = class extends AgentOptionRejectedError {
   constructor() {
-    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', engine: 'opencode', or engine: 'agy'");
+    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', engine: 'opencode', engine: 'agy', or engine: 'zcode'");
   }
 };
 var UnknownEngineError = class extends AgentOptionRejectedError {
   constructor(engine) {
-    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', 'opencode', or 'agy'`);
+    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', 'opencode', 'agy', or 'zcode'`);
   }
 };
 var EngineShutdownError = class extends EnsembleError {
@@ -14513,6 +14513,8 @@ var CodexSubstrateRefusedError = class extends SubstrateRefusedError {
     super(`Codex app-server could not serve a thread${cwd === void 0 ? "" : ` in ${cwd}`}: ${detail}`, { cause });
   }
 };
+var ZCodeSubstrateRefusedError = class extends SubstrateRefusedError {
+};
 var ClaudeWorkerLostError = class extends ClaudeWorkerError {
 };
 var ClaudePollTimeoutError = class extends ClaudeWorkerError {
@@ -14538,6 +14540,11 @@ var ClaudeWorkerDiagnosticError = class extends ClaudeWorkerError {
 var OpenCodeModelRequiredError = class extends AgentOptionRejectedError {
   constructor(registry) {
     super(`agent({ engine:'opencode' }) requires a model from the opencode registry; ${registeredOpenCodeModels(registry)}`);
+  }
+};
+var ZCodeModelRequiredError = class extends AgentOptionRejectedError {
+  constructor(model) {
+    super(model === void 0 ? "agent({ engine:'zcode' }) requires a model: name a provider and one of its models as `zcode models` lists them, spelt provider/model (gateway/claude-opus-5-5), or declare defaults.zcode.model" : `zcode model ${JSON.stringify(model)} names no provider: spell it provider/model as \`zcode models\` lists them (gateway/claude-opus-5-5)`);
   }
 };
 var OpenCodeModelNotRegisteredError = class extends AgentOptionRejectedError {
@@ -14712,7 +14719,7 @@ function isCanonicalEffort(value) {
 function effortPolicyKeys(engine, model) {
   return [...model !== void 0 ? [`${engine}:${model}`] : [], engine, "*"];
 }
-var ENGINE_NAMES = ["codex", "claude", "opencode", "agy"];
+var ENGINE_NAMES = ["codex", "claude", "opencode", "agy", "zcode"];
 var EFFORT_TARGET_POLICY_FIELDS = ["ceiling", "floor", "levels"];
 function assertEffortSection(section, fail) {
   if (!isPlainObject(section)) {
@@ -14849,6 +14856,9 @@ function defaultOpenCodeConcurrency() {
 function defaultAgyConcurrency() {
   return 12;
 }
+function defaultZCodeConcurrency() {
+  return 12;
+}
 
 // src/capability-stripping.ts
 var STRIPPABLE_CAPABILITIES = ["skills", "agents"];
@@ -14912,6 +14922,15 @@ function createOpenCodeModelRegistry(models, source = { kind: "caller" }) {
   return new StaticOpenCodeModelRegistry(models, source);
 }
 var defaultOpenCodeModelRegistry = createOpenCodeModelRegistry([]);
+
+// src/zcode-model.ts
+function parseZCodeModel(spelling) {
+  const separator = spelling?.indexOf("/") ?? -1;
+  if (spelling === void 0 || separator <= 0 || separator === spelling.length - 1 || spelling.slice(0, separator).trim().length === 0 || spelling.slice(separator + 1).trim().length === 0) {
+    throw new ZCodeModelRequiredError(spelling);
+  }
+  return { provider: spelling.slice(0, separator), model: spelling.slice(separator + 1) };
+}
 
 // src/engine-option-validation.ts
 var MAX_TIMER_DELAY_MS = 2147483647;
@@ -15145,8 +15164,8 @@ function assertValidFallbackChain(chain) {
       }
       return;
     }
-    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "opencode" && target.engine !== "agy") {
-      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude", "opencode" or "agy", got ${JSON.stringify(target.engine)}`);
+    if (target.engine !== "codex" && target.engine !== "claude" && target.engine !== "opencode" && target.engine !== "agy" && target.engine !== "zcode") {
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex", "claude", "opencode", "agy" or "zcode", got ${JSON.stringify(target.engine)}`);
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
@@ -15172,6 +15191,9 @@ function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaul
   if (defaults.effort === "ultra") assertCanonicalEffortSupported(defaults.effort);
   if (engine !== "opencode") {
     assertCanonicalEffortSupported(defaults.effort);
+  }
+  if (engine === "zcode" && defaults.model !== void 0) {
+    parseZCodeModel(defaults.model);
   }
   if (engine === "opencode" && defaults.model !== void 0) {
     const model = requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
@@ -15913,7 +15935,7 @@ var AmbientConfigError = class extends Error {
 };
 var OPENCODE_MODEL_DECLARATION_KEYS = ["provider_model", "display_name", "family", "vision", "billing", "variants"];
 var OPENCODE_BILLING_MODES = ["pay-as-you-go", "self-hosted"];
-var ENGINES = ["codex", "claude", "opencode", "agy"];
+var ENGINES = ["codex", "claude", "opencode", "agy", "zcode"];
 function isConfiguredEngine(value) {
   return ENGINES.includes(value);
 }
@@ -15926,7 +15948,8 @@ function resolveAmbientSettings(input) {
     codex: defaultCodexConcurrency(),
     claude: defaultClaudeConcurrency(),
     opencode: defaultOpenCodeConcurrency(),
-    agy: defaultAgyConcurrency()
+    agy: defaultAgyConcurrency(),
+    zcode: defaultZCodeConcurrency()
   };
   return {
     configFile,
@@ -15960,6 +15983,7 @@ function resolveAmbientSettings(input) {
     machineFallback: { chains: config?.fallback ?? {}, source: configFile },
     effortPolicy: { section: config?.effort ?? {}, source: configFile },
     modelFamilies: config?.model_families ?? {},
+    zcodeSessionStaleAfterMs: zcodeStaleThresholds(config?.zcode_providers),
     singleFamilyNotice: config?.single_family_notice ?? true
   };
 }
@@ -15990,7 +16014,7 @@ function readMachineConfig(configFile) {
   if (!newer) {
     assertKnownKeys(
       parsed,
-      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "fallback", "effort", "model_families", "single_family_notice"],
+      ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "fallback", "effort", "model_families", "zcode_providers", "single_family_notice"],
       configFile
     );
   }
@@ -16009,6 +16033,7 @@ function readMachineConfig(configFile) {
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
   validateModelFamilies(parsed, configFile);
+  validateZCodeProviders(parsed, configFile);
   if (parsed.single_family_notice !== void 0 && typeof parsed.single_family_notice !== "boolean") {
     throw fileValueError(configFile, "single_family_notice", "must be a boolean");
   }
@@ -16091,6 +16116,29 @@ function validateModelFamilies(root, configFile) {
       throw fileValueError(configFile, `model_families.${model}`, "must be a non-empty string");
     }
   }
+}
+function validateZCodeProviders(root, configFile) {
+  const section = root.zcode_providers;
+  if (section === void 0) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "zcode_providers", "must be a JSON object of zcode provider ids to { stale_after_minutes? }");
+  }
+  for (const [provider, declaration] of Object.entries(section)) {
+    if (provider.trim().length === 0 || provider.includes("/")) {
+      throw fileValueError(configFile, "zcode_providers", 'provider ids must be non-empty and hold no "/"');
+    }
+    const qualified = `zcode_providers.${provider}`;
+    if (!isObject(declaration) || Array.isArray(declaration)) {
+      throw fileValueError(configFile, qualified, "must be a JSON object carrying stale_after_minutes");
+    }
+    assertKnownKeys(declaration, ["stale_after_minutes"], configFile, qualified);
+    validateOptionalPositiveInteger(declaration, "stale_after_minutes", configFile, qualified);
+  }
+}
+function zcodeStaleThresholds(section) {
+  return Object.fromEntries(Object.entries(section ?? {}).flatMap(([provider, declaration]) => declaration.stale_after_minutes === void 0 ? [] : [[provider, declaration.stale_after_minutes * 6e4]]));
 }
 function validateOpenCodeModels(root, configFile) {
   const section = root.opencode_models;
@@ -16544,10 +16592,16 @@ var OPENCODE_TRANSCRIPT = {
   filename: "transcript.opencode.jsonl",
   source: "opencode run --format json"
 };
+var ZCODE_TRANSCRIPT = {
+  held: "archive",
+  filename: "transcript.zcode.jsonl",
+  source: "zcode --output-format stream-json"
+};
 var LIVE_TRANSCRIPTS = {
   codex: CODEX_TRANSCRIPT,
   claude: CLAUDE_TRANSCRIPT,
-  opencode: OPENCODE_TRANSCRIPT
+  opencode: OPENCODE_TRANSCRIPT,
+  zcode: ZCODE_TRANSCRIPT
 };
 function transcriptLine(event) {
   return `${JSON.stringify(event)}
@@ -16581,7 +16635,8 @@ var ENGINE_INCLUSION_RULES = {
   codex: { cachedWithinInput: true, reasoningWithinOutput: true },
   claude: { cachedWithinInput: false, reasoningWithinOutput: true },
   opencode: { cachedWithinInput: false, reasoningWithinOutput: false },
-  agy: { cachedWithinInput: false, reasoningWithinOutput: true }
+  agy: { cachedWithinInput: false, reasoningWithinOutput: true },
+  zcode: { cachedWithinInput: true, reasoningWithinOutput: true }
 };
 function summariseUsage(engine, events) {
   if (events.length === 0) {
@@ -16661,12 +16716,9 @@ var TOKEN_ABSENCE_PRECEDENCE = [
 function leafTokenAbsence(unobserved) {
   return TOKEN_ABSENCE_PRECEDENCE.find((reason) => unobserved.some((entry) => entry.reason === reason)) ?? "substrate-never-started";
 }
-var REFUSED_BEFORE_WORKER_KINDS = /* @__PURE__ */ new Set([
-  "SubstrateRefusedError",
-  "ResourcePreflightRefusedError",
-  "CodexSubstrateRefusedError",
-  "ClaudeDispatchError"
-]);
+function isRefusedBeforeWorkerKind(kind) {
+  return kind !== void 0 && (kind.endsWith("RefusedError") || kind === "ClaudeDispatchError");
+}
 var DEADLINE_FAILURE_KINDS = /* @__PURE__ */ new Set([
   "TurnTimeoutError",
   "AppServerFirstOutputTimeoutError",
@@ -16695,7 +16747,7 @@ function attemptEnding(attempt) {
   if (kind === null) {
     return "settled";
   }
-  if (REFUSED_BEFORE_WORKER_KINDS.has(kind)) {
+  if (isRefusedBeforeWorkerKind(kind)) {
     return "refused";
   }
   if (isRunEndingFailureKind(kind)) {
@@ -16716,7 +16768,7 @@ function isWhitespaceStreamFailureKind(kind) {
   return kind === "WhitespaceStreamError" || kind === "ClaudeHeldWhitespaceStreamError";
 }
 function isWorkerLossFailureKind(kind) {
-  return kind === "claude-worker-lost" || kind === "opencode-worker-lost" || kind === "session-lost";
+  return kind !== void 0 && (kind === "session-lost" || kind.endsWith("-worker-lost"));
 }
 var UNOBSERVED_REASON = {
   interrupted: "worker-interrupted",
@@ -17638,7 +17690,7 @@ function agentUsage(record) {
 }
 function substratesNeverStarted(record) {
   return record.attempts.length > 0 && record.attempts.every(
-    (attempt) => attempt.failure !== null && REFUSED_BEFORE_WORKER_KINDS.has(attempt.failure.kind)
+    (attempt) => isRefusedBeforeWorkerKind(attempt.failure?.kind)
   );
 }
 async function resolveRunDirectory(storeDir, cwd, runUuid) {
@@ -17840,7 +17892,7 @@ function isObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isEngineName(value) {
-  return value === "codex" || value === "claude" || value === "opencode" || value === "agy";
+  return value === "codex" || value === "claude" || value === "opencode" || value === "agy" || value === "zcode";
 }
 function isAgentStatus(value) {
   return value === "in-progress" || value === "complete" || value === "failed" || value === "timed-out" || value === "interrupted" || value === "abandoned";
@@ -17905,14 +17957,15 @@ async function findHarnessRoot() {
   }
 }
 async function toolVersions(archiveDir) {
-  const [gitVersion, codexVersion, claudeVersion, openCodeVersion, agyVersion] = await Promise.all([
+  const [gitVersion, codexVersion, claudeVersion, openCodeVersion, agyVersion, zcodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
     commandVersion("claude", ["--version"], withoutRunScopedVariables(process.env)),
     queryOpenCodeVersion(archiveDir),
-    commandVersion("agy", ["--version"])
+    commandVersion("agy", ["--version"]),
+    commandVersion("zcode", ["--version"])
   ]);
-  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion, agy: agyVersion };
+  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion, agy: agyVersion, zcode: zcodeVersion };
 }
 async function queryOpenCodeVersion(archiveDir) {
   const scratch = await mkdtemp(path6.join(archiveDir, ".opencode-version-"));
@@ -18357,7 +18410,7 @@ function findErrorCode(error, code) {
 }
 
 // src/runtime.ts
-import { randomUUID as randomUUID8 } from "node:crypto";
+import { randomUUID as randomUUID9 } from "node:crypto";
 
 // src/agent-placement.ts
 import { statSync as statSync2 } from "node:fs";
@@ -18728,6 +18781,7 @@ var TokenBudget = class {
       claude: ceilings.claude ?? null,
       opencode: ceilings.opencode ?? null,
       agy: ceilings.agy ?? null,
+      zcode: ceilings.zcode ?? null,
       ...ceilings
     };
   }
@@ -19786,6 +19840,9 @@ function diagnoseAttemptFailure(evidence) {
   if (engine === "opencode" && failure.kind === "opencode-run-error" && /^opencode run failed: tool \S+ failed:/.test(failure.message)) {
     return failure;
   }
+  if (engine === "zcode" && failure.kind === "zcode-run-error" && isZCodeCredentialFailure(diagnostics)) {
+    return authenticationFailure(engine, failure.message);
+  }
   const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
   const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status ?? openCodeHttpStatus(evidence);
   if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
@@ -19796,16 +19853,22 @@ function diagnoseAttemptFailure(evidence) {
   }
   const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|\bAPI key is missing\b|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
-    const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude" ? "Run `claude auth login`." : "Run `opencode auth login` for the provider you selected.";
-    return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${failure.message}` };
+    return authenticationFailure(engine, failure.message);
   }
   if (engine === "codex" && appServerDiagnostic?.code === "modelNotFound") {
     return { kind: "model-not-found", message: `Codex modelNotFound: choose a model available to your account (run \`codex\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
+  }
+  if (engine === "zcode" && failure.kind === "zcode-run-error" && /^zcode run failed: Unknown (?:model|provider) "/.test(failure.message)) {
+    return { kind: "model-not-found", message: `ZCode does not list the model: name a provider and model as \`zcode models\` prints them, spelt provider/model. Engine diagnostic: ${failure.message}` };
   }
   if (engine === "claude" && failure.kind === "claude-worker-diagnostic" && (status == null || status === 400 || status === 404) && /\bunknown provider for model\s+\S+/i.test(failure.message)) {
     return { kind: "model-not-found", message: `Claude model not found: choose a model available to your account (run \`claude\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
   }
   return failure;
+}
+function authenticationFailure(engine, diagnostic) {
+  const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude" ? "Run `claude auth login`." : engine === "zcode" ? "Configure the provider's credentials in ZCode for the provider the model names." : "Run `opencode auth login` for the provider you selected.";
+  return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${diagnostic}` };
 }
 var OUTPUT_FAILURE_KINDS = /* @__PURE__ */ new Set([
   "empty-output",
@@ -19883,6 +19946,49 @@ var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);
+var ZCODE_AVAILABILITY_REASONS = /* @__PURE__ */ new Map([
+  ["rate_limited", "zcode.rate-limit"],
+  ["provider_overloaded", "zcode.overloaded"],
+  ["server_error", "zcode.provider-internal-error"],
+  ["network_error", "zcode.provider-unreachable"],
+  ["auth_failed", "zcode.authentication-failure"],
+  ["provider_not_configured", "zcode.provider-not-configured"]
+]);
+var ZCODE_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
+  ["model_rate_limited", "zcode.rate-limit"],
+  ["model_request_auth_missing", "zcode.authentication-failure"],
+  ["provider_not_configured", "zcode.provider-not-configured"],
+  ["insufficient_quota", "zcode.quota"]
+]);
+function isZCodeCredentialFailure(diagnostics) {
+  const turnError = objectField(diagnostics?.zcode, "turn_error");
+  const reason = objectField(turnError, "reason");
+  const code = objectField(turnError, "code");
+  return typeof reason === "string" && ZCODE_AVAILABILITY_REASONS.get(reason) === "zcode.authentication-failure" || typeof code === "string" && ZCODE_AVAILABILITY_CODES.get(code) === "zcode.authentication-failure";
+}
+var ZCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
+  // The installed zcode cannot be driven (missing, or lacking per-run model
+  // selection or its model listing): refused before any worker existed.
+  ["ZCodeSubstrateRefusedError", { class: "availability", rule: "zcode.substrate-refused" }],
+  // The run's process ended without zcode's closing result: killed, or
+  // crashed past zcode's own handling. The worker is gone, so the
+  // substrate died before it answered.
+  ["zcode-worker-lost", { class: "availability", rule: "zcode.worker-dead" }],
+  ["zcode-run-error", { class: "unclassified", rule: "zcode.run-error" }],
+  ["TurnTimeoutError", { class: "unclassified", rule: "zcode.deadline" }]
+]);
+function classifyZCodeFailure(kind, diagnostics) {
+  if (kind === "zcode-run-error") {
+    const turnError = objectField(diagnostics?.zcode, "turn_error");
+    const reason = objectField(turnError, "reason");
+    const code = objectField(turnError, "code");
+    const rule = (typeof reason === "string" ? ZCODE_AVAILABILITY_REASONS.get(reason) : void 0) ?? (typeof code === "string" ? ZCODE_AVAILABILITY_CODES.get(code) : void 0);
+    if (rule !== void 0) {
+      return { class: "availability", rule };
+    }
+  }
+  return ZCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
+}
 var OPENCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["opencode-worker-lost", { class: "availability", rule: "opencode.worker-lost" }],
   ["opencode-run-error", { class: "unclassified", rule: "opencode.run-error" }],
@@ -19944,6 +20050,8 @@ function classifyAttemptFailure(evidence) {
     }
     case "agy":
       return AGY_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
+    case "zcode":
+      return classifyZCodeFailure(kind, evidence.diagnostics);
   }
 }
 function openCodeHttpStatus(evidence) {
@@ -20019,6 +20127,9 @@ function isEffortRejection(message) {
 }
 function isProviderEffortRejection(evidence) {
   const { engine, failure, appServerDiagnostic, diagnostics } = evidence;
+  if (engine === "zcode") {
+    return failure.kind === "zcode-run-error" && /^zcode run failed: Unsupported reasoning level "/.test(failure.message);
+  }
   if (engine === "claude" && failure.kind === "claude-worker-diagnostic") {
     const api = claudeApiErrorOf(diagnostics);
     return api !== null && (api.status === 400 || api.status === 422 || api.status === null && (api.code === "invalid_request_error" || api.code === "invalid_request")) && isEffortRejection(failure.message);
@@ -21584,6 +21695,14 @@ function agyResources(env) {
     ...defaultDirectory({ rule: "$HOME/.gemini/antigravity-cli", movedBy: "HOME" }, homeRoot(env.written, env.cwd), ".gemini", "antigravity-cli")
   }];
 }
+function zcodeResources(env) {
+  const declared = env.written.ZCODE_DATA_BASE_DIR?.trim();
+  const home = declared ? declaredDirectory(readSetting("ZCODE_DATA_BASE_DIR", declared, env.cwd), ".zcode") : defaultDirectory({ rule: "$HOME/.zcode", movedBy: "ZCODE_DATA_BASE_DIR" }, homeRoot(env.written, env.cwd), ".zcode");
+  return [
+    { owner: "zcode", role: "ZCode home", access: "create-entries", ...home },
+    { owner: "zcode", role: "ZCode scratch files", access: "create-entries", ...temporaryLocation(env.written, env.cwd) }
+  ];
+}
 function claudeConfigDirectory(env, cwd) {
   return path16.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path16.join(homeOf(env), ".claude")).normalize("NFC"));
 }
@@ -21603,7 +21722,8 @@ var ENGINE_RESOURCE_RESOLVERS = {
   codex: codexResources,
   claude: claudeResources,
   opencode: openCodeResources,
-  agy: agyResources
+  agy: agyResources,
+  zcode: zcodeResources
 };
 function engineResourceRequirements(engine, declared, cwd, launcher = process.env) {
   return ENGINE_RESOURCE_RESOLVERS[engine]({
@@ -23984,7 +24104,7 @@ function delay2(ms, signal, abortError) {
 }
 
 // src/engines.ts
-import { randomUUID as randomUUID7 } from "node:crypto";
+import { randomUUID as randomUUID8 } from "node:crypto";
 
 // src/app-server.ts
 import { spawn as spawn3 } from "node:child_process";
@@ -26217,9 +26337,9 @@ async function runTurn(worker, message, timeoutMs, context) {
   }
   return turn;
 }
-function safely(observe) {
+function safely(observe2) {
   try {
-    observe();
+    observe2();
   } catch {
   }
 }
@@ -26820,6 +26940,172 @@ function list(value) {
   return Array.isArray(value) ? value : [];
 }
 
+// src/streamed-command.ts
+var MAX_ARGUMENT_BYTES = 128 * 1024;
+function fitsOneArgument(argument) {
+  return Buffer.byteLength(argument, "utf8") + 1 <= MAX_ARGUMENT_BYTES;
+}
+async function runStreamedCommand(options) {
+  const startedAt = Date.now();
+  if (options.signal?.aborted) {
+    return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
+  }
+  const oversized = options.args.find((argument) => !fitsOneArgument(argument));
+  if (oversized !== void 0) {
+    throw new AgentPromptRejectedError(
+      `${options.label} cannot be given an argument of ${Buffer.byteLength(oversized, "utf8")} bytes: Linux passes at most ${MAX_ARGUMENT_BYTES} bytes (128 KiB) in one command-line argument`
+    );
+  }
+  const scopes = options.commands === void 0 ? await createWorkerScopes() : void 0;
+  const containment = options.commands ?? new CommandContainment(scopes);
+  try {
+    let command;
+    try {
+      command = await containment.contain(options.label, options.file, options.args, {
+        cwd: options.cwd,
+        env: options.env,
+        stdio: [options.stdin === void 0 ? "ignore" : "pipe", "pipe", "pipe"]
+      });
+    } catch (error) {
+      throw unstartable(options.label, error);
+    }
+    if (options.stdin !== void 0) {
+      command.child.stdin?.on("error", () => void 0);
+      command.child.stdin?.end(options.stdin);
+    }
+    return await collectProcess(command, startedAt, { ...options, abortSignal: options.signal });
+  } finally {
+    if (scopes !== void 0) {
+      try {
+        await containment.close();
+      } finally {
+        await scopes.close();
+      }
+    }
+  }
+}
+function unstartable(label, error) {
+  const code = error?.code;
+  if (!(error instanceof Error) || typeof code !== "string") return error;
+  return new SubstrateRefusedError(`${label} could not be started (${code}): ${error.message}`, { cause: error });
+}
+function collectProcess(command, startedAt, options) {
+  const { timeoutMs, killGraceMs, watchLine, abortSignal, onFirstData, onData, onCommandStop } = options;
+  return new Promise((resolve, reject) => {
+    const child = command.child;
+    const stdout = [];
+    const stderr = [];
+    let settled = false;
+    let exited = child.exitCode !== null || child.signalCode !== null;
+    let closed = exited && (child.stdout?.closed ?? true) && (child.stderr?.closed ?? true);
+    let stopped = false;
+    let deadlineExpired = false;
+    let whitespaceLimitReached = false;
+    let stopping;
+    let drainTimer;
+    let processError;
+    let exitCode = child.exitCode;
+    let exitSignal = child.signalCode;
+    let streamBuffer = "";
+    const whitespace = watchLine !== void 0 ? new WhitespaceStream(startedAt, () => {
+      whitespaceLimitReached = true;
+      stop();
+    }) : null;
+    const settle = () => {
+      if (settled || !stopped || !closed) return;
+      settled = true;
+      clearTimeout(drainTimer);
+      abortSignal?.removeEventListener("abort", terminate);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref();
+      if (processError !== void 0) {
+        reject(processError);
+      } else {
+        resolve({
+          exitCode,
+          signal: exitSignal,
+          stdout: stdout.join(""),
+          stderr: stderr.join(""),
+          durationMs: Date.now() - startedAt,
+          deadlineExpired,
+          whitespaceLimitReached
+        });
+      }
+    };
+    const stop = () => {
+      whitespace?.clear();
+      clearTimeout(timeout);
+      stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then((observation) => {
+        onCommandStop?.(observation);
+        stopped = true;
+        if (!closed) {
+          drainTimer = setTimeout(() => {
+            closed = true;
+            settle();
+          }, 1e3);
+        }
+        settle();
+      });
+    };
+    const terminate = () => {
+      if (!settled) stop();
+    };
+    const timeout = timeoutMs === void 0 || exited ? void 0 : setTimeout(() => {
+      if (!settled && !exited) {
+        deadlineExpired = true;
+        stop();
+      }
+    }, timeoutMs);
+    let firstDataSeen = false;
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      if (!firstDataSeen) {
+        firstDataSeen = true;
+        try {
+          onFirstData?.();
+        } catch {
+        }
+      }
+      try {
+        onData?.(chunk);
+      } catch {
+      }
+      stdout.push(chunk);
+      if (whitespace !== null && stopping === void 0) {
+        streamBuffer += chunk;
+        const lines = streamBuffer.split(/\r?\n/);
+        streamBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          watchLine?.(line, whitespace);
+        }
+      }
+    });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", (error) => {
+      processError = error;
+      stop();
+    });
+    child.on("exit", (code, signal) => {
+      exited = true;
+      exitCode = code;
+      exitSignal = signal;
+      stop();
+    });
+    child.on("close", (code, signal) => {
+      closed = true;
+      exitCode = code;
+      exitSignal = signal;
+      stop();
+      settle();
+    });
+    abortSignal?.addEventListener("abort", terminate, { once: true });
+    if (exited) stop();
+    if (abortSignal?.aborted) terminate();
+  });
+}
+
 // src/opencode-engine.ts
 var OpenCodeCliRunner = class {
   #bin;
@@ -26849,7 +27135,8 @@ var OpenCodeCliRunner = class {
     if (options.variant !== void 0) {
       args.push("--variant", options.variant);
     }
-    args.push(options.prompt);
+    const promptOnStdin = !fitsOneArgument(options.prompt);
+    if (!promptOnStdin) args.push(options.prompt);
     const signal = options.signal;
     if (signal?.aborted) return stoppedBeforeLaunch();
     try {
@@ -26861,48 +27148,57 @@ var OpenCodeCliRunner = class {
         strip: options.strip ?? [],
         lean: options.lean === true,
         providerModel: options.providerModel,
-        run: (command, env) => runProcess(
-          this.#bin,
-          command,
-          options.cwd,
+        run: (command, env) => runStreamedCommand({
+          label: `opencode ${command[0]}`,
+          file: this.#bin,
+          args: command,
+          cwd: options.cwd,
           env,
-          this.#commands,
-          3e4,
-          this.#killGraceMs,
+          commands: this.#commands,
+          timeoutMs: 3e4,
+          killGraceMs: this.#killGraceMs,
           signal,
-          void 0,
-          void 0,
-          options.onCommandStop
-        )
+          onCommandStop: options.onCommandStop
+        })
       });
       try {
-        return await runProcess(
-          this.#bin,
+        return await runStreamedCommand({
+          label: "opencode run",
+          file: this.#bin,
           args,
-          options.cwd,
-          launch.env,
-          this.#commands,
-          options.timeoutMs,
-          this.#killGraceMs,
+          ...promptOnStdin ? { stdin: options.prompt } : {},
+          cwd: options.cwd,
+          env: launch.env,
+          commands: this.#commands,
+          timeoutMs: options.timeoutMs,
+          killGraceMs: this.#killGraceMs,
           signal,
-          options.onFirstData,
-          options.onData,
-          options.onCommandStop
-        );
+          onFirstData: options.onFirstData,
+          onData: options.onData,
+          onCommandStop: options.onCommandStop,
+          watchLine: watchOpenCodeLine
+        });
       } finally {
         await launch.close?.();
       }
     } catch (error) {
       if (signal?.aborted) return stoppedBeforeLaunch();
-      const code = error?.code;
-      if (code === "ENOENT" || code === "EACCES") {
-        throw new SubstrateRefusedError(`opencode could not start (${code})`, { cause: error });
-      }
       throw error;
     }
   }
   async exportSession(sessionId, cwd, signal, onCommandStop) {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, this.#commands, 3e4, this.#killGraceMs, signal, void 0, void 0, onCommandStop);
+    const result = await runStreamedCommand({
+      label: "opencode export",
+      file: this.#bin,
+      args: ["export", sessionId],
+      cwd,
+      env: this.#env,
+      commands: this.#commands,
+      timeoutMs: 3e4,
+      killGraceMs: this.#killGraceMs,
+      signal,
+      onCommandStop
+    });
     if (result.exitCode !== 0) {
       return {
         status: "command-failed",
@@ -27227,151 +27523,6 @@ var OpenCodeEngineInvocation = class {
 function stoppedBeforeLaunch() {
   return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 };
 }
-async function runProcess(file, args, cwd, env, commands, timeoutMs, killGraceMs, abortSignal, onFirstData, onData, onCommandStop) {
-  const startedAt = Date.now();
-  if (abortSignal?.aborted) {
-    return stoppedBeforeLaunch();
-  }
-  const scopes = commands === void 0 ? await createWorkerScopes() : void 0;
-  const containment = commands ?? new CommandContainment(scopes);
-  try {
-    const command = await containment.contain(`opencode ${args[0]}`, file, args, {
-      cwd,
-      env,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    return await collectProcess(command, startedAt, timeoutMs, killGraceMs, args[0] === "run", abortSignal, onFirstData, onData, onCommandStop);
-  } finally {
-    if (scopes !== void 0) {
-      try {
-        await containment.close();
-      } finally {
-        await scopes.close();
-      }
-    }
-  }
-}
-function collectProcess(command, startedAt, timeoutMs, killGraceMs, watchWhitespace, abortSignal, onFirstData, onData, onCommandStop) {
-  return new Promise((resolve, reject) => {
-    const child = command.child;
-    const stdout = [];
-    const stderr = [];
-    let settled = false;
-    let exited = child.exitCode !== null || child.signalCode !== null;
-    let closed = exited && (child.stdout?.closed ?? true) && (child.stderr?.closed ?? true);
-    let stopped = false;
-    let deadlineExpired = false;
-    let whitespaceLimitReached = false;
-    let stopping;
-    let drainTimer;
-    let processError;
-    let exitCode = child.exitCode;
-    let exitSignal = child.signalCode;
-    let streamBuffer = "";
-    const whitespace = watchWhitespace ? new WhitespaceStream(startedAt, () => {
-      whitespaceLimitReached = true;
-      stop();
-    }) : null;
-    const settle = () => {
-      if (settled || !stopped || !closed) return;
-      settled = true;
-      clearTimeout(drainTimer);
-      abortSignal?.removeEventListener("abort", terminate);
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      child.unref();
-      if (processError !== void 0) {
-        reject(processError);
-      } else {
-        resolve({
-          exitCode,
-          signal: exitSignal,
-          stdout: stdout.join(""),
-          stderr: stderr.join(""),
-          durationMs: Date.now() - startedAt,
-          deadlineExpired,
-          whitespaceLimitReached
-        });
-      }
-    };
-    const stop = () => {
-      whitespace?.clear();
-      clearTimeout(timeout);
-      stopping ??= command.stop({ stopGraceMs: killGraceMs, confirmMs: DEFAULT_STOP_BOUNDS.confirmMs }).then((observation) => {
-        onCommandStop?.(observation);
-        stopped = true;
-        if (!closed) {
-          drainTimer = setTimeout(() => {
-            closed = true;
-            settle();
-          }, 1e3);
-        }
-        settle();
-      });
-    };
-    const terminate = () => {
-      if (!settled) stop();
-    };
-    const timeout = timeoutMs === void 0 || exited ? void 0 : setTimeout(() => {
-      if (!settled && !exited) {
-        deadlineExpired = true;
-        stop();
-      }
-    }, timeoutMs);
-    let firstDataSeen = false;
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => {
-      if (!firstDataSeen) {
-        firstDataSeen = true;
-        try {
-          onFirstData?.();
-        } catch {
-        }
-      }
-      try {
-        onData?.(chunk);
-      } catch {
-      }
-      stdout.push(chunk);
-      if (whitespace !== null && stopping === void 0) {
-        streamBuffer += chunk;
-        const lines = streamBuffer.split(/\r?\n/);
-        streamBuffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const event = parseRunEvent(line);
-          const text = runTextPart(event);
-          if (text !== null) {
-            whitespace.observeText(text);
-          } else if (isRecord(event) && (event.type === "tool_use" || event.type === "reasoning")) {
-            whitespace.observeActivity();
-          }
-        }
-      }
-    });
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", (error) => {
-      processError = error;
-      stop();
-    });
-    child.on("exit", (code, signal) => {
-      exited = true;
-      exitCode = code;
-      exitSignal = signal;
-      stop();
-    });
-    child.on("close", (code, signal) => {
-      closed = true;
-      exitCode = code;
-      exitSignal = signal;
-      stop();
-      settle();
-    });
-    abortSignal?.addEventListener("abort", terminate, { once: true });
-    if (exited) stop();
-    if (abortSignal?.aborted) terminate();
-  });
-}
 function parseRunEvents(stdout) {
   const events = [];
   let sessionId = null;
@@ -27646,6 +27797,743 @@ function numberValue(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function watchOpenCodeLine(line, whitespace) {
+  const event = parseRunEvent(line);
+  const text = runTextPart(event);
+  if (text !== null) {
+    whitespace.observeText(text);
+  } else if (isRecord(event) && (event.type === "tool_use" || event.type === "reasoning")) {
+    whitespace.observeActivity();
+  }
+}
+
+// src/zcode-engine.ts
+import { randomUUID as randomUUID7 } from "node:crypto";
+var ZCodeCliRunner = class {
+  bin;
+  #killGraceMs;
+  #env;
+  #commands;
+  constructor(bin = "zcode", options = {}) {
+    this.bin = bin;
+    this.#killGraceMs = options.killGraceMs ?? DEFAULT_STOP_BOUNDS.stopGraceMs;
+    this.#env = launchEnvironment("zcode", options.workerEnv);
+    this.#commands = options.commands;
+  }
+  async run(options) {
+    return runStreamedCommand({
+      label: "zcode run",
+      file: this.bin,
+      args: zcodeRunArguments(options),
+      cwd: options.cwd,
+      env: this.#env,
+      commands: this.#commands,
+      timeoutMs: options.timeoutMs,
+      killGraceMs: this.#killGraceMs,
+      signal: options.signal,
+      onFirstData: options.onFirstData,
+      onData: options.onData,
+      onCommandStop: options.onCommandStop,
+      watchLine: watchZCodeLine
+    });
+  }
+  async inspect(args) {
+    return runStreamedCommand({
+      label: `zcode ${args[0] ?? ""}`.trim(),
+      file: this.bin,
+      args: [...args],
+      cwd: process.cwd(),
+      env: this.#env,
+      commands: this.#commands,
+      timeoutMs: 6e4,
+      killGraceMs: this.#killGraceMs,
+      signal: void 0
+    });
+  }
+};
+function zcodeRunArguments(options) {
+  return [
+    `--prompt=${options.prompt}`,
+    "--output-format",
+    "stream-json",
+    "--provider",
+    options.provider,
+    "--model",
+    options.model,
+    "--reasoning-level",
+    options.reasoningLevel,
+    "--cwd",
+    options.cwd,
+    ...options.resume !== void 0 ? ["--resume", options.resume] : [],
+    ...options.disallowedTools !== void 0 && options.disallowedTools.length > 0 ? ["--disallowed-tools", ...options.disallowedTools] : []
+  ];
+}
+var ZCodeListing = class {
+  #levels = /* @__PURE__ */ new Map();
+  /**
+   * Whether zcode read every provider's listing. A provider whose listing
+   * failed (zcode reports `"status": "failed"`, as a NanoGPT listing that
+   * timed out does, and exits 1) has no models here.
+   */
+  complete;
+  constructor(models, complete = true) {
+    for (const entry of models) {
+      this.#levels.set(`${entry.provider}/${entry.model}`, entry.reasoningLevels);
+    }
+    this.complete = complete;
+  }
+  /** The reasoning levels zcode lists for the model, or undefined where it lists no such model. */
+  levels(selection) {
+    return this.#levels.get(`${selection.provider}/${selection.model}`);
+  }
+  /**
+   * Records levels zcode named for a model the listing lacked, as its
+   * refusal of an unsupported level does (`Supported levels: …`), so the
+   * rest of the run knows them without asking again.
+   */
+  learn(selection, levels2) {
+    const key = `${selection.provider}/${selection.model}`;
+    if (!this.#levels.has(key)) this.#levels.set(key, levels2);
+  }
+};
+function parseZCodeListing(stdout) {
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!isRecord2(parsed) || !Array.isArray(parsed.models)) return null;
+  const models = parsed.models.flatMap(
+    (entry) => isRecord2(entry) && typeof entry.provider === "string" && typeof entry.model === "string" ? [{
+      provider: entry.provider,
+      model: entry.model,
+      reasoningLevels: Array.isArray(entry.reasoningLevels) ? entry.reasoningLevels.filter((level) => typeof level === "string") : []
+    }] : []
+  );
+  const complete = !Array.isArray(parsed.listings) || parsed.listings.every((listing) => !isRecord2(listing) || listing.status === void 0 || listing.status === "read");
+  return new ZCodeListing(models, complete);
+}
+function defaultZCodeReasoningLevel(levels2) {
+  if (levels2 === void 0 || levels2.length === 0) return void 0;
+  const canonical = CANONICAL_EFFORT_DOMAIN.filter((level) => levels2.includes(level));
+  return canonical.at(-1) ?? levels2.at(-1);
+}
+var STRIPPED_TOOLS = {
+  skills: ["Skill"],
+  agents: ["Agent", "CreateWorkflow"]
+};
+function disallowedToolsFor(strip) {
+  return [...new Set((strip ?? []).flatMap((capability) => STRIPPED_TOOLS[capability]))];
+}
+var ZCodeEngineAdapter = class {
+  name = "zcode";
+  concurrency;
+  capabilities = {
+    skills: { route: "config", detail: "zcode --disallowed-tools Skill withholds the skill tool from the model for the run" },
+    agents: {
+      route: "config",
+      detail: "zcode --disallowed-tools Agent CreateWorkflow withholds the subagent and dynamic-workflow tools from the model for the run"
+    }
+  };
+  leanStart = {
+    route: "unsupported",
+    detail: "zcode has no per-run switch that withholds the operator's instructions, skill listing and MCP servers"
+  };
+  #scheduler;
+  #cwd;
+  #runner;
+  #onEvent;
+  #abilities = null;
+  #active = /* @__PURE__ */ new Set();
+  #closed = false;
+  constructor(options = {}) {
+    this.concurrency = options.concurrency ?? defaultZCodeConcurrency();
+    this.#scheduler = new Scheduler(this.concurrency);
+    this.#cwd = options.cwd ?? process.cwd();
+    this.#runner = options.runner ?? new ZCodeCliRunner();
+    this.#onEvent = options.onEvent;
+  }
+  schedule(task) {
+    return this.#scheduler.schedule(task);
+  }
+  // No `modelIdentity`, and a report naming no identity: a zcode model's
+  // served levels are the ones zcode lists for it on that provider, so the
+  // built-in table, whose rows describe the levels other routes serve (the
+  // Codex route's `none` on gpt-6-luna, which the gateway refuses through
+  // zcode), never stands in for the listing. The machine's own `levels`
+  // map for a `zcode:provider/model` key still outranks it.
+  async effortReport(model) {
+    if (model === void 0) return null;
+    let selection;
+    let abilities;
+    try {
+      selection = parseZCodeModel(model);
+      abilities = await this.#readAbilities();
+    } catch {
+      return null;
+    }
+    const listed = abilities.listing.levels(selection);
+    if (listed === void 0) return null;
+    const levels2 = Object.fromEntries(listed.filter(isCanonicalEffort).map((level) => [level, level]));
+    return { identity: null, levels: Object.keys(levels2).length === 0 ? null : levels2 };
+  }
+  createInvocation(prompt, options) {
+    if (this.#closed) throw new EngineShutdownError(this.name);
+    const turn = this.#turnSettings(options);
+    const invocation = new ZCodeEngineInvocation(prompt, turn, (closed) => this.#active.delete(closed));
+    this.#active.add(invocation);
+    return invocation;
+  }
+  createSession(options, observer) {
+    if (this.#closed) throw new EngineShutdownError(this.name);
+    const session = new ZCodeWorkerSession(this.#turnSettings(options), observer, (closed) => this.#active.delete(closed));
+    this.#active.add(session);
+    return session;
+  }
+  async close() {
+    this.#closed = true;
+    this.#scheduler.close(new EngineShutdownError(this.name));
+    await Promise.allSettled([...this.#active].map(async (worker) => worker.close()));
+  }
+  #turnSettings(options) {
+    const selection = parseZCodeModel(options.model);
+    return {
+      selection,
+      options,
+      cwd: options.cwd ?? this.#cwd,
+      runner: this.#runner,
+      abilities: () => this.#readAbilities(),
+      onEvent: this.#onEvent
+    };
+  }
+  /**
+   * Reads, once per run, whether the installed zcode can be told a run's
+   * provider, model and reasoning level and can print its model listing,
+   * and keeps the listing for the run, a listing that lacked a provider
+   * included: reading it again would wait on that provider again, for
+   * every dispatch and every retry. Single-flight and not failure-memoised:
+   * a zcode that could not be read is asked again by the next dispatch.
+   */
+  #readAbilities() {
+    const reading = this.#abilities ??= readZCodeAbilities(this.#runner).catch((error) => {
+      if (this.#abilities === reading) this.#abilities = null;
+      throw error;
+    });
+    return reading;
+  }
+};
+async function readZCodeAbilities(runner) {
+  const refuse = (detail) => {
+    throw new ZCodeSubstrateRefusedError(`zcode at ${runner.bin} cannot serve the zcode engine: ${detail}`);
+  };
+  let help;
+  try {
+    help = await runner.inspect(["--help"]);
+  } catch (error) {
+    return refuse(`it could not be run (${error instanceof Error ? error.message : String(error)})`);
+  }
+  const usage2 = `${help.stdout}
+${help.stderr}`;
+  const lacks = [
+    .../--reasoning-level\b/.test(usage2) && /--provider\b/.test(usage2) && /--model\b/.test(usage2) ? [] : ["per-run model selection (--provider, --model and --reasoning-level)"],
+    .../^\s+models\s/m.test(usage2) ? [] : ["a model listing (zcode models)"]
+  ];
+  if (lacks.length > 0) {
+    return refuse(`it lacks ${lacks.join(" and ")}; the engine needs a ZCode that has both`);
+  }
+  let listed;
+  try {
+    listed = await runner.inspect(["models"]);
+  } catch (error) {
+    return refuse(`its model listing could not be read (${error instanceof Error ? error.message : String(error)})`);
+  }
+  const listing = parseZCodeListing(listed.stdout);
+  if (listing === null) {
+    const stderr = listed.stderr.trim();
+    return refuse(`its model listing (zcode models) did not print the expected JSON${stderr.length > 0 ? `: ${stderr}` : ""}`);
+  }
+  return { listing };
+}
+var ZCodeEngineInvocation = class {
+  #prompt;
+  #settings;
+  #abort = new AbortController();
+  #settlement = null;
+  #closing = null;
+  #onClose;
+  constructor(prompt, settings, onClose) {
+    this.#prompt = prompt;
+    this.#settings = settings;
+    this.#onClose = onClose;
+  }
+  async runAttempt(context) {
+    const settlement = runZCodeAttempt(this.#settings, {
+      prompt: openingRunPrompt(this.#prompt, this.#settings.options.schema, context.previousFailure),
+      resume: void 0,
+      signal: this.#abort.signal,
+      context
+    });
+    this.#settlement = settlement;
+    try {
+      return (await settlement).result;
+    } finally {
+      if (this.#settlement === settlement) this.#settlement = null;
+    }
+  }
+  async close() {
+    this.#closing ??= (async () => {
+      this.#abort.abort();
+      try {
+        await this.#settlement?.catch(() => void 0);
+      } finally {
+        this.#onClose(this);
+      }
+    })();
+    await this.#closing;
+  }
+};
+var ZCodeWorkerSession = class {
+  #settings;
+  #observer;
+  #onClose;
+  #sessionId = null;
+  #lost = null;
+  #abort = new AbortController();
+  #settlement = null;
+  #closed = false;
+  constructor(settings, observer, onClose) {
+    this.#settings = settings;
+    this.#observer = observer;
+    this.#onClose = onClose;
+  }
+  beginTurn(prompt, turn) {
+    return { runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context) };
+  }
+  async #runTurnAttempt(prompt, schema, context) {
+    if (this.#lost !== null) return this.#lostResult();
+    if (this.#closed) throw new EngineShutdownError("zcode");
+    const resume = this.#sessionId ?? void 0;
+    const message = resume === void 0 ? openingRunPrompt(prompt, schema, context.previousFailure) : context.previousFailure !== void 0 ? inSessionCorrection(carriedFailure(context.previousFailure)) : laterTurnPrompt({ task: prompt, ...schema !== void 0 ? { schema } : {} });
+    const settlement = runZCodeAttempt(this.#settings, {
+      prompt: message,
+      resume,
+      signal: this.#abort.signal,
+      context
+    });
+    this.#settlement = settlement;
+    try {
+      const { result, sessionId, sessionMissing } = await settlement;
+      if (sessionMissing && resume !== void 0) {
+        this.#noteLost(resume, result.attemptFailure?.message ?? `zcode no longer finds session ${resume}`);
+        return { ...result, attemptFailure: { kind: "session-lost", message: this.#lost.reason } };
+      }
+      this.#sessionId ??= sessionId;
+      return result;
+    } catch (error) {
+      this.#sessionId ??= sessionIdOfFailure(error);
+      throw error;
+    } finally {
+      if (this.#settlement === settlement) this.#settlement = null;
+    }
+  }
+  #noteLost(sessionId, reason) {
+    if (this.#closed || this.#lost !== null) return;
+    this.#lost = { nativeSession: sessionId, reason, observedAt: Date.now() };
+    try {
+      this.#observer.onLost(this.#lost);
+    } catch {
+    }
+  }
+  #lostResult() {
+    return {
+      text: "",
+      deltaText: "",
+      durationMs: null,
+      firstDeltaMs: null,
+      items: {},
+      tokenUsageEvents: [],
+      attemptFailure: { kind: "session-lost", message: this.#lost.reason }
+    };
+  }
+  async close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#abort.abort();
+    try {
+      await this.#settlement?.catch(() => void 0);
+    } finally {
+      this.#onClose(this);
+    }
+  }
+};
+var sessionIdsOfFailures = /* @__PURE__ */ new WeakMap();
+function sessionIdOfFailure(error) {
+  return error instanceof Error ? sessionIdsOfFailures.get(error) ?? null : null;
+}
+var CORRECTION_MESSAGE_CHARACTERS = 2e3;
+var LONGEST_CARRIED_FAILURE = {
+  kind: "x".repeat(64),
+  message: "\uFFFF".repeat(CORRECTION_MESSAGE_CHARACTERS + 1)
+};
+function carriedFailure(failure) {
+  return failure.message.length > CORRECTION_MESSAGE_CHARACTERS ? { ...failure, message: `${failure.message.slice(0, CORRECTION_MESSAGE_CHARACTERS)}\u2026` } : failure;
+}
+function openingRunPrompt(task, schema, previousFailure) {
+  return openingPrompt({
+    task,
+    ...schema !== void 0 ? { schema } : {},
+    ...previousFailure !== void 0 ? { previousFailure: carriedFailure(previousFailure) } : {}
+  });
+}
+function assertZCodePromptFits(prompt, schema) {
+  if (fitsOneArgument(`--prompt=${openingRunPrompt(prompt, schema, LONGEST_CARRIED_FAILURE)}`)) return;
+  throw new AgentPromptRejectedError(
+    `the zcode engine cannot be given this prompt: zcode takes a prompt only as one command-line argument, which Linux bounds at ${MAX_ARGUMENT_BYTES} bytes (128 KiB), and this prompt is ${Buffer.byteLength(prompt, "utf8")} bytes${schema !== void 0 ? " before its schema" : ""}; shorten it, or dispatch it on an engine that takes longer prompts`
+  );
+}
+function requestedReasoningLevel(options) {
+  return options.effortResolution?.dispatched ?? options.effort;
+}
+var UNLISTED_MODEL_LEVEL = "medium";
+function supportedLevelsOfRefusal(message) {
+  const match = /\bUnsupported reasoning level "[^"]*".*\bSupported levels: ([^\n]*?)\.?\s*$/m.exec(message);
+  if (match === null) return null;
+  const levels2 = match[1].split(",").map((level) => level.trim()).filter((level) => level.length > 0);
+  return levels2.length === 0 ? null : levels2;
+}
+async function runZCodeAttempt(settings, request) {
+  const stops = [];
+  const startedAt = Date.now();
+  try {
+    const outcome = await runZCodeTurn(settings, request, (stop) => stops.push(stop));
+    outcome.result.diagnostics = { ...outcome.result.diagnostics, ...unestablishedStopDiagnostics(stops) };
+    return outcome;
+  } catch (error) {
+    if (error instanceof Error && stops.some((stop) => stop.attemptAccount !== null)) {
+      const text = partialWorkerTextOf(error) ?? "";
+      const result = failedTurnResultOf(error) ?? {
+        text,
+        deltaText: text,
+        durationMs: Date.now() - startedAt,
+        firstDeltaMs: null,
+        items: {},
+        tokenUsageEvents: []
+      };
+      result.diagnostics = { ...result.diagnostics, ...unestablishedStopDiagnostics(stops) };
+      attachFailedTurnResult(error, result);
+    }
+    throw error;
+  }
+}
+async function runZCodeTurn(settings, request, onCommandStop) {
+  const { selection, options } = settings;
+  const { context } = request;
+  const { listing } = await settings.abilities();
+  if (request.signal.aborted) throw new EngineShutdownError("zcode");
+  const requested = requestedReasoningLevel(options);
+  const launch = async (reasoningLevel, earlier) => {
+    const stream2 = new ZCodeStream(settings, context, earlier?.stream);
+    const run2 = await settings.runner.run({
+      prompt: request.prompt,
+      cwd: settings.cwd,
+      provider: selection.provider,
+      model: selection.model,
+      reasoningLevel,
+      ...request.resume !== void 0 ? { resume: request.resume } : {},
+      disallowedTools: disallowedToolsFor(options.strip),
+      ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
+      signal: request.signal,
+      ...context.onLiveEvidence !== void 0 ? { onFirstData: context.onLiveEvidence } : {},
+      onData: (chunk) => stream2.push(chunk),
+      onCommandStop
+    });
+    stream2.end(run2.stdout);
+    return { stream: stream2, run: run2, durationMs: (earlier?.durationMs ?? 0) + run2.durationMs };
+  };
+  let { stream, run, durationMs } = await launch(requested ?? defaultZCodeReasoningLevel(listing.levels(selection)) ?? UNLISTED_MODEL_LEVEL);
+  if (requested === void 0 && listing.levels(selection) === void 0 && !request.signal.aborted) {
+    const refusal2 = stream.evidence().failure(run);
+    const levels2 = refusal2 === null ? null : supportedLevelsOfRefusal(refusal2.message);
+    const level = defaultZCodeReasoningLevel(levels2 ?? void 0);
+    if (levels2 !== null && level !== void 0) {
+      listing.learn(selection, levels2);
+      ({ stream, run, durationMs } = await launch(level, { stream, durationMs }));
+    }
+  }
+  const evidence = stream.evidence();
+  const workerExit = { exitCode: run.exitCode, signal: run.signal };
+  const text = evidence.response ?? evidence.streamedText;
+  const base = {
+    text,
+    deltaText: evidence.streamedText,
+    durationMs,
+    firstDeltaMs: evidence.firstTextAt === null ? null : evidence.firstTextAt - stream.startedAt,
+    items: {},
+    tokenUsageEvents: evidence.usageEvents,
+    transcripts: evidence.transcripts,
+    ...evidence.resolvedModel !== null ? { resolvedModel: evidence.resolvedModel } : {},
+    ...evidence.resolvedEffort !== null ? { resolvedEffort: evidence.resolvedEffort } : {},
+    diagnostics: { zcode: evidence.diagnostics(run) }
+  };
+  if (request.signal.aborted) {
+    throw attachWorkerExitStatus(attachPartialWorkerText(new EngineShutdownError("zcode"), text), workerExit);
+  }
+  if (run.whitespaceLimitReached === true || run.deadlineExpired === true) {
+    const error = run.whitespaceLimitReached === true ? new WhitespaceStreamError() : new TurnTimeoutError(`zcode turn timed out after ${options.timeoutMs}ms`, {
+      kind: "turn",
+      timeoutMs: options.timeoutMs ?? 0,
+      threadId: evidence.sessionId ?? `zcode-no-session-${randomUUID7()}`
+    });
+    attachFailedTurnResult(error, { ...base, workerExit });
+    if (evidence.sessionId !== null) sessionIdsOfFailures.set(error, evidence.sessionId);
+    throw attachWorkerExitStatus(attachPartialWorkerText(error, text), workerExit);
+  }
+  const failure = evidence.failure(run);
+  return {
+    result: failure === null ? base : { ...base, attemptFailure: failure, workerExit },
+    sessionId: evidence.sessionId,
+    sessionMissing: failure?.kind === "zcode-run-error" && /^zcode run failed: Session not found\b/.test(failure.message)
+  };
+}
+function watchZCodeLine(line, whitespace) {
+  const event = parseLine2(line);
+  if (!isRecord2(event)) return;
+  const payload = isRecord2(event.payload) ? event.payload : {};
+  if (event.type === "model.streaming") {
+    if (payload.kind === "text_delta" && typeof payload.delta === "string") {
+      whitespace.observeText(payload.delta);
+    } else if (typeof payload.kind === "string" && /^(?:reasoning|tool)_/.test(payload.kind)) {
+      whitespace.observeActivity();
+    }
+  } else if (event.type === "tool.updated") {
+    whitespace.observeActivity();
+  }
+}
+var ZCodeStream = class {
+  /** When the attempt's first run started. */
+  startedAt;
+  #settings;
+  #context;
+  /** Events of the attempt's earlier runs, which its transcript keeps before this run's. */
+  #earlierEvents;
+  #buffer = "";
+  #events = [];
+  #result = null;
+  #sessionId = null;
+  #messageText = /* @__PURE__ */ new Map();
+  #lastTextMessage = null;
+  #firstTextAt = null;
+  #requests = /* @__PURE__ */ new Set();
+  #requestTotal = null;
+  #reported = null;
+  #liveUsage = [];
+  #resolvedModel = null;
+  #resolvedEffort = null;
+  #turnError = null;
+  /** `earlier` is the stream of a run the same attempt made before this one. */
+  constructor(settings, context, earlier) {
+    this.#settings = settings;
+    this.#context = context;
+    this.startedAt = earlier?.startedAt ?? Date.now();
+    this.#earlierEvents = earlier === void 0 ? [] : earlier.#allEvents();
+  }
+  #allEvents() {
+    return [...this.#earlierEvents, ...this.#events];
+  }
+  push(chunk) {
+    this.#buffer += chunk;
+    const lines = this.#buffer.split(/\r?\n/);
+    this.#buffer = lines.pop() ?? "";
+    for (const line of lines) this.#line(line);
+  }
+  /** Reads whatever the chunks did not deliver: a final unterminated line. */
+  end(stdout) {
+    if (this.#events.length === 0 && this.#buffer.length === 0 && stdout.length > 0) {
+      this.push(stdout);
+    }
+    if (this.#buffer.trim().length > 0) this.#line(this.#buffer);
+    this.#buffer = "";
+  }
+  #line(line) {
+    const event = parseLine2(line);
+    if (event === void 0) return;
+    this.#events.push(event);
+    observe(() => this.#context.onTranscriptEvent?.(event));
+    observe(() => this.#context.onOutput?.());
+    if (!isRecord2(event)) return;
+    if (typeof event.sessionId === "string") this.#sessionId = event.sessionId;
+    if (event.type === "result") {
+      this.#result = event;
+      const usage2 = isRecord2(event.usage) ? usageBreakdown(event.usage) : null;
+      if (usage2 !== null) this.#report(usage2);
+      return;
+    }
+    const payload = isRecord2(event.payload) ? event.payload : null;
+    if (payload === null) return;
+    if (event.type === "model.streaming" && payload.kind === "text_delta" && typeof payload.delta === "string") {
+      const message = typeof payload.assistantMessageId === "string" ? payload.assistantMessageId : "";
+      this.#messageText.set(message, (this.#messageText.get(message) ?? "") + payload.delta);
+      this.#lastTextMessage = message;
+      this.#firstTextAt ??= Date.now();
+    } else if (event.type === "turn.failed" && isRecord2(payload.error)) {
+      this.#turnError = payload.error;
+    } else if (event.type === "session.updated" && typeof payload.requestId === "string" && typeof payload.providerId === "string") {
+      this.#request(payload);
+    }
+  }
+  /** A model request's start names the served model; its completion carries its usage. */
+  #request(payload) {
+    const model = typeof payload.modelId === "string" ? `${payload.providerId}/${payload.modelId}` : null;
+    const reasoning = isRecord2(payload.modelCall) && isRecord2(payload.modelCall.reasoning) ? payload.modelCall.reasoning : null;
+    const reported = typeof reasoning?.effectiveLevel === "string" && reasoning.effectiveLevel !== "unknown" ? reasoning.effectiveLevel : null;
+    const effective = reported ?? (model === this.#resolvedModel ? this.#resolvedEffort : null);
+    if (model !== null && (model !== this.#resolvedModel || effective !== this.#resolvedEffort)) {
+      this.#resolvedModel = model;
+      this.#resolvedEffort = effective;
+      observe(() => this.#context.onIdentity?.({ resolvedModel: model, resolvedEffort: effective }));
+    }
+    const usage2 = isRecord2(payload.usage) && payload.durationMs !== void 0 ? usageBreakdown(payload.usage) : null;
+    if (usage2 === null || this.#requests.has(payload.requestId)) return;
+    this.#requests.add(payload.requestId);
+    this.#requestTotal = this.#requestTotal === null ? usage2 : addUsage2(this.#requestTotal, usage2);
+    this.#report(this.#requestTotal);
+  }
+  /** Reports the run's spend so far, as the delta from what was reported before. */
+  #report(total) {
+    const last = subtractUsage(total, this.#reported);
+    if (last.totalTokens <= 0) return;
+    this.#reported = total;
+    const event = this.#usageEvent(last, total);
+    this.#liveUsage.push(event);
+    observe(() => this.#context.onUsage?.(event));
+    this.#settings.onEvent?.({ method: "thread/tokenUsage/updated", params: event.raw, receivedAt: Date.now() });
+  }
+  #usageEvent(last, total) {
+    const threadId = this.#sessionId ?? "zcode-no-session";
+    const turnId = `${threadId}:zcode-${this.#context.attempt}-${this.#liveUsage.length + 1}`;
+    return {
+      threadId,
+      turnId,
+      last,
+      total,
+      raw: { threadId, turnId, model: `${this.#settings.selection.provider}/${this.#settings.selection.model}`, tokenUsage: { last, total } }
+    };
+  }
+  evidence() {
+    const result = this.#result;
+    const response = typeof result?.response === "string" ? result.response : null;
+    const streamedText = this.#lastTextMessage === null ? "" : this.#messageText.get(this.#lastTextMessage) ?? "";
+    const turnError = this.#turnError;
+    const content = transcriptContent(this.#allEvents());
+    return {
+      response,
+      streamedText,
+      firstTextAt: this.#firstTextAt,
+      sessionId: this.#sessionId,
+      resolvedModel: this.#resolvedModel,
+      resolvedEffort: this.#resolvedEffort,
+      usageEvents: this.#reported === null ? [] : [this.#usageEvent(this.#reported, this.#reported)],
+      transcripts: content.length === 0 ? [] : [{
+        filename: ZCODE_TRANSCRIPT.filename,
+        format: "jsonl",
+        source: ZCODE_TRANSCRIPT.source,
+        content,
+        ...this.#sessionId !== null ? { sessionId: this.#sessionId } : {}
+      }],
+      diagnostics: (run) => ({
+        outcome: typeof result?.outcome === "string" ? result.outcome : null,
+        ...typeof result?.error === "string" ? { error: result.error } : {},
+        turn_error: turnError === null ? null : {
+          code: stringOrNull(turnError.code),
+          type: stringOrNull(turnError.type),
+          message: stringOrNull(turnError.message),
+          reason: isRecord2(turnError.attribution) ? stringOrNull(turnError.attribution.reason) : null,
+          source: isRecord2(turnError.attribution) ? stringOrNull(turnError.attribution.source) : null
+        },
+        session_id: this.#sessionId,
+        exit_code: run.exitCode,
+        signal: run.signal,
+        ...run.stderr.trim().length > 0 ? { stderr: run.stderr.trim().slice(-4e3) } : {}
+      }),
+      /**
+       * Why the run failed; null for a run that finished. zcode closes every
+       * run it handles, a refused or failed one included, with its `result`
+       * line, so a process that ended without one died under the worker:
+       * killed, or crashed past zcode's own handling.
+       */
+      failure: (run) => {
+        const stderr = run.stderr.trim().replace(/^Error: /, "").split("\n")[0] ?? "";
+        if (result === null) {
+          const ending = run.signal !== null ? `was killed by ${run.signal}` : `exited with code ${run.exitCode ?? "unknown"}`;
+          return {
+            kind: "zcode-worker-lost",
+            message: `zcode ${ending} before its closing result${stderr.length > 0 ? `: ${stderr}` : ""}`
+          };
+        }
+        const outcome = result.outcome;
+        if (outcome === "finished" && run.exitCode === 0) return null;
+        const runError = (message) => ({ kind: "zcode-run-error", message: `zcode run failed: ${message}` });
+        if (outcome === "cancelled") return runError("the run was cancelled");
+        if (typeof result.error === "string") return runError(result.error);
+        if (stderr.length > 0) return runError(stderr);
+        return runError(`exit code ${run.exitCode ?? "unknown"}${run.signal !== null ? `, signal ${run.signal}` : ""}`);
+      }
+    };
+  }
+};
+function usageBreakdown(usage2) {
+  const input = numberOr0(usage2.inputTokens);
+  const output = numberOr0(usage2.outputTokens);
+  const cacheRead = numberOr0(usage2.cacheReadTokens);
+  const cacheWrite = typeof usage2.cacheWriteTokens === "number" ? usage2.cacheWriteTokens : void 0;
+  const total = typeof usage2.totalTokens === "number" ? usage2.totalTokens : input + output;
+  if (total === 0 && input === 0 && output === 0) return null;
+  return {
+    cachedInputTokens: cacheRead + (cacheWrite ?? 0),
+    ...cacheWrite !== void 0 ? { cacheCreationInputTokens: cacheWrite } : {},
+    inputTokens: input,
+    outputTokens: output,
+    ...typeof usage2.reasoningTokens === "number" ? { reasoningOutputTokens: usage2.reasoningTokens } : {},
+    totalTokens: total
+  };
+}
+function addUsage2(left, right) {
+  const creation = left.cacheCreationInputTokens === void 0 || right.cacheCreationInputTokens === void 0 ? void 0 : left.cacheCreationInputTokens + right.cacheCreationInputTokens;
+  const reasoning = left.reasoningOutputTokens === void 0 || right.reasoningOutputTokens === void 0 ? void 0 : left.reasoningOutputTokens + right.reasoningOutputTokens;
+  return {
+    cachedInputTokens: left.cachedInputTokens + right.cachedInputTokens,
+    ...creation !== void 0 ? { cacheCreationInputTokens: creation } : {},
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    ...reasoning !== void 0 ? { reasoningOutputTokens: reasoning } : {},
+    totalTokens: left.totalTokens + right.totalTokens
+  };
+}
+function observe(callback) {
+  try {
+    callback();
+  } catch {
+  }
+}
+function parseLine2(line) {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return void 0;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return { type: "raw", text: line };
+  }
+}
+function numberOr0(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+function stringOrNull(value) {
+  return typeof value === "string" ? value : null;
+}
+function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -28582,7 +29470,7 @@ var OpenCodeEngineAdapter = class {
 async function createDefaultEngineRegistry(options) {
   const grouping = parseWorkerScopeGrouping(options.workerScope ?? "worker", "workerScope");
   const ownsScopes = options.workerScopes === void 0;
-  const workerScopes = options.workerScopes ?? await createWorkerScopes({ label: `${process.pid}-${randomUUID7()}` });
+  const workerScopes = options.workerScopes ?? await createWorkerScopes({ label: `${process.pid}-${randomUUID8()}` });
   const workerCommands = new CommandContainment(workerScopes, { grouping });
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
@@ -28637,6 +29525,15 @@ async function createDefaultEngineRegistry(options) {
         ...options.workerEnvironment?.agy !== void 0 ? { workerEnv: options.workerEnvironment.agy } : {},
         ...options.concurrencyCaps?.agy !== void 0 ? { concurrency: options.concurrencyCaps.agy } : {},
         onEvent: options.onAgyEvent
+      }),
+      new ZCodeEngineAdapter({
+        cwd: options.cwd,
+        runner: new ZCodeCliRunner(options.zcodeBin, {
+          commands: workerCommands,
+          ...options.workerEnvironment?.zcode !== void 0 ? { workerEnv: options.workerEnvironment.zcode } : {}
+        }),
+        ...options.concurrencyCaps?.zcode !== void 0 ? { concurrency: options.concurrencyCaps.zcode } : {},
+        onEvent: options.onZCodeEvent
       })
     ],
     // Commands before scopes: a command's scope is one of the manager's, and
@@ -28644,7 +29541,7 @@ async function createDefaultEngineRegistry(options) {
     // containment names the command and judges how it was stopped.
     [workerCommands, ...ownsScopes ? [workerScopes] : []],
     // The Codex app-server is shared and starts in the run base; Claude,
-    // opencode and agy launch a process in each invocation's placement.
+    // opencode, agy and zcode launch a process in each invocation's placement.
     (engine, cwd) => engineResourceRequirements(engine, options.workerEnvironment?.[engine], engine === "codex" ? options.cwd : cwd)
   );
 }
@@ -28676,6 +29573,9 @@ ${previousFailureNotice(failure)}`;
 }
 
 // src/runtime.ts
+function assertPromptFits(engine, prompt, schema) {
+  if (engine === "zcode") assertZCodePromptFits(prompt, schema);
+}
 function assertValidAgentPrompt(prompt) {
   if (typeof prompt !== "string") {
     throw new AgentPromptRejectedError(`agent() prompt must be a string, got ${typeof prompt}`);
@@ -28797,7 +29697,7 @@ var WorkerSession = class {
    */
   get stale() {
     const state = this.#state;
-    if (!state.markStaleness || state.lastTurnEndedAt === null || state.inFlight) {
+    if (!state.markStaleness || state.stalenessThresholdMs === null || state.lastTurnEndedAt === null || state.inFlight) {
       return false;
     }
     return this.#now() - state.lastTurnEndedAt >= state.stalenessThresholdMs;
@@ -28898,6 +29798,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #claudeSessionStaleAfterMs;
   #codexSessionStaleAfterMs;
   #agySessionStaleAfterMs;
+  #zcodeSessionStaleAfterMs;
   constructor(options) {
     if (options.strip !== void 0) {
       assertValidStripOption(options.strip);
@@ -28929,6 +29830,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 36e5;
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 36e5;
     this.#agySessionStaleAfterMs = options.agySessionStaleAfterMs ?? 3e5;
+    this.#zcodeSessionStaleAfterMs = options.zcodeSessionStaleAfterMs ?? {};
     this.#now = options.now ?? (() => Date.now());
     this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
     rejectBlankHoldScope(options.holdScope);
@@ -28962,7 +29864,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.now !== void 0 ? { now: options.now } : {}
     });
     this.progress = new RunProgress({
-      runId: options.runId ?? randomUUID8(),
+      runId: options.runId ?? randomUUID9(),
       budget: this.budget,
       admission: this.#admission,
       ...options.now !== void 0 ? { now: options.now } : {}
@@ -29016,6 +29918,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       onAgyEvent: (event) => {
         runtime?.handleEngineEvent("agy", event);
       },
+      onZCodeEvent: (event) => {
+        runtime?.handleEngineEvent("zcode", event);
+      },
       ...options.concurrencyCaps !== void 0 ? { concurrencyCaps: options.concurrencyCaps } : {}
     });
     runtime = new _EnsembleRuntime({
@@ -29037,7 +29942,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.modelFamilies !== void 0 ? { modelFamilies: options.modelFamilies } : {},
       ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : {},
       ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {},
-      ...options.agySessionStaleAfterMs !== void 0 ? { agySessionStaleAfterMs: options.agySessionStaleAfterMs } : {}
+      ...options.agySessionStaleAfterMs !== void 0 ? { agySessionStaleAfterMs: options.agySessionStaleAfterMs } : {},
+      ...options.zcodeSessionStaleAfterMs !== void 0 ? { zcodeSessionStaleAfterMs: options.zcodeSessionStaleAfterMs } : {}
     });
     return runtime;
   }
@@ -29168,7 +30074,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
     this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
-    this.#validateOpenCodeTarget(engine, options);
+    this.#validateModelTarget(engine, options);
+    for (const target of [engine.name, ...chain.map((entry) => entry.engine)]) {
+      assertPromptFits(target, prompt, options.schema);
+    }
     const dispatchOptions = strip.length === 0 && !lean ? options : withOptionOverrides(options, { ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} });
     const dispatchPhase = this.#dispatchRemap === void 0 ? options.phase ?? this.progress.snapshot().currentPhase : remapPhase;
     const dispatchContext = [
@@ -29340,7 +30249,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveLeanStart(target.name, target.leanStart);
       }
     }
-    this.#validateOpenCodeTarget(engine, resolved);
+    this.#validateModelTarget(engine, resolved);
     const model = resolved.model ?? null;
     return { target: name, bound: true, engine: engine.name, model, family: this.modelFamilyOf({ engine: engine.name, requested: model, served: null }) };
   }
@@ -29393,7 +30302,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const targets = settleChain(this.#namedTargets, chain, chain);
     if (this.#dispatchRemap !== void 0) return;
     for (const target of targets) {
-      this.#validateOpenCodeTarget(this.#engines.get(target.engine), target);
+      this.#validateModelTarget(this.#engines.get(target.engine), target);
     }
   }
   createWorkerSession(declared) {
@@ -29432,6 +30341,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
     this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
+    this.#validateModelTarget(engine, options);
     const sessionOptions = strip.length === 0 && !lean ? options : withOptionOverrides(options, { ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} });
     this.#sessionCounter += 1;
     const state = {
@@ -29447,7 +30357,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       chain,
       remap,
       servingTarget: namedTarget?.name ?? null,
-      stalenessThresholdMs: this.#sessionStaleAfterMs(engine.name),
+      stalenessThresholdMs: this.#sessionStaleAfterMs(engine.name, sessionOptions.model),
       markStaleness: sessionOptions.stalenessMark ?? true,
       engineSession: null,
       placement: null,
@@ -29495,6 +30405,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
+    for (const target of [engine.name, ...state.turnCount === 0 ? state.chain.map((entry) => entry.engine) : []]) {
+      assertPromptFits(target, prompt, turn.schema);
+    }
     let phase = options.phase ?? this.progress.snapshot().currentPhase;
     state.inFlight = true;
     try {
@@ -29595,7 +30508,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     state.engine = targetEngine;
     state.options = optionsForTarget(state.options, target);
     state.servingTarget = target.namedTarget;
-    state.stalenessThresholdMs = this.#sessionStaleAfterMs(targetEngine.name);
+    state.stalenessThresholdMs = this.#sessionStaleAfterMs(targetEngine.name, state.options.model);
     const options = state.options;
     if (state.engineSession === null) {
       state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
@@ -30946,21 +31859,27 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return this.#recordThrownFailure(record, attempt, error, startedAt, attempts).refused;
   }
   /**
-   * The idle gap at which a held worker on `engine` reads stale. The
-   * threshold is per engine shape: Claude's is the cliff at its
+   * The idle gap at which a held worker on this engine and model reads
+   * stale, or null where none applies. Claude's is the cliff at its
    * subscription cache TTL, Codex's the measured coin-flip idle point,
    * agy's the five-minute cache lifetime its operator reports — each
-   * overridable as a library-level runtime option. opencode holds no
-   * sessions.
+   * overridable as a library-level runtime option; opencode holds no
+   * sessions; zcode's is the threshold declared for the model's provider,
+   * and a provider with none leaves its workers unmarked.
    */
-  #sessionStaleAfterMs(engine) {
+  #sessionStaleAfterMs(engine, model) {
     switch (engine) {
       case "claude":
         return this.#claudeSessionStaleAfterMs;
       case "agy":
         return this.#agySessionStaleAfterMs;
-      default:
+      case "codex":
+      case "opencode":
         return this.#codexSessionStaleAfterMs;
+      case "zcode": {
+        const provider = model?.slice(0, Math.max(0, model.indexOf("/")));
+        return provider !== void 0 && provider.length > 0 && Object.hasOwn(this.#zcodeSessionStaleAfterMs, provider) ? this.#zcodeSessionStaleAfterMs[provider] ?? null : null;
+      }
     }
   }
   async #resolveEffortFor(record, engine, options) {
@@ -31143,11 +32062,20 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (adapter === void 0) {
       throw new FallbackTargetRejectedError(`the ${target.engine} engine is not available to this run`);
     }
-    this.#validateOpenCodeTarget(adapter, { model: target.model, effort: target.effort ?? inheritedEffort });
+    this.#validateModelTarget(adapter, { model: target.model, effort: target.effort ?? inheritedEffort });
     if (adapter.name !== "opencode") assertCanonicalEffortSupported(target.effort);
     return adapter;
   }
-  #validateOpenCodeTarget(engine, options) {
+  /**
+   * Refuses a target whose engine cannot run without a model it lacks: an
+   * opencode call with no registered model, and a zcode call with no
+   * model or one that names no provider.
+   */
+  #validateModelTarget(engine, options) {
+    if (engine?.name === "zcode") {
+      parseZCodeModel(options.model);
+      return;
+    }
     if (!(engine instanceof OpenCodeEngineAdapter)) return;
     if (options.model === void 0) throw new OpenCodeModelRequiredError(engine.modelRegistry);
     validateEngineDefaults(engine.name, {
@@ -37702,9 +38630,9 @@ function validateWorkflowDefaults(value, openCodeModelRegistry) {
   }
   const defaults = {};
   for (const [engine, engineValue] of Object.entries(value)) {
-    if (engine !== "codex" && engine !== "claude" && engine !== "opencode" && engine !== "agy") {
+    if (engine !== "codex" && engine !== "claude" && engine !== "opencode" && engine !== "agy" && engine !== "zcode") {
       throw new WorkflowScriptError(
-        `Workflow defaults key ${JSON.stringify(engine)} is not an engine; expected codex, claude, opencode, or agy`
+        `Workflow defaults key ${JSON.stringify(engine)} is not an engine; expected codex, claude, opencode, agy, or zcode`
       );
     }
     if (typeof engineValue !== "object" || engineValue === null || Array.isArray(engineValue)) {
@@ -38542,7 +39470,7 @@ async function runEnsembleCli(argv, options = {}) {
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage(program));
     stdout.write(
-      "\nDispatches one worker (--engine codex|claude|opencode|agy), or\non the engine and model a named target binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure, answeredBy }.\n"
+      "\nDispatches one worker on the named engine\n(--engine codex|claude|opencode|agy|zcode), or on the engine and model a\nnamed target binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure, answeredBy }.\n"
     );
     return 0;
   }
@@ -38732,6 +39660,7 @@ async function runEnsembleCli(argv, options = {}) {
       machineFallback: ambientSettings.machineFallback,
       ...remap === void 0 ? {} : { dispatchRemap: remap.ledger },
       modelFamilies: ambientSettings.modelFamilies,
+      zcodeSessionStaleAfterMs: ambientSettings.zcodeSessionStaleAfterMs,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
@@ -39271,7 +40200,7 @@ function cliFlags(invocation) {
 }
 function runtimeConcurrencyOptions(settings) {
   const concurrencyCaps = {};
-  for (const engine of ["codex", "claude", "opencode", "agy"]) {
+  for (const engine of ["codex", "claude", "opencode", "agy", "zcode"]) {
     const resolved = settings.concurrencyCaps[engine];
     if (resolved.layer !== "default") {
       concurrencyCaps[engine] = resolved.value;
@@ -39288,7 +40217,7 @@ function recordConcurrency(settings, progress) {
     return { agentCeiling: settings.agentCeiling, engines: settings.concurrencyCaps };
   }
   const engines = {};
-  for (const engine of ["codex", "claude", "opencode", "agy"]) {
+  for (const engine of ["codex", "claude", "opencode", "agy", "zcode"]) {
     const cap = snapshot.engines[engine]?.cap;
     if (cap !== null && cap !== void 0) {
       engines[engine] = { value: cap, layer: settings.concurrencyCaps[engine].layer };
@@ -39298,7 +40227,7 @@ function recordConcurrency(settings, progress) {
 }
 function recordEffectiveSettings(invocation, injectedTimeoutMs) {
   const budgetCeilings = {};
-  for (const engine of ["codex", "claude", "opencode", "agy"]) {
+  for (const engine of ["codex", "claude", "opencode", "agy", "zcode"]) {
     const flagged = invocation.budgetCeilings?.[engine];
     budgetCeilings[engine] = flagged !== void 0 ? { value: flagged, layer: "flag" } : { value: null, layer: "default" };
   }
@@ -39952,13 +40881,13 @@ function parseEngineMap(values, parseValue, flagName) {
   return result;
 }
 function parseEngineName(value, flagName) {
-  if (value === "codex" || value === "claude" || value === "opencode" || value === "agy") {
+  if (value === "codex" || value === "claude" || value === "opencode" || value === "agy" || value === "zcode") {
     return value;
   }
   if (flagName === "--engine") {
-    throw new CliUsageError(`${flagName} must be codex, claude, opencode, or agy; got ${value}`);
+    throw new CliUsageError(`${flagName} must be codex, claude, opencode, agy, or zcode; got ${value}`);
   }
-  throw new CliUsageError(`${flagName} engine must be codex, claude, opencode, or agy; got ${value}`);
+  throw new CliUsageError(`${flagName} engine must be codex, claude, opencode, agy, or zcode; got ${value}`);
 }
 function parseBudgetCeiling(value) {
   const ceiling = Number(value);

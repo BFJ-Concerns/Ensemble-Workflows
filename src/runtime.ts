@@ -126,7 +126,14 @@ import type {
   TerminalErrorRecord
 } from "./run-record.js";
 import { unknownWorktreeRecord } from "./worktree-isolation.js";
+import { assertZCodePromptFits } from "./zcode-engine.js";
+import { parseZCodeModel } from "./zcode-model.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
+
+/** Refuses before spawn a prompt the target's engine cannot be given; only zcode bounds one. */
+function assertPromptFits(engine: EngineName, prompt: string, schema: JsonSchema | undefined): void {
+  if (engine === "zcode") assertZCodePromptFits(prompt, schema);
+}
 
 function assertValidAgentPrompt(prompt: unknown): asserts prompt is string {
   if (typeof prompt !== "string") {
@@ -425,7 +432,8 @@ interface WorkerSessionState {
    * it, as they run on that target.
    */
   servingTarget: string | null;
-  stalenessThresholdMs: number;
+  /** Null where the session's engine and model have no threshold: it is never marked. */
+  stalenessThresholdMs: number | null;
   markStaleness: boolean;
   engineSession: EngineWorkerSession | null;
   placement: AgentPlacement | null;
@@ -509,7 +517,7 @@ export class WorkerSession<Identified extends boolean = false> {
    */
   get stale(): boolean {
     const state = this.#state;
-    if (!state.markStaleness || state.lastTurnEndedAt === null || state.inFlight) {
+    if (!state.markStaleness || state.stalenessThresholdMs === null || state.lastTurnEndedAt === null || state.inFlight) {
       return false;
     }
     return this.#now() - state.lastTurnEndedAt >= state.stalenessThresholdMs;
@@ -618,6 +626,7 @@ export class EnsembleRuntime {
   #claudeSessionStaleAfterMs: number;
   #codexSessionStaleAfterMs: number;
   #agySessionStaleAfterMs: number;
+  #zcodeSessionStaleAfterMs: Readonly<Record<string, number>>;
 
   constructor(options: {
     engines?: EngineRegistry;
@@ -638,6 +647,7 @@ export class EnsembleRuntime {
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     agySessionStaleAfterMs?: number;
+    zcodeSessionStaleAfterMs?: Readonly<Record<string, number>>;
     holdsDir?: string;
     holdScope?: string;
     holdPollIntervalMs?: number;
@@ -680,6 +690,7 @@ export class EnsembleRuntime {
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 3_600_000;
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
     this.#agySessionStaleAfterMs = options.agySessionStaleAfterMs ?? 300_000;
+    this.#zcodeSessionStaleAfterMs = options.zcodeSessionStaleAfterMs ?? {};
     this.#now = options.now ?? (() => Date.now());
     this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
     rejectBlankHoldScope(options.holdScope);
@@ -781,6 +792,9 @@ export class EnsembleRuntime {
       onAgyEvent: (event) => {
         runtime?.handleEngineEvent("agy", event);
       },
+      onZCodeEvent: (event) => {
+        runtime?.handleEngineEvent("zcode", event);
+      },
       ...(options.concurrencyCaps !== undefined ? { concurrencyCaps: options.concurrencyCaps } : {})
     });
 
@@ -809,6 +823,9 @@ export class EnsembleRuntime {
         : {}),
       ...(options.agySessionStaleAfterMs !== undefined
         ? { agySessionStaleAfterMs: options.agySessionStaleAfterMs }
+        : {}),
+      ...(options.zcodeSessionStaleAfterMs !== undefined
+        ? { zcodeSessionStaleAfterMs: options.zcodeSessionStaleAfterMs }
         : {})
     });
 
@@ -997,7 +1014,10 @@ export class EnsembleRuntime {
       }
     }
     this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
-    this.#validateOpenCodeTarget(engine, options);
+    this.#validateModelTarget(engine, options);
+    for (const target of [engine.name, ...chain.map((entry) => entry.engine)]) {
+      assertPromptFits(target, prompt, options.schema);
+    }
     const dispatchOptions = strip.length === 0 && !lean ? options :
       withOptionOverrides(options, { ...(strip.length > 0 ? { strip } : {}), ...(lean ? { lean: true } : {}) });
     // The per-engine budget is an admission boundary, judged once per
@@ -1194,7 +1214,7 @@ export class EnsembleRuntime {
         resolveLeanStart(target.name, target.leanStart);
       }
     }
-    this.#validateOpenCodeTarget(engine, resolved);
+    this.#validateModelTarget(engine, resolved);
     const model = resolved.model ?? null;
     return { target: name, bound: true, engine: engine.name, model, family: this.modelFamilyOf({ engine: engine.name, requested: model, served: null }) };
   }
@@ -1255,7 +1275,7 @@ export class EnsembleRuntime {
     // at dispatch in that case, after the remap has settled each target.
     if (this.#dispatchRemap !== undefined) return;
     for (const target of targets) {
-      this.#validateOpenCodeTarget(this.#engines.get(target.engine), target);
+      this.#validateModelTarget(this.#engines.get(target.engine), target);
     }
   }
 
@@ -1312,6 +1332,7 @@ export class EnsembleRuntime {
       }
     }
     this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
+    this.#validateModelTarget(engine, options);
     const sessionOptions =
       strip.length === 0 && !lean
         ? options
@@ -1331,7 +1352,7 @@ export class EnsembleRuntime {
       chain,
       remap,
       servingTarget: namedTarget?.name ?? null,
-      stalenessThresholdMs: this.#sessionStaleAfterMs(engine.name),
+      stalenessThresholdMs: this.#sessionStaleAfterMs(engine.name, sessionOptions.model),
       markStaleness: sessionOptions.stalenessMark ?? true,
       engineSession: null,
       placement: null,
@@ -1381,6 +1402,11 @@ export class EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
+    // The creating turn may reach any of its chain's targets; a later turn
+    // runs on the engine that answered it.
+    for (const target of [engine.name, ...(state.turnCount === 0 ? state.chain.map((entry) => entry.engine) : [])]) {
+      assertPromptFits(target, prompt, turn.schema);
+    }
     let phase = options.phase ?? this.progress.snapshot().currentPhase;
     state.inFlight = true;
     try {
@@ -1515,7 +1541,7 @@ export class EnsembleRuntime {
     state.engine = targetEngine;
     state.options = optionsForTarget(state.options, target);
     state.servingTarget = target.namedTarget;
-    state.stalenessThresholdMs = this.#sessionStaleAfterMs(targetEngine.name);
+    state.stalenessThresholdMs = this.#sessionStaleAfterMs(targetEngine.name, state.options.model);
     const options = state.options;
     if (state.engineSession === null) {
       state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
@@ -3219,18 +3245,29 @@ export class EnsembleRuntime {
   }
 
   /**
-   * The idle gap at which a held worker on `engine` reads stale. The
-   * threshold is per engine shape: Claude's is the cliff at its
+   * The idle gap at which a held worker on this engine and model reads
+   * stale, or null where none applies. Claude's is the cliff at its
    * subscription cache TTL, Codex's the measured coin-flip idle point,
    * agy's the five-minute cache lifetime its operator reports — each
-   * overridable as a library-level runtime option. opencode holds no
-   * sessions.
+   * overridable as a library-level runtime option; opencode holds no
+   * sessions; zcode's is the threshold declared for the model's provider,
+   * and a provider with none leaves its workers unmarked.
    */
-  #sessionStaleAfterMs(engine: EngineName): number {
+  #sessionStaleAfterMs(engine: EngineName, model: string | undefined): number | null {
     switch (engine) {
-      case "claude": return this.#claudeSessionStaleAfterMs;
-      case "agy": return this.#agySessionStaleAfterMs;
-      default: return this.#codexSessionStaleAfterMs;
+      case "claude":
+        return this.#claudeSessionStaleAfterMs;
+      case "agy":
+        return this.#agySessionStaleAfterMs;
+      case "codex":
+      case "opencode":
+        return this.#codexSessionStaleAfterMs;
+      case "zcode": {
+        const provider = model?.slice(0, Math.max(0, model.indexOf("/")));
+        return provider !== undefined && provider.length > 0 && Object.hasOwn(this.#zcodeSessionStaleAfterMs, provider)
+          ? this.#zcodeSessionStaleAfterMs[provider] ?? null
+          : null;
+      }
     }
   }
 
@@ -3451,15 +3488,24 @@ export class EnsembleRuntime {
     if (adapter === undefined) {
       throw new FallbackTargetRejectedError(`the ${target.engine} engine is not available to this run`);
     }
-    this.#validateOpenCodeTarget(adapter, { model: target.model, effort: target.effort ?? inheritedEffort });
+    this.#validateModelTarget(adapter, { model: target.model, effort: target.effort ?? inheritedEffort });
     if (adapter.name !== "opencode") assertCanonicalEffortSupported(target.effort);
     return adapter;
   }
 
-  #validateOpenCodeTarget(
+  /**
+   * Refuses a target whose engine cannot run without a model it lacks: an
+   * opencode call with no registered model, and a zcode call with no
+   * model or one that names no provider.
+   */
+  #validateModelTarget(
     engine: EngineAdapter | undefined,
     options: { model?: string | undefined; effort?: string | undefined }
   ): void {
+    if (engine?.name === "zcode") {
+      parseZCodeModel(options.model);
+      return;
+    }
     if (!(engine instanceof OpenCodeEngineAdapter)) return;
     if (options.model === undefined) throw new OpenCodeModelRequiredError(engine.modelRegistry);
     validateEngineDefaults(engine.name, {

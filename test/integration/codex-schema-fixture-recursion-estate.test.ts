@@ -131,7 +131,10 @@ test("built CLI schema fixture fails closed on every recursive executable ingres
         } else {
           assert.match(result.stderr, new RegExp(escapeRegExp(ingress.command)));
         }
-        assert.ok(result.peakProcesses <= 5, `unexpected process fan-out: ${result.peakProcesses}`);
+        // The run's start asks git and every engine for its version at once,
+        // which with five engines peaks at six processes in the scope; a
+        // recursive ingress grows past that without limit.
+        assert.ok(result.peakProcesses <= 6, `unexpected process fan-out: ${result.peakProcesses}`);
         assert.ok(result.peakTasks < 60, `scope reached its task cap: ${result.peakTasks}`);
         assert.ok(result.peakMemoryBytes < 500 * 1024 * 1024, `scope reached its memory cap: ${result.peakMemoryBytes}`);
       });

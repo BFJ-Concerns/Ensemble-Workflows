@@ -17,10 +17,13 @@ import type { OpenCodeModelRegistryEntry } from "../../src/opencode-model-regist
  *   (`gemini-4-hydrogen`). Every agy leg needs it and runs it at `low`:
  *   agy runs on the operator's own signed-in subscription, which a machine
  *   without that sign-in cannot reach, and agy's default is its dearest tier.
+ * - `ENSEMBLE_LIVE_ZCODE_MODEL`: a zcode model spelt provider/model as
+ *   `zcode models` lists it; zcode has no default, so every zcode leg needs it.
  */
 export const liveCodexModel = nonEmpty(process.env.ENSEMBLE_LIVE_CODEX_MODEL);
 export const liveOpenCodeModel = nonEmpty(process.env.ENSEMBLE_LIVE_OPENCODE_MODEL);
 export const liveAgyModel = nonEmpty(process.env.ENSEMBLE_LIVE_AGY_MODEL);
+export const liveZCodeModel = nonEmpty(process.env.ENSEMBLE_LIVE_ZCODE_MODEL);
 
 /** The Codex model options a leg passes: the pinned model at `low` effort, or none for the engine default. */
 export function liveCodexOptions(): { model?: string; effort?: "low" } {

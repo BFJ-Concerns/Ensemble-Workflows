@@ -83,8 +83,9 @@ Per-engine spend is never summed: the engines count tokens under different
 rules, and a token on one engine does not cost the same as on another.
 Spend advances when usage evidence arrives, including while a worker is
 running: Codex emits usage notifications, Claude is measured by transcript
-polls, opencode is measured from its streamed step events, and agy from
-each turn's reply. These are
+polls, opencode is measured from its streamed step events, agy from each
+turn's reply, and zcode from each completed model request in its event
+stream. These are
 usage updates, not a token-by-token meter. Engines start at `spent: 0`, and a
 worker's `spent` stays `null` until its own usage is observed. On opencode,
 engine spend advances during execution while worker spend appears at
@@ -139,12 +140,12 @@ Each status file contains one JSON object with these fields:
   or `null` when the run has none, and numeric `active`, the workers holding a
   slot under it.
 - `engines`: object keyed by registered engine name (`codex`, `claude`,
-  `opencode`, and `agy`). Each entry has numeric `active`, `queued`, `done`, `failed`,
+  `opencode`, `agy`, and `zcode`). Each entry has numeric `active`, `queued`, `done`, `failed`,
   `cutShort`, `unsettled`, and `spent`; `cap`, `ceiling`, and `remaining` are
   numbers or `null`. Spend and ceilings are per-engine and are never summed.
 - `agents`: array of every worker: running first, then queued (oldest
   first within each), then finished (newest registered first). Each object has
-  `id`, `attempt`, `engine` (codex, claude, opencode or agy), `state` (queued,
+  `id`, `attempt`, `engine` (codex, claude, opencode, agy or zcode), `state` (queued,
   running, done, failed, cut-short or unsettled), nullable strings `label`,
   `phase`, `requestedModel`, `requestedEffort`, `resolvedModel`,
   `resolvedEffort`, `transcript`, and `worktree`; nullable numeric `spent`, `startedAtMs`, `firstEvidenceAtMs`,
@@ -163,14 +164,15 @@ unobserved, not zero. Identity and paths are producer-supplied evidence, never
 inferred. Requested identity describes the original call and is present from
 the first snapshot listing the worker; resolved identity names what was
 served. Transcript paths match the running agent record's current attempt:
-archive-relative for Codex and opencode, absolute native paths for Claude.
+archive-relative for Codex, opencode and zcode, absolute native paths for
+Claude. An agy worker has no transcript path while it runs.
 Resolve relative paths against `archiveDir`. A settled Claude record
 archives a copy of the native transcript; the status entry retains its
 live path. Evidence timestamps advance when output is observed, which each
 engine allows at a different grain. Codex reports each notification of the
 running turn after it starts — streamed text, tool work, usage — as
-evidence, opencode each decoded step, text or tool event, and agy each
-session update. Claude is read from its transcript, which Claude Code writes one
+evidence, opencode each decoded step, text or tool event, agy each session
+update, and zcode each event line its run streams. Claude is read from its transcript, which Claude Code writes one
 completed message part at a time — a block of text or thinking, or a tool
 call — not as tokens stream. Its evidence advances when a transcript poll
 finds a new or changed assistant row for the current turn, so a Claude
@@ -532,7 +534,7 @@ before the death:
 - The record's `resolved_model` and `resolved_effort` take that attempt's
   served identity where the engine had reported one.
 - That attempt's partial transcript is linked in `transcripts` with
-  `partial: true`. Codex and opencode transcripts are already in the archive, and their
+  `partial: true`. Codex, opencode and zcode transcripts are already in the archive, and their
   files-table entries are re-measured. A Claude transcript is copied into
   the archive when it is still readable. `transcripts_unavailable` names a reason
   only when no transcript is linked.
@@ -682,7 +684,7 @@ families; their versions are listed in [Schema versions](#schema-versions).
   outside a git repository. These inspections disable git's optional locks,
   so recording a run does not refresh or lock the repository's index.
 - `environment`: OS architecture, platform and release, Node version, and the
-  versions of `agy`, `claude`, `codex`, `git`, and `opencode` where available.
+  versions of `agy`, `claude`, `codex`, `git`, `opencode`, and `zcode` where available.
   The opencode version query uses temporary XDG and scratch directories in
   the run archive and removes them after the query; it does not initialise
   opencode's configured homes.
@@ -792,8 +794,9 @@ lists settled attempts only. The running attempt is `current_attempt`.
 
 Claude's live path is absolute and points to the session's own JSONL file
 under `~/.claude/projects/`. A held session uses that same file across its
-turns, so the live file includes the conversation. Codex and opencode
-write live JSONL files relative to the archive directory, one per attempt.
+turns, so the live file includes the conversation. Codex, opencode and
+zcode write live JSONL files relative to the archive directory, one per
+attempt. agy has no live file: its transcript is archived at settlement.
 Ensemble appends each event as it arrives. For opencode it also appends the
 session export when available. The same path appears in `transcripts`
 at settlement, with its final size and digest in the manifest's files table.
@@ -863,7 +866,11 @@ The fields present throughout a record's lifetime are:
   effort: its configured model was not served. That attempt books under
   `unresolved` in the cost roll-up.
   opencode reports no served identity, so its `resolved_model` is the
-  configured `provider_model` the worker was launched with.
+  configured `provider_model` the worker was launched with. zcode reports the
+  provider and model each model request went to, recorded as
+  `provider/model`, and the reasoning level a request reports as effective,
+  which stands until a request of the same model reports another; it is
+  `null` while every request reports it as `unknown`.
 - `fallback`: the fallback chain in force for this record, as declared
   (`[{ engine, model, effort? }]`, a named entry as `{ target, effort? }`), or
   `null` when none applies. An attempt on a named entry names it in its
@@ -1031,6 +1038,12 @@ The fields present throughout a record's lifetime are:
     growth since the previous attempt's session total, even if its transcript
     reference repeats earlier API calls. Summing attempts never charges that
     earlier work twice.
+    A zcode attempt supplies `diagnostics.zcode`: the run's `outcome`
+    (`finished`, `failed` or `cancelled`, `null` without a closing result),
+    its `error` where it gave one, `turn_error` (the `turn.failed` event's
+    `code`, `type`, `message` and attribution `reason` and `source`, or
+    `null`), `session_id`, `exit_code`, `signal`, and the tail of `stderr`
+    where there was any.
     A failed Claude launch supplies `diagnostics.claudeLaunch`: `failure`
     keeps the launch's account, and `cleanupConfirmed` says whether it was
     safe to reject after teardown. `command` contains the dispatch command's `ok`, `exitCode`, `signal`, `stdout` and
@@ -1084,8 +1097,9 @@ The fields present throughout a record's lifetime are:
   `codex.schema-rejected` even in this envelope and settles immediately
   without retrying. Other unrecognised `other` diagnostics keep a
   null rule. Credential failures use kind `authentication-failure` and rule
-  `<engine>.authentication-failure`; Codex `modelNotFound` and Claude's
-  `unknown provider for model` diagnostics use kind `model-not-found` and rule
+  `<engine>.authentication-failure`; Codex `modelNotFound`, Claude's
+  `unknown provider for model` and zcode's `Unknown model` or `Unknown
+  provider` diagnostics use kind `model-not-found` and rule
   `<engine>.model-not-found`. Both keep the engine's
   diagnostic and add a recovery step to `failure.message`. An explicit
   provider HTTP 401 remains `authentication-failure` when Codex's
@@ -1130,7 +1144,10 @@ transcripts keep the `opencode run --format json` event stream plus the
 session export when available. agy transcripts (`transcript.agy.jsonl`) hold,
 for each attempt, the prompt sent, every `session/update` the turn produced
 and the `session/prompt` reply, one JSON value per line; a turn that did not
-end on its own reply is marked `partial: true`.
+end on its own reply is marked `partial: true`. zcode transcripts keep the
+run's `--output-format stream-json` event lines, its closing `result` line
+included; a held session's transcripts are per turn, each naming the zcode
+session id it resumed.
 
 #### Failure classification rules
 
@@ -1145,7 +1162,7 @@ on the same target.
 | `effort.rejected` | `unclassified` | The provider refused the requested reasoning level; *settles* |
 | `<engine>.authentication-failure` | `availability` | Credentials were missing or rejected |
 | `<engine>.model-not-found` | `unclassified` | The engine does not know the model |
-| `substrate.refused` | `availability` | The launch environment denied a resource the engine needs, before its substrate started |
+| `substrate.refused` | `availability` | The launch environment denied a resource the engine needs, before its substrate started, or a `zcode` or `opencode` command could not be started |
 | `preflight.resource-denied` | `availability` | The resource preflight found a location the worker needs inaccessible |
 | `session.lost` | `unclassified` | A held session's worker is gone; *settles* |
 | `engine-shutdown` | `unclassified` | A local engine or session close ended the attempt |
@@ -1185,6 +1202,18 @@ on the same target.
 | `opencode.rate-limit` | `availability` | The provider reported HTTP 429 |
 | `opencode.provider-internal-error` | `availability` | The provider reported HTTP 5xx |
 | `opencode.run-error` | `unclassified` | `opencode run` exited in error |
+| `zcode.substrate-refused` | `availability` | The installed `zcode` could not be run, or lacks per-run model selection or its model listing; *pre-spawn* |
+| `zcode.worker-dead` | `availability` | The run's process ended without zcode's closing `result` line — killed by a signal, or crashed past zcode's own handling (kind `zcode-worker-lost`) |
+| `zcode.rate-limit` | `availability` | The turn failed on a rate limit (`turn.failed` reason `rate_limited` or code `model_rate_limited`) after zcode's own retries |
+| `zcode.overloaded` | `availability` | The turn failed with the provider overloaded (reason `provider_overloaded`) |
+| `zcode.provider-internal-error` | `availability` | The turn failed on a provider server error (reason `server_error`) |
+| `zcode.provider-unreachable` | `availability` | The turn failed on a network error (reason `network_error`) |
+| `zcode.authentication-failure` | `availability` | The provider refused its credentials, or none were configured (reason `auth_failed`, or code `model_request_auth_missing`); kind `authentication-failure`, its message naming the step that mends it |
+| `zcode.provider-not-configured` | `availability` | The provider has no usable configuration in ZCode |
+| `zcode.quota` | `availability` | The provider reported its quota exhausted (code `insufficient_quota`) |
+| `zcode.model-not-found` | `unclassified` | zcode lists no such provider or model |
+| `zcode.run-error` | `unclassified` | The run failed for any other reason zcode gave |
+| `zcode.deadline` | `unclassified` | The call's `timeoutMs` ended the run |
 | `opencode.deadline` | `unclassified` | The call's `timeoutMs` ended the run |
 | `agy.substrate-refused` | `availability` | `agy acp` would not start or initialise, was not signed in, or opened no session; no prompt was sent |
 | `agy.sign-in-required` | `availability` | agy refused a prompt for want of a sign-in |
@@ -1213,8 +1242,9 @@ Usage summaries — an agent record's `usage` and each `cost_rollup` bucket's
 | `reasoningOutputTokens` | Reasoning output, or `null` when the engine does not separate reasoning (not zero) |
 | `unclassifiedTokens` | Spend the engine's total covers but no other class does — for example opencode steps that report only a total |
 
-Each engine's native fields are mapped under one rule. Codex reports cached
-tokens within input and reasoning within output, so both are subtracted out.
+Each engine's native fields are mapped under one rule. Codex and zcode
+report cached tokens within input and reasoning within output, so both are
+subtracted out.
 Claude, opencode and agy report cached tokens separately from input, and
 opencode reports reasoning separately from output too. agy reports its
 thought tokens within output, so they are subtracted out. Claude's reasoning
@@ -1241,6 +1271,7 @@ the disjoint summary vocabulary above.
 | Claude | A settled attempt normally has one derived event with `last` equal to `total`: usage across that attempt's API calls, excluding usage already accounted for by earlier attempts or held-session turns. If only live observations survive a failed attempt, there can instead be several incremental `last` values with attempt-cumulative `total`. | `{ threadId, turnId, tokenUsage: { last, total } }`. `threadId` is the Claude session id; `turnId` is synthetic (`<session-id>:claude-<counter>`). The transcript's `input_tokens` and `output_tokens` become `inputTokens` and `outputTokens`; `cache_read_input_tokens + cache_creation_input_tokens` becomes `cachedInputTokens`, with creation also in `cacheCreationInputTokens`. `totalTokens` sums input, combined cache and output. No reasoning split is reported. |
 | opencode | At most one derived event, with `last` equal to `total`, aggregated for that attempt. These are attempt totals, not cumulative session totals. | `{ threadId, turnId, model, providerModel, tokenUsage: { last, total }, cost }`. `model` is the configured registry key; `providerModel` is its provider route; `cost` is the reported figure or `null`. `threadId` is the session id (a synthetic id if missing); `turnId` is synthetic (`<session-id>:opencode-<counter>`). Native `input`, `output`, `reasoning` and `cache.read`/`cache.write` map to the corresponding breakdown fields, with cache reads and writes combined. Input, cache, output and reasoning are disjoint. |
 | agy | At most one event per turn. `last` is the usage from the `session/prompt` reply, and `total` sums those replies across the worker's session. Any automatic follow-up after the reply supplies context occupancy updates only. | `{ threadId, turnId, model, tokenUsage: { last, total }, usage }`. `threadId` is the agy session id; `turnId` is synthetic (`<session-id>:agy-<counter>`); `model` is the model the session ran on; `usage` is agy's own counts. `inputTokens` and `outputTokens` map across, `thoughtTokens` becomes `reasoningOutputTokens` (within output), `cachedReadTokens + cachedWriteTokens` becomes `cachedInputTokens` (beside input), with the writes also in `cacheCreationInputTokens`; `totalTokens` is agy's own. |
+| zcode | One derived event per attempt, with `last` equal to `total`: the run's own usage from its closing result, or the sum of its completed model requests where the run ended without one. | `{ threadId, turnId, model, tokenUsage: { last, total } }`. `model` is the dispatched `provider/model`; `threadId` is the zcode session id (`zcode-no-session` if none was reported); `turnId` is synthetic (`<session-id>:zcode-<attempt>-<counter>`). Native `inputTokens` (which includes cached input), `outputTokens` (which includes reasoning), `reasoningTokens` and `totalTokens` keep their names; `cacheReadTokens + cacheWriteTokens` becomes `cachedInputTokens`, with writes also in `cacheCreationInputTokens`. |
 
 To reproduce an attempt's summary, sum its events' `last` breakdowns and
 apply the engine's inclusion rule. For Codex, never sum `total` across
@@ -1268,7 +1299,7 @@ count with `0`.
 fallback chain crossed engines books each attempt under the engine that ran
 it. The literal `"unresolved"` is used when no served model was ever learned,
 never the requested model; for opencode the served model is the configured
-`provider_model`. A run whose agents started no attempt has an empty roll-up.
+`provider_model`, and for zcode the `provider/model` its requests went to. A run whose agents started no attempt has an empty roll-up.
 Figures are never summed across engines.
 
 A live or abandoned attempt with no served identity of its own books under

@@ -377,7 +377,7 @@ test("the default registry uses worker placement for Claude and opencode, but th
       claude: { CLAUDE_CODE_TMPDIR: "claude-scratch" },
       opencode: { XDG_DATA_HOME: "data" }
     },
-    onEvent: () => undefined, onClaudeEvent: () => undefined, onOpenCodeEvent: () => undefined, onAgyEvent: () => undefined
+    onEvent: () => undefined, onClaudeEvent: () => undefined, onOpenCodeEvent: () => undefined, onAgyEvent: () => undefined, onZCodeEvent: () => undefined
   });
   try {
     assert.equal(registry.resourceRequirements("codex", "/placed/worker")[0]?.path, "/run/base/codex-home");

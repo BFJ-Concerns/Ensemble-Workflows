@@ -131,6 +131,22 @@ export function agyResources(env: EngineResourceEnvironment): ResourceRequiremen
   }];
 }
 
+/**
+ * ZCode 0.17.1 keeps its settings, provider configuration and sessions
+ * under `.zcode` in `ZCODE_DATA_BASE_DIR`, else the account's home
+ * directory, and writes a resumed session's state there on every turn.
+ */
+export function zcodeResources(env: EngineResourceEnvironment): ResourceRequirement[] {
+  const declared = env.written.ZCODE_DATA_BASE_DIR?.trim();
+  const home = declared
+    ? declaredDirectory(readSetting("ZCODE_DATA_BASE_DIR", declared, env.cwd), ".zcode")
+    : defaultDirectory({ rule: "$HOME/.zcode", movedBy: "ZCODE_DATA_BASE_DIR" }, homeRoot(env.written, env.cwd), ".zcode");
+  return [
+    { owner: "zcode", role: "ZCode home", access: "create-entries", ...home },
+    { owner: "zcode", role: "ZCode scratch files", access: "create-entries", ...temporaryLocation(env.written, env.cwd) }
+  ];
+}
+
 /** Shared with the control plane so transcript reads and preflight use the same home. */
 export function claudeConfigDirectory(env: NodeJS.ProcessEnv, cwd: string): string {
   return path.resolve(cwd, (env.CLAUDE_CONFIG_DIR || path.join(homeOf(env), ".claude")).normalize("NFC"));
@@ -158,7 +174,8 @@ export const ENGINE_RESOURCE_RESOLVERS: Readonly<Record<EngineName, EngineResour
   codex: codexResources,
   claude: claudeResources,
   opencode: openCodeResources,
-  agy: agyResources
+  agy: agyResources,
+  zcode: zcodeResources
 };
 
 /** An engine's requirements under the environment its adapter launches it with. */

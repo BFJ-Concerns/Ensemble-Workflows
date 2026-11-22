@@ -1,15 +1,16 @@
 # Ensemble
 
 Ensemble runs JavaScript workflow scripts that coordinate many AI coding
-agents across several engines: **Codex**, **Claude Code**, **opencode**, and
-Google's **Antigravity CLI** (`agy`).
+agents across several engines: **Codex**, **Claude Code**, **opencode**,
+Google's **Antigravity CLI** (`agy`), and **ZCode**.
 A script fans work out to agents, collects their structured answers, and
 combines them. Each agent call names the engine it runs on, so one model
 family can check another's work within a single run.
 
 - Codex runs over `codex app-server`, Claude runs as Claude Code background
-  sessions (`claude --bg`), opencode runs through `opencode run`, and agy
-  runs each worker as an `agy acp` session. Every
+  sessions (`claude --bg`), opencode runs through `opencode run`, agy runs
+  each worker as an `agy acp` session, and ZCode runs one headless `zcode`
+  run per turn, resuming its session. Every
   call names its engine, or a named target the machine configuration binds to
   one; there is no default.
 - A call given a JSON Schema returns a value that validates against it, or
@@ -34,7 +35,10 @@ family can check another's work within a single run.
   Codex, `claude` (Claude Code) for Claude, `opencode` for opencode, and
   `agy` for agy.
   opencode models must also be declared in the
-  [machine configuration](docs/configuration.md#opencode_models).
+  [machine configuration](docs/configuration.md#opencode_models). The
+  `zcode` engine needs a ZCode that takes a run's provider, model and
+  reasoning level and prints its model listing; see
+  [zcode](docs/workflow-scripts.md#zcode).
 - For Claude, accept its bypass-permissions disclaimer once interactively
   before dispatching workers; see [Claude dispatch](docs/workflow-scripts.md#claude-dispatch).
 - `tmux`, for opening prompts, follow-up turns and in-session corrections on Claude.

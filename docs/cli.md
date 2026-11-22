@@ -113,9 +113,9 @@ the prompt.
 
 | Option | Description |
 |---|---|
-| `--engine <engine>` | `codex`, `claude`, `opencode`, or `agy`. Required unless `--target` is given |
+| `--engine <engine>` | `codex`, `claude`, `opencode`, `agy`, or `zcode`. Required unless `--target` is given |
 | `--target <name>` | A named target from the machine configuration's [`targets`](configuration.md#targets) section, in place of `--engine` and `--model`. Given beside either, it fails the run before the worker spawns, naming the configuration file, as does a name the file does not bind |
-| `--model <model>` | Model to run. Required for opencode |
+| `--model <model>` | Model to run. Required for opencode, and for zcode as `provider/model` |
 | `--effort <effort>` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; resolved against known served levels and [machine bounds](configuration.md#effort). On opencode, a declared raw variant is also accepted when no machine bound applies |
 | `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed. A schema Ensemble cannot compile is a usage error (exit 2), naming the inline argument or resolved file path, the invalid location and a correction |
 | `--identity` | Print the identified result `{ label, phase, output, failure, answeredBy }` instead of the bare output |

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { EngineRegistry } from "../../src/engines.js";
 import {
+  AgentPromptRejectedError,
   LeanStartUnsupportedError,
   ZCodeModelRequiredError,
   ZCodeSubstrateRefusedError
@@ -17,9 +18,11 @@ import { EnsembleRuntime } from "../../src/runtime.js";
 import { WhitespaceStream } from "../../src/whitespace-stream.js";
 import {
   ZCodeEngineAdapter,
+  assertZCodePromptFits,
   defaultZCodeReasoningLevel,
   disallowedToolsFor,
   parseZCodeListing,
+  supportedLevelsOfRefusal,
   watchZCodeLine,
   zcodeRunArguments
 } from "../../src/zcode-engine.js";
@@ -65,6 +68,8 @@ interface ScriptedRun {
   stderr?: string;
   deadlineExpired?: boolean;
   whitespaceLimitReached?: boolean;
+  /** Awaited once the run's output has been delivered and before the run settles. */
+  during?: () => Promise<void>;
 }
 
 class FakeZCodeRunner implements ZCodeRunner {
@@ -100,6 +105,7 @@ class FakeZCodeRunner implements ZCodeRunner {
     const middle = Math.floor(stdout.length / 2);
     options.onData?.(stdout.slice(0, middle));
     options.onData?.(stdout.slice(middle));
+    await scripted.during?.();
     return {
       exitCode: scripted.exitCode === undefined ? 0 : scripted.exitCode,
       signal: scripted.signal ?? null,
@@ -383,20 +389,62 @@ test("a ZCode without per-run model selection or a listing is refused before any
   }
 });
 
-test("a listing that lacks one provider still serves, and is read again by the next dispatch", async () => {
-  // zcode 0.17.1 prints the providers it read and exits 1 when another
-  // provider's listing times out.
-  const partial = JSON.stringify({
-    models: LISTING.models.filter((entry) => entry.provider === "gateway"),
-    listings: [{ provider: "gateway", status: "read", models: 2 }, { provider: "nanogpt", status: "failed", reason: "Model listing timed out" }]
-  });
-  const runner = new FakeZCodeRunner([finishedRun("sess_a", "one"), finishedRun("sess_b", "two")], { models: partial, modelsExit: 1 });
+/** zcode 0.17.1's listing when NanoGPT's timed out: the providers it read, and an exit of 1. */
+const PARTIAL_LISTING = JSON.stringify({
+  models: LISTING.models.filter((entry) => entry.provider === "gateway"),
+  listings: [{ provider: "gateway", status: "read", models: 3 }, { provider: "nanogpt", status: "failed", reason: "Model listing timed out" }]
+});
+
+test("a listing that lacks one provider is read once and serves the whole run, retries included", async () => {
+  const runner = new FakeZCodeRunner([
+    finishedRun("sess_a", "one"),
+    failedRun("sess_b", "The model stream ended early", { code: "model_request_failed", type: "model_error", message: "The model stream ended early" }),
+    finishedRun("sess_c", "two")
+  ], { models: PARTIAL_LISTING, modelsExit: 1 });
   const { runtime } = runtimeWith(runner);
   try {
-    assert.equal(await runtime.agent("go", { engine: "zcode", model: "gateway/gpt-6.2-sol" }), "one");
+    assert.equal(await runtime.agent("go", { engine: "zcode", model: "gateway/gpt-6.2-sol", effort: "high" }), "one");
     assert.equal(await runtime.agent("go", { engine: "zcode", model: "gateway/gpt-6.2-sol" }), "two");
-    assert.deepEqual(runner.inspections, [["--help"], ["models"], ["--help"], ["models"]]);
-    assert.deepEqual(runner.runs.map((run) => run.reasoningLevel), ["max", "max"]);
+    assert.deepEqual(runner.inspections, [["--help"], ["models"]]);
+    assert.deepEqual(runner.runs.map((run) => run.reasoningLevel), ["high", "max", "max"]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a call naming no effort for a model the listing lacks runs at the level zcode chooses among those the model serves", async () => {
+  const refusal = 'Unsupported reasoning level "medium" for model "z-ai/glm-5.3-flash" from provider "nanogpt". Supported levels: disabled, enabled.';
+  const runner = new FakeZCodeRunner([
+    failedRun(null, refusal),
+    finishedRun("sess_a", "answered", "z-ai/glm-5.3-flash"),
+    finishedRun("sess_b", "again", "z-ai/glm-5.3-flash")
+  ], { models: PARTIAL_LISTING, modelsExit: 1 });
+  const { runtime, records } = runtimeWith(runner);
+  try {
+    assert.equal(await runtime.agent("go", { engine: "zcode", model: "nanogpt/z-ai/glm-5.3-flash" }), "answered");
+    const record = records.at(-1)!;
+    assert.equal(record.status, "complete");
+    assert.equal(record.attempts.length, 1);
+    // The levels zcode named serve the rest of the run.
+    assert.equal(await runtime.agent("go", { engine: "zcode", model: "nanogpt/z-ai/glm-5.3-flash" }), "again");
+    assert.deepEqual(runner.runs.map((run) => run.reasoningLevel), ["medium", "enabled", "enabled"]);
+    assert.deepEqual(runner.inspections, [["--help"], ["models"]]);
+  } finally {
+    await runtime.close();
+  }
+  assert.deepEqual(supportedLevelsOfRefusal(`zcode run failed: ${refusal}`), ["disabled", "enabled"]);
+  assert.equal(supportedLevelsOfRefusal('zcode run failed: Unknown model "x" for provider "nanogpt".'), null);
+});
+
+test("a requested effort zcode refuses for a model the listing lacks still settles as effort-rejected", async () => {
+  const runner = new FakeZCodeRunner([
+    failedRun(null, 'Unsupported reasoning level "max" for model "z-ai/glm-5.3-flash" from provider "nanogpt". Supported levels: disabled, enabled.')
+  ], { models: PARTIAL_LISTING, modelsExit: 1 });
+  const { runtime, records } = runtimeWith(runner);
+  try {
+    await runtime.agent("go", { engine: "zcode", model: "nanogpt/z-ai/glm-5.3-flash", effort: "max" }).catch(() => null);
+    assert.equal(runner.runs.length, 1);
+    assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "effort-rejected");
   } finally {
     await runtime.close();
   }
@@ -506,13 +554,24 @@ test("zcode's streamed text arms the whitespace bound and its tool and reasoning
 
 test("a zcode attempt's events reach the archive as they stream, and the settled transcript is that file", async () => {
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-zcode-archive-"));
-  const runner = new FakeZCodeRunner([finishedRun("sess_live", "pong")]);
+  const live = finishedRun("sess_live", "pong");
+  let streamed: string[] = [];
+  const held: { writer?: RunRecordWriter } = {};
+  live.during = async () => {
+    // The run has streamed every line and not yet settled.
+    const liveFile = path.join(held.writer!.archiveDir, "agents/000001/attempt-001-1-transcript.zcode.jsonl");
+    for (let tries = 0; tries < 200 && streamed.length < 7; tries += 1) {
+      streamed = (await readFile(liveFile, "utf8").catch(() => "")).trim().split("\n").filter((line) => line.length > 0);
+      if (streamed.length < 7) await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  };
+  const runner = new FakeZCodeRunner([live]);
   const runtime = new EnsembleRuntime({
     engines: new EngineRegistry([new ZCodeEngineAdapter({ cwd: store, runner })]),
     cwd: store,
     defaultMaxAttempts: 1
   });
-  const writer = await RunRecordWriter.start({
+  const writer = held.writer = await RunRecordWriter.start({
     storeDir: store,
     cwd: store,
     runUuid: "run-zcode-transcript",
@@ -524,6 +583,7 @@ test("a zcode attempt's events reach the archive as they stream, and the settled
   runtime.setRunRecorder(writer);
   try {
     assert.equal(await runtime.agent("Reply pong", { engine: "zcode", model: "gateway/gpt-6.2-sol" }), "pong");
+    assert.equal(streamed.length, 7, "every streamed line was in the archive before the call settled");
     const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
       transcripts: Array<{ path: string; source: string; session_id: string | null }>;
     };
@@ -536,5 +596,123 @@ test("a zcode attempt's events reach the archive as they stream, and the settled
   } finally {
     await runtime.close();
     await rm(store, { recursive: true, force: true });
+  }
+});
+
+test("the effort a request's start reports stays on the record through its completion", async () => {
+  const run = finishedRun("sess_e", "ok");
+  const start = run.events[1] as { payload: { modelCall: { reasoning: { effectiveLevel: string } } } };
+  start.payload.modelCall.reasoning.effectiveLevel = "high";
+  // A second request of the same model reports its level as unknown.
+  const second = { type: "session.updated", sessionId: "sess_e", payload: { requestId: "req-2", providerId: "gateway", modelId: "gpt-6.2-sol",
+    modelCall: { reasoning: { requestedLevel: "high", effectiveLevel: "unknown" } } } };
+  run.events.splice(5, 0, second);
+  const runner = new FakeZCodeRunner([run]);
+  const { runtime, records } = runtimeWith(runner);
+  try {
+    await runtime.agent("go", { engine: "zcode", model: "gateway/gpt-6.2-sol", effort: "high" });
+    const record = records.at(-1)!;
+    assert.equal(record.resolvedEffort, "high");
+    assert.equal(record.attempts[0]?.resolvedEffort, "high");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a zcode target with no model, or one naming no provider, is refused by the lookup, by agent() and in a chain before any worker spawns", async () => {
+  const runner = new FakeZCodeRunner([]);
+  const { runtime } = runtimeWith(runner);
+  try {
+    assert.throws(() => runtime.lookupDispatch({ engine: "zcode" }), ZCodeModelRequiredError);
+    assert.throws(() => runtime.lookupDispatch({ engine: "zcode", model: "gpt-6.2-sol" }), ZCodeModelRequiredError);
+    assert.throws(() => runtime.lookupDispatch({ engine: "zcode", model: "gateway/gpt-6.2-sol", fallback: [{ engine: "zcode", model: "opus" }] }),
+      ZCodeModelRequiredError);
+    await assert.rejects(runtime.agent("work", {
+      engine: "zcode", model: "gateway/gpt-6.2-sol", fallback: [{ engine: "zcode", model: "claude-opus-5-5" }]
+    }), ZCodeModelRequiredError);
+    assert.throws(() => runtime.createWorkerSession({ engine: "zcode", model: "gpt-6.2-sol" }), ZCodeModelRequiredError);
+    assert.equal(runner.runs.length, 0);
+    assert.deepEqual(runner.inspections, []);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a credential zcode reports missing or rejected is an authentication failure naming the step that mends it", () => {
+  for (const turnError of [{ code: "model_request_failed", reason: "auth_failed" }, { code: "model_request_auth_missing", reason: null }]) {
+    const evidence = {
+      engine: "zcode" as const,
+      failure: { kind: "zcode-run-error", message: "zcode run failed: Unauthorized" },
+      appServerDiagnostic: null,
+      diagnostics: { zcode: { turn_error: turnError } } as JsonObject
+    };
+    const failure = diagnoseAttemptFailure(evidence);
+    assert.equal(failure.kind, "authentication-failure");
+    assert.match(failure.message, /^zcode authentication failed\. Configure the provider's credentials in ZCode .* Engine diagnostic: zcode run failed: Unauthorized$/);
+    assert.deepEqual(classifyAttemptFailure({ ...evidence, failure }), { class: "availability", rule: "zcode.authentication-failure" });
+  }
+});
+
+test("a prompt longer than one command-line argument can carry is refused before a zcode worker spawns, naming the limit", async () => {
+  const runner = new FakeZCodeRunner([]);
+  const { runtime } = runtimeWith(runner);
+  const prompt = "x".repeat(130 * 1024);
+  try {
+    await assert.rejects(runtime.agent(prompt, { engine: "zcode", model: "gateway/gpt-6.2-sol" }),
+      (error: unknown) => error instanceof AgentPromptRejectedError && /131072 bytes \(128 KiB\)/.test(error.message));
+    const session = runtime.createWorkerSession({ engine: "zcode", model: "gateway/gpt-6.2-sol" });
+    await assert.rejects(session.send(prompt), AgentPromptRejectedError);
+    await session.close();
+    assert.equal(runner.runs.length, 0);
+  } finally {
+    await runtime.close();
+  }
+  assert.doesNotThrow(() => assertZCodePromptFits("x".repeat(100 * 1024), undefined));
+});
+
+test("a zcode turn that streams only whitespace, or passes its deadline, spends an attempt and keeps its text", async () => {
+  for (const ending of ["whitespace", "deadline"] as const) {
+    const cut = finishedRun("sess_w", "   \n\n  ");
+    const runner = new FakeZCodeRunner([
+      { events: cut.events.slice(0, 3), exitCode: null, signal: "SIGTERM",
+        ...(ending === "whitespace" ? { whitespaceLimitReached: true } : { deadlineExpired: true }) },
+      finishedRun("sess_x", "recovered")
+    ]);
+    const { runtime, records } = runtimeWith(runner);
+    try {
+      assert.equal(await runtime.agent("go", { engine: "zcode", model: "gateway/gpt-6.2-sol", timeoutMs: 60_000 }), "recovered");
+      const failed = records.at(-1)!.attempts[0]!;
+      assert.equal(failed.failure?.kind, ending === "whitespace" ? "WhitespaceStreamError" : "TurnTimeoutError", ending);
+      assert.equal(failed.rawOutput, "   ", ending);
+      assert.equal(records.at(-1)!.attempts.length, 2);
+    } finally {
+      await runtime.close();
+    }
+  }
+});
+
+test("a killed zcode attempt keeps the text it had streamed", async () => {
+  const killed = finishedRun("sess_k", "partial answer");
+  const runner = new FakeZCodeRunner([{ events: killed.events.slice(0, 3), exitCode: null, signal: "SIGKILL" }]);
+  const { runtime, records } = runtimeWith(runner, { maxAttempts: 1 });
+  try {
+    await runtime.agent("go", { engine: "zcode", model: "gateway/gpt-6.2-sol" }).catch(() => null);
+    const attempt = records.at(-1)!.attempts[0]!;
+    assert.equal(attempt.failure?.kind, "zcode-worker-lost");
+    assert.equal(attempt.rawOutput, "par");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a zcode strip of agents is recorded as enforced, as one of skills is", async () => {
+  const runner = new FakeZCodeRunner([finishedRun("sess_s", "ok")]);
+  const { runtime, records } = runtimeWith(runner);
+  try {
+    await runtime.agent("go", { engine: "zcode", model: "gateway/gpt-6.2-sol", strip: ["agents"] });
+    assert.deepEqual(runner.runs[0]?.disallowedTools, ["Agent", "CreateWorkflow"]);
+    assert.equal(records.at(-1)?.strip?.enforcement.agents?.route, "config");
+  } finally {
+    await runtime.close();
   }
 });

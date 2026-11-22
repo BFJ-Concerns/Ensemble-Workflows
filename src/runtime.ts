@@ -126,7 +126,14 @@ import type {
   TerminalErrorRecord
 } from "./run-record.js";
 import { unknownWorktreeRecord } from "./worktree-isolation.js";
+import { assertZCodePromptFits } from "./zcode-engine.js";
+import { parseZCodeModel } from "./zcode-model.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
+
+/** Refuses before spawn a prompt the target's engine cannot be given; only zcode bounds one. */
+function assertPromptFits(engine: EngineName, prompt: string, schema: JsonSchema | undefined): void {
+  if (engine === "zcode") assertZCodePromptFits(prompt, schema);
+}
 
 function assertValidAgentPrompt(prompt: unknown): asserts prompt is string {
   if (typeof prompt !== "string") {
@@ -998,7 +1005,10 @@ export class EnsembleRuntime {
       }
     }
     this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
-    this.#validateOpenCodeTarget(engine, options);
+    this.#validateModelTarget(engine, options);
+    for (const target of [engine.name, ...chain.map((entry) => entry.engine)]) {
+      assertPromptFits(target, prompt, options.schema);
+    }
     const dispatchOptions = strip.length === 0 && !lean ? options :
       withOptionOverrides(options, { ...(strip.length > 0 ? { strip } : {}), ...(lean ? { lean: true } : {}) });
     // The per-engine budget is an admission boundary, judged once per
@@ -1195,7 +1205,7 @@ export class EnsembleRuntime {
         resolveLeanStart(target.name, target.leanStart);
       }
     }
-    this.#validateOpenCodeTarget(engine, resolved);
+    this.#validateModelTarget(engine, resolved);
     const model = resolved.model ?? null;
     return { target: name, bound: true, engine: engine.name, model, family: this.modelFamilyOf({ engine: engine.name, requested: model, served: null }) };
   }
@@ -1256,7 +1266,7 @@ export class EnsembleRuntime {
     // at dispatch in that case, after the remap has settled each target.
     if (this.#dispatchRemap !== undefined) return;
     for (const target of targets) {
-      this.#validateOpenCodeTarget(this.#engines.get(target.engine), target);
+      this.#validateModelTarget(this.#engines.get(target.engine), target);
     }
   }
 
@@ -1313,6 +1323,7 @@ export class EnsembleRuntime {
       }
     }
     this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
+    this.#validateModelTarget(engine, options);
     const sessionOptions =
       strip.length === 0 && !lean
         ? options
@@ -1382,6 +1393,7 @@ export class EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
+    assertPromptFits(engine.name, prompt, turn.schema);
     let phase = options.phase ?? this.progress.snapshot().currentPhase;
     state.inFlight = true;
     try {
@@ -3459,15 +3471,24 @@ export class EnsembleRuntime {
     if (adapter === undefined) {
       throw new FallbackTargetRejectedError(`the ${target.engine} engine is not available to this run`);
     }
-    this.#validateOpenCodeTarget(adapter, { model: target.model, effort: target.effort ?? inheritedEffort });
+    this.#validateModelTarget(adapter, { model: target.model, effort: target.effort ?? inheritedEffort });
     if (adapter.name !== "opencode") assertCanonicalEffortSupported(target.effort);
     return adapter;
   }
 
-  #validateOpenCodeTarget(
+  /**
+   * Refuses a target whose engine cannot run without a model it lacks: an
+   * opencode call with no registered model, and a zcode call with no
+   * model or one that names no provider.
+   */
+  #validateModelTarget(
     engine: EngineAdapter | undefined,
     options: { model?: string | undefined; effort?: string | undefined }
   ): void {
+    if (engine?.name === "zcode") {
+      parseZCodeModel(options.model);
+      return;
+    }
     if (!(engine instanceof OpenCodeEngineAdapter)) return;
     if (options.model === undefined) throw new OpenCodeModelRequiredError(engine.modelRegistry);
     validateEngineDefaults(engine.name, {

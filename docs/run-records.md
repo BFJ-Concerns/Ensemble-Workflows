@@ -862,7 +862,9 @@ The fields present throughout a record's lifetime are:
   opencode reports no served identity, so its `resolved_model` is the
   configured `provider_model` the worker was launched with. zcode reports the
   provider and model each model request went to, recorded as
-  `provider/model`, and no served reasoning level.
+  `provider/model`, and the reasoning level a request reports as effective,
+  which stands until a request of the same model reports another; it is
+  `null` while every request reports it as `unknown`.
 - `fallback`: the fallback chain in force for this record, as declared
   (`[{ engine, model, effort? }]`, a named entry as `{ target, effort? }`), or
   `null` when none applies. An attempt on a named entry names it in its
@@ -1148,7 +1150,7 @@ on the same target.
 | `effort.rejected` | `unclassified` | The provider refused the requested reasoning level; *settles* |
 | `<engine>.authentication-failure` | `availability` | Credentials were missing or rejected |
 | `<engine>.model-not-found` | `unclassified` | The engine does not know the model |
-| `substrate.refused` | `availability` | The launch environment denied a resource the engine needs, before its substrate started |
+| `substrate.refused` | `availability` | The launch environment denied a resource the engine needs, before its substrate started, or a `zcode` or `opencode` command could not be started |
 | `preflight.resource-denied` | `availability` | The resource preflight found a location the worker needs inaccessible |
 | `session.lost` | `unclassified` | A held session's worker is gone; *settles* |
 | `engine-shutdown` | `unclassified` | A local engine or session close ended the attempt |
@@ -1194,7 +1196,7 @@ on the same target.
 | `zcode.overloaded` | `availability` | The turn failed with the provider overloaded (reason `provider_overloaded`) |
 | `zcode.provider-internal-error` | `availability` | The turn failed on a provider server error (reason `server_error`) |
 | `zcode.provider-unreachable` | `availability` | The turn failed on a network error (reason `network_error`) |
-| `zcode.authentication-failure` | `availability` | The provider refused its credentials (reason `auth_failed`, or code `model_request_auth_missing`) |
+| `zcode.authentication-failure` | `availability` | The provider refused its credentials, or none were configured (reason `auth_failed`, or code `model_request_auth_missing`); kind `authentication-failure`, its message naming the step that mends it |
 | `zcode.provider-not-configured` | `availability` | The provider has no usable configuration in ZCode |
 | `zcode.quota` | `availability` | The provider reported its quota exhausted (code `insufficient_quota`) |
 | `zcode.model-not-found` | `unclassified` | zcode lists no such provider or model |

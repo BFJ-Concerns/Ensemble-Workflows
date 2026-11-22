@@ -5,6 +5,7 @@ import { unestablishedStopDiagnostics, type CommandContainment, type CommandStop
 import { CANONICAL_EFFORT_DOMAIN, isCanonicalEffort } from "./effort-resolution.js";
 import { launchEnvironment } from "./engine-environment.js";
 import {
+  AgentPromptRejectedError,
   EngineShutdownError,
   TurnTimeoutError,
   WhitespaceStreamError,
@@ -16,7 +17,7 @@ import {
   partialWorkerTextOf
 } from "./errors.js";
 import { Scheduler } from "./scheduler.js";
-import { runStreamedCommand, type StreamedCommandResult } from "./streamed-command.js";
+import { fitsOneArgument, MAX_ARGUMENT_BYTES, runStreamedCommand, type StreamedCommandResult } from "./streamed-command.js";
 import { subtractUsage } from "./usage-summary.js";
 import { DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
 import { parseZCodeModel, type ZCodeModelSelection } from "./zcode-model.js";
@@ -162,6 +163,16 @@ export class ZCodeListing {
   /** The reasoning levels zcode lists for the model, or undefined where it lists no such model. */
   levels(selection: ZCodeModelSelection): readonly string[] | undefined {
     return this.#levels.get(`${selection.provider}/${selection.model}`);
+  }
+
+  /**
+   * Records levels zcode named for a model the listing lacked, as its
+   * refusal of an unsupported level does (`Supported levels: …`), so the
+   * rest of the run knows them without asking again.
+   */
+  learn(selection: ZCodeModelSelection, levels: readonly string[]): void {
+    const key = `${selection.provider}/${selection.model}`;
+    if (!this.#levels.has(key)) this.#levels.set(key, levels);
   }
 }
 
@@ -336,23 +347,16 @@ export class ZCodeEngineAdapter implements EngineAdapter {
   /**
    * Reads, once per run, whether the installed zcode can be told a run's
    * provider, model and reasoning level and can print its model listing,
-   * and keeps the listing. Single-flight and not failure-memoised: a zcode
-   * that could not be read, or whose listing lacked a provider, is asked
-   * again by the next dispatch.
+   * and keeps the listing for the run, a listing that lacked a provider
+   * included: reading it again would wait on that provider again, for
+   * every dispatch and every retry. Single-flight and not failure-memoised:
+   * a zcode that could not be read is asked again by the next dispatch.
    */
   #readAbilities(): Promise<ZCodeAbilities> {
-    const reading = this.#abilities ??= readZCodeAbilities(this.#runner).then(
-      (abilities) => {
-        // A listing missing a provider's models serves the dispatches that
-        // asked for it; the next dispatch reads the listing again.
-        if (!abilities.listing.complete && this.#abilities === reading) this.#abilities = null;
-        return abilities;
-      },
-      (error: unknown) => {
-        if (this.#abilities === reading) this.#abilities = null;
-        throw error;
-      }
-    );
+    const reading = this.#abilities ??= readZCodeAbilities(this.#runner).catch((error: unknown) => {
+      if (this.#abilities === reading) this.#abilities = null;
+      throw error;
+    });
     return reading;
   }
 }
@@ -476,7 +480,7 @@ class ZCodeWorkerSession implements EngineWorkerSession {
     if (this.#closed) throw new EngineShutdownError("zcode");
     const resume = this.#sessionId ?? undefined;
     const message = resume !== undefined && context.previousFailure !== undefined
-      ? `A previous attempt failed (${context.previousFailure.kind}): ${context.previousFailure.message}. Correct it this time.`
+      ? correctionLine(context.previousFailure)
       : workerPrompt(prompt, schema, resume === undefined ? context.previousFailure : undefined);
     const settlement = runZCodeAttempt(this.#settings, {
       prompt: message,
@@ -549,10 +553,43 @@ function workerPrompt(prompt: string, schema: JsonSchema | undefined, previousFa
     );
   }
   if (previousFailure !== undefined) {
-    lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
+    lines.push(correctionLine(previousFailure));
   }
   lines.push("", "Task:", prompt);
   return lines.join("\n");
+}
+
+/**
+ * The most characters of a failure's message a correction repeats. A
+ * correction rides the same command-line argument as the prompt, so its
+ * length is bounded for the prompt's own bound to hold on every attempt.
+ */
+const CORRECTION_MESSAGE_CHARACTERS = 2_000;
+
+function correctionLine(failure: PreviousAttemptFailure): string {
+  const message = failure.message.length > CORRECTION_MESSAGE_CHARACTERS
+    ? `${failure.message.slice(0, CORRECTION_MESSAGE_CHARACTERS)}…`
+    : failure.message;
+  return `A previous attempt failed (${failure.kind}): ${message}. Correct it this time.`;
+}
+
+/**
+ * Refuses, before any worker spawns, a prompt zcode cannot be given. A run
+ * takes its prompt only as one command-line argument (`--prompt=`), which
+ * Linux bounds at 128 KiB; the bound is judged on the text a run is sent,
+ * with room for the longest correction a retry adds.
+ */
+export function assertZCodePromptFits(prompt: string, schema: JsonSchema | undefined): void {
+  const longest = workerPrompt(prompt, schema, {
+    kind: "x".repeat(64),
+    message: "\u{10FFFF}".repeat(CORRECTION_MESSAGE_CHARACTERS)
+  });
+  if (fitsOneArgument(`--prompt=${longest}`)) return;
+  throw new AgentPromptRejectedError(
+    `the zcode engine cannot be given this prompt: zcode takes a prompt only as one command-line argument, ` +
+    `which Linux bounds at ${MAX_ARGUMENT_BYTES} bytes (128 KiB), and this prompt is ${Buffer.byteLength(prompt, "utf8")} bytes` +
+    `${schema !== undefined ? " before its schema" : ""}; shorten it, or dispatch it on an engine that takes longer prompts`
+  );
 }
 
 interface ZCodeAttemptRequest {
@@ -569,13 +606,26 @@ interface ZCodeAttemptOutcome {
   sessionMissing: boolean;
 }
 
-/** The level a dispatch runs at: the resolved effort's native name, else zcode's own default for the model. */
-function reasoningLevelFor(options: EngineTurnOptions, listing: ZCodeListing, selection: ZCodeModelSelection): string {
-  if (options.effortResolution !== undefined) return options.effortResolution.dispatched;
-  if (options.effort !== undefined) return options.effort;
-  // A model the listing lacks is refused by zcode before it reads the
-  // level ("Unknown model"), so the level sent then is never judged.
-  return defaultZCodeReasoningLevel(listing.levels(selection)) ?? "medium";
+/** The level a dispatch asked for: the resolved effort's native name, else the requested effort; undefined where it asked for none. */
+function requestedReasoningLevel(options: EngineTurnOptions): string | undefined {
+  return options.effortResolution?.dispatched ?? options.effort;
+}
+
+/**
+ * The level sent when a dispatch asked for none and the listing does not
+ * have the model, as when the model's provider did not answer the listing.
+ * zcode names no model without a level, so one is sent; a model that does
+ * not serve it is refused before any request, naming the levels it does,
+ * and the run is made again at zcode's own choice among those.
+ */
+const UNLISTED_MODEL_LEVEL = "medium";
+
+/** The levels zcode's refusal of an unsupported level names (`… Supported levels: low, high.`), or null. */
+export function supportedLevelsOfRefusal(message: string): string[] | null {
+  const match = /\bUnsupported reasoning level "[^"]*".*\bSupported levels: ([^\n]*?)\.?\s*$/m.exec(message);
+  if (match === null) return null;
+  const levels = match[1]!.split(",").map((level) => level.trim()).filter((level) => level.length > 0);
+  return levels.length === 0 ? null : levels;
 }
 
 async function runZCodeAttempt(settings: ZCodeTurnSettings, request: ZCodeAttemptRequest): Promise<ZCodeAttemptOutcome> {
@@ -608,22 +658,38 @@ async function runZCodeTurn(
   // Refused before any worker exists: a zcode that cannot be driven.
   const { listing } = await settings.abilities();
   if (request.signal.aborted) throw new EngineShutdownError("zcode");
-  const stream = new ZCodeStream(settings, context);
-  const run = await settings.runner.run({
-    prompt: request.prompt,
-    cwd: settings.cwd,
-    provider: selection.provider,
-    model: selection.model,
-    reasoningLevel: reasoningLevelFor(options, listing, selection),
-    ...(request.resume !== undefined ? { resume: request.resume } : {}),
-    disallowedTools: disallowedToolsFor(options.strip),
-    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-    signal: request.signal,
-    ...(context.onLiveEvidence !== undefined ? { onFirstData: context.onLiveEvidence } : {}),
-    onData: (chunk) => stream.push(chunk),
-    onCommandStop
-  });
-  stream.end(run.stdout);
+  const requested = requestedReasoningLevel(options);
+  const launch = async (reasoningLevel: string) => {
+    const stream = new ZCodeStream(settings, context);
+    const run = await settings.runner.run({
+      prompt: request.prompt,
+      cwd: settings.cwd,
+      provider: selection.provider,
+      model: selection.model,
+      reasoningLevel,
+      ...(request.resume !== undefined ? { resume: request.resume } : {}),
+      disallowedTools: disallowedToolsFor(options.strip),
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      signal: request.signal,
+      ...(context.onLiveEvidence !== undefined ? { onFirstData: context.onLiveEvidence } : {}),
+      onData: (chunk) => stream.push(chunk),
+      onCommandStop
+    });
+    stream.end(run.stdout);
+    return { stream, run };
+  };
+  let { stream, run } = await launch(requested ?? defaultZCodeReasoningLevel(listing.levels(selection)) ?? UNLISTED_MODEL_LEVEL);
+  if (requested === undefined && listing.levels(selection) === undefined && !request.signal.aborted) {
+    // The level was a guess for a model the listing lacked: zcode's refusal
+    // names the model's levels, and the run is made again at its own choice.
+    const refusal = stream.evidence().failure(run);
+    const levels = refusal === null ? null : supportedLevelsOfRefusal(refusal.message);
+    const level = defaultZCodeReasoningLevel(levels ?? undefined);
+    if (levels !== null && level !== undefined) {
+      listing.learn(selection, levels);
+      ({ stream, run } = await launch(level));
+    }
+  }
   const evidence = stream.evidence();
   const workerExit = { exitCode: run.exitCode, signal: run.signal };
   const text = evidence.response ?? evidence.streamedText;
@@ -759,8 +825,12 @@ class ZCodeStream {
   #request(payload: Record<string, unknown>): void {
     const model = typeof payload.modelId === "string" ? `${payload.providerId as string}/${payload.modelId}` : null;
     const reasoning = isRecord(payload.modelCall) && isRecord(payload.modelCall.reasoning) ? payload.modelCall.reasoning : null;
-    const effective = typeof reasoning?.effectiveLevel === "string" && reasoning.effectiveLevel !== "unknown"
+    const reported = typeof reasoning?.effectiveLevel === "string" && reasoning.effectiveLevel !== "unknown"
       ? reasoning.effectiveLevel : null;
+    // A request's completion carries usage and no reasoning, and a later
+    // request may report its level as unknown: the level a request of the
+    // same model reported stands until one reports another.
+    const effective = reported ?? (model === this.#resolvedModel ? this.#resolvedEffort : null);
     if (model !== null && (model !== this.#resolvedModel || effective !== this.#resolvedEffort)) {
       this.#resolvedModel = model;
       this.#resolvedEffort = effective;

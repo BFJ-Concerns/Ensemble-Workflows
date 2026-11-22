@@ -553,8 +553,9 @@ The run record shows what each engine actually served: `resolved_model` and
 thread starts, Claude Code's transcript — and are `null` when it reports none.
 opencode reports no served model, so its `resolved_model` is the configured
 `provider_model`. zcode names the provider and model each model request went
-to, recorded as `provider/model`; it reports no served reasoning level, so
-its `resolved_effort` is `null`.
+to, recorded as `provider/model`, and its `resolved_effort` is the level a
+request reports as effective, `null` while every request reports it as
+`unknown`.
 
 Codex supports only a subset of JSON Schema for backend enforcement. A schema
 outside that subset is rejected before generation: the call returns `null`
@@ -593,17 +594,30 @@ is an availability failure, so a remaining fallback entry runs instead.
   outranks the listing. A call with no
   `effort` runs at the model's highest canonical listed level, zcode's own
   choice for a model picked without one; a model listing only `disabled` and
-  `enabled` runs at the last of those.
+  `enabled` runs at the last of those. Where the listing lacks the model,
+  because its provider did not answer, the call is sent at `medium`; if the
+  model does not serve that level, zcode refuses before any request, naming
+  the levels it does, and the call runs at zcode's own choice among those
+  without spending an attempt.
 - Each attempt is one headless run, `zcode --prompt=<text> --output-format
-  stream-json`, in the worker's `cwd`. A held worker's later turns resume
+  stream-json`, in the worker's `cwd`. zcode takes a prompt only as that one
+  command-line argument, which Linux bounds at 128 KiB, so a longer prompt
+  (with the worker preamble, any schema and room for a retry's correction)
+  is refused before the worker spawns (`AgentPromptRejectedError`), the error
+  naming the limit. A held worker's later turns resume
   the ZCode session its first run created (`--resume`); if zcode no longer
   finds that session, the session is lost.
 - zcode closes every run it handles with a `result` line, so a run whose
   process ends without one — killed, or crashed — is a dead worker: an
   availability failure that advances a remaining fallback entry.
 - zcode prints its listing and exits 1 when one provider's listing fails (a
-  NanoGPT listing that timed out, say); that listing still serves, and the
-  next dispatch reads it again.
+  NanoGPT listing that timed out, say); that listing still serves, and serves
+  the rest of the run: Ensemble reads the listing once per run, so a provider
+  that did not answer costs that wait once.
+- A `zcode` or `opencode` command that cannot be started (its executable
+  gone or not executable, or the system refusing the spawn) is refused as
+  its substrate (`SubstrateRefusedError`): an availability failure that
+  spends no attempt and advances a remaining fallback entry.
 - zcode finds its settings, providers and sessions under `.zcode` in
   `ZCODE_DATA_BASE_DIR`, else the home directory; declare either in the
   [worker environment](configuration.md#worker_environment) to move them.
@@ -619,6 +633,8 @@ permission mode, which approves every tool call.
 
 Ensemble starts opencode with `--auto`, approving permissions that opencode
 would otherwise ask about, including shell access outside the worker's cwd.
+A prompt too long for one command-line argument (128 KiB on Linux) reaches
+opencode on its standard input instead.
 Explicit denies in the operator's opencode configuration still apply.
 
 `strip` is the one opt-in restriction. It removes a named tool-surface

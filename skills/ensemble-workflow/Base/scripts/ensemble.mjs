@@ -19804,6 +19804,9 @@ function diagnoseAttemptFailure(evidence) {
   if (engine === "opencode" && failure.kind === "opencode-run-error" && /^opencode run failed: tool \S+ failed:/.test(failure.message)) {
     return failure;
   }
+  if (engine === "zcode" && failure.kind === "zcode-run-error" && isZCodeCredentialFailure(diagnostics)) {
+    return authenticationFailure(engine, failure.message);
+  }
   const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
   const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status ?? openCodeHttpStatus(evidence);
   if (status !== 401 && classifyAttemptFailure(evidence).class === "availability") {
@@ -19814,8 +19817,7 @@ function diagnoseAttemptFailure(evidence) {
   }
   const authentication = status != null ? status === 401 : apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" || /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|\bAPI key is missing\b|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
-    const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude" ? "Run `claude auth login`." : engine === "zcode" ? "Configure the provider's credentials in ZCode for the provider the model names." : "Run `opencode auth login` for the provider you selected.";
-    return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${failure.message}` };
+    return authenticationFailure(engine, failure.message);
   }
   if (engine === "codex" && appServerDiagnostic?.code === "modelNotFound") {
     return { kind: "model-not-found", message: `Codex modelNotFound: choose a model available to your account (run \`codex\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
@@ -19827,6 +19829,10 @@ function diagnoseAttemptFailure(evidence) {
     return { kind: "model-not-found", message: `Claude model not found: choose a model available to your account (run \`claude\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
   }
   return failure;
+}
+function authenticationFailure(engine, diagnostic) {
+  const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude" ? "Run `claude auth login`." : engine === "zcode" ? "Configure the provider's credentials in ZCode for the provider the model names." : "Run `opencode auth login` for the provider you selected.";
+  return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${diagnostic}` };
 }
 var OUTPUT_FAILURE_KINDS = /* @__PURE__ */ new Set([
   "empty-output",
@@ -19918,6 +19924,12 @@ var ZCODE_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
   ["provider_not_configured", "zcode.provider-not-configured"],
   ["insufficient_quota", "zcode.quota"]
 ]);
+function isZCodeCredentialFailure(diagnostics) {
+  const turnError = objectField(diagnostics?.zcode, "turn_error");
+  const reason = objectField(turnError, "reason");
+  const code = objectField(turnError, "code");
+  return typeof reason === "string" && ZCODE_AVAILABILITY_REASONS.get(reason) === "zcode.authentication-failure" || typeof code === "string" && ZCODE_AVAILABILITY_CODES.get(code) === "zcode.authentication-failure";
+}
 var ZCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   // The installed zcode cannot be driven (missing, or lacking per-run model
   // selection or its model listing): refused before any worker existed.
@@ -26590,6 +26602,15 @@ var ZCodeListing = class {
   levels(selection) {
     return this.#levels.get(`${selection.provider}/${selection.model}`);
   }
+  /**
+   * Records levels zcode named for a model the listing lacked, as its
+   * refusal of an unsupported level does (`Supported levels: …`), so the
+   * rest of the run knows them without asking again.
+   */
+  learn(selection, levels2) {
+    const key = `${selection.provider}/${selection.model}`;
+    if (!this.#levels.has(key)) this.#levels.set(key, levels2);
+  }
 };
 function parseZCodeListing(stdout) {
   let parsed;
@@ -26705,21 +26726,16 @@ var ZCodeEngineAdapter = class {
   /**
    * Reads, once per run, whether the installed zcode can be told a run's
    * provider, model and reasoning level and can print its model listing,
-   * and keeps the listing. Single-flight and not failure-memoised: a zcode
-   * that could not be read, or whose listing lacked a provider, is asked
-   * again by the next dispatch.
+   * and keeps the listing for the run, a listing that lacked a provider
+   * included: reading it again would wait on that provider again, for
+   * every dispatch and every retry. Single-flight and not failure-memoised:
+   * a zcode that could not be read is asked again by the next dispatch.
    */
   #readAbilities() {
-    const reading = this.#abilities ??= readZCodeAbilities(this.#runner).then(
-      (abilities) => {
-        if (!abilities.listing.complete && this.#abilities === reading) this.#abilities = null;
-        return abilities;
-      },
-      (error) => {
-        if (this.#abilities === reading) this.#abilities = null;
-        throw error;
-      }
-    );
+    const reading = this.#abilities ??= readZCodeAbilities(this.#runner).catch((error) => {
+      if (this.#abilities === reading) this.#abilities = null;
+      throw error;
+    });
     return reading;
   }
 };
@@ -26814,7 +26830,7 @@ var ZCodeWorkerSession = class {
     if (this.#lost !== null) return this.#lostResult();
     if (this.#closed) throw new EngineShutdownError("zcode");
     const resume = this.#sessionId ?? void 0;
-    const message = resume !== void 0 && context.previousFailure !== void 0 ? `A previous attempt failed (${context.previousFailure.kind}): ${context.previousFailure.message}. Correct it this time.` : workerPrompt(prompt, schema, resume === void 0 ? context.previousFailure : void 0);
+    const message = resume !== void 0 && context.previousFailure !== void 0 ? correctionLine(context.previousFailure) : workerPrompt(prompt, schema, resume === void 0 ? context.previousFailure : void 0);
     const settlement = runZCodeAttempt(this.#settings, {
       prompt: message,
       resume,
@@ -26883,15 +26899,35 @@ function workerPrompt(prompt, schema, previousFailure) {
     );
   }
   if (previousFailure !== void 0) {
-    lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
+    lines.push(correctionLine(previousFailure));
   }
   lines.push("", "Task:", prompt);
   return lines.join("\n");
 }
-function reasoningLevelFor(options, listing, selection) {
-  if (options.effortResolution !== void 0) return options.effortResolution.dispatched;
-  if (options.effort !== void 0) return options.effort;
-  return defaultZCodeReasoningLevel(listing.levels(selection)) ?? "medium";
+var CORRECTION_MESSAGE_CHARACTERS = 2e3;
+function correctionLine(failure) {
+  const message = failure.message.length > CORRECTION_MESSAGE_CHARACTERS ? `${failure.message.slice(0, CORRECTION_MESSAGE_CHARACTERS)}\u2026` : failure.message;
+  return `A previous attempt failed (${failure.kind}): ${message}. Correct it this time.`;
+}
+function assertZCodePromptFits(prompt, schema) {
+  const longest = workerPrompt(prompt, schema, {
+    kind: "x".repeat(64),
+    message: "\u{10FFFF}".repeat(CORRECTION_MESSAGE_CHARACTERS)
+  });
+  if (fitsOneArgument(`--prompt=${longest}`)) return;
+  throw new AgentPromptRejectedError(
+    `the zcode engine cannot be given this prompt: zcode takes a prompt only as one command-line argument, which Linux bounds at ${MAX_ARGUMENT_BYTES} bytes (128 KiB), and this prompt is ${Buffer.byteLength(prompt, "utf8")} bytes${schema !== void 0 ? " before its schema" : ""}; shorten it, or dispatch it on an engine that takes longer prompts`
+  );
+}
+function requestedReasoningLevel(options) {
+  return options.effortResolution?.dispatched ?? options.effort;
+}
+var UNLISTED_MODEL_LEVEL = "medium";
+function supportedLevelsOfRefusal(message) {
+  const match = /\bUnsupported reasoning level "[^"]*".*\bSupported levels: ([^\n]*?)\.?\s*$/m.exec(message);
+  if (match === null) return null;
+  const levels2 = match[1].split(",").map((level) => level.trim()).filter((level) => level.length > 0);
+  return levels2.length === 0 ? null : levels2;
 }
 async function runZCodeAttempt(settings, request) {
   const stops = [];
@@ -26922,22 +26958,36 @@ async function runZCodeTurn(settings, request, onCommandStop) {
   const { context } = request;
   const { listing } = await settings.abilities();
   if (request.signal.aborted) throw new EngineShutdownError("zcode");
-  const stream = new ZCodeStream(settings, context);
-  const run = await settings.runner.run({
-    prompt: request.prompt,
-    cwd: settings.cwd,
-    provider: selection.provider,
-    model: selection.model,
-    reasoningLevel: reasoningLevelFor(options, listing, selection),
-    ...request.resume !== void 0 ? { resume: request.resume } : {},
-    disallowedTools: disallowedToolsFor(options.strip),
-    ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
-    signal: request.signal,
-    ...context.onLiveEvidence !== void 0 ? { onFirstData: context.onLiveEvidence } : {},
-    onData: (chunk) => stream.push(chunk),
-    onCommandStop
-  });
-  stream.end(run.stdout);
+  const requested = requestedReasoningLevel(options);
+  const launch = async (reasoningLevel) => {
+    const stream2 = new ZCodeStream(settings, context);
+    const run2 = await settings.runner.run({
+      prompt: request.prompt,
+      cwd: settings.cwd,
+      provider: selection.provider,
+      model: selection.model,
+      reasoningLevel,
+      ...request.resume !== void 0 ? { resume: request.resume } : {},
+      disallowedTools: disallowedToolsFor(options.strip),
+      ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
+      signal: request.signal,
+      ...context.onLiveEvidence !== void 0 ? { onFirstData: context.onLiveEvidence } : {},
+      onData: (chunk) => stream2.push(chunk),
+      onCommandStop
+    });
+    stream2.end(run2.stdout);
+    return { stream: stream2, run: run2 };
+  };
+  let { stream, run } = await launch(requested ?? defaultZCodeReasoningLevel(listing.levels(selection)) ?? UNLISTED_MODEL_LEVEL);
+  if (requested === void 0 && listing.levels(selection) === void 0 && !request.signal.aborted) {
+    const refusal = stream.evidence().failure(run);
+    const levels2 = refusal === null ? null : supportedLevelsOfRefusal(refusal.message);
+    const level = defaultZCodeReasoningLevel(levels2 ?? void 0);
+    if (levels2 !== null && level !== void 0) {
+      listing.learn(selection, levels2);
+      ({ stream, run } = await launch(level));
+    }
+  }
   const evidence = stream.evidence();
   const workerExit = { exitCode: run.exitCode, signal: run.signal };
   const text = evidence.response ?? evidence.streamedText;
@@ -27054,7 +27104,8 @@ var ZCodeStream = class {
   #request(payload) {
     const model = typeof payload.modelId === "string" ? `${payload.providerId}/${payload.modelId}` : null;
     const reasoning = isRecord2(payload.modelCall) && isRecord2(payload.modelCall.reasoning) ? payload.modelCall.reasoning : null;
-    const effective = typeof reasoning?.effectiveLevel === "string" && reasoning.effectiveLevel !== "unknown" ? reasoning.effectiveLevel : null;
+    const reported = typeof reasoning?.effectiveLevel === "string" && reasoning.effectiveLevel !== "unknown" ? reasoning.effectiveLevel : null;
+    const effective = reported ?? (model === this.#resolvedModel ? this.#resolvedEffort : null);
     if (model !== null && (model !== this.#resolvedModel || effective !== this.#resolvedEffort)) {
       this.#resolvedModel = model;
       this.#resolvedEffort = effective;
@@ -28229,6 +28280,9 @@ A previous attempt failed (${failure.kind}): ${failure.message}. Correct it this
 }
 
 // src/runtime.ts
+function assertPromptFits(engine, prompt, schema) {
+  if (engine === "zcode") assertZCodePromptFits(prompt, schema);
+}
 function assertValidAgentPrompt(prompt) {
   if (typeof prompt !== "string") {
     throw new AgentPromptRejectedError(`agent() prompt must be a string, got ${typeof prompt}`);
@@ -28721,7 +28775,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
     this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
-    this.#validateOpenCodeTarget(engine, options);
+    this.#validateModelTarget(engine, options);
+    for (const target of [engine.name, ...chain.map((entry) => entry.engine)]) {
+      assertPromptFits(target, prompt, options.schema);
+    }
     const dispatchOptions = strip.length === 0 && !lean ? options : withOptionOverrides(options, { ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} });
     const dispatchPhase = this.#dispatchRemap === void 0 ? options.phase ?? this.progress.snapshot().currentPhase : remapPhase;
     const dispatchContext = [
@@ -28893,7 +28950,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveLeanStart(target.name, target.leanStart);
       }
     }
-    this.#validateOpenCodeTarget(engine, resolved);
+    this.#validateModelTarget(engine, resolved);
     const model = resolved.model ?? null;
     return { target: name, bound: true, engine: engine.name, model, family: this.modelFamilyOf({ engine: engine.name, requested: model, served: null }) };
   }
@@ -28946,7 +29003,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const targets = settleChain(this.#namedTargets, chain, chain);
     if (this.#dispatchRemap !== void 0) return;
     for (const target of targets) {
-      this.#validateOpenCodeTarget(this.#engines.get(target.engine), target);
+      this.#validateModelTarget(this.#engines.get(target.engine), target);
     }
   }
   createWorkerSession(declared) {
@@ -28985,6 +29042,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
     this.#warnSharedSubstrateFallback(engine.name, chain, options.label);
+    this.#validateModelTarget(engine, options);
     const sessionOptions = strip.length === 0 && !lean ? options : withOptionOverrides(options, { ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} });
     this.#sessionCounter += 1;
     const state = {
@@ -29048,6 +29106,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const options = state.options;
     const engine = state.engine;
+    assertPromptFits(engine.name, prompt, turn.schema);
     let phase = options.phase ?? this.progress.snapshot().currentPhase;
     state.inFlight = true;
     try {
@@ -30698,11 +30757,20 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (adapter === void 0) {
       throw new FallbackTargetRejectedError(`the ${target.engine} engine is not available to this run`);
     }
-    this.#validateOpenCodeTarget(adapter, { model: target.model, effort: target.effort ?? inheritedEffort });
+    this.#validateModelTarget(adapter, { model: target.model, effort: target.effort ?? inheritedEffort });
     if (adapter.name !== "opencode") assertCanonicalEffortSupported(target.effort);
     return adapter;
   }
-  #validateOpenCodeTarget(engine, options) {
+  /**
+   * Refuses a target whose engine cannot run without a model it lacks: an
+   * opencode call with no registered model, and a zcode call with no
+   * model or one that names no provider.
+   */
+  #validateModelTarget(engine, options) {
+    if (engine?.name === "zcode") {
+      parseZCodeModel(options.model);
+      return;
+    }
     if (!(engine instanceof OpenCodeEngineAdapter)) return;
     if (options.model === void 0) throw new OpenCodeModelRequiredError(engine.modelRegistry);
     validateEngineDefaults(engine.name, {

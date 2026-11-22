@@ -91,6 +91,11 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
       /^opencode run failed: tool \S+ failed:/.test(failure.message)) {
     return failure;
   }
+  // ZCode names a credential failure by its own reason or code, which
+  // also classes it availability: it is diagnosed before that return.
+  if (engine === "zcode" && failure.kind === "zcode-run-error" && isZCodeCredentialFailure(diagnostics)) {
+    return authenticationFailure(engine, failure.message);
+  }
   const apiError = engine === "claude" ? claudeApiErrorOf(diagnostics) : null;
   const status = appServerDiagnostic?.httpStatusCode ?? apiError?.status ?? openCodeHttpStatus(evidence);
   // Substrate failures may quote credential errors from recent stderr.
@@ -107,11 +112,7 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
     apiError?.code === "authentication_error" || apiError?.code === "authentication_failed" || apiError?.code === "invalid_api_key" ||
     /\b(?:HTTP(?: status)?|status(?: code)?)[: ]+401\b|\b401 Unauthorized\b|Missing bearer or basic authentication|\bAPI key is missing\b|invalid[_ -]api[_ -]key|authentication[_ -](?:error|failed)/i.test(failure.message);
   if (authentication) {
-    const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude"
-      ? "Run `claude auth login`." : engine === "zcode"
-        ? "Configure the provider's credentials in ZCode for the provider the model names."
-        : "Run `opencode auth login` for the provider you selected.";
-    return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${failure.message}` };
+    return authenticationFailure(engine, failure.message);
   }
   if (engine === "codex" && appServerDiagnostic?.code === "modelNotFound") {
     return { kind: "model-not-found", message: `Codex modelNotFound: choose a model available to your account (run \`codex\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
@@ -126,6 +127,14 @@ export function diagnoseAttemptFailure(evidence: AttemptFailureEvidence): Attemp
     return { kind: "model-not-found", message: `Claude model not found: choose a model available to your account (run \`claude\` and use /model to list models), or correct the call's model option. Engine diagnostic: ${failure.message}` };
   }
   return failure;
+}
+
+function authenticationFailure(engine: AttemptFailureEvidence["engine"], diagnostic: string): AttemptFailureEvidence["failure"] {
+  const remedy = engine === "codex" ? "Run `codex login`." : engine === "claude"
+    ? "Run `claude auth login`." : engine === "zcode"
+      ? "Configure the provider's credentials in ZCode for the provider the model names."
+      : "Run `opencode auth login` for the provider you selected.";
+  return { kind: "authentication-failure", message: `${engine} authentication failed. ${remedy} Engine diagnostic: ${diagnostic}` };
 }
 
 const OUTPUT_FAILURE_KINDS = new Set([
@@ -262,6 +271,15 @@ const ZCODE_AVAILABILITY_CODES = new Map<string, string>([
   ["provider_not_configured", "zcode.provider-not-configured"],
   ["insufficient_quota", "zcode.quota"]
 ]);
+
+/** Whether zcode's `turn.failed` reported a missing or rejected credential. */
+function isZCodeCredentialFailure(diagnostics: JsonObject | undefined): boolean {
+  const turnError = objectField(diagnostics?.zcode, "turn_error");
+  const reason = objectField(turnError, "reason");
+  const code = objectField(turnError, "code");
+  return (typeof reason === "string" && ZCODE_AVAILABILITY_REASONS.get(reason) === "zcode.authentication-failure") ||
+    (typeof code === "string" && ZCODE_AVAILABILITY_CODES.get(code) === "zcode.authentication-failure");
+}
 
 const ZCODE_FAILURE_KINDS = new Map<string, FailureClassification>([
   // The installed zcode cannot be driven (missing, or lacking per-run model

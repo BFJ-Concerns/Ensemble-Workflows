@@ -52,7 +52,7 @@ export interface SelectedFallback {
  */
 export function selectFallback(
   passed: object,
-  options: { fallback?: FallbackTarget[] | false; model?: string; engine?: EngineName },
+  options: { fallback?: FallbackTarget[] | false; model?: string | undefined; engine?: EngineName | undefined },
   map: FallbackMap | undefined
 ): SelectedFallback {
   const { fallback, engine, model } = options;

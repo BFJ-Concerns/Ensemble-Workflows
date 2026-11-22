@@ -115,10 +115,11 @@ and its class.
 Ensemble uses the first declaration it finds in this order.
 
 1. The call's `fallback`.
-2. The script's `defaults` for the engine the call dispatches on.
+2. The script's `defaults` for the engine the call dispatches on, after any
+   [dispatch remap](#dispatch-remap).
 3. The named target's binding, if the call names a target.
 4. The machine's [fallback map](configuration.md#fallback), checking
-   `engine:model` for the resolved dispatch options, then `engine`. A
+   `engine:model` for the pair after remapping, then `engine`. A
    dispatch that leaves the model to the engine checks the engine key.
 
 Each declaration supplies the whole chain. Set `fallback: false` on a call or
@@ -183,10 +184,50 @@ cannot assume should name its engines and models directly. The run record
 keeps the name beside what it resolved to (see
 [Run records](run-records.md#agent-records)).
 
+### Dispatch remap
+
+Launch a workflow on different models with `--remap` before the script path.
+
+```sh
+ensemble --remap 'label:review-*=claude:sonnet' --remap codex=claude workflow.js
+```
+
+Repeat `--remap` to give multiple rules. The flags replace the entire
+comma-separated list from `ENSEMBLE_DISPATCH_REMAP`. Remaps apply to one
+launch and are configured through the flag or environment variable.
+
+For each dispatch, the first matching rule in the highest-ranked category
+wins:
+
+1. `label:<glob>` matches the call's label.
+2. `phase:<glob>` matches the call's explicit phase or the current workflow
+   phase.
+3. `engine:model` matches the engine and model after resolving any named
+   target and filling in its model from the script's defaults.
+4. `engine` matches the engine alone.
+
+Globs match the whole label or phase. `*` matches any number of characters,
+and `?` matches one character. Quote glob rules on the shell command line.
+
+A rule's destination is an `engine:model` pair or an `engine` alone. A
+destination without a model takes that engine's model from the script's
+`defaults`, or uses the engine's own default if the script has none. The
+requested canonical effort carries over and is resolved under the
+destination's effort policy. A named target keeps its place in the fallback search order.
+
+Ensemble applies the rules to the first dispatch and to each reached
+fallback entry. A session uses its label and phase at `session()` creation.
+Once established, its worker keeps the engine and model for subsequent
+turns. Stderr names the winning key for each remapped dispatch and reports
+rules that matched no dispatch at the end of the run.
+[Run records](run-records.md#run-record-schema) preserve the effective
+rules and the requested and dispatched targets.
+
 ### Dispatch lookup
 
 `lookupDispatch(options)` answers where `agent()` given the same options would
-send its first dispatch, with nothing dispatched:
+send its first dispatch under the active [dispatch remap](#dispatch-remap),
+without starting a worker or counting a rule as matched.
 
 ```js
 const doer = lookupDispatch({ target: "doer" });
@@ -206,13 +247,12 @@ It answers `{ target, bound, engine, model, family }`:
 | `target` | The name the options asked for, or `null` for a literal `engine` |
 | `bound` | `false` for a `target` the machine does not bind; the other fields are then `null` |
 | `engine` | The engine the call would run on |
-| `model` | The model it would ask for, resolved as the call resolves it (the binding's, else the script's `defaults` model for that engine), or `null` where the engine's own default decides |
+| `model` | The model the first dispatch requests, or `null` when the selected engine uses its default |
 | `family` | The [model family](#model-families) of `model`, whatever engine runs it; `null` where Ensemble cannot place the model, including where `model` is `null` |
 
-A literal call is answered the same way, so
-`lookupDispatch({ engine: "claude" })` reports the script's `defaults` model
-for Claude. An unbound `target` answers `bound: false` where the call itself
-would throw. Any other option the call would refuse before spawning — a
+For a literal call, `lookupDispatch({ engine: "claude" })` reports the
+model a Claude request would dispatch to. A lookup for an unbound `target`
+answers `bound: false`. Any other option the call would refuse before spawning — a
 `target` beside an `engine` or `model`, a missing or unknown engine, an
 opencode call with no model, a fallback entry naming an unbound target, a
 `strip` or `lean` a target cannot honour, a schema that cannot compile, or

@@ -149,6 +149,10 @@ export function withDeclaredModels<T extends object>(options: T, lookup: (engine
   return options;
 }
 
+export function declaredModelFor(options: object, engine: EngineName): string | undefined {
+  return declaredModels.get(options)?.(engine);
+}
+
 /**
  * Settle a call's chain for dispatch. A named entry takes its binding's
  * engine and model — never the binding's own chain, since chains do not
@@ -160,7 +164,6 @@ export function withDeclaredModels<T extends object>(options: T, lookup: (engine
  * and a named entry bound to opencode, which takes no chain entries.
  */
 export function settleChain(targets: NamedTargets | null, chain: readonly FallbackTarget[] | undefined, passed: object): SettledChainEntry[] {
-  const declaredModel = declaredModels.get(passed) ?? (() => undefined);
   return (chain ?? []).map((entry, index) => {
     if (entry.target === undefined) {
       return { engine: entry.engine, model: entry.model, effort: entry.effort, namedTarget: null };
@@ -181,7 +184,7 @@ export function settleChain(targets: NamedTargets | null, chain: readonly Fallba
     }
     return {
       engine: binding.engine,
-      model: binding.model ?? declaredModel(binding.engine),
+      model: binding.model ?? declaredModelFor(passed, binding.engine),
       effort: entry.effort,
       namedTarget: entry.target
     };

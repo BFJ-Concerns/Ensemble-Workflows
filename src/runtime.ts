@@ -2,7 +2,7 @@ import { resolveEffort, isCanonicalEffort, assertEffortSection, effortPolicyKeys
 import type { EffortPolicy, EffortResolution } from "./effort-resolution.js";
 import { randomUUID } from "node:crypto";
 
-import { validateMachineFallback, validateNamedTargetBindings } from "./ambient-settings.js";
+import { isConfiguredEngine, validateMachineFallback, validateNamedTargetBindings } from "./ambient-settings.js";
 import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
@@ -12,9 +12,11 @@ import type { DischargedLeanStart } from "./lean-start.js";
 import { unestablishedStopsOf } from "./contained-command.js";
 import { isTimeoutFailureKind, runEndingFailureKind } from "./cost-rollup.js";
 import { classifyAttemptFailure, diagnoseAttemptFailure, settlesWithoutRetry } from "./failure-classification.js";
+import { remapFallbackFor } from "./dispatch-remap.js";
+import type { DispatchRemap, RemapMatch } from "./dispatch-remap.js";
 import { selectFallback } from "./fallback-source.js";
 import { withOptionOverrides } from "./option-overrides.js";
-import { isNamedTargetBound, namedTargetResolutionOf, resolveNamedTarget, settleChain, withTargetChain } from "./named-targets.js";
+import { declaredModelFor, isNamedTargetBound, namedTargetResolutionOf, resolveNamedTarget, settleChain, withTargetChain } from "./named-targets.js";
 import { modelFamilyOf, singleFamilyOf } from "./model-family.js";
 import type { FamilyJudgedTarget, ModelFamilyAssignments, SingleFamilyJudgement } from "./model-family.js";
 import type { NamedTargetResolution, NamedTargets, SettledChainEntry } from "./named-targets.js";
@@ -169,6 +171,10 @@ interface AgentExecutionResult {
  */
 type AgentExecutionOutcome = AgentExecutionResult | { status: "refused" };
 
+interface DispatchChainEntry extends SettledChainEntry {
+  remap?: RemapMatch;
+}
+
 /**
  * Where a call's dispatch stands on its fallback chain: `entry` is -1 for
  * the call's own target and the chain index thereafter. Every attempt
@@ -176,6 +182,7 @@ type AgentExecutionOutcome = AgentExecutionResult | { status: "refused" };
  * the one that answered.
  */
 interface ChainTarget {
+  remap?: RemapMatch;
   effortResolution?: EffortResolution | null;
   entry: number;
   engine: EngineName;
@@ -224,17 +231,19 @@ class ChainAdvance {
 function chainTargets(
   engine: EngineName,
   options: { model?: string; effort?: string },
-  chain: readonly SettledChainEntry[],
-  namedTarget: string | null
+  chain: readonly DispatchChainEntry[],
+  namedTarget: string | null,
+  remap?: RemapMatch
 ): ChainTarget[] {
   return [
-    { entry: -1, engine, model: options.model, effort: options.effort, namedTarget },
+    { entry: -1, engine, model: options.model, effort: options.effort, namedTarget, ...(remap === undefined ? {} : { remap }) },
     ...chain.map((target, index) => ({
       entry: index,
       engine: target.engine,
       model: target.model,
       effort: target.effort ?? options.effort,
-      namedTarget: target.namedTarget
+      namedTarget: target.namedTarget,
+      ...(target.remap === undefined ? {} : { remap: target.remap })
     }))
   ];
 }
@@ -405,7 +414,8 @@ interface WorkerSessionState {
   /** The named target the session was created through, resolved once at creation; null for a literal engine. */
   namedTarget: NamedTargetResolution | null;
   /** The creating turn's chain, settled once at creation. */
-  chain: SettledChainEntry[];
+  chain: DispatchChainEntry[];
+  remap: RemapMatch | undefined;
   /**
    * The name the target now serving the session was reached through: the
    * session's own target until a chain entry answers its creating turn,
@@ -548,6 +558,7 @@ export class EnsembleRuntime {
   /** The machine's named targets, or null where the run was given none (every name is then unbound). */
   #namedTargets: NamedTargets | null;
   #machineFallback: MachineFallback | undefined;
+  #dispatchRemap: DispatchRemap | undefined;
   #effortPolicy: EffortPolicy | null;
   /** The machine's model family assignments, outranking the harness's grouping of model names. */
   #modelFamilies: ModelFamilyAssignments;
@@ -618,6 +629,7 @@ export class EnsembleRuntime {
     lean?: boolean;
     namedTargets?: NamedTargets;
     machineFallback?: MachineFallback;
+    dispatchRemap?: DispatchRemap;
     effortPolicy?: EffortPolicy;
     modelFamilies?: ModelFamilyAssignments;
     claudeSessionStaleAfterMs?: number;
@@ -647,6 +659,7 @@ export class EnsembleRuntime {
     }
     this.#namedTargets = options.namedTargets ?? null;
     this.#machineFallback = options.machineFallback;
+    this.#dispatchRemap = options.dispatchRemap;
     this.#effortPolicy = options.effortPolicy ?? null;
     this.#modelFamilies = options.modelFamilies ?? {};
     if (this.#effortPolicy !== null) {
@@ -777,6 +790,7 @@ export class EnsembleRuntime {
       ...(options.lean !== undefined ? { lean: options.lean } : {}),
       ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {}),
       ...(options.machineFallback !== undefined ? { machineFallback: options.machineFallback } : {}),
+      ...(options.dispatchRemap !== undefined ? { dispatchRemap: options.dispatchRemap } : {}),
       ...(options.effortPolicy !== undefined ? { effortPolicy: options.effortPolicy } : {}),
       ...(options.modelFamilies !== undefined ? { modelFamilies: options.modelFamilies } : {}),
       ...(options.claudeSessionStaleAfterMs !== undefined
@@ -932,8 +946,6 @@ export class EnsembleRuntime {
       assertValidAgentOptions(options);
     }
     const namedTarget = namedTargetResolutionOf(passedOptions);
-    const fallback = selectFallback(passedOptions, options, this.#machineFallback?.chains);
-    const chain = settleChain(this.#namedTargets, fallback.chain, passedOptions);
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.
       assertCompilableSchema(options.schema);
@@ -945,6 +957,10 @@ export class EnsembleRuntime {
     if (options.cwd !== undefined) {
       await this.#placement.assertUsableCwd(options);
     }
+
+    const { effective, chain, fallback, remap, phase: remapPhase } = this.#settleDispatch(passedOptions, options);
+    if (remap !== undefined) assertValidAgentOptions(effective);
+    options = effective;
 
     const engine = this.#engineFor(options.engine);
     // Capability stripping is judged pre-spawn, like any other rejected
@@ -992,7 +1008,7 @@ export class EnsembleRuntime {
     // attempts to completion, so spend can overshoot by the whole dispatched
     // backlog. A blocked call is a pre-dispatch rejection, like a rejected
     // option: no engine invocation, no progress entry, no run record.
-    const dispatchPhase = options.phase ?? this.progress.snapshot().currentPhase;
+    const dispatchPhase = this.#dispatchRemap === undefined ? options.phase ?? this.progress.snapshot().currentPhase : remapPhase;
     const dispatchContext = [
       ...(options.label !== undefined ? [`label ${JSON.stringify(options.label)}`] : []),
       ...(dispatchPhase !== null ? [`phase ${JSON.stringify(dispatchPhase)}`] : [])
@@ -1003,7 +1019,7 @@ export class EnsembleRuntime {
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
-      phase: options.phase ?? null,
+      phase: dispatchPhase,
       requestedModel: options.model ?? null,
       requestedEffort: options.effort ?? null
     });
@@ -1017,7 +1033,8 @@ export class EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(
-      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, fallback, namedTarget, stripRoutes, leanRoute
+      agentId, engine.name, prompt, { ...dispatchOptions, ...(phase !== null ? { phase } : {}) }, fallback, namedTarget,
+      stripRoutes, leanRoute, remap
     );
     const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
@@ -1027,7 +1044,7 @@ export class EnsembleRuntime {
     try {
       await this.#recordAgentSafely(agentRecord);
       unsettled.stage = "admitting";
-      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, chain, agentId, agentRecord, queuedAt);
+      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, chain, agentId, agentRecord, queuedAt, remap);
       if (options.identity === true) {
         // Identified resolution (opt-in): the envelope wraps every
         // resolution, a schema call's null collapse included, so a fan-in
@@ -1148,10 +1165,10 @@ export class EnsembleRuntime {
       return { target: name, bound: false, engine: null, model: null, family: null };
     }
     const passed = applyDefaults(this.resolveNamedTarget(options) as Partial<AgentOptions>);
-    const resolved = snapshotAgentCwd(passed);
-    assertValidAgentOptions(resolved);
-    const fallback = selectFallback(passed, resolved, this.#machineFallback?.chains);
-    const chain = settleChain(this.#namedTargets, fallback.chain, passed);
+    const snapshot = snapshotAgentCwd(passed);
+    assertValidAgentOptions(snapshot);
+    const { effective: resolved, chain, remap } = this.#settleDispatch(passed, snapshot);
+    if (remap !== undefined) assertValidAgentOptions(resolved);
     if (resolved.schema !== undefined) {
       assertCompilableSchema(resolved.schema);
     }
@@ -1262,8 +1279,9 @@ export class EnsembleRuntime {
       assertValidWorkerSessionOptions(options);
     }
     const namedTarget = namedTargetResolutionOf(options);
-    const fallback = selectFallback(options, options, this.#machineFallback?.chains);
-    const chain = settleChain(this.#namedTargets, fallback.chain, options);
+    const { effective, chain, fallback, remap } = this.#settleDispatch(options, options);
+    if (remap !== undefined) assertValidWorkerSessionOptions(effective);
+    options = effective;
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === undefined) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -1305,6 +1323,7 @@ export class EnsembleRuntime {
       fallback,
       namedTarget,
       chain,
+      remap,
       servingTarget: namedTarget?.name ?? null,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its subscription cache TTL, Codex's the measured coin-flip
@@ -1407,8 +1426,9 @@ export class EnsembleRuntime {
       // later turn records none, and says why, so it never reads as a call
       // that declared nothing or switched its chain off.
       const fallback: SelectedFallback = state.turnCount === 0 ? state.fallback : { chain: undefined, source: { kind: "later-turn" } };
+      const remap = state.turnCount === 0 ? state.remap : undefined;
       const agentRecord = this.#newAgentRecord(
-        agentId, engine.name, prompt, recordOptions, fallback, state.namedTarget, state.stripRoutes, state.leanRoute
+        agentId, engine.name, prompt, recordOptions, fallback, state.namedTarget, state.stripRoutes, state.leanRoute, remap
       );
       // The engine exposes the served model and effort when its held worker
       // first starts. Every later turn is still on that worker, so carry the
@@ -1433,7 +1453,7 @@ export class EnsembleRuntime {
           // target answers, the session's engine and model are fixed for
           // its life, so a later turn runs its own target only and an
           // availability failure there fails the turn.
-          const targets = chainTargets(engine.name, options, state.turnCount === 0 ? state.chain : [], state.servingTarget);
+          const targets = chainTargets(engine.name, options, state.turnCount === 0 ? state.chain : [], state.servingTarget, remap);
           const output = await this.#runChained(
             engine,
             targets,
@@ -1716,14 +1736,15 @@ export class EnsembleRuntime {
     engine: EngineAdapter,
     prompt: string,
     options: Partial<AgentOptions>,
-    chain: readonly SettledChainEntry[],
+    chain: readonly DispatchChainEntry[],
     agentId: number,
     agentRecord: RuntimeAgentRecord,
-    queuedAt: number
+    queuedAt: number,
+    remap: RemapMatch | undefined
   ): Promise<unknown> {
     return this.#runChained(
       engine,
-      chainTargets(engine.name, options, chain, agentRecord.namedTarget?.name ?? null),
+      chainTargets(engine.name, options, chain, agentRecord.namedTarget?.name ?? null, remap),
       { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,
@@ -1796,6 +1817,20 @@ export class EnsembleRuntime {
               agentRecord.resolvedEffort = null;
               this.progress.noteAgentIdentity(agentId, { resolvedModel: null, resolvedEffort: null });
               this.progress.noteAgentWorktree(agentId, null);
+            }
+            if (target.remap !== undefined) {
+              this.#dispatchRemap?.noteDispatch(target.remap);
+              this.#emitEvent({
+                method: "dispatch/remapped",
+                params: {
+                  agentId,
+                  label: identity.label,
+                  entry: target.entry,
+                  ...target.remap.evidence,
+                  dispatched: { engine: target.engine, model: target.model ?? null }
+                },
+                receivedAt: Date.now()
+              });
             }
             const settled = await runTarget(target, admittedEngine, ledger, position.next + 1 < targets.length);
             if (settled.status !== "refused") {
@@ -2206,6 +2241,7 @@ export class EnsembleRuntime {
           startedAt: new Date(startedAt).toISOString(),
           target: { engine: target.engine, model: target.model ?? null },
           namedTarget: target.namedTarget,
+          ...(target.remap === undefined ? {} : { remap: target.remap.evidence }),
           ...(target.effortResolution == null ? {} : { effortResolution: target.effortResolution }),
           identity: record === undefined || record.session === null
             ? { resolvedModel: null, resolvedEffort: null }
@@ -3349,6 +3385,32 @@ export class EnsembleRuntime {
     return caps;
   }
 
+  #settleDispatch<T extends Partial<AgentOptions> | LiteralWorkerSessionOptions>(passed: object, options: T) {
+    const { engine, model } = options;
+    const phase = options.phase ?? (this.#dispatchRemap === undefined ? null : this.progress.snapshot().currentPhase);
+    const resolve = (target: { engine: EngineName; model?: string | undefined }) =>
+      this.#dispatchRemap?.resolve(target, options.label ?? null, phase, (destination) => declaredModelFor(passed, destination));
+
+    // A role key only applies to a call that already names a valid engine.
+    const remap = isConfiguredEngine(engine) ? resolve({ engine, model }) : undefined;
+    const effective = remap === undefined ? options : withOptionOverrides(options, {
+      engine: remap.target.engine,
+      model: remap.target.model
+    });
+    const switchedFallback = remap === undefined ? undefined : remapFallbackFor(passed, remap.target.engine);
+    const fallback = switchedFallback !== undefined && switchedFallback.source.kind !== "none"
+      ? switchedFallback
+      : selectFallback(passed, switchedFallback === undefined ? effective : {
+        engine: effective.engine,
+        model: effective.model
+      }, this.#machineFallback?.chains);
+    const chain = settleChain(this.#namedTargets, fallback.chain, passed).map((entry): DispatchChainEntry => {
+      const move = resolve(entry);
+      return move === undefined ? entry : { ...entry, engine: move.target.engine, model: move.target.model, remap: move };
+    });
+    return { effective, fallback, chain, remap, phase };
+  }
+
   #engineFor(engine: unknown): EngineAdapter {
     if (engine === undefined) {
       throw new MissingEngineError();
@@ -3364,15 +3426,20 @@ export class EnsembleRuntime {
   }
 
   /**
-   * A chain entry's engine, resolved pre-spawn: the validator has already
-   * confined entries to Codex and Claude, so an entry naming an engine this
-   * runtime does not carry (a registry built without it) is a declaration
-   * the run cannot honour, rejected before anything is paid for.
+   * Validate the effective chain target before any worker spawns. A remap
+   * can send a declared entry to opencode, whose model must be registered.
    */
   #chainEngineFor(target: SettledChainEntry): EngineAdapter {
     const adapter = this.#engines.get(target.engine);
     if (adapter === undefined) {
       throw new FallbackTargetRejectedError(`the ${target.engine} engine is not available to this run`);
+    }
+    if (adapter instanceof OpenCodeEngineAdapter) {
+      if (target.model === undefined) throw new OpenCodeModelRequiredError(adapter.modelRegistry);
+      validateEngineDefaults(adapter.name, {
+        model: target.model,
+        ...(target.effort === undefined ? {} : { effort: target.effort })
+      }, adapter.modelRegistry);
     }
     return adapter;
   }
@@ -3398,7 +3465,8 @@ export class EnsembleRuntime {
     fallback: SelectedFallback,
     namedTarget: NamedTargetResolution | null,
     stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null,
-    leanRoute: DischargedLeanStart | null = null
+    leanRoute: DischargedLeanStart | null = null,
+    remap?: RemapMatch
   ): RuntimeAgentRecord {
     const record: RuntimeAgentRecord = {
       id,
@@ -3414,6 +3482,7 @@ export class EnsembleRuntime {
       fallback: fallback.chain?.map((target) => ({ ...target })) ?? null,
       fallbackSource: fallback.source,
       namedTarget,
+      ...(remap === undefined ? {} : { remap: remap.evidence }),
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
@@ -3525,6 +3594,7 @@ function attemptRecord(
     status,
     target: { engine: target.engine, model: target.model ?? null },
     namedTarget: target.namedTarget,
+    ...(target.remap === undefined ? {} : { remap: target.remap.evidence }),
     effortResolution: target.effortResolution ?? null,
     failure,
     classification,

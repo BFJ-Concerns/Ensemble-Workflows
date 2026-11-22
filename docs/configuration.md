@@ -388,6 +388,7 @@ as off and the run says nothing.
 | `ENSEMBLE_STATUS_DIR` | Directory for live status files; must already exist while status is on |
 | `ENSEMBLE_CALLER_IDENTITY` | Opaque identity of the invoking session, recorded in the manifest's `caller_identity`; `--caller-identity` overrides it |
 | `ENSEMBLE_WORKER_SCOPE` | `worker` or `run`; systemd worker grouping, overridden by `--worker-scope` |
+| `ENSEMBLE_DISPATCH_REMAP` | Comma-separated [dispatch remap](workflow-scripts.md#dispatch-remap) rules for this launch. A `--remap` flag replaces the list |
 | `ENSEMBLE_HOLD_SCOPE` | Scope for decision holds, inherited by nested invocations; `--hold-scope` overrides it (see [Holds](workflow-scripts.md#holds)) |
 
 The on/off switches accept `on`/`off`, `true`/`false`, `yes`/`no`, or `1`/`0`.
@@ -483,6 +484,7 @@ own environment.
 | `strip` | `--strip` | None | Capabilities stripped from every worker, added to each call's own `strip` |
 | `lean` | `--lean` | `false` | Start every worker without the operator's interactive context; per-call `lean: false` cannot lift it |
 | `holdScope` | `--hold-scope` | `ENSEMBLE_HOLD_SCOPE`, else the shared scope | Hold scope for the runtime's runs |
+| `dispatchRemap` | `--remap` | None | A fresh `DispatchRemap` instance for this run, constructed with an array of rule strings |
 | `workerScope` | `--worker-scope` | `worker` | Systemd scope grouping (`worker` or `run`); the library uses the explicit option or its default |
 
 These options have no flag or environment variable:

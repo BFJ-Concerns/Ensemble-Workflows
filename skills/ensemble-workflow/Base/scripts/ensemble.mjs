@@ -16546,7 +16546,7 @@ var ENGINE_INCLUSION_RULES = {
   codex: { cachedWithinInput: true, reasoningWithinOutput: true },
   claude: { cachedWithinInput: false, reasoningWithinOutput: true },
   opencode: { cachedWithinInput: false, reasoningWithinOutput: false },
-  agy: { cachedWithinInput: true, reasoningWithinOutput: false }
+  agy: { cachedWithinInput: false, reasoningWithinOutput: true }
 };
 function summariseUsage(engine, events) {
   if (events.length === 0) {
@@ -25781,7 +25781,7 @@ function breakdownOf(usage2) {
     ...cachedWrite !== null ? { cacheCreationInputTokens: cachedWrite } : {},
     outputTokens: output,
     ...thought !== null ? { reasoningOutputTokens: thought } : {},
-    totalTokens: usage2.totalTokens ?? input + output + (thought ?? 0)
+    totalTokens: usage2.totalTokens ?? input + cachedRead + (cachedWrite ?? 0) + output
   };
 }
 function addUsage(total, last) {

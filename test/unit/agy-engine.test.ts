@@ -377,10 +377,12 @@ test("agy's whitespace bound is reset by text, tool activity and thought, and a 
   assert.deepEqual(record?.attempts[0]?.classification, { class: "output", rule: "output" });
 });
 
-test("agy's usage summarises with the cached share inside the input and thought tokens beside the output", () => {
-  const last = { inputTokens: 100, cachedInputTokens: 40, outputTokens: 7, reasoningOutputTokens: 3, totalTokens: 110 };
+test("agy's usage summarises with the cached share beside the input and thought tokens inside the output", () => {
+  // agy 1.5.14's counts for a second turn on gemini-4-hydrogen at low, 2026-11-22.
+  const last = { inputTokens: 2217, cachedInputTokens: 7331, cacheCreationInputTokens: 0, outputTokens: 74, reasoningOutputTokens: 59, totalTokens: 9622 };
   assert.deepEqual(summariseUsage("agy", [{ threadId: "s", turnId: "s:agy-1", last, total: last, raw: {} }]), {
-    freshInputTokens: 60, cachedInputTokens: 40, outputTokens: 7, reasoningOutputTokens: 3, unclassifiedTokens: 0, totalTokens: 110
+    freshInputTokens: 2217, cachedInputTokens: 7331, cacheReadTokens: 7331, cacheCreationTokens: 0,
+    outputTokens: 15, reasoningOutputTokens: 59, unclassifiedTokens: 0, totalTokens: 9622
   });
 });
 

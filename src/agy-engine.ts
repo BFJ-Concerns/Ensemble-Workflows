@@ -374,7 +374,7 @@ function safely(observe: () => void): void {
   try { observe(); } catch { /* Observability cannot fail a turn. */ }
 }
 
-/** Turns a reply's counts into the shared breakdown: agy's input includes the cached share and its thought tokens sit outside its output. */
+/** Turns a reply's counts into the shared breakdown: agy's input excludes the cached share, and its output includes the thought tokens. */
 function breakdownOf(usage: AcpUsage): TokenUsageBreakdown {
   const cachedRead = usage.cachedReadTokens ?? 0;
   const cachedWrite = usage.cachedWriteTokens;
@@ -387,7 +387,7 @@ function breakdownOf(usage: AcpUsage): TokenUsageBreakdown {
     ...(cachedWrite !== null ? { cacheCreationInputTokens: cachedWrite } : {}),
     outputTokens: output,
     ...(thought !== null ? { reasoningOutputTokens: thought } : {}),
-    totalTokens: usage.totalTokens ?? input + output + (thought ?? 0)
+    totalTokens: usage.totalTokens ?? input + cachedRead + (cachedWrite ?? 0) + output
   };
 }
 

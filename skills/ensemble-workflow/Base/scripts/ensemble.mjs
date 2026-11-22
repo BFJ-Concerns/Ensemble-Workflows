@@ -14178,8 +14178,8 @@ import path22 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile12, stat as stat8 } from "node:fs/promises";
-import { homedir as homedir5, hostname as hostname4 } from "node:os";
+import { readFile as readFile13, stat as stat8 } from "node:fs/promises";
+import { homedir as homedir5, hostname as hostname5 } from "node:os";
 import path21 from "node:path";
 import { parseArgs } from "node:util";
 
@@ -25303,10 +25303,28 @@ var ClaudeStripPreparer = class {
 import { randomUUID as randomUUID6 } from "node:crypto";
 
 // src/opencode-launch-config.ts
-import { mkdtemp as mkdtemp4, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp as mkdtemp4, readFile as readFile10, readdir as readdir8, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
+import { hostname as hostname4, tmpdir } from "node:os";
 import path18 from "node:path";
+var LEAN_DIRECTORY_PREFIX = "ensemble-opencode-lean-";
+var OWNER_FILENAME2 = "owner.json";
 var OPENCODE_STRIP_TOOLS = { skills: "skill", agents: "task" };
+async function sweepAbandonedOpenCodeProfiles() {
+  const root = tmpdir();
+  const host = hostname4();
+  const entries = await readdir8(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(LEAN_DIRECTORY_PREFIX)) continue;
+    const directory = path18.join(root, entry.name);
+    try {
+      const owner = JSON.parse(await readFile10(path18.join(directory, OWNER_FILENAME2), "utf8"));
+      if (await judgeOwnerGone(owner, "/proc", host) === "owner-process-gone") {
+        await rm6(directory, { recursive: true, force: true });
+      }
+    } catch {
+    }
+  }
+}
 async function prepareOpenCodeLaunch(options) {
   const { env, strip, lean, providerModel, run } = options;
   if (!lean && strip.length === 0) return { env };
@@ -25340,9 +25358,11 @@ async function prepareOpenCodeLaunch(options) {
     verifyStrips(await readConfig(stripped), strip);
     return { env: stripped };
   }
-  const directory = await mkdtemp4(path18.join(tmpdir(), "ensemble-opencode-lean-"));
+  const owner = await captureProcessOwner("/proc", hostname4());
+  const directory = await mkdtemp4(path18.join(tmpdir(), LEAN_DIRECTORY_PREFIX));
   const close = () => rm6(directory, { recursive: true, force: true });
   try {
+    await writeFile7(path18.join(directory, OWNER_FILENAME2), JSON.stringify(owner), { mode: 384 });
     const configFile = path18.join(directory, "opencode.json");
     const profile = {
       $schema: "https://opencode.ai/config.json",
@@ -25469,6 +25489,7 @@ var OpenCodeCliRunner = class {
   #killGraceMs;
   #env;
   #commands;
+  #profileSweep;
   constructor(bin = "opencode", options = {}) {
     this.#bin = bin;
     this.#killGraceMs = options.killGraceMs ?? DEFAULT_STOP_BOUNDS.stopGraceMs;
@@ -25495,6 +25516,9 @@ var OpenCodeCliRunner = class {
     const signal = options.signal;
     if (signal?.aborted) return stoppedBeforeLaunch();
     try {
+      this.#profileSweep ??= sweepAbandonedOpenCodeProfiles();
+      await this.#profileSweep;
+      if (signal?.aborted) return stoppedBeforeLaunch();
       const launch = await prepareOpenCodeLaunch({
         env: this.#env,
         strip: options.strip ?? [],
@@ -30220,7 +30244,7 @@ function describeWorkerFailure(error) {
 import vm from "node:vm";
 import { createHash as createHash5 } from "node:crypto";
 import { constants as constants4 } from "node:fs";
-import { access as access4, readFile as readFile11, stat as stat7 } from "node:fs/promises";
+import { access as access4, readFile as readFile12, stat as stat7 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path20 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
@@ -35920,7 +35944,7 @@ var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 
 // src/workflow-registry.ts
 import { constants as constants3 } from "node:fs";
-import { access as access3, readdir as readdir8, readFile as readFile10 } from "node:fs/promises";
+import { access as access3, readdir as readdir9, readFile as readFile11 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
 import path19 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
@@ -36001,7 +36025,7 @@ async function resolveWorkflowName(name, options) {
 async function listRegistryDir(dir, scope, readMeta) {
   let directoryEntries;
   try {
-    directoryEntries = await readdir8(dir, { withFileTypes: true });
+    directoryEntries = await readdir9(dir, { withFileTypes: true });
   } catch (error) {
     if (isMissingDirectory(error)) {
       return { entries: [], notes: [] };
@@ -36019,7 +36043,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     }
     const scriptPath = path19.join(dir, entry.name);
     try {
-      const source = await readFile10(scriptPath, "utf8");
+      const source = await readFile11(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -36602,7 +36626,7 @@ function acornSyntaxErrorPosition(wrappedSource) {
 }
 async function readWorkflowScript(scriptPath) {
   try {
-    return await readFile11(scriptPath, "utf8");
+    return await readFile12(scriptPath, "utf8");
   } catch (error) {
     throw workflowScriptReadError(scriptPath, error);
   }
@@ -38579,7 +38603,7 @@ async function parseJsonValue(value, cwd, flagName) {
     const filePath = path21.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
-      source = await readFile12(filePath, "utf8");
+      source = await readFile13(filePath, "utf8");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new CliUsageError(`${flagName} could not read ${filePath}: ${message}`);
@@ -38786,7 +38810,7 @@ async function answerHoldCommand(args, env, stdout, stderr, program) {
     stderr.write(answerUsage);
     return 2;
   }
-  const answeredBy = resolveCallerIdentity(void 0, env) ?? `${hostname4()}:${process.pid}`;
+  const answeredBy = resolveCallerIdentity(void 0, env) ?? `${hostname5()}:${process.pid}`;
   let result;
   try {
     result = await answerHold({

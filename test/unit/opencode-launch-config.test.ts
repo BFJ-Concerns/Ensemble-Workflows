@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import { access, readFile, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { CapabilityStripUnsupportedError, LeanStartUnsupportedError } from "../../src/errors.js";
+import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
+import { readProcessStartTicks } from "../../src/process-owner-evidence.js";
 import { prepareOpenCodeLaunch } from "../../src/opencode-launch-config.js";
 
 const providerModel = "gateway/proof";
@@ -85,4 +91,55 @@ test("opencode lean retains reach configuration and removes its private file on 
   }), LeanStartUnsupportedError);
   assert.ok(profileFile);
   await assert.rejects(access(profileFile), { code: "ENOENT" });
+});
+
+test("a later opencode dispatch reclaims a killed launcher's lean profile and keeps live profiles", async (t) => {
+  if (await readProcessStartTicks("/proc", process.pid) === null) {
+    t.skip("requires process ownership evidence from /proc");
+    return;
+  }
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-reclaim-"));
+  const savedTemp = process.env.TMPDIR;
+  process.env.TMPDIR = root;
+  try {
+    const savedProfilePath = path.join(root, "profile-path");
+    const moduleUrl = new URL("../../src/opencode-launch-config.js", import.meta.url).href;
+    await assert.rejects(promisify(execFile)(process.execPath, ["--input-type=module", "--eval", `
+      import { writeFile } from "node:fs/promises";
+      const { prepareOpenCodeLaunch } = await import(process.argv[1]);
+      const launch = await prepareOpenCodeLaunch({
+        env: {}, lean: true, strip: [], providerModel: "gateway/proof",
+        run: async (args) => ({
+          exitCode: 0,
+          stdout: args[0] === "models" ? "gateway/proof" : '{"provider":{"gateway":{"options":{"apiKey":"fixture-key"}}}}'
+        })
+      });
+      await writeFile(process.argv[2], launch.env.OPENCODE_CONFIG);
+      process.kill(process.pid, "SIGKILL");
+    `, moduleUrl, savedProfilePath], { timeout: 10_000 }), { signal: "SIGKILL" });
+
+    const abandonedConfig = await readFile(savedProfilePath, "utf8");
+    assert.match(await readFile(abandonedConfig, "utf8"), /fixture-key/);
+    const live = await prepareOpenCodeLaunch({
+      env: {}, lean: true, strip: [], providerModel,
+      run: async (args) => args[0] === "models" ? { exitCode: 0, stdout: providerModel } : output({})
+    });
+    // This may be another launcher between directory creation and its owner write.
+    const unknownOwner = await mkdtemp(path.join(root, "ensemble-opencode-lean-"));
+    const bin = path.join(root, "opencode");
+    await writeFile(bin, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    try {
+      const result = await new OpenCodeCliRunner(bin).run({ cwd: root, providerModel, prompt: "fixture" });
+      assert.equal(result.exitCode, 0);
+      await assert.rejects(access(path.dirname(abandonedConfig)), { code: "ENOENT" });
+      await access(live.env.OPENCODE_CONFIG!);
+      await access(unknownOwner);
+    } finally {
+      await live.close?.();
+    }
+  } finally {
+    if (savedTemp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = savedTemp;
+    await rm(root, { recursive: true, force: true });
+  }
 });

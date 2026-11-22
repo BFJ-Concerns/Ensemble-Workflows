@@ -421,9 +421,22 @@ test("an opencode subprocess stopped by its turn deadline records a timeout", as
   }
 });
 
+/** Wait for the runner to observe process events before driving a fake child. */
+function waitForRunListeners(child: ChildProcess): Promise<void> {
+  return new Promise((resolve) => {
+    const observe = (event: string | symbol): void => {
+      if (event !== "close") return;
+      child.off("newListener", observe);
+      resolve();
+    };
+    child.on("newListener", observe);
+  });
+}
+
 for (const signal of ["SIGTERM", "SIGKILL"] as const) {
   test(`an opencode turn deadline retains ${signal} after contained stop settles`, async (t) => {
     const child = new ChildProcess();
+    const started = waitForRunListeners(child);
     Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
     const commands = new CommandContainment(new NoWorkerScopes());
     let releaseStop!: () => void;
@@ -452,7 +465,7 @@ for (const signal of ["SIGTERM", "SIGKILL"] as const) {
       const pending = runtime.agent("outlast the deadline", {
         engine: "opencode", model: "glm-5.2", timeoutMs: 50, maxAttempts: 1
       }).then((result) => { settled = true; return result; });
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await started;
       t.mock.timers.tick(49);
       assert.equal(stop.mock.callCount(), 0);
       t.mock.timers.tick(1);
@@ -559,6 +572,7 @@ test("an opencode deadline keeps the engine diagnostic in the failure record", a
 
 test("opencode resets the whitespace bound on activity and retries a one-shot stop", async (t) => {
   const child = new ChildProcess();
+  const started = waitForRunListeners(child);
   const stdout = new PassThrough();
   Object.assign(child, { stdout, stderr: new PassThrough() });
   const commands = new CommandContainment(new NoWorkerScopes());
@@ -602,7 +616,7 @@ test("opencode resets the whitespace bound on activity and retries a one-shot st
     const pending = runtime.agent("answer", {
       engine: "opencode", model: "glm-5.2", timeoutMs: 600_000, maxAttempts: 2
     });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await started;
     for (const [type, part] of [
       ["text", { type: "text", text: "partial answer" }],
       ["tool_use", { type: "tool", tool: "bash" }],
@@ -637,6 +651,7 @@ test("opencode resets the whitespace bound on activity and retries a one-shot st
 
 test("an opencode process that exited before its streams close is not timed out", async (t) => {
   const child = new ChildProcess();
+  const started = waitForRunListeners(child);
   Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough() });
   const commands = new CommandContainment(new NoWorkerScopes());
   const stop = t.mock.fn(async () => ({ outcome: { kind: "stopped" as const }, attemptAccount: null }));
@@ -646,7 +661,7 @@ test("an opencode process that exited before its streams close is not timed out"
     const pending = new OpenCodeCliRunner(undefined, { commands }).run({
       prompt: "finish", cwd: process.cwd(), providerModel: "fixture/model", timeoutMs: 100
     });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await started;
     child.emit("exit", 0, null);
     // Deterministically separate exit from close: the process has finished,
     // but a pipe is still open when the former deadline would have fired.

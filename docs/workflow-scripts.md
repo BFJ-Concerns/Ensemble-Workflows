@@ -657,6 +657,9 @@ call cannot lift a run-wide `--lean` by setting `lean: false`.
   that the registered model is still listed and that the isolated
   configuration loads no instructions, skills or MCP servers. A provider
   supplied only by an external plugin may be unavailable to a lean worker.
+  Ensemble removes the private profile when the worker ends. A later opencode
+  dispatch also removes profiles in the same temporary directory whose
+  recorded launcher can be proved gone.
 - **Codex** refuses lean requests before the first dispatch, whether it is
   the initial target or a fallback entry.
 

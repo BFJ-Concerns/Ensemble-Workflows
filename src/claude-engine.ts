@@ -191,6 +191,14 @@ interface Submission {
   what: string;
   /** Whether the message carries the turn's prompt, so that its receipt moves `TurnDelivery`. */
   carriesTurn: boolean;
+  /**
+   * The text the valve submits instead when it closes a native input
+   * request first (`SteerOptions`). Unset, the message goes behind an
+   * account of the close (`closedPromptPreface`).
+   */
+  onInputClosed?: (closedInput: string) => string;
+  /** The request a refused delivery of this submission had already closed, as the roster named it. */
+  closedInput?: string;
 }
 
 /**
@@ -674,14 +682,27 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #deliver(handle: ClaudeSessionHandle, submission: Submission, observers: AttemptObservers): Promise<void> {
     if (this.#lost !== null) throw new ClaudeWorkerLostError(this.#lost.reason);
     if (submission.carriesTurn) this.#collectionMark = submission.mark;
-    const outcome = await this.#controlPlane.steer(handle, submission.message);
+    // A message the valve reaches by closing a native prompt says so, since
+    // Claude Code answers a tool call held there as though a person had
+    // refused it. A leading command cannot take the account in front of it
+    // and stay a command, so it goes as written.
+    const onInputClosed = submission.onInputClosed ??
+      (openingCommand(submission.message) === null ? (closed: string) => closedPromptPreface(closed, submission.message) : undefined);
+    const textFor = (closed: string | undefined) =>
+      closed !== undefined && onInputClosed !== undefined ? onInputClosed(closed) : submission.message;
+    const outcome = await this.#controlPlane.steer(handle, textFor(submission.closedInput), onInputClosed !== undefined ? { onInputClosed } : {});
+    // What the valve typed is what the receipt must show. A refusal that had
+    // already closed a request keeps its account for the resend, since the
+    // request it describes is not there to close a second time.
+    const closedInput = outcome.closedInput ?? submission.closedInput;
     if (!outcome.submitted) {
-      this.#refused = submission;
+      this.#refused = closedInput !== undefined ? { ...submission, closedInput } : submission;
       throw new ClaudeValveError(`reply valve failed to inject ${submission.what}: ${outcome.reason}`);
     }
     this.#refused = null;
-    this.#accept(submission);
-    await this.#requireReceipt(handle, submission, observers);
+    const sent = { ...submission, message: textFor(closedInput) };
+    this.#accept(sent, submission.message);
+    await this.#requireReceipt(handle, sent, observers);
   }
 
   /**
@@ -690,11 +711,13 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * may be running a turn on it, and nothing else is sent until its receipt
    * has been judged.
    */
-  #accept(submission: Submission): void {
+  #accept(submission: Submission, turnCopy = submission.message): void {
     this.#pending = { ...submission, answersTurn: true };
     if (submission.carriesTurn) {
+      // The copy a redelivery repeats is the turn's own text, without any
+      // account of a prompt the valve closed on the way.
       if (this.#turn === "unsent") {
-        this.#acceptedTurnCopy = submission.message;
+        this.#acceptedTurnCopy = turnCopy;
       }
       this.#turn = "accepted";
       this.#deliveryFailure = null;
@@ -1108,8 +1131,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         }
         this.#nudges += 1;
         const mark = latest.entries.length;
-        const message = this.#blockedNudge(status.waitingFor);
-        await this.#deliver(handle, { message, mark, what: "the blocked-worker nudge", carriesTurn: false }, observers);
+        await this.#deliver(handle, {
+          message: BLOCKED_NUDGE, onInputClosed: closedPromptNudge, mark, what: "the blocked-worker nudge", carriesTurn: false
+        }, observers);
         continue;
       }
 
@@ -1479,18 +1503,41 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     ].join("\n");
   }
 
-  #blockedNudge(waitingFor: string | undefined): string {
-    const context = waitingFor !== undefined ? ` (waiting for: ${waitingFor})` : "";
-    return (
-      `You appear to be waiting for input${context}. ` +
-      "Proceed autonomously without asking — make a reasonable decision, complete the task, and output your final answer."
-    );
-  }
-
   #nextName(): string {
     dispatchCounter += 1;
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID().slice(0, 8)}`;
   }
+}
+
+/**
+ * The nudge to a blocked worker the valve reached without closing anything:
+ * the worker is told only to carry on without asking.
+ */
+const BLOCKED_NUDGE =
+  "You appear to be waiting for input. " +
+  "Proceed autonomously without asking — make a reasonable decision, complete the task, and output your final answer.";
+
+/**
+ * What a worker is told of a native prompt the valve closed on its way in.
+ * Claude Code answers a tool call held at a closed prompt as though a person
+ * had refused it, so the account says who closed it and why, and that
+ * nobody refused, and the worker does not report a refusal nobody made.
+ */
+function closedPromptAccount(closedInput: string): string {
+  return `Ensemble closed a prompt you were waiting on (Claude Code reported it as waiting for: ${closedInput}), ` +
+    "because nobody is present to answer prompts in this session. " +
+    "Nobody refused the action: a tool result saying the user doesn't want to proceed came from that close, not from a person.";
+}
+
+/** The nudge to a worker whose native prompt the valve closed on its way in. */
+function closedPromptNudge(closedInput: string): string {
+  return `${closedPromptAccount(closedInput)} ` +
+    "Carry on without asking: reach what you need another way where you can, make a reasonable decision where you must, and output your final answer.";
+}
+
+/** Any other message the valve delivers by closing a native prompt: the account first, then the message as written. */
+function closedPromptPreface(closedInput: string, message: string): string {
+  return `${closedPromptAccount(closedInput)}\n\n${message}`;
 }
 
 /**

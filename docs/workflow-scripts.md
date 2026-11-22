@@ -542,7 +542,7 @@ lists the accepted type names, and invalid `properties` asks for a JSON object.
 | `model` | Optional; without one the engine's default is used and noted on stderr | Optional; without one a warning is printed on stderr | **Required**: a key or route declared in [`opencode_models`](configuration.md#opencode_models) | Optional: a base name agy lists (`gemini-4-hydrogen`, not `gemini-4-hydrogen-low`); without one, agy's own default | **Required**: a provider and one of its models as `zcode models` lists them, spelt `provider/model` (see [zcode](#zcode)) |
 | `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` | Resolved per model against the levels agy lists for it, then set as the session's thought level | Resolved per model against the reasoning levels zcode lists for it |
 | `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
-| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess | Cancels the turn. A held session remains usable if agy answers within ten seconds. Otherwise Ensemble stops the worker | Kills the subprocess |
+| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess | Cancels the turn, including any background follow-up. If agy gives no prompt reply within ten seconds, Ensemble stops the worker | Kills the subprocess |
 | `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Enforced through permission deny rules | Not supported: throws before the worker spawns | Enforced by withholding zcode's tools for the run |
 | `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Isolated configuration with provider settings and permissions | Not supported: throws before the worker spawns | Not supported: throws before the worker spawns |
 | `fallback` entry | Yes | Yes | Yes, for one-shot calls | Yes | Yes |
@@ -824,7 +824,7 @@ cannot pass silently:
 - Errors raised before a worker exists: an invalid option, a placement that
   could not be opened, an engine refusing the dispatch itself
   (`ClaudeDispatchError`, `CodexSubstrateRefusedError`,
-  `ZCodeSubstrateRefusedError`), a strip that cannot
+   `AgySubstrateRefusedError`, `ZCodeSubstrateRefusedError`), a strip that cannot
   be enforced, or a budget refusal (`BudgetExceededError`). A budget refusal
   propagates through `parallel()` and `pipeline()` too, including a refused
   session turn; if uncaught, the run fails and the manifest and completion
@@ -834,9 +834,10 @@ cannot pass silently:
   Codex's `CODEX_HOME` (else `$HOME/.codex`); Claude's `CLAUDE_CONFIG_DIR`
   (else `$HOME/.claude`), global configuration and daemon sockets;
   opencode's data, configuration, state and cache homes under the matching
-  `XDG_*_HOME` variables, plus its temporary directory; and zcode's `.zcode`
-  under `ZCODE_DATA_BASE_DIR` (else `$HOME/.zcode`), plus its temporary
-  directory. Claude's dispatch
+   `XDG_*_HOME` variables, plus its temporary directory; agy's
+   `$HOME/.gemini/antigravity-cli`; and zcode's `.zcode` under
+   `ZCODE_DATA_BASE_DIR` (else `$HOME/.zcode`), plus its temporary
+   directory. Claude's dispatch
   settings scratch files use the launcher's `TMPDIR` (then `TMP`, `TEMP`,
   `/tmp`), and reply valve sockets use its `TMUX_TMPDIR` (else `/tmp`),
   independently of worker overrides. Claude's own scratch files use
@@ -1008,14 +1009,17 @@ An opencode model absent from the machine registry, a missing model, or an
 unsupported registry variant is refused before worker admission: the call
 throws, leaves no agent record, and adds nothing to the worker tally.
 
-Missing or rejected credentials advance the chain if an entry remains. With
-no entry left, the usual attempt bound applies. Codex, Claude, opencode and
-zcode record `authentication-failure`, the engine's diagnostic and a sign-in
-step (`codex login`, `claude auth login` or `opencode auth login`; on zcode,
-configuring the provider's credentials in ZCode). agy
-records a missing sign-in at session startup as `AgySubstrateRefusedError`
-and a prompt refused for lack of sign-in as `agy-sign-in-required`. Both
-carry agy's diagnostic and direct the operator to sign in through `agy`.
+Missing or rejected credentials advance the chain if an entry remains. If
+agy refuses to open a session because it is signed out and the chain is
+exhausted, the call throws `AgySubstrateRefusedError`. An uncaught refusal
+fails the run. If agy refuses a prompt for lack of sign-in, it records
+`agy-sign-in-required` and the usual attempt bound applies when the chain
+is exhausted. Both errors carry agy's diagnostic and direct the operator
+to sign in through `agy`. Codex, Claude, opencode and zcode record
+`authentication-failure`, the engine's diagnostic and a sign-in step
+(`codex login`, `claude auth login`, `opencode auth login`, or configuring
+the provider's credentials in ZCode). Their credential failures follow the
+usual attempt bound when the chain is exhausted.
 A malformed agy prompt reply is an output failure and stays on the current
 chain entry. An explicit provider HTTP 401 identifies an authentication
 failure even when Codex's retry-promise bound ends the turn. A dead or unstartable substrate retains its
@@ -1103,6 +1107,18 @@ the daemon to clear its input request.
 This exposes the normal prompt so Claude Code's external editor can load the
 nudge. An ordinary empty prompt needs no cancellation. If the input request
 does not clear, the valve refuses the message without submitting it.
+Claude Code answers a tool call held at a cancelled dialog as though the user
+had refused it. So when the valve itself cancelled a dialog on its way to
+the prompt, the nudge it types says that Ensemble closed the prompt because
+nobody is present to answer it, names what the daemon reported it waiting
+for, and says that nobody refused the action, before telling the worker to
+carry on without asking. When the valve cancelled nothing, the worker is
+told only to proceed without asking. Any other message the valve delivers by
+cancelling a dialog, such as a follow-up turn, a correction or a
+redelivery, goes behind the same account of the close, except a message
+that opens with a command, which goes as written so that it stays a
+command. A delivery refused after its dialog was cancelled is resent with
+the account.
 
 In a `session()`, a turn the worker took on altered text runs to its end
 before the attempt fails, with its text kept on the attempt record, so the
@@ -1143,11 +1159,11 @@ have passed since the turn began or last produced non-whitespace text, tool
 activity or reasoning. This fixed bound applies to Codex app-server events,
 Claude transcript entries, opencode run events, agy session updates and
 zcode's streamed run events. On agy a tool call, a tool call's update, a
-thought or a plan is activity; on zcode streamed reasoning, a tool event or
-a tool update is. agy ends
-a stuck stream by cancelling the turn. If agy answers within ten seconds,
-a held session remains usable. Otherwise Ensemble stops the worker and
-records a held session as lost. A whitespace failure spends one attempt
+thought or a plan is activity. On zcode streamed reasoning, a tool event or
+a tool update is activity. agy ends a stuck stream by cancelling the turn. If agy replies to the pending
+prompt within ten seconds, a held session remains usable. Otherwise
+Ensemble stops the worker and marks a held session lost for later turns.
+The interrupted turn records the whitespace failure, spends one attempt
 and retains its partial text. A turn that has emitted nothing does not
 start a whitespace stream.
 
@@ -1276,15 +1292,24 @@ signed in to, and the `agy` binary is found on the worker environment's
   which advances a remaining chain entry without spending an attempt.
 - **Effort:** to clamp a level, Ensemble reads every model's levels once
   per run from an agy session it never prompts.
-- **The answer** is the message text after the turn's last tool call; the
-  whole turn's text is kept as the attempt's delta text.
+- **The answer** is the message text after the turn's last tool call. If
+  agy returns `end_turn` while its shell commands are running, Ensemble keeps
+  the worker open until agy reports that those commands have ended and the
+  automatic follow-up has settled. The follow-up is the answer. The
+  attempt's delta text includes the interim messages. If agy sends no
+  session updates for 15 minutes during this wait, Ensemble cancels the
+  attempt and records `agy.background-silence`. The call's own deadline
+  still applies.
 - **Retries:** a one-shot call's worker is stopped when each attempt
   ends, so what that stop could not establish rides the attempt's
   `unestablishedStops`; a retry opens a fresh worker whose opening prompt
   says what failed. A held session's retry corrects in the same session
   while its process lives, naming only the failure.
-- **The deadline** cancels the turn (`agy.deadline`, unclassified); a turn
-  still running ten seconds after the cancel has its worker stopped.
+- **The deadline** covers the prompt and any automatic follow-up. Ensemble
+  cancels the turn and stops the worker if cancellation receives no prompt
+  reply within ten seconds. The interrupted turn records `agy.deadline`
+  (unclassified). If Ensemble stops a held worker, later turns see the
+  lost session.
 - **Failures agy returns:** a prompt refused for want of a sign-in
   (`agy-sign-in-required`, `agy.sign-in-required`) and a worker process
   that ended mid-turn (`agy-worker-lost`, `agy.worker-lost`) are

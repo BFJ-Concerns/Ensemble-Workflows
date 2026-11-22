@@ -332,6 +332,7 @@ const AGY_FAILURE_KINDS = new Map<string, FailureClassification>([
   ["agy-invalid-prompt-reply", { class: "output", rule: "agy.invalid-prompt-reply" }],
   // agy ended the turn as a refusal, at a token or request limit, or cancelled it itself.
   ["agy-stop-reason", { class: "unclassified", rule: "agy.stop-reason" }],
+  ["agy-background-silence", { class: "unclassified", rule: "agy.background-silence" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "agy.deadline" }]
 ]);
 

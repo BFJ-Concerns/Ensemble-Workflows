@@ -96,6 +96,10 @@ test("a dead or unstartable Codex substrate is availability, a deadline is recog
     classifyAttemptFailure(evidence({ engine: "opencode", failure: { kind: "TurnTimeoutError", message: "deadline" } })),
     { class: "unclassified", rule: "opencode.deadline" }
   );
+  assert.deepEqual(
+    classifyAttemptFailure(evidence({ engine: "agy", failure: { kind: "agy-background-silence", message: "background wait" } })),
+    { class: "unclassified", rule: "agy.background-silence" }
+  );
 });
 
 test("Codex schema rejection before generation is recognised without attributing a worker answer", () => {

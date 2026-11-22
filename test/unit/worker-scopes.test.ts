@@ -12,6 +12,7 @@ import { StopUnconfirmedError } from "../../src/errors.js";
 import {
   NoWorkerScopes,
   SystemdWorkerScopes,
+  cgroupEmpty,
   containingSlice,
   createWorkerScopes,
   isLive,
@@ -159,17 +160,27 @@ test("stop ends one group's scope, confirms it empty and releases the group, lea
     const first = await scopes.place("worker-1", [stopped.pid!]);
     const second = await scopes.place("worker-2", [kept.pid!]);
     assert.ok(first.kind === "placed" && second.kind === "placed", JSON.stringify([first, second]));
+    const stoppedScope = await cgroupDirectory(stopped.pid!);
+    const keptScope = await cgroupDirectory(kept.pid!);
 
+    // What stop and close promise is read from the scope's cgroup the moment
+    // they return. Whether the process still answers a signal is not: the
+    // kernel empties the cgroup before the process becomes a zombie, and the
+    // zombie answers until this test's event loop reaps it, which a loaded
+    // machine can delay past the return.
     assert.deepEqual(await scopes.stop("worker-1"), { kind: "stopped" });
-    assert.equal(isLive(stopped.pid!), false, "stopped is an observation: the scope's process is gone when stop returns");
+    assert.equal(await cgroupEmpty(stoppedScope), true, "stopped is an observation: the scope is empty when stop returns");
+    await waitFor(() => !isLive(stopped.pid!), "the stopped scope's process to be reaped");
     assert.equal(isLive(kept.pid!), true);
     assert.equal(await cgroupUnit(kept.pid!), second.unit);
+    assert.equal(await cgroupEmpty(keptScope), false);
     // A group with no scope has nothing of the manager's to stop, whether it was released or never placed.
     assert.deepEqual(await scopes.stop("worker-1"), { kind: "stopped" });
     assert.deepEqual(await scopes.stop("never-placed"), { kind: "stopped" });
 
     await scopes.close();
-    assert.equal(isLive(kept.pid!), false, "close returns only once every scope is empty");
+    assert.equal(await cgroupEmpty(keptScope), true, "close returns only once every scope is empty");
+    await waitFor(() => !isLive(kept.pid!), "the closed scope's process to be reaped");
   } finally {
     for (const child of [stopped, kept]) {
       child.kill("SIGKILL");
@@ -593,6 +604,13 @@ async function ownSlice(): Promise<string | null> {
 
 function sleeper(): ChildProcess {
   return spawn("sleep", ["infinity"], { stdio: "ignore" });
+}
+
+/** The directory of the cgroup a process sits in, under the cgroup mount. */
+async function cgroupDirectory(pid: number): Promise<string> {
+  const line = (await readFile(`/proc/${pid}/cgroup`, "utf8")).split("\n").find((entry) => entry.startsWith("0::"));
+  assert.ok(line !== undefined, `process ${pid} has no cgroup v2 line`);
+  return path.join("/sys/fs/cgroup", line.slice("0::".length));
 }
 
 async function cgroupUnit(pid: number): Promise<string> {

@@ -135,6 +135,7 @@ export interface EngineAttemptFailure {
     | "opencode-run-error"
     | "opencode-worker-lost"
     | "agy-stop-reason"
+    | "agy-background-silence"
     | "agy-sign-in-required"
     | "agy-prompt-error"
     | "agy-invalid-prompt-reply"

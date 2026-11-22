@@ -22,7 +22,7 @@ const liveSkip = process.env.ENSEMBLE_LIVE !== "1"
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 for (const scenario of [
-  { engine: "claude", model: null, error: /claude-poll-timeout: worker left the roster/ },
+  { engine: "claude", model: null, error: /claude-worker-lost: worker left the roster/ },
   // An opencode run failure consumes its (single) attempt, so exhaustion
   // surfaces the engine diagnostic on the failure notice.
   { engine: "opencode", model: liveOpenCodeModel, error: /opencode run failed/ }
@@ -72,7 +72,7 @@ for (const scenario of [
           `
             export const meta = {
               name: ${JSON.stringify(`${scenario.engine}-failure-evidence`)},
-              description: "Archive live worker text when the turn times out"
+              description: "Archive partial text when a live worker is stopped"
             };
 
             return await agent(
@@ -98,6 +98,10 @@ for (const scenario of [
         assert.equal(result.code, 0, result.stderr);
         assert.match(result.stderr, scenario.error);
         const agent = await recordedAgent(recordStore, `failure-evidence-${scenario.engine}`);
+        if (scenario.engine === "claude") {
+          assert.equal(agent.status, "failed");
+          assert.equal(agent.attempts[0]?.failure?.kind, "claude-worker-lost");
+        }
         assert.ok(
           (agent.attempts[0]?.raw_output ?? "").includes(observedWorkerText),
           "The archived attempt omitted text observed from the live worker"
@@ -210,6 +214,7 @@ test("a launcher exit cancels and settles its unfinished partial-output observer
 
 interface RecordedAgent {
   label: string | null;
+  status: string;
   attempts: Array<{
     raw_output: string | null;
     failure: { kind: string; message: string } | null;

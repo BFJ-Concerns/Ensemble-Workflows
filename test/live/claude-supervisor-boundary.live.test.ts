@@ -269,7 +269,16 @@ async function ownedSupervisorEnvironment(root: string): Promise<NodeJS.ProcessE
   await mkdir(configDir, { mode: 0o700 });
   // Onboarding and bypass consent belong only to this proof's private daemon.
   await writeFile(path.join(configDir, ".claude.json"), `${JSON.stringify({ hasCompletedOnboarding: true })}\n`, { mode: 0o600 });
-  await writeFile(path.join(configDir, "settings.json"), `${JSON.stringify({ skipDangerousModePermissionPrompt: true })}\n`, { mode: 0o600 });
+  // Native respawn reconstructs the gateway route from the private Claude
+  // settings. The launch environment alone only reaches the initial worker.
+  const gatewayEnvironment = claude.env.ANTHROPIC_BASE_URL ? {
+    ANTHROPIC_BASE_URL: claude.env.ANTHROPIC_BASE_URL,
+    ANTHROPIC_AUTH_TOKEN: claude.env.ANTHROPIC_AUTH_TOKEN,
+    ANTHROPIC_API_KEY: claude.env.ANTHROPIC_API_KEY,
+    CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: claude.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
+  } : undefined;
+  const settings = { skipDangerousModePermissionPrompt: true, env: gatewayEnvironment };
+  await writeFile(path.join(configDir, "settings.json"), `${JSON.stringify(settings)}\n`, { mode: 0o600 });
   const machineEnvironment = resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment;
   const xdg = path.join(root, "config");
   await mkdir(path.join(root, "status"));

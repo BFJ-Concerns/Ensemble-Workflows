@@ -41,6 +41,11 @@ worker spawns. It may be followed by an optional `defaults` export (see
 `/* … */` comments may separate the two exports; a `defaults` export declared
 later in the body is rejected with a placement error.
 
+The `meta` object may include `task: { id, family? }`, with a string `id`
+and an optional string `family`. Ensemble copies the task identity verbatim
+into the run record for grouping benchmark runs. Reuse the same identity
+across runs of the same task. Runs without it are still recorded.
+
 The rest of the file is the workflow body. It runs as the body of a single
 async function, so `return` produces the run's result and top-level `await`
 works. The body is ordinary, unsandboxed Node: every Node global (`process`,

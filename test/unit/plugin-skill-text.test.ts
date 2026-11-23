@@ -120,13 +120,16 @@ test("the flags the skill names and the flags the launcher's help names are the 
   // Flags of other tools that the text names when it explains an engine.
   const otherTools = new Set(["--dangerously-skip-permissions"]);
   const offered = flagsIn(launcherHelp());
-  // The help text describes the version report without spelling its flag.
-  const version = spawnSync(process.execPath, [launcherPath, "--version"], { encoding: "utf8", timeout: 30_000 });
-  assert.equal(version.stdout.trim(), (JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version);
-  offered.add("--version");
   const named = flagsIn(wholeText);
   assert.deepEqual([...named].filter((flag) => !offered.has(flag) && !otherTools.has(flag)), [], "named by the skill, unknown to the launcher");
   assert.deepEqual([...offered].filter((flag) => !named.has(flag)), [], "offered by the launcher, absent from the skill");
+});
+
+test("the launcher reports the package version", () => {
+  const result = spawnSync(process.execPath, [launcherPath, "--version"], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr);
+  const { version } = JSON.parse(readFileSync("package.json", "utf8")) as { version: string };
+  assert.equal(result.stdout.trim(), version);
 });
 
 test("every ENSEMBLE_ variable the skill names is one the launcher reads", () => {

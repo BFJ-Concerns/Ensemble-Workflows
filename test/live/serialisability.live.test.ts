@@ -9,7 +9,7 @@ import test from "node:test";
 import { removeTestDirectory } from "../failure-evidence.js";
 import { liveCodexModel, liveCodexScriptOptions } from "./live-models.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 const archiveReaderPath = path.resolve("test/consumers/read-run-record.mjs");
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ensemble Workflow"
+  short_description: "Run multi-agent workflows where one model family checks another"
+  default_prompt: "Use $ensemble-workflow to split this job across agents on more than one engine and have a different model family check the results before reporting them."

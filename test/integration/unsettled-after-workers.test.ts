@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { assertSalvageEnvelope, executablePath, findOnlyFile, runNode } from "./estate-process.js";
 
-const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 for (const engine of ["codex", "claude", "opencode"] as const) {
   for (const parallel of [false, true]) {

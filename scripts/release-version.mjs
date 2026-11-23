@@ -5,7 +5,10 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const launcher = path.join(root, "skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.join(root, "plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
+// The plugin's manifests name the product's version too: the tools that install
+// the plugin read it there to tell one release from the next.
+const pluginManifests = ["plugin/.claude-plugin/plugin.json", "plugin/.codex-plugin/plugin.json"];
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const validVersion = (value) => typeof value === "string" && value === value.trim() && versionPattern.test(value);
 const readJson = (name) => JSON.parse(readFileSync(path.join(root, name), "utf8"));
@@ -19,6 +22,7 @@ function check(tag) {
   for (const [name, value] of [
     ["package-lock.json", lock.version],
     ["package-lock.json root package", lock.packages?.[""]?.version],
+    ...pluginManifests.map((name) => [name, readJson(name).version]),
     ["launcher --version", reported]
   ]) {
     if (value !== pkg.version) throw new Error(`${name} reports ${value}; package.json reports ${pkg.version}`);
@@ -45,6 +49,7 @@ try {
     pkg.version = lock.version = lock.packages[""].version = version;
     writeJson("package.json", pkg);
     writeJson("package-lock.json", lock);
+    for (const name of pluginManifests) writeJson(name, { ...readJson(name), version });
     execFileSync(process.execPath, [path.join(root, "scripts/build-skill.mjs")], { cwd: root, stdio: "inherit" });
     process.stdout.write(`${check()}\n`);
   } else {

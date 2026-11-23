@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
 
-const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 async function withClosedStdout(args: string[], cwd?: string): Promise<{ code: number | null; stderr: string }> {
   const child = spawn(process.execPath, [launcher, ...args], {

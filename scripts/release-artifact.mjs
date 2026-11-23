@@ -12,7 +12,7 @@ try {
   const [command, argument, ...extra] = process.argv.slice(2);
   if (extra.length > 0) throw new Error("too many arguments");
   if (command === "digest" && argument === undefined) {
-    process.stdout.write(`${digest(readFileSync(path.join(root, "skills/ensemble-workflow/Base/scripts/ensemble.mjs")))}\n`);
+    process.stdout.write(`${digest(readFileSync(path.join(root, "plugin/skills/ensemble-workflow/scripts/ensemble.mjs")))}\n`);
   } else if (command === "read") {
     const tag = argument ?? process.env.RELEASE_TAG;
     if (typeof tag !== "string" || tag !== tag.trim() || !/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag)) {

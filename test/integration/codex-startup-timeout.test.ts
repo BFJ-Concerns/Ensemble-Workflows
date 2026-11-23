@@ -9,7 +9,7 @@ import { readArchiveIntegrity } from "../archive-integrity-reader.js";
 import { assertSalvageEnvelope, findOnlyFile, hermeticEstateEnvironment } from "./estate-process.js";
 
 const deadlinePreload = path.resolve("test/fixtures/codex/release-workflow-timeout.mjs");
-const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 for (const mode of ["silent-startup", "serial-failures"] as const) {
   test(`the built CLI seals a timed-out run with ${mode}`, async () => {

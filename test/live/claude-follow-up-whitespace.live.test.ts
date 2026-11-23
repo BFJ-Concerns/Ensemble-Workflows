@@ -8,7 +8,7 @@ import { removeTestDirectory } from "../failure-evidence.js";
 import { parseTranscriptText } from "../../src/claude-transcript.js";
 import { findOnlyFile, runNode } from "../integration/estate-process.js";
 
-const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundle = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 test("built Claude follow-up preserves leading and trailing whitespace in one exact native turn", {
   skip: process.env.ENSEMBLE_LIVE !== "1" ? "ENSEMBLE_LIVE must be 1" : false, timeout: 360_000

@@ -2559,7 +2559,7 @@ test("usage names the program as the caller invoked it and keeps every line with
   // The word comes from what Node was handed: a script file reads as the
   // command the reader must type, a bin shim or symlink as itself.
   assert.equal(programNameFor(undefined), "ensemble");
-  assert.equal(programNameFor("/opt/skills/ensemble-workflow/scripts/ensemble.mjs"), "node /opt/skills/ensemble-workflow/scripts/ensemble.mjs");
+  assert.equal(programNameFor("/opt/plugin/skills/ensemble-workflow/scripts/ensemble.mjs"), "node /opt/plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
   assert.equal(programNameFor("/repo/dist/src/cli/ensemble.js"), "node /repo/dist/src/cli/ensemble.js");
   assert.equal(programNameFor("/home/me/.local/bin/ensemble"), "/home/me/.local/bin/ensemble");
 
@@ -2653,7 +2653,7 @@ test("an unregistered opencode call archives and counts no workers", async () =>
 });
 
 test("blank prompt refusals name the absolute launcher from another directory", () => {
-  const launcher = fileURLToPath(new URL("../../../skills/ensemble-workflow/Base/scripts/ensemble.mjs", import.meta.url));
+  const launcher = fileURLToPath(new URL("../../../plugin/skills/ensemble-workflow/scripts/ensemble.mjs", import.meta.url));
   for (const prompt of [undefined, "", " \t "]) {
     for (const input of ["", " \n "]) {
       const result = spawnSync(process.execPath, [launcher, "agent", "--engine", "codex", ...(prompt === undefined ? [] : [prompt])], {
@@ -2670,7 +2670,7 @@ test("blank prompt refusals name the absolute launcher from another directory", 
 });
 
 test("unknown options name the invoked launcher path for agent and workflow runs", async () => {
-  const launcher = fileURLToPath(new URL("../../../skills/ensemble-workflow/Base/scripts/ensemble.mjs", import.meta.url));
+  const launcher = fileURLToPath(new URL("../../../plugin/skills/ensemble-workflow/scripts/ensemble.mjs", import.meta.url));
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-option-path-"));
   const invoked = path.join(directory, "operator's launcher.mjs");
   try {
@@ -2704,7 +2704,7 @@ test("unknown options name the invoked launcher path for agent and workflow runs
 });
 
 test("unknown agent option hints round-trip the complete prompt through a POSIX shell", () => {
-  const launcher = fileURLToPath(new URL("../../../skills/ensemble-workflow/Base/scripts/ensemble.mjs", import.meta.url));
+  const launcher = fileURLToPath(new URL("../../../plugin/skills/ensemble-workflow/scripts/ensemble.mjs", import.meta.url));
   for (const prompt of [
     "--don't stop", "--it's", "--say 'hello'. Keep going", "--set x=1 please", "--unknown=value=twice",
     '--cost is $HOME today', '--literal `printf expanded`', '--literal $(printf expanded)',
@@ -4973,7 +4973,7 @@ test("chain exhaustion separates pre-spawn refusals from answered attempts", asy
 
 test("built launcher refusal repairs preserve the invoked symlink path", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "cli-built-refusals-"));
-  const launcher = fileURLToPath(new URL("../../../skills/ensemble-workflow/Base/scripts/ensemble.mjs", import.meta.url));
+  const launcher = fileURLToPath(new URL("../../../plugin/skills/ensemble-workflow/scripts/ensemble.mjs", import.meta.url));
   const invoked = path.join(directory, "operator's launcher.mjs");
   try {
     await symlink(launcher, invoked);

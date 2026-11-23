@@ -406,7 +406,7 @@ test("suite runner uses its checkout when invoked from another directory", async
       import assert from "node:assert/strict";
       import { accessSync } from "node:fs";
       assert.equal(process.cwd(), ${JSON.stringify(path.dirname(path.dirname(runnerPath)))});
-      accessSync("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+      accessSync("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
       console.log("# tests 1");
     `);
     const run = startSuiteProgram(childProgram, {}, directory);

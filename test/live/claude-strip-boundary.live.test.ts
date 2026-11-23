@@ -17,7 +17,7 @@ import { findOnlyFile, runNode } from "../integration/estate-process.js";
 const exec = promisify(execFile);
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 const skip = isLive ? false : "set ENSEMBLE_LIVE=1 to exercise the real Claude background tool surface";
-const bundle = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundle = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 /** Private settings, placeholder credentials and a private daemon; no model is reached. */
 async function fixture() {

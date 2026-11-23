@@ -14,7 +14,7 @@ test("printed launcher commands run from another directory through relative and 
     const elsewhere = path.join(directory, "elsewhere");
     await Promise.all([mkdir(home, { recursive: true }), mkdir(elsewhere)]);
     const bundle = path.join(home, "ensemble.mjs");
-    await copyFile(path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs"), bundle);
+    await copyFile(path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs"), bundle);
     await chmod(bundle, 0o755);
     const shim = path.join(home, "ensemble");
     await symlink(bundle, shim);

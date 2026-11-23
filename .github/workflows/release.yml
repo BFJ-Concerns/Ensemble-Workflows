@@ -45,7 +45,7 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p "$RUNNER_TEMP/ensemble-release"
-          cp skills/ensemble-workflow/Base/scripts/ensemble.mjs "$RUNNER_TEMP/ensemble-release/ensemble.mjs"
+          cp plugin/skills/ensemble-workflow/scripts/ensemble.mjs "$RUNNER_TEMP/ensemble-release/ensemble.mjs"
           cd "$RUNNER_TEMP/ensemble-release"
           sha256sum ensemble.mjs > SHA256SUMS
 

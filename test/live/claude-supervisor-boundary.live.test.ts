@@ -19,7 +19,7 @@ import { heldProbePrompt, probePaths, waitForPath, type HeldProbe } from "./held
 const execFileAsync = promisify(execFile);
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 const claudeModel = process.env.ENSEMBLE_LIVE_CLAUDE_MODEL ?? "haiku";
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 let claude: Awaited<ReturnType<typeof selectClaudeExecutable>>;
 after(async () => { await claude?.dispose(); });

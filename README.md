@@ -84,8 +84,48 @@ alias ensemble='node /path/to/ensemble.mjs'
 ```
 
 The launcher can live anywhere. A checkout of this repository carries the
-same file at `skills/ensemble-workflow/Base/scripts/ensemble.mjs`, built from
+same file at `plugin/skills/ensemble-workflow/scripts/ensemble.mjs`, built from
 the checkout's own source; see [Building from source](#building-from-source).
+
+### Installing the skill for a coding agent
+
+Ensemble is most often driven by a coding agent. This repository is a plugin
+marketplace offering one plugin, `ensemble`, whose `ensemble-workflow` skill
+teaches an agent to write and run workflows and to dispatch a single worker.
+The plugin carries its own copy of the launcher, which the skill runs by
+path; it puts no command on `PATH`.
+
+On **Claude Code**, from a shell:
+
+```sh
+claude plugin install ensemble --marketplace BFJ-Concerns/Ensemble-Workflows
+```
+
+The skill is then `/ensemble:ensemble-workflow`.
+
+On **Codex**:
+
+```sh
+codex plugin marketplace add BFJ-Concerns/Ensemble-Workflows
+codex plugin add ensemble@ensemble-workflows
+```
+
+A new session lists the skill as `ensemble:ensemble-workflow`.
+
+**opencode** loads skills from directories and has no plugin format that
+carries one, so link the skill out of a checkout:
+
+```sh
+git clone https://github.com/BFJ-Concerns/Ensemble-Workflows.git
+mkdir -p ~/.config/opencode/skills
+ln -s "$PWD/Ensemble-Workflows/plugin/skills/ensemble-workflow" ~/.config/opencode/skills/
+```
+
+A new session lists the skill as `ensemble-workflow`.
+
+Every route gives the agent the skill and the launcher from one revision of
+this repository, so the skill describes the launcher it runs. The
+[requirements](#requirements) above apply to the machine the agent runs on.
 
 ## A first workflow
 
@@ -252,7 +292,7 @@ npm run build
 ```
 
 The build compiles the TypeScript in `src/` to `dist/` and rebuilds the
-launcher at `skills/ensemble-workflow/Base/scripts/ensemble.mjs`.
+launcher at `plugin/skills/ensemble-workflow/scripts/ensemble.mjs`.
 
 If `tsc` is missing, let any other install in that checkout finish first:
 [`npm ci`](https://docs.npmjs.com/cli/v11/commands/npm-ci/) removes

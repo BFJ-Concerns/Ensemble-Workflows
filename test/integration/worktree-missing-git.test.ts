@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { runNode } from "./estate-process.js";
 
 const execFileAsync = promisify(execFile);
-const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 for (const route of ["single agent", "workflow"] as const) {
   test(`${route} worktree isolation names missing git instead of blaming the repository`, async () => {

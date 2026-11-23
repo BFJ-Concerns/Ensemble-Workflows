@@ -80,13 +80,17 @@ function interfaceField(name: string): string {
   return match[1]!;
 }
 
-test("the skill's frontmatter loads on Claude Code, Codex and opencode", () => {
+test("the skill has the frontmatter required by Claude Code, Codex and opencode", () => {
   const fields = frontmatter();
   // Codex requires both keys, and lists the skill by `name`; opencode does
   // not advertise a skill that has no description.
   assert.equal(fields.get("name"), path.basename(skillDirectory));
   const description = fields.get("description") ?? "";
   assert.ok(description.length > 0, "description is empty");
+  // The description is a single-line plain YAML scalar.
+  const indicators = "-?:,[]{}#&*!|>'\"%@`";
+  assert.ok(!indicators.includes(description[0]!), "description starts with a YAML indicator");
+  assert.doesNotMatch(description, /:(?:[ \t]|$)|[ \t]#/, "description contains a YAML mapping or comment marker");
   // Claude Code cuts a listed description off at 1,536 characters.
   assert.ok(description.length <= 1536, `description is ${description.length} characters`);
 });

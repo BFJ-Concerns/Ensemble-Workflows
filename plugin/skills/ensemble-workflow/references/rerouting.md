@@ -70,12 +70,18 @@ the same precedence, for each fallback entry the call reaches. A rule's
 destination is final: no other rule moves it on. How far a rule reaches
 along the chain depends on the kind of key:
 
-- `label:` and `phase:` keys read the call, not where it is going. A rule
-  that matches the call matches every entry of its chain, whatever engine
-  and model the entry names, and sends each to the rule's destination. A
-  fallback step then dispatches the call there again.
-- An `engine` key matches each entry on that engine. The chain cannot carry
-  the call back onto that engine, and can still carry it to any other.
+- `label:` and `phase:` keys read the call, not where it is going. The
+  rule that wins the call wins every entry of its chain, whatever engine
+  and model the entry names, and sends each to its destination. A fallback
+  step then dispatches the call there again. A `phase:` rule moves nothing
+  for a call that a `label:` rule also matches.
+- An `engine` key matches each entry on that engine. As the only rule, it
+  keeps the chain from carrying the call back onto that engine, and the
+  chain can still carry it to any other. Beside other rules it promises
+  less, because any rule whose destination is that engine sends there
+  whatever it wins: an entry on another engine (`opencode=claude` beside
+  `claude=codex`), or an entry on that engine which a higher-ranked rule
+  takes first.
 - An `engine:model` key matches an entry only where it names that engine
   and that model. An entry on the same engine with another model runs as
   written. So does a dispatch that leaves its model to the engine's

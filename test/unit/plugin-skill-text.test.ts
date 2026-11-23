@@ -4,8 +4,9 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+import { isRunScopedEnvironmentVariable } from "../../src/ambient-settings.js";
 import type { WorkflowHooks } from "../../src/hooks.js";
-import type { AgentOptions, EngineName } from "../../src/types.js";
+import type { AgentOptions, EngineName, LiteralWorkerSessionOptions } from "../../src/types.js";
 
 // The skill's text ships beside the launcher it describes. These tests hold
 // what a machine can check of that: the text loads on each tool, and every
@@ -41,6 +42,11 @@ const agentOptions = Object.keys({
   isolation: true, timeoutMs: true, maxAttempts: true, label: true, phase: true, identity: true,
   strip: true, lean: true
 } satisfies Record<keyof AgentOptions, true>);
+const sessionOptions = Object.keys({
+  engine: true, target: true, model: true, effort: true, fallback: true, cwd: true,
+  isolation: true, timeoutMs: true, maxAttempts: true, label: true, phase: true,
+  strip: true, lean: true, identity: true, stalenessMark: true
+} satisfies Record<keyof LiteralWorkerSessionOptions, true>);
 const hooks = Object.keys({
   agent: true, session: true, hold: true, workflow: true, parallel: true, pipeline: true, phase: true,
   log: true, tally: true, lookupDispatch: true, budget: true, worktrees: true, args: true
@@ -74,13 +80,17 @@ function interfaceField(name: string): string {
   return match[1]!;
 }
 
-test("the skill's frontmatter loads on Claude Code, Codex and opencode", () => {
+test("the skill has the frontmatter required by Claude Code, Codex and opencode", () => {
   const fields = frontmatter();
   // Codex requires both keys, and lists the skill by `name`; opencode does
   // not advertise a skill that has no description.
   assert.equal(fields.get("name"), path.basename(skillDirectory));
   const description = fields.get("description") ?? "";
   assert.ok(description.length > 0, "description is empty");
+  // The description is a single-line plain YAML scalar.
+  const indicators = "-?:,[]{}#&*!|>'\"%@`";
+  assert.ok(!indicators.includes(description[0]!), "description starts with a YAML indicator");
+  assert.doesNotMatch(description, /:(?:[ \t]|$)|[ \t]#/, "description contains a YAML mapping or comment marker");
   // Claude Code cuts a listed description off at 1,536 characters.
   assert.ok(description.length <= 1536, `description is ${description.length} characters`);
 });
@@ -120,24 +130,29 @@ test("the flags the skill names and the flags the launcher's help names are the 
   // Flags of other tools that the text names when it explains an engine.
   const otherTools = new Set(["--dangerously-skip-permissions"]);
   const offered = flagsIn(launcherHelp());
-  // The help text describes the version report without spelling its flag.
-  const version = spawnSync(process.execPath, [launcherPath, "--version"], { encoding: "utf8", timeout: 30_000 });
-  assert.equal(version.stdout.trim(), (JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version);
-  offered.add("--version");
   const named = flagsIn(wholeText);
   assert.deepEqual([...named].filter((flag) => !offered.has(flag) && !otherTools.has(flag)), [], "named by the skill, unknown to the launcher");
   assert.deepEqual([...offered].filter((flag) => !named.has(flag)), [], "offered by the launcher, absent from the skill");
 });
 
-test("every ENSEMBLE_ variable the skill names is one the launcher reads", () => {
-  const variablePattern = /ENSEMBLE_[A-Z0-9_]+/g;
-  const read = new Set(readFileSync(launcherPath, "utf8").match(variablePattern) ?? []);
-  // The launcher builds each engine's concurrency variable from this stem.
-  assert.ok(read.has("ENSEMBLE_CONCURRENCY_"));
-  for (const engine of engines) read.add(`ENSEMBLE_CONCURRENCY_${engine.toUpperCase()}`);
-  const named = new Set(wholeText.match(variablePattern) ?? []);
+test("the launcher reports the package version", () => {
+  const result = spawnSync(process.execPath, [launcherPath, "--version"], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr);
+  const { version } = JSON.parse(readFileSync("package.json", "utf8")) as { version: string };
+  assert.equal(result.stdout.trim(), version);
+});
+
+test("every ENSEMBLE_ variable the skill names is a run setting", () => {
+  const named = new Set(wholeText.match(/ENSEMBLE_[A-Z0-9_]+/g) ?? []);
   assert.ok(named.size > 0);
-  assert.deepEqual([...named].filter((variable) => !read.has(variable)), []);
+  const concurrencyPrefix = "ENSEMBLE_CONCURRENCY_";
+  const concurrencySettings = new Set(engines.map((engine) => `${concurrencyPrefix}${engine.toUpperCase()}`));
+  // The runtime withholds the entire concurrency namespace from child
+  // processes. Only the known engines have settings in that namespace.
+  const unknown = [...named].filter((variable) => variable.startsWith(concurrencyPrefix)
+    ? !concurrencySettings.has(variable)
+    : !isRunScopedEnvironmentVariable(variable));
+  assert.deepEqual(unknown, [], "named by the skill, unknown as a run setting");
 });
 
 test("the skill covers every engine, agent() option and script hook the runtime has", () => {
@@ -157,6 +172,14 @@ test("the skill covers every engine, agent() option and script hook the runtime 
   for (const hook of hooks) {
     assert.match(hookTable, new RegExp(`^\\|[^|]*\`${hook}[\`(]`, "m"), `SKILL.md's hook table has no row for ${hook}`);
     assert.match(references, new RegExp(`\`${hook}[\`(.]`), `no reference names ${hook}`);
+  }
+});
+
+test("the skill names every session() creation option", () => {
+  const reference = page("references/sessions-and-holds.md");
+  const creationOptions = /^- \*\*Fixed at creation:\*\* ([\s\S]*?)(?=^- )/m.exec(reference)?.[1] ?? "";
+  for (const option of sessionOptions) {
+    assert.ok(creationOptions.includes(`\`${option}\``), `references/sessions-and-holds.md omits the session() creation option ${option}`);
   }
 });
 

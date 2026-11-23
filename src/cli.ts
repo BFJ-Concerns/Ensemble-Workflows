@@ -114,7 +114,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\n" +
         "or dispatches a single agent. Workflow and agent runs return JSON on stdout.\n" +
         "workflows and holds list prose on stdout; holds --json lists JSON.\n" +
-        "Help and version print text on stdout; diagnostics go to stderr.\n" +
+        "--help and --version print text on stdout. Diagnostics go to stderr.\n" +
         "Subcommands: agent (one worker on a named engine; prompt from argv or stdin),\n" +
         "workflows (list saved workflows), holds (list open decision holds),\n" +
         "holds answer (answer one). Each subcommand answers its own --help.\n"

@@ -2776,7 +2776,7 @@ test("top-level help states each stdout format without promising JSON for prose 
   assert.equal(result.stderr, "");
   assert.match(result.stdout, /Workflow and agent runs return JSON on stdout\./);
   assert.match(result.stdout, /workflows and holds list prose on stdout; holds --json lists JSON\./);
-  assert.match(result.stdout, /Help and version print text on stdout; diagnostics go to stderr\./);
+  assert.match(result.stdout, /--help and --version print text on stdout\. Diagnostics go to stderr\./);
   assert.doesNotMatch(result.stdout, /Results are JSON on stdout/);
 });
 

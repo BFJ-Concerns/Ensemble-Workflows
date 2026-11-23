@@ -20,13 +20,16 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Ensemble",
-    "shortDescription": "Write and run multi-agent workflows across engines",
+    "shortDescription": "Run multi-agent workflows where one model family checks another",
     "longDescription": "Ensemble runs JavaScript workflow scripts that fan work out to AI coding agents and collect their answers. Every agent call names the engine it runs on (Codex, Claude Code, opencode, ZCode or Google's Antigravity CLI), so one model family can check another's work within a single run. The bundled ensemble-workflow skill teaches an agent to write and run those scripts, and to dispatch a single worker with no script, using the launcher the skill carries.",
     "developerName": "BFJ Concerns",
     "category": "Developer Tools",
     "capabilities": [
       "Read",
       "Write"
+    ],
+    "defaultPrompt": [
+      "Split this job across agents on more than one engine and have a different model family check the results before reporting them."
     ],
     "websiteURL": "https://github.com/BFJ-Concerns/Ensemble-Workflows"
   }

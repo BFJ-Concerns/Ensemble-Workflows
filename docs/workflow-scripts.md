@@ -1117,8 +1117,9 @@ told only to proceed without asking. Any other message the valve delivers by
 cancelling a dialog, such as a follow-up turn, a correction or a
 redelivery, goes behind the same account of the close, except a message
 that opens with a command, which goes as written so that it stays a
-command. A delivery refused after its dialog was cancelled is resent with
-the account.
+command. Once the valve successfully sends Escape, it remembers the input
+request for redelivery, even if the roster still shows the request when the
+delivery times out.
 
 In a `session()`, a turn the worker took on altered text runs to its end
 before the attempt fails, with its text kept on the attempt record, so the
@@ -1305,11 +1306,12 @@ signed in to, and the `agy` binary is found on the worker environment's
   `unestablishedStops`; a retry opens a fresh worker whose opening prompt
   says what failed. A held session's retry corrects in the same session
   while its process lives, naming only the failure.
-- **The deadline** covers the prompt and any automatic follow-up. Ensemble
-  cancels the turn and stops the worker if cancellation receives no prompt
-  reply within ten seconds. The interrupted turn records `agy.deadline`
-  (unclassified). If Ensemble stops a held worker, later turns see the
-  lost session.
+- **The deadline and whitespace bound** apply through the automatic
+  follow-up. When either expires, Ensemble cancels the turn. It waits up
+  to ten seconds for a prompt reply, or, after the original reply, a failed
+  update for the last outstanding background command. If agy does not
+  confirm cancellation, Ensemble stops the worker and any held session
+  is lost. A deadline records `agy.deadline` (unclassified).
 - **Failures agy returns:** a prompt refused for want of a sign-in
   (`agy-sign-in-required`, `agy.sign-in-required`) and a worker process
   that ended mid-turn (`agy-worker-lost`, `agy.worker-lost`) are

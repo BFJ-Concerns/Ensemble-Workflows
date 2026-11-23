@@ -121,6 +121,29 @@ test("zcode spend maps by subtraction: cached out of input, reasoning out of out
   });
 });
 
+test("agy spend adds cached input and splits reasoning out of output", () => {
+  const summary = summariseUsage("agy", [
+    event({
+      cachedInputTokens: 8,
+      cacheCreationInputTokens: 3,
+      inputTokens: 20,
+      outputTokens: 5,
+      reasoningOutputTokens: 2,
+      totalTokens: 33
+    })
+  ]);
+  assert.deepEqual(summary, {
+    freshInputTokens: 20,
+    cachedInputTokens: 8,
+    cacheReadTokens: 5,
+    cacheCreationTokens: 3,
+    outputTokens: 3,
+    reasoningOutputTokens: 2,
+    unclassifiedTokens: 0,
+    totalTokens: 33
+  });
+});
+
 test("a wholly unclassifiable event keeps its reported spend as unclassified, never zero", () => {
   // opencode's total-only steps: the aggregate carries spend only in the
   // engine total. Erasing it into an all-zero summary would make reported

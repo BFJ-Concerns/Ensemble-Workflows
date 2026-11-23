@@ -391,7 +391,15 @@ async function runTurn(worker: AgyWorker, message: string, timeoutMs: number | u
       whitespace.observeText(text);
     } else if (update.kind === "tool_call" || update.kind === "tool_call_update") {
       clearTimeout(settleFollowUp);
+      const { toolCallId, status } = update.body;
+      const backgroundCommand = typeof toolCallId === "string" && commands.has(toolCallId);
       trackCommand(commands, update.body);
+      // After end_turn, cancel can end a background command without a second
+      // prompt reply. A failed update for the last outstanding command is
+      // evidence of cancellation; an unrelated tool failure is not.
+      if (waiting && stopping !== null && backgroundCommand && status === "failed" && commands.size === 0) {
+        followUp.resolve(null);
+      }
       turn.finalText = "";
       whitespace.observeActivity();
     } else if (update.kind === "agent_thought_chunk" || update.kind === "plan") {

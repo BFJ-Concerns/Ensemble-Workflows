@@ -171,7 +171,7 @@ test("closing the engine settles an attempt whose launch never returns, and ends
     assert.ok(Date.now() - closingAt <= bounds.stopGraceMs + bounds.drainMs + slackMs, "engine close outlived the bound");
     const outcome = await attempt;
     assert.ok("error" in outcome && outcome.error instanceof EngineShutdownError, `the attempt settled as ${JSON.stringify(outcome)}`);
-    assert.equal(isLive(launchPid), false, "the launch command survived engine close");
+    await waitForCondition(() => !isLive(launchPid), "the launch command to be reaped after engine close", slackMs);
     assert.deepEqual(events.map((event) => event.method), ["claude/launchUnreclaimed"]);
   } finally {
     if (settingsDir !== null) await rm(settingsDir, { recursive: true, force: true });
@@ -225,7 +225,7 @@ test("engine close cancels a strip preparation stuck in the native probe launch"
     settingsDir = await settingsDirOf(stub);
     await adapter.close();
     await rejected;
-    assert.equal(isLive(pid), false, "the probe command survived engine close");
+    await waitForCondition(() => !isLive(pid), "the probe command to be reaped after engine close", slackMs);
     assert.equal(events[0]?.method, "claude/launchUnreclaimed");
   } finally {
     await adapter.close();

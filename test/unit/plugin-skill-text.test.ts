@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import type { WorkflowHooks } from "../../src/hooks.js";
-import type { AgentOptions, EngineName } from "../../src/types.js";
+import type { AgentOptions, EngineName, LiteralWorkerSessionOptions } from "../../src/types.js";
 
 // The skill's text ships beside the launcher it describes. These tests hold
 // what a machine can check of that: the text loads on each tool, and every
@@ -41,6 +41,11 @@ const agentOptions = Object.keys({
   isolation: true, timeoutMs: true, maxAttempts: true, label: true, phase: true, identity: true,
   strip: true, lean: true
 } satisfies Record<keyof AgentOptions, true>);
+const sessionOptions = Object.keys({
+  engine: true, target: true, model: true, effort: true, fallback: true, cwd: true,
+  isolation: true, timeoutMs: true, maxAttempts: true, label: true, phase: true,
+  strip: true, lean: true, identity: true, stalenessMark: true
+} satisfies Record<keyof LiteralWorkerSessionOptions, true>);
 const hooks = Object.keys({
   agent: true, session: true, hold: true, workflow: true, parallel: true, pipeline: true, phase: true,
   log: true, tally: true, lookupDispatch: true, budget: true, worktrees: true, args: true
@@ -160,6 +165,14 @@ test("the skill covers every engine, agent() option and script hook the runtime 
   for (const hook of hooks) {
     assert.match(hookTable, new RegExp(`^\\|[^|]*\`${hook}[\`(]`, "m"), `SKILL.md's hook table has no row for ${hook}`);
     assert.match(references, new RegExp(`\`${hook}[\`(.]`), `no reference names ${hook}`);
+  }
+});
+
+test("the skill names every session() creation option", () => {
+  const reference = page("references/sessions-and-holds.md");
+  const creationOptions = /^- \*\*Fixed at creation:\*\* ([\s\S]*?)(?=^- )/m.exec(reference)?.[1] ?? "";
+  for (const option of sessionOptions) {
+    assert.ok(creationOptions.includes(`\`${option}\``), `references/sessions-and-holds.md omits the session() creation option ${option}`);
   }
 });
 

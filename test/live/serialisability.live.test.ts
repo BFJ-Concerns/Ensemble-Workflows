@@ -47,6 +47,13 @@ function withoutUnpinnedNotice(stderr: string): string {
   return stderr.replace(notice, "");
 }
 
+function withoutSingleFamilyNotice(stderr: string): string {
+  const notice = /^\[single-family\] 1 worker resolved onto one model family: [^\r\n]*\S[^\r\n]*\n/gm;
+  const matches = stderr.match(notice) ?? [];
+  assert.equal(matches.length, 1, `expected exactly one single-family notice, got:\n${stderr}`);
+  return stderr.replace(notice, "");
+}
+
 test(
   "live built CLI salvages completed Codex output and a consumer can recover it from the archive alone",
   { skip: !isLive ? "ENSEMBLE_LIVE must be 1" : false, timeout: 300_000 },
@@ -89,7 +96,7 @@ test(
 
       assert.equal(result.code, 1, result.stderr);
       assert.equal(
-        withoutUnpinnedNotice(withoutArchiveAnnouncement(withoutSentinelAnnouncement(result.stderr))),
+        withoutSingleFamilyNotice(withoutUnpinnedNotice(withoutArchiveAnnouncement(withoutSentinelAnnouncement(result.stderr)))),
         "WorkflowScriptError: workflow return value must be a JSON value: return value.settlementFailure is a BigInt\n"
       );
       const envelope = JSON.parse(result.stdout) as SalvageEnvelope;

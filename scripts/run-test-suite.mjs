@@ -77,14 +77,17 @@ const suiteTestChildProgram =
 // A live run shares fixtures no single test file can own. Node's test runner
 // evaluates the suite setup module once, in the process that spawns the test
 // files: before the first starts and after the last ends.
-const liveSuiteSetup =
+// A file can launch several engines concurrently. Limit the number of live
+// files in flight independently of the host's CPU count and of each workflow's
+// own worker limits.
+const liveSuiteOptions =
   process.env.ENSEMBLE_LIVE === "1"
-    ? [`--test-global-setup=${path.resolve(import.meta.dirname, "../dist/test/live/suite-setup.js")}`]
+    ? ["--test-concurrency=6", `--test-global-setup=${path.resolve(import.meta.dirname, "../dist/test/live/suite-setup.js")}`]
     : [];
 const child = spawn(
   process.execPath,
   suiteTestChildProgram === undefined
-    ? ["--test", "--test-reporter=tap", ...liveSuiteSetup, ...testPatterns]
+    ? ["--test", "--test-reporter=tap", ...liveSuiteOptions, ...testPatterns]
     : [suiteTestChildProgram],
   {
     cwd: repositoryRoot,

@@ -107,6 +107,31 @@ for (const gate of ["engine-cap", "agent-ceiling"] as const) {
 
 }
 
+test("a status consumer reports an unexpected terminal worker before the release barrier", { timeout: 60_000 }, async () => {
+  const { directory, env } = await setup();
+  try {
+    const cwd = path.join(directory, "not-a-repository");
+    await mkdir(cwd);
+    const workflow = path.join(directory, "workflow.mjs");
+    const releaseFile = path.join(directory, "release");
+    await writeFile(workflow, `
+      export const meta = { name: "unexpected-status-settlement" };
+      try { await agent("fixture", { engine: "codex", isolation: "worktree" }); }
+      catch (error) { if (error.name !== "WorktreePlacementRejectedError") throw error; }
+      ${barrier(releaseFile)}
+    `);
+    const spec = path.join(directory, "spec.json");
+    await writeFile(spec, JSON.stringify({
+      bundle, workflow, cwd, releaseFile, timeoutMs: 90_000,
+      workers: [{ id: 1, state: "done" }]
+    }));
+    const result = await runNode([consumer, spec], env, 40_000);
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /worker 1 settled as failed, expected done:.*WorktreePlacementRejectedError/);
+    await assert.rejects(access(releaseFile), { code: "ENOENT" });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("status disablement and explicit directories preserve discovery and independent concurrent files", { timeout: 90_000 }, async () => {
   const { directory, env } = await setup();
   const running: Array<Promise<unknown>> = [];

@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createAcknowledgementWriter } from "./archive-helpers.mjs";
 
 const spec = JSON.parse(await readFile(process.argv[2], "utf8"));
+const expectedWorkers = new Map((spec.workers ?? []).map((worker) => [worker.id, worker]));
 const agentKeys = ["id", "attempt", "engine", "label", "phase", "state", "startedAtMs", "firstEvidenceAtMs", "lastEvidenceAtMs", "finishedAtMs", "waitingOn", "requestedModel", "requestedEffort", "resolvedModel", "resolvedEffort", "transcript", "worktree", "spent", "failure"].sort();
 // Every finished worker carries one of four dispositions, each counted under its own total.
 const finishedCounts = { done: "done", failed: "failed", "cut-short": "cutShort", unsettled: "unsettled" };
@@ -144,6 +145,11 @@ try {
           assert.equal(typeof agent.failure?.message, "string");
           assert.ok(agent.failure.message.length > 0);
         } else assert.equal(agent.failure, null);
+        const expected = expectedWorkers.get(agent.id);
+        if (expected !== undefined) {
+          assert.equal(agent.state, expected.state,
+            `worker ${agent.id} settled as ${agent.state}, expected ${expected.state}: ${JSON.stringify(agent.failure)}`);
+        }
       }
     }
     const expected = spec.workers ?? [];

@@ -1140,9 +1140,10 @@ told only to proceed without asking. Any other message the valve delivers by
 cancelling a dialog, such as a follow-up turn, a correction or a
 redelivery, goes behind the same account of the close, except a message
 that opens with a command, which goes as written so that it stays a
-command. Once the valve successfully sends Escape, it remembers the input
-request for redelivery, even if the roster still shows the request when the
-delivery times out.
+command. If the valve sends Escape and then refuses delivery, the resend
+puts the message behind the account of the close, even if the roster still
+showed the request when delivery timed out. If the resend finds the request
+still waiting, the valve closes it again before submitting the message.
 
 In a `session()`, a turn the worker took on altered text runs to its end
 before the attempt fails, with its text kept on the attempt record, so the

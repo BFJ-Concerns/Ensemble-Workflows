@@ -6,7 +6,9 @@ import { CANONICAL_EFFORT_DOMAIN, isCanonicalEffort } from "./effort-resolution.
 import { launchEnvironment } from "./engine-environment.js";
 import {
   AgentPromptRejectedError,
+  CapabilityStripUnsupportedError,
   EngineShutdownError,
+  SubstrateRefusedError,
   TurnTimeoutError,
   WhitespaceStreamError,
   ZCodeSubstrateRefusedError,
@@ -19,12 +21,12 @@ import {
 import { Scheduler } from "./scheduler.js";
 import { fitsOneArgument, MAX_ARGUMENT_BYTES, runStreamedCommand, type StreamedCommandResult } from "./streamed-command.js";
 import { subtractUsage } from "./usage-summary.js";
-import { inSessionCorrection, laterTurnPrompt, openingPrompt } from "./worker-instructions.js";
+import { inSessionCorrection, laterTurnPrompt, openingPrompt, previousFailureNotice } from "./worker-instructions.js";
 import { DEFAULT_STOP_BOUNDS } from "./worker-scopes.js";
 import { parseZCodeModel, type ZCodeModelSelection } from "./zcode-model.js";
 import { defaultZCodeConcurrency } from "./concurrency-defaults.js";
 
-import type { EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";
+import { resolveStripEnforcement, type EngineCapabilityTable, type PreparedStrip, type StrippableCapability } from "./capability-stripping.js";
 import type { EngineEffortReport } from "./effort-resolution.js";
 import type {
   EngineAdapter,
@@ -74,7 +76,7 @@ export interface ZCodeRunOptions {
 export interface ZCodeRunner {
   run(options: ZCodeRunOptions): Promise<StreamedCommandResult>;
   /** One short command (`--help`, `models`) the adapter reads the installed zcode's abilities from. */
-  inspect(args: readonly string[]): Promise<StreamedCommandResult>;
+  inspect(args: readonly string[], signal: AbortSignal): Promise<StreamedCommandResult>;
   /** How a refusal names the installed zcode. */
   readonly bin: string;
 }
@@ -110,7 +112,7 @@ export class ZCodeCliRunner implements ZCodeRunner {
     });
   }
 
-  async inspect(args: readonly string[]): Promise<StreamedCommandResult> {
+  async inspect(args: readonly string[], signal: AbortSignal): Promise<StreamedCommandResult> {
     return runStreamedCommand({
       label: `zcode ${args[0] ?? ""}`.trim(),
       file: this.bin,
@@ -120,7 +122,7 @@ export class ZCodeCliRunner implements ZCodeRunner {
       commands: this.#commands,
       timeoutMs: 60_000,
       killGraceMs: this.#killGraceMs,
-      signal: undefined
+      signal
     });
   }
 }
@@ -248,9 +250,6 @@ export interface ZCodeEngineAdapterOptions {
   onEvent?: (event: RuntimeEvent) => void;
 }
 
-/** What the installed zcode can do, read once per run from its help and listing. */
-type ZCodeAbilities = { listing: ZCodeListing };
-
 export class ZCodeEngineAdapter implements EngineAdapter {
   readonly name = "zcode" satisfies EngineName;
   readonly concurrency: number;
@@ -271,7 +270,9 @@ export class ZCodeEngineAdapter implements EngineAdapter {
   #cwd: string;
   #runner: ZCodeRunner;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
-  #abilities: Promise<ZCodeAbilities> | null = null;
+  #usage: Promise<string> | null = null;
+  #listing: Promise<ZCodeListing> | null = null;
+  #inspectionAbort = new AbortController();
   #active = new Set<{ close(): Promise<void> }>();
   #closed = false;
 
@@ -297,19 +298,31 @@ export class ZCodeEngineAdapter implements EngineAdapter {
   async effortReport(model: string | undefined): Promise<EngineEffortReport | null> {
     if (model === undefined) return null;
     let selection: ZCodeModelSelection;
-    let abilities: ZCodeAbilities;
+    let listing: ZCodeListing;
     try {
       selection = parseZCodeModel(model);
-      abilities = await this.#readAbilities();
+      listing = await this.#readListing();
     } catch {
       // The dispatch itself refuses a bad spelling or an unusable zcode,
       // naming why; a missing report only leaves the level to pass through.
       return null;
     }
-    const listed = abilities.listing.levels(selection);
+    const listed = listing.levels(selection);
     if (listed === undefined) return null;
     const levels = Object.fromEntries(listed.filter(isCanonicalEffort).map((level) => [level, level]));
     return { identity: null, levels: Object.keys(levels).length === 0 ? null : levels };
+  }
+
+  async prepareStrip(strip: readonly StrippableCapability[]): Promise<PreparedStrip> {
+    await this.#checkStrip(strip);
+    return { engine: this.name, requested: strip, enforcement: resolveStripEnforcement(this.name, this.capabilities, strip) };
+  }
+
+  async #checkStrip(strip: readonly StrippableCapability[] | undefined): Promise<void> {
+    const capability = strip?.[0];
+    if (capability !== undefined && !/(?:^|[\s,])--disallowed-tools(?=[\s=,]|$)/.test(await this.#readUsage())) {
+      throw new CapabilityStripUnsupportedError(this.name, capability, `zcode at ${this.#runner.bin} does not offer --disallowed-tools`);
+    }
   }
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
@@ -329,8 +342,11 @@ export class ZCodeEngineAdapter implements EngineAdapter {
 
   async close(): Promise<void> {
     this.#closed = true;
-    this.#scheduler.close(new EngineShutdownError(this.name));
-    await Promise.allSettled([...this.#active].map(async (worker) => worker.close()));
+    const shutdown = new EngineShutdownError(this.name);
+    this.#scheduler.close(shutdown);
+    this.#inspectionAbort.abort(shutdown);
+    const workers = [...this.#active].map(async (worker) => worker.close());
+    await Promise.allSettled([this.#usage, this.#listing, ...workers]);
   }
 
   #turnSettings(options: EngineTurnOptions): ZCodeTurnSettings {
@@ -340,38 +356,48 @@ export class ZCodeEngineAdapter implements EngineAdapter {
       options,
       cwd: options.cwd ?? this.#cwd,
       runner: this.#runner,
-      abilities: () => this.#readAbilities(),
+      listing: async () => {
+        // Direct adapter callers can dispatch without runtime preparation.
+        await this.#checkStrip(options.strip);
+        return this.#readListing();
+      },
       onEvent: this.#onEvent
     };
   }
 
-  /**
-   * Reads, once per run, whether the installed zcode can be told a run's
-   * provider, model and reasoning level and can print its model listing,
-   * and keeps the listing for the run, a listing that lacked a provider
-   * included: reading it again would wait on that provider again, for
-   * every dispatch and every retry. Single-flight and not failure-memoised:
-   * a zcode that could not be read is asked again by the next dispatch.
-   */
-  #readAbilities(): Promise<ZCodeAbilities> {
-    const reading = this.#abilities ??= readZCodeAbilities(this.#runner).catch((error: unknown) => {
-      if (this.#abilities === reading) this.#abilities = null;
+  #readUsage(): Promise<string> {
+    return this.#usage ??= readZCodeUsage(this.#runner, this.#inspectionAbort.signal).catch((error: unknown) => {
+      this.#usage = null;
       throw error;
     });
-    return reading;
+  }
+
+  /** Keep even an incomplete listing so each dispatch does not wait on the same provider. */
+  #readListing(): Promise<ZCodeListing> {
+    return this.#listing ??= this.#readUsage()
+      .then(() => readZCodeListing(this.#runner, this.#inspectionAbort.signal))
+      .catch((error: unknown) => {
+        this.#listing = null;
+        throw error;
+      });
   }
 }
 
-async function readZCodeAbilities(runner: ZCodeRunner): Promise<ZCodeAbilities> {
-  const refuse = (detail: string): never => {
-    throw new ZCodeSubstrateRefusedError(`zcode at ${runner.bin} cannot serve the zcode engine: ${detail}`);
-  };
+function zcodeRefusal(runner: ZCodeRunner, detail: string): ZCodeSubstrateRefusedError {
+  return new ZCodeSubstrateRefusedError(`zcode at ${runner.bin} cannot serve the zcode engine: ${detail}`);
+}
+
+async function readZCodeUsage(runner: ZCodeRunner, signal: AbortSignal): Promise<string> {
+  signal.throwIfAborted();
   let help: StreamedCommandResult;
   try {
-    help = await runner.inspect(["--help"]);
+    help = await runner.inspect(["--help"], signal);
   } catch (error) {
-    return refuse(`it could not be run (${error instanceof Error ? error.message : String(error)})`);
+    signal.throwIfAborted();
+    if (!(error instanceof SubstrateRefusedError)) throw error;
+    throw zcodeRefusal(runner, `it could not be run (${error.message})`);
   }
+  signal.throwIfAborted();
   const usage = `${help.stdout}\n${help.stderr}`;
   const lacks = [
     ...(/--reasoning-level\b/.test(usage) && /--provider\b/.test(usage) && /--model\b/.test(usage)
@@ -380,20 +406,28 @@ async function readZCodeAbilities(runner: ZCodeRunner): Promise<ZCodeAbilities> 
     ...(/^\s+models\s/m.test(usage) ? [] : ["a model listing (zcode models)"])
   ];
   if (lacks.length > 0) {
-    return refuse(`it lacks ${lacks.join(" and ")}; the engine needs a ZCode that has both`);
+    throw zcodeRefusal(runner, `it lacks ${lacks.join(" and ")}; the engine needs a ZCode that has both`);
   }
+  return usage;
+}
+
+async function readZCodeListing(runner: ZCodeRunner, signal: AbortSignal): Promise<ZCodeListing> {
+  signal.throwIfAborted();
   let listed: StreamedCommandResult;
   try {
-    listed = await runner.inspect(["models"]);
+    listed = await runner.inspect(["models"], signal);
   } catch (error) {
-    return refuse(`its model listing could not be read (${error instanceof Error ? error.message : String(error)})`);
+    signal.throwIfAborted();
+    if (!(error instanceof SubstrateRefusedError)) throw error;
+    throw zcodeRefusal(runner, `its model listing could not be read (${error.message})`);
   }
+  signal.throwIfAborted();
   const listing = parseZCodeListing(listed.stdout);
   if (listing === null) {
     const stderr = listed.stderr.trim();
-    return refuse(`its model listing (zcode models) did not print the expected JSON${stderr.length > 0 ? `: ${stderr}` : ""}`);
+    throw zcodeRefusal(runner, `its model listing (zcode models) did not print the expected JSON${stderr.length > 0 ? `: ${stderr}` : ""}`);
   }
-  return { listing };
+  return listing;
 }
 
 /** What every turn of one dispatch shares. */
@@ -402,7 +436,7 @@ interface ZCodeTurnSettings {
   options: EngineTurnOptions;
   cwd: string;
   runner: ZCodeRunner;
-  abilities: () => Promise<ZCodeAbilities>;
+  listing: () => Promise<ZCodeListing>;
   onEvent: ((event: RuntimeEvent) => void) | undefined;
 }
 
@@ -452,15 +486,15 @@ class ZCodeEngineInvocation implements EngineInvocation {
 /**
  * One held zcode worker: a persisted ZCode session, created by its first
  * run and resumed by every later one, so the session's context and prompt
- * cache accumulate. A retry stays in the session where one exists: the
- * session already holds the turn's prompt, so the correction names only
- * the failure. The session is lost when zcode no longer finds it.
+ * cache accumulate. A retry sends only the correction if ZCode accepted
+ * the turn's prompt. The session is lost when ZCode no longer finds it.
  */
 class ZCodeWorkerSession implements EngineWorkerSession {
   #settings: ZCodeTurnSettings;
   #observer: EngineSessionObserver;
   #onClose: (session: ZCodeWorkerSession) => void;
   #sessionId: string | null = null;
+  #opened = false;
   #lost: EngineSessionLoss | null = null;
   #abort = new AbortController();
   #settlement: Promise<unknown> | null = null;
@@ -473,23 +507,38 @@ class ZCodeWorkerSession implements EngineWorkerSession {
   }
 
   beginTurn(prompt: string, turn: EngineSessionTurn): EngineInvocation {
-    return { runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context) };
+    let turnDelivered = false;
+    return {
+      runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context, turnDelivered, () => {
+        turnDelivered = true;
+        this.#opened = true;
+      })
+    };
   }
 
-  async #runTurnAttempt(prompt: string, schema: JsonSchema | undefined, context: EngineAttemptContext): Promise<EngineAttemptResult> {
+  async #runTurnAttempt(
+    prompt: string, schema: JsonSchema | undefined, context: EngineAttemptContext,
+    turnDelivered: boolean, onPromptDelivered: () => void
+  ): Promise<EngineAttemptResult> {
     if (this.#lost !== null) return this.#lostResult();
     if (this.#closed) throw new EngineShutdownError("zcode");
     const resume = this.#sessionId ?? undefined;
-    const message = resume === undefined
-      ? openingRunPrompt(prompt, schema, context.previousFailure)
-      : context.previousFailure !== undefined
-        ? inSessionCorrection(carriedFailure(context.previousFailure))
-        : laterTurnPrompt({ task: prompt, ...(schema !== undefined ? { schema } : {}) });
+    const failure = context.previousFailure === undefined ? undefined : carriedFailure(context.previousFailure);
+    let message: string;
+    if (!this.#opened || resume === undefined) {
+      message = openingRunPrompt(prompt, schema, context.previousFailure);
+    } else if (turnDelivered && failure !== undefined) {
+      message = inSessionCorrection(failure);
+    } else {
+      const task = laterTurnPrompt({ task: prompt, ...(schema !== undefined ? { schema } : {}) });
+      message = failure === undefined ? task : `${previousFailureNotice(failure)}\n\n${task}`;
+    }
     const settlement = runZCodeAttempt(this.#settings, {
       prompt: message,
       resume,
       signal: this.#abort.signal,
-      context
+      context,
+      onPromptDelivered
     });
     this.#settlement = settlement;
     try {
@@ -602,6 +651,7 @@ interface ZCodeAttemptRequest {
   resume: string | undefined;
   signal: AbortSignal;
   context: EngineAttemptContext;
+  onPromptDelivered?: () => void;
 }
 
 interface ZCodeAttemptOutcome {
@@ -661,11 +711,11 @@ async function runZCodeTurn(
   const { selection, options } = settings;
   const { context } = request;
   // Refused before any worker exists: a zcode that cannot be driven.
-  const { listing } = await settings.abilities();
+  const listing = await settings.listing();
   if (request.signal.aborted) throw new EngineShutdownError("zcode");
   const requested = requestedReasoningLevel(options);
   const launch = async (reasoningLevel: string, earlier?: { stream: ZCodeStream; durationMs: number }) => {
-    const stream = new ZCodeStream(settings, context, earlier?.stream);
+    const stream = new ZCodeStream(settings, context, request.onPromptDelivered, earlier?.stream);
     const run = await settings.runner.run({
       prompt: request.prompt,
       cwd: settings.cwd,
@@ -764,6 +814,7 @@ class ZCodeStream {
   readonly startedAt: number;
   #settings: ZCodeTurnSettings;
   #context: EngineAttemptContext;
+  #onPromptDelivered: (() => void) | undefined;
   /** Events of the attempt's earlier runs, which its transcript keeps before this run's. */
   #earlierEvents: readonly unknown[];
   #buffer = "";
@@ -782,9 +833,12 @@ class ZCodeStream {
   #turnError: Record<string, unknown> | null = null;
 
   /** `earlier` is the stream of a run the same attempt made before this one. */
-  constructor(settings: ZCodeTurnSettings, context: EngineAttemptContext, earlier?: ZCodeStream) {
+  constructor(
+    settings: ZCodeTurnSettings, context: EngineAttemptContext, onPromptDelivered: (() => void) | undefined, earlier?: ZCodeStream
+  ) {
     this.#settings = settings;
     this.#context = context;
+    this.#onPromptDelivered = onPromptDelivered;
     this.startedAt = earlier?.startedAt ?? Date.now();
     this.#earlierEvents = earlier === undefined ? [] : earlier.#allEvents();
   }
@@ -818,6 +872,9 @@ class ZCodeStream {
     observe(() => this.#context.onOutput?.());
     if (!isRecord(event)) return;
     if (typeof event.sessionId === "string") this.#sessionId = event.sessionId;
+    if (event.type === "turn.started" || (event.type === "result" && event.outcome === "finished")) {
+      this.#onPromptDelivered?.();
+    }
     if (event.type === "result") {
       this.#result = event;
       const usage = isRecord(event.usage) ? usageBreakdown(event.usage) : null;

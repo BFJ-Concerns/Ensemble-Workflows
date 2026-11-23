@@ -1,10 +1,12 @@
 # Ensemble
 
 Ensemble is a TypeScript/Node runtime that runs JavaScript workflow scripts over
-AI coding agents on four engines: Codex (`codex app-server`), Claude
-(`claude --bg` background sessions), opencode (`opencode run`), and ZCode
-(one headless `zcode` run per turn). `agent()` requires an explicit `engine`,
-so one model family can check another's work in a single run. `README.md` gives the overview; `docs/` is the usage reference.
+AI coding agents on five engines: Codex (`codex app-server`), Claude
+(`claude --bg` background sessions), opencode (`opencode run`),
+Antigravity CLI (`agy acp`), and ZCode (one headless `zcode` run per turn).
+`agent()` requires an explicit `engine`, so one model family can check
+another's work in a single run. `README.md` gives the overview. `docs/` is
+the usage reference.
 
 ## Commands
 

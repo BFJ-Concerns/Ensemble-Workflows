@@ -423,11 +423,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants6) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants5);
+          this.rhs = optimizeExpr(this.rhs, names, constants6);
         return this;
       }
       get names() {
@@ -444,10 +444,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants6) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants5);
+        this.rhs = optimizeExpr(this.rhs, names, constants6);
         return this;
       }
       get names() {
@@ -508,8 +508,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants5) {
-        this.code = optimizeExpr(this.code, names, constants5);
+      optimizeNames(names, constants6) {
+        this.code = optimizeExpr(this.code, names, constants6);
         return this;
       }
       get names() {
@@ -538,12 +538,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants6) {
         const { nodes } = this;
         let i2 = nodes.length;
         while (i2--) {
           const n = nodes[i2];
-          if (n.optimizeNames(names, constants5))
+          if (n.optimizeNames(names, constants6))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i2, 1);
@@ -596,12 +596,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants6) {
         var _a;
-        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants5);
-        if (!(super.optimizeNames(names, constants5) || this.else))
+        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants6);
+        if (!(super.optimizeNames(names, constants6) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants5);
+        this.condition = optimizeExpr(this.condition, names, constants6);
         return this;
       }
       get names() {
@@ -624,10 +624,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants5) {
-        if (!super.optimizeNames(names, constants5))
+      optimizeNames(names, constants6) {
+        if (!super.optimizeNames(names, constants6))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants5);
+        this.iteration = optimizeExpr(this.iteration, names, constants6);
         return this;
       }
       get names() {
@@ -663,10 +663,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants5) {
-        if (!super.optimizeNames(names, constants5))
+      optimizeNames(names, constants6) {
+        if (!super.optimizeNames(names, constants6))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants5);
+        this.iterable = optimizeExpr(this.iterable, names, constants6);
         return this;
       }
       get names() {
@@ -708,11 +708,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants6) {
         var _a, _b;
-        super.optimizeNames(names, constants5);
-        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants5);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants5);
+        super.optimizeNames(names, constants6);
+        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants6);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants6);
         return this;
       }
       get names() {
@@ -1013,7 +1013,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants5) {
+    function optimizeExpr(expr, names, constants6) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1028,14 +1028,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants5[n.str];
+        const c = constants6[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants5[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants6[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -14178,7 +14178,7 @@ import path22 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile13, stat as stat8 } from "node:fs/promises";
+import { readFile as readFile12, stat as stat9 } from "node:fs/promises";
 import { homedir as homedir5, hostname as hostname5 } from "node:os";
 import path21 from "node:path";
 import { parseArgs } from "node:util";
@@ -23692,9 +23692,9 @@ var ClaudeEngineInvocation = class {
    */
   #noteWaits(outstanding) {
     const now = /* @__PURE__ */ new Date();
-    const open = new Set(outstanding.map((task) => task.id));
+    const open2 = new Set(outstanding.map((task) => task.id));
     for (const wait of this.#waits) {
-      if (wait.endedAt === null && !open.has(wait.taskId)) {
+      if (wait.endedAt === null && !open2.has(wait.taskId)) {
         wait.endedAt = now.toISOString();
       }
     }
@@ -26760,21 +26760,37 @@ var AgyEngineAdapter = class {
 import { randomUUID as randomUUID6 } from "node:crypto";
 
 // src/opencode-launch-config.ts
-import { mkdtemp as mkdtemp4, readFile as readFile10, readdir as readdir8, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
+import { constants as constants3 } from "node:fs";
+import { lstat, mkdtemp as mkdtemp4, open, readdir as readdir8, rm as rm6, stat as stat7, writeFile as writeFile7 } from "node:fs/promises";
 import { hostname as hostname4, tmpdir } from "node:os";
 import path18 from "node:path";
 var LEAN_DIRECTORY_PREFIX = "ensemble-opencode-lean-";
 var OWNER_FILENAME2 = "owner.json";
 var OPENCODE_STRIP_TOOLS = { skills: "skill", agents: "task" };
 async function sweepAbandonedOpenCodeProfiles() {
+  const uid = process.geteuid?.();
+  if (uid === void 0) return;
   const root = tmpdir();
+  const parent = await stat7(root).catch(() => null);
+  if (parent === null || parent.uid !== uid && parent.uid !== 0 || (parent.mode & 18) !== 0 && (parent.mode & 512) === 0) return;
   const host = hostname4();
   const entries = await readdir8(root, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith(LEAN_DIRECTORY_PREFIX)) continue;
     const directory = path18.join(root, entry.name);
     try {
-      const owner = JSON.parse(await readFile10(path18.join(directory, OWNER_FILENAME2), "utf8"));
+      const profile = await lstat(directory);
+      if (!profile.isDirectory() || profile.uid !== uid || (profile.mode & 18) !== 0) continue;
+      const recordPath = path18.join(directory, OWNER_FILENAME2);
+      if (!(await lstat(recordPath)).isFile()) continue;
+      const record = await open(recordPath, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
+      let owner;
+      try {
+        if (!(await record.stat()).isFile()) continue;
+        owner = JSON.parse(await record.readFile("utf8"));
+      } finally {
+        await record.close();
+      }
       if (await judgeOwnerGone(owner, "/proc", host) === "owner-process-gone") {
         await rm6(directory, { recursive: true, force: true });
       }
@@ -26985,8 +27001,9 @@ async function runStreamedCommand(options) {
   }
 }
 function unstartable(label, error) {
-  const code = error?.code;
-  if (!(error instanceof Error) || typeof code !== "string") return error;
+  if (!(error instanceof Error)) return error;
+  const { code, errno, syscall } = error;
+  if (typeof code !== "string" || typeof errno !== "number" || !/^spawn(?: |$)/.test(syscall ?? "")) return error;
   return new SubstrateRefusedError(`${label} could not be started (${code}): ${error.message}`, { cause: error });
 }
 function collectProcess(command, startedAt, options) {
@@ -27839,7 +27856,7 @@ var ZCodeCliRunner = class {
       watchLine: watchZCodeLine
     });
   }
-  async inspect(args) {
+  async inspect(args, signal) {
     return runStreamedCommand({
       label: `zcode ${args[0] ?? ""}`.trim(),
       file: this.bin,
@@ -27849,7 +27866,7 @@ var ZCodeCliRunner = class {
       commands: this.#commands,
       timeoutMs: 6e4,
       killGraceMs: this.#killGraceMs,
-      signal: void 0
+      signal
     });
   }
 };
@@ -27946,7 +27963,9 @@ var ZCodeEngineAdapter = class {
   #cwd;
   #runner;
   #onEvent;
-  #abilities = null;
+  #usage = null;
+  #listing = null;
+  #inspectionAbort = new AbortController();
   #active = /* @__PURE__ */ new Set();
   #closed = false;
   constructor(options = {}) {
@@ -27968,17 +27987,27 @@ var ZCodeEngineAdapter = class {
   async effortReport(model) {
     if (model === void 0) return null;
     let selection;
-    let abilities;
+    let listing;
     try {
       selection = parseZCodeModel(model);
-      abilities = await this.#readAbilities();
+      listing = await this.#readListing();
     } catch {
       return null;
     }
-    const listed = abilities.listing.levels(selection);
+    const listed = listing.levels(selection);
     if (listed === void 0) return null;
     const levels2 = Object.fromEntries(listed.filter(isCanonicalEffort).map((level) => [level, level]));
     return { identity: null, levels: Object.keys(levels2).length === 0 ? null : levels2 };
+  }
+  async prepareStrip(strip) {
+    await this.#checkStrip(strip);
+    return { engine: this.name, requested: strip, enforcement: resolveStripEnforcement(this.name, this.capabilities, strip) };
+  }
+  async #checkStrip(strip) {
+    const capability = strip?.[0];
+    if (capability !== void 0 && !/(?:^|[\s,])--disallowed-tools(?=[\s=,]|$)/.test(await this.#readUsage())) {
+      throw new CapabilityStripUnsupportedError(this.name, capability, `zcode at ${this.#runner.bin} does not offer --disallowed-tools`);
+    }
   }
   createInvocation(prompt, options) {
     if (this.#closed) throw new EngineShutdownError(this.name);
@@ -27995,8 +28024,11 @@ var ZCodeEngineAdapter = class {
   }
   async close() {
     this.#closed = true;
-    this.#scheduler.close(new EngineShutdownError(this.name));
-    await Promise.allSettled([...this.#active].map(async (worker) => worker.close()));
+    const shutdown = new EngineShutdownError(this.name);
+    this.#scheduler.close(shutdown);
+    this.#inspectionAbort.abort(shutdown);
+    const workers = [...this.#active].map(async (worker) => worker.close());
+    await Promise.allSettled([this.#usage, this.#listing, ...workers]);
   }
   #turnSettings(options) {
     const selection = parseZCodeModel(options.model);
@@ -28005,36 +28037,41 @@ var ZCodeEngineAdapter = class {
       options,
       cwd: options.cwd ?? this.#cwd,
       runner: this.#runner,
-      abilities: () => this.#readAbilities(),
+      listing: async () => {
+        await this.#checkStrip(options.strip);
+        return this.#readListing();
+      },
       onEvent: this.#onEvent
     };
   }
-  /**
-   * Reads, once per run, whether the installed zcode can be told a run's
-   * provider, model and reasoning level and can print its model listing,
-   * and keeps the listing for the run, a listing that lacked a provider
-   * included: reading it again would wait on that provider again, for
-   * every dispatch and every retry. Single-flight and not failure-memoised:
-   * a zcode that could not be read is asked again by the next dispatch.
-   */
-  #readAbilities() {
-    const reading = this.#abilities ??= readZCodeAbilities(this.#runner).catch((error) => {
-      if (this.#abilities === reading) this.#abilities = null;
+  #readUsage() {
+    return this.#usage ??= readZCodeUsage(this.#runner, this.#inspectionAbort.signal).catch((error) => {
+      this.#usage = null;
       throw error;
     });
-    return reading;
+  }
+  /** Keep even an incomplete listing so each dispatch does not wait on the same provider. */
+  #readListing() {
+    return this.#listing ??= this.#readUsage().then(() => readZCodeListing(this.#runner, this.#inspectionAbort.signal)).catch((error) => {
+      this.#listing = null;
+      throw error;
+    });
   }
 };
-async function readZCodeAbilities(runner) {
-  const refuse = (detail) => {
-    throw new ZCodeSubstrateRefusedError(`zcode at ${runner.bin} cannot serve the zcode engine: ${detail}`);
-  };
+function zcodeRefusal(runner, detail) {
+  return new ZCodeSubstrateRefusedError(`zcode at ${runner.bin} cannot serve the zcode engine: ${detail}`);
+}
+async function readZCodeUsage(runner, signal) {
+  signal.throwIfAborted();
   let help;
   try {
-    help = await runner.inspect(["--help"]);
+    help = await runner.inspect(["--help"], signal);
   } catch (error) {
-    return refuse(`it could not be run (${error instanceof Error ? error.message : String(error)})`);
+    signal.throwIfAborted();
+    if (!(error instanceof SubstrateRefusedError)) throw error;
+    throw zcodeRefusal(runner, `it could not be run (${error.message})`);
   }
+  signal.throwIfAborted();
   const usage2 = `${help.stdout}
 ${help.stderr}`;
   const lacks = [
@@ -28042,20 +28079,27 @@ ${help.stderr}`;
     .../^\s+models\s/m.test(usage2) ? [] : ["a model listing (zcode models)"]
   ];
   if (lacks.length > 0) {
-    return refuse(`it lacks ${lacks.join(" and ")}; the engine needs a ZCode that has both`);
+    throw zcodeRefusal(runner, `it lacks ${lacks.join(" and ")}; the engine needs a ZCode that has both`);
   }
+  return usage2;
+}
+async function readZCodeListing(runner, signal) {
+  signal.throwIfAborted();
   let listed;
   try {
-    listed = await runner.inspect(["models"]);
+    listed = await runner.inspect(["models"], signal);
   } catch (error) {
-    return refuse(`its model listing could not be read (${error instanceof Error ? error.message : String(error)})`);
+    signal.throwIfAborted();
+    if (!(error instanceof SubstrateRefusedError)) throw error;
+    throw zcodeRefusal(runner, `its model listing could not be read (${error.message})`);
   }
+  signal.throwIfAborted();
   const listing = parseZCodeListing(listed.stdout);
   if (listing === null) {
     const stderr = listed.stderr.trim();
-    return refuse(`its model listing (zcode models) did not print the expected JSON${stderr.length > 0 ? `: ${stderr}` : ""}`);
+    throw zcodeRefusal(runner, `its model listing (zcode models) did not print the expected JSON${stderr.length > 0 ? `: ${stderr}` : ""}`);
   }
-  return { listing };
+  return listing;
 }
 var ZCodeEngineInvocation = class {
   #prompt;
@@ -28100,6 +28144,7 @@ var ZCodeWorkerSession = class {
   #observer;
   #onClose;
   #sessionId = null;
+  #opened = false;
   #lost = null;
   #abort = new AbortController();
   #settlement = null;
@@ -28110,18 +28155,36 @@ var ZCodeWorkerSession = class {
     this.#onClose = onClose;
   }
   beginTurn(prompt, turn) {
-    return { runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context) };
+    let turnDelivered = false;
+    return {
+      runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context, turnDelivered, () => {
+        turnDelivered = true;
+        this.#opened = true;
+      })
+    };
   }
-  async #runTurnAttempt(prompt, schema, context) {
+  async #runTurnAttempt(prompt, schema, context, turnDelivered, onPromptDelivered) {
     if (this.#lost !== null) return this.#lostResult();
     if (this.#closed) throw new EngineShutdownError("zcode");
     const resume = this.#sessionId ?? void 0;
-    const message = resume === void 0 ? openingRunPrompt(prompt, schema, context.previousFailure) : context.previousFailure !== void 0 ? inSessionCorrection(carriedFailure(context.previousFailure)) : laterTurnPrompt({ task: prompt, ...schema !== void 0 ? { schema } : {} });
+    const failure = context.previousFailure === void 0 ? void 0 : carriedFailure(context.previousFailure);
+    let message;
+    if (!this.#opened || resume === void 0) {
+      message = openingRunPrompt(prompt, schema, context.previousFailure);
+    } else if (turnDelivered && failure !== void 0) {
+      message = inSessionCorrection(failure);
+    } else {
+      const task = laterTurnPrompt({ task: prompt, ...schema !== void 0 ? { schema } : {} });
+      message = failure === void 0 ? task : `${previousFailureNotice(failure)}
+
+${task}`;
+    }
     const settlement = runZCodeAttempt(this.#settings, {
       prompt: message,
       resume,
       signal: this.#abort.signal,
-      context
+      context,
+      onPromptDelivered
     });
     this.#settlement = settlement;
     try {
@@ -28231,11 +28294,11 @@ async function runZCodeAttempt(settings, request) {
 async function runZCodeTurn(settings, request, onCommandStop) {
   const { selection, options } = settings;
   const { context } = request;
-  const { listing } = await settings.abilities();
+  const listing = await settings.listing();
   if (request.signal.aborted) throw new EngineShutdownError("zcode");
   const requested = requestedReasoningLevel(options);
   const launch = async (reasoningLevel, earlier) => {
-    const stream2 = new ZCodeStream(settings, context, earlier?.stream);
+    const stream2 = new ZCodeStream(settings, context, request.onPromptDelivered, earlier?.stream);
     const run2 = await settings.runner.run({
       prompt: request.prompt,
       cwd: settings.cwd,
@@ -28317,6 +28380,7 @@ var ZCodeStream = class {
   startedAt;
   #settings;
   #context;
+  #onPromptDelivered;
   /** Events of the attempt's earlier runs, which its transcript keeps before this run's. */
   #earlierEvents;
   #buffer = "";
@@ -28334,9 +28398,10 @@ var ZCodeStream = class {
   #resolvedEffort = null;
   #turnError = null;
   /** `earlier` is the stream of a run the same attempt made before this one. */
-  constructor(settings, context, earlier) {
+  constructor(settings, context, onPromptDelivered, earlier) {
     this.#settings = settings;
     this.#context = context;
+    this.#onPromptDelivered = onPromptDelivered;
     this.startedAt = earlier?.startedAt ?? Date.now();
     this.#earlierEvents = earlier === void 0 ? [] : earlier.#allEvents();
   }
@@ -28365,6 +28430,9 @@ var ZCodeStream = class {
     observe(() => this.#context.onOutput?.());
     if (!isRecord2(event)) return;
     if (typeof event.sessionId === "string") this.#sessionId = event.sessionId;
+    if (event.type === "turn.started" || event.type === "result" && event.outcome === "finished") {
+      this.#onPromptDelivered?.();
+    }
     if (event.type === "result") {
       this.#result = event;
       const usage2 = isRecord2(event.usage) ? usageBreakdown(event.usage) : null;
@@ -28816,8 +28884,8 @@ function parseJsonCandidates(source) {
   const structures = [];
   const regions = indexBalancedJsonRegions(trimmed);
   for (let index = 0; index < trimmed.length; index += 1) {
-    const open = trimmed[index];
-    if (open !== "{" && open !== "[") {
+    const open2 = trimmed[index];
+    if (open2 !== "{" && open2 !== "[") {
       continue;
     }
     const region = regions.byStart.get(index);
@@ -28829,7 +28897,7 @@ function parseJsonCandidates(source) {
     if (parsed.ok) {
       structures.push({
         value: parsed.value,
-        source: open === "{" ? "object-fallback" : "array-fallback",
+        source: open2 === "{" ? "object-fallback" : "array-fallback",
         start: region.start,
         end: region.end
       });
@@ -28902,9 +28970,9 @@ function indexBalancedJsonRegions(source) {
       starts[char][quoteParity].push(index);
       continue;
     }
-    const open = char === "}" ? "{" : char === "]" ? "[" : null;
-    if (open !== null) {
-      const start = starts[open][quoteParity].pop();
+    const open2 = char === "}" ? "{" : char === "]" ? "[" : null;
+    if (open2 !== null) {
+      const start = starts[open2][quoteParity].pop();
       if (start !== void 0) {
         regions.push({ start, end: index, quoteParity, children: [] });
       }
@@ -32468,8 +32536,8 @@ function describeWorkerFailure(error) {
 // src/script-runner.ts
 import vm from "node:vm";
 import { createHash as createHash5 } from "node:crypto";
-import { constants as constants4 } from "node:fs";
-import { access as access4, readFile as readFile12, stat as stat7 } from "node:fs/promises";
+import { constants as constants5 } from "node:fs";
+import { access as access4, readFile as readFile11, stat as stat8 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path20 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
@@ -38168,8 +38236,8 @@ function parseExpressionAt2(input, pos, options) {
 var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 
 // src/workflow-registry.ts
-import { constants as constants3 } from "node:fs";
-import { access as access3, readdir as readdir9, readFile as readFile11 } from "node:fs/promises";
+import { constants as constants4 } from "node:fs";
+import { access as access3, readdir as readdir9, readFile as readFile10 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
 import path19 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
@@ -38195,7 +38263,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   }
   const scriptPath = path19.resolve(options.cwd, nameOrRef.scriptPath);
   try {
-    await access3(scriptPath, constants3.R_OK);
+    await access3(scriptPath, constants4.R_OK);
   } catch (error) {
     throw new WorkflowResolutionError(`workflow({ scriptPath }) could not read ${scriptPath}`, { cause: error });
   }
@@ -38268,7 +38336,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     }
     const scriptPath = path19.join(dir, entry.name);
     try {
-      const source = await readFile11(scriptPath, "utf8");
+      const source = await readFile10(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -38851,15 +38919,15 @@ function acornSyntaxErrorPosition(wrappedSource) {
 }
 async function readWorkflowScript(scriptPath) {
   try {
-    return await readFile12(scriptPath, "utf8");
+    return await readFile11(scriptPath, "utf8");
   } catch (error) {
     throw workflowScriptReadError(scriptPath, error);
   }
 }
 async function checkWorkflowScriptPath(scriptPath) {
   try {
-    await access4(scriptPath, constants4.R_OK);
-    if ((await stat7(scriptPath)).isDirectory()) {
+    await access4(scriptPath, constants5.R_OK);
+    if ((await stat8(scriptPath)).isDirectory()) {
       throw Object.assign(new Error("script path is a directory"), { code: "EISDIR" });
     }
   } catch (error) {
@@ -38944,10 +39012,10 @@ function wrappedFrameCitation(frameLine) {
   return null;
 }
 function citedLocationOf(frameLine) {
-  const open = frameLine.lastIndexOf("(");
-  if (open >= 0) {
-    const close = frameLine.indexOf(")", open);
-    return close > open ? frameLine.slice(open + 1, close) : null;
+  const open2 = frameLine.lastIndexOf("(");
+  if (open2 >= 0) {
+    const close = frameLine.indexOf(")", open2);
+    return close > open2 ? frameLine.slice(open2 + 1, close) : null;
   }
   const bare = /^\s+at\s+(?:async\s+)?(\S+)/.exec(frameLine);
   return bare === null ? null : bare[1];
@@ -40131,7 +40199,7 @@ async function prepareRun(invocation, cwd, program) {
       const requestedCwd = path21.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
-        isDirectory2 = (await stat8(requestedCwd)).isDirectory();
+        isDirectory2 = (await stat9(requestedCwd)).isDirectory();
       } catch {
         isDirectory2 = false;
       }
@@ -40442,7 +40510,7 @@ var WORKFLOW_TUNING_OPTIONS = {
 async function parseWorkflowInvocation(argv, cwd, program) {
   if (argv[0] === "run") {
     try {
-      await stat8(path21.resolve(cwd, "run"));
+      await stat9(path21.resolve(cwd, "run"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       throw new CliUsageError(`${program}: "run" was taken as the script path; there is no run subcommand. Use: ${program} [run options] <script.js> [args...]`);
@@ -40829,7 +40897,7 @@ async function parseJsonValue(value, cwd, flagName) {
     const filePath = path21.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
-      source = await readFile13(filePath, "utf8");
+      source = await readFile12(filePath, "utf8");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new CliUsageError(`${flagName} could not read ${filePath}: ${message}`);

@@ -8,6 +8,8 @@ import { EngineRegistry } from "../../src/engines.js";
 import { ChainEngine } from "./chain-engine-fakes.js";
 import {
   AgentPromptRejectedError,
+  CapabilityStripUnsupportedError,
+  EngineShutdownError,
   LeanStartUnsupportedError,
   ZCodeModelRequiredError,
   ZCodeSubstrateRefusedError
@@ -43,7 +45,8 @@ const FORK_HELP = [
   "  models     Print the available models and their limits and reasoning levels as JSON",
   "Options:",
   "  -p, --prompt <text>  Run a single prompt without opening the TUI",
-  "  --provider <id> --model <id> --reasoning-level <level>  Select the model for this interactive or headless run"
+  "  --provider <id> --model <id> --reasoning-level <level>  Select the model for this interactive or headless run",
+  "  --disallowed-tools <tools...>  Withhold tools for this run"
 ].join("\n");
 
 /** Upstream ZCode's help: no per-run model flags and no listing. */
@@ -373,6 +376,38 @@ test("zcode's refusals of an unlisted model and of a level it does not hold are 
     { class: "availability", rule: "zcode.substrate-refused" });
 });
 
+for (const inspecting of ["--help", "models"]) {
+  test(`closing the zcode adapter aborts a shared ${inspecting} inspection`, { timeout: 3_000 }, async (t) => {
+    const runner = new FakeZCodeRunner([]);
+    const started = Promise.withResolvers<void>();
+    const stopped = Promise.withResolvers<void>();
+    const inspect = runner.inspect.bind(runner);
+    t.mock.method(runner, "inspect", async (args: readonly string[], signal: AbortSignal) => {
+      if (args[0] !== inspecting) return inspect(args);
+      signal.addEventListener("abort", () => stopped.resolve(), { once: true });
+      started.resolve();
+      await stopped.promise;
+      return { exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 1 };
+    });
+    const model = "gateway/gpt-6.2-sol";
+    const adapter = new ZCodeEngineAdapter({ runner });
+    const report = adapter.effortReport(model);
+    const invocation = adapter.createInvocation("never launch", { model });
+    const attempt = assert.rejects(invocation.runAttempt({ attempt: 1 }), EngineShutdownError);
+    try {
+      await started.promise;
+      await adapter.close();
+      await attempt;
+      assert.equal(await report, null);
+      assert.equal(runner.runs.length, 0);
+      assert.deepEqual(runner.inspections, inspecting === "--help" ? [] : [["--help"]]);
+    } finally {
+      stopped.resolve();
+      await adapter.close();
+    }
+  });
+}
+
 test("a ZCode without per-run model selection or a listing is refused before any worker spawns, naming what it lacks", async () => {
   const runner = new FakeZCodeRunner([], { help: UPSTREAM_HELP });
   const { runtime } = runtimeWith(runner);
@@ -485,6 +520,27 @@ test("a zcode strip withholds the tools by name, and a lean start is refused", a
   }
 });
 
+test("zcode refuses a requested strip when the CLI does not advertise the flag", async () => {
+  const help = FORK_HELP.replace("--disallowed-tools ", "--disallowed-tools-extra ");
+  const runner = new FakeZCodeRunner([finishedRun("sess_unstripped", "ok")], { help });
+  const { runtime, records } = runtimeWith(runner);
+  const target = { engine: "zcode", model: "gateway/gpt-6.2-sol" } as const;
+  try {
+    await assert.rejects(runtime.agent("go", { ...target, strip: ["skills"] }), {
+      name: CapabilityStripUnsupportedError.name, message: /does not offer --disallowed-tools/
+    });
+    const session = runtime.createWorkerSession({ ...target, strip: ["agents"] });
+    await assert.rejects(session.send("go"), CapabilityStripUnsupportedError);
+    await session.close();
+    assert.deepEqual(runner.inspections, [["--help"]]);
+    assert.equal(runner.runs.length, 0);
+    assert.ok(records.every((record) => record.attempts.length === 0));
+    assert.equal(await runtime.agent("go", target), "ok");
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("a held zcode worker resumes its session on every later turn, and a retry corrects in-session", async () => {
   const runner = new FakeZCodeRunner([
     finishedRun("sess_held", "first answer"),
@@ -501,6 +557,47 @@ test("a held zcode worker resumes its session on every later turn, and a retry c
     assert.ok(runner.runs[0]!.prompt.startsWith(WORKER_STANDING_INSTRUCTIONS));
     assert.equal(runner.runs[1]!.prompt, laterTurnPrompt({ task: "second prompt", schema }));
     assert.match(runner.runs[2]!.prompt, /^Your last final message was not valid JSON for the required schema\./);
+    await session.close();
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a held zcode retry includes the task when the CLI failed before accepting that turn", async () => {
+  const runner = new FakeZCodeRunner([
+    finishedRun("sess_held", "first answer"),
+    failedRun("sess_held", "could not open the working directory"),
+    finishedRun("sess_held", '{"ok": true}')
+  ]);
+  const { runtime } = runtimeWith(runner);
+  try {
+    const session = runtime.createWorkerSession({ engine: "zcode", model: "gateway/gpt-6.2-sol" });
+    assert.equal(await session.send("first prompt"), "first answer");
+    const schema = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
+    assert.deepEqual(await session.send("second prompt", { schema }), { ok: true });
+    assert.deepEqual(runner.runs.map((run) => run.resume), [undefined, "sess_held", "sess_held"]);
+    const task = laterTurnPrompt({ task: "second prompt", schema });
+    assert.equal(runner.runs[1]!.prompt, task);
+    assert.match(runner.runs[2]!.prompt, /^A previous attempt failed .*could not open the working directory/);
+    assert.ok(runner.runs[2]!.prompt.endsWith(`\n\n${task}`));
+    await session.close();
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a held zcode retry delivers the opening instructions if only the session was created", async () => {
+  const runner = new FakeZCodeRunner([
+    failedRun("sess_new", "could not open the working directory"),
+    finishedRun("sess_new", "ok")
+  ]);
+  const { runtime } = runtimeWith(runner);
+  try {
+    const session = runtime.createWorkerSession({ engine: "zcode", model: "gateway/gpt-6.2-sol" });
+    assert.equal(await session.send("first prompt"), "ok");
+    assert.equal(runner.runs[1]!.resume, "sess_new");
+    assert.ok(runner.runs[1]!.prompt.startsWith(WORKER_STANDING_INSTRUCTIONS));
+    assert.ok(runner.runs[1]!.prompt.endsWith("Task:\nfirst prompt"));
     await session.close();
   } finally {
     await runtime.close();

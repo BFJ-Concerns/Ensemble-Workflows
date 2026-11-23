@@ -20,7 +20,8 @@ script whose finder runs on one family and whose checker runs on another
 loses its check when the two are moved together. When the checker's family
 is the one misbehaving, move the checker to a third family where the machine
 has one. Where it has none, run on one family and report that the
-cross-family check was not performed.
+cross-family check was not performed. With a remap, the kind of key decides
+what moves: see *Taking a family off a check*.
 
 ## Dispatch remap
 
@@ -64,10 +65,52 @@ a model from the rule or from `defaults`, since those engines require one.
 resolved afresh for the destination's model. A call whose effort is a raw
 opencode variant name cannot be moved to another engine; it is refused.
 
-**Reach.** The remap applies to a call's first dispatch and to each fallback
-entry the call reaches, so a chain cannot carry a call back onto an engine
-the launch moved it off. A session is remapped once, at creation, from its
-label and phase, and keeps that engine and model for its life.
+**Reach.** The rules are read for a call's first dispatch and again, with
+the same precedence, for each fallback entry the call reaches. A rule's
+destination is final: no other rule moves it on. How far a rule reaches
+along the chain depends on the kind of key:
+
+- `label:` and `phase:` keys read the call, not where it is going. A rule
+  that matches the call matches every entry of its chain, whatever engine
+  and model the entry names, and sends each to the rule's destination. A
+  fallback step then dispatches the call there again.
+- An `engine` key matches each entry on that engine. The chain cannot carry
+  the call back onto that engine, and can still carry it to any other.
+- An `engine:model` key matches an entry only where it names that engine
+  and that model. An entry on the same engine with another model runs as
+  written. So does a dispatch that leaves its model to the engine's
+  default: it has no model for a pair to match.
+
+A session's rules are read once, at `session()`, against the label and
+phase it has then. Its worker keeps the engine and model that answer its
+first turn for its life.
+
+**Taking a family off a check.** No key names a family. A key names a role
+by its label or phase, an engine, or one model, so choose the kind by what
+has to move:
+
+- **One role**, such as the checker: a `label:` rule on its label, or a
+  `phase:` rule where the role has a phase to itself. Nothing else in the
+  run moves, and the role's whole chain moves with it, so no fallback step
+  can put it back on the family it left or onto its doer's. This is the
+  rule that holds a check on the family you chose. Its cost is that the
+  role has nowhere else to go when the destination is unavailable.
+- **Everything on an engine**: an `engine` rule. It moves the doer with the
+  checker when both are dispatched on that engine; a `label:` rule beside
+  it outranks it, and can send the checker somewhere else. It leaves the
+  family in the run wherever another engine serves it, as `opencode` and
+  `zcode` can: a chain entry or a call that reaches one of the family's
+  models there still runs. Give each such engine a rule of its own.
+- **One model**: an `engine:model` rule, for when that model is the trouble
+  and the rest of its family should keep working. It takes no family off
+  anything: another model of the family still answers on the same engine,
+  from a chain entry or from a call that names it.
+
+Under an `engine` or `engine:model` rule, read the chain each moved call
+will take before launching (*Where a call's chain comes from*, below) and
+hold every entry against the rules: an entry that no rule matches runs
+where it says. `lookupDispatch()` answers for the first dispatch only.
+*Which family ran* says how to confirm the move afterwards.
 
 **What the run tells you.** Stderr names the winning key for each remapped
 dispatch. At the run's end, a rule that matched no dispatch is reported as
@@ -169,7 +212,8 @@ it finds, whole, never merged with another:
    any dispatch remap;
 3. the binding of the named target the call names;
 4. the machine configuration's `fallback` map, by `engine:model` and then by
-   `engine`.
+   `engine`, for the engine and model the call is dispatched on after any
+   dispatch remap.
 
 `fallback: false` on a call or in a `defaults` block ends the search with no
 chain. So a call that declares nothing may still have a chain, from the

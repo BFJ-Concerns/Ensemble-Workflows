@@ -352,10 +352,11 @@ is a routing problem, not a script problem. Leave the script as written and
 move its dispatches:
 
 - **For one launch**, add a dispatch remap. `--remap claude=codex` moves
-  every Claude dispatch to Codex. A key can instead be a label or phase
-  glob, or an `engine:model` pair, and the destination can carry a model:
-  `--remap 'label:verify-*=codex:<model>'`. Nothing on disk changes, and
-  stderr names each dispatch the remap moved.
+  every dispatch on the `claude` engine to Codex. A key can instead be a
+  label or phase glob, which moves one role and its whole fallback chain,
+  or an `engine:model` pair, which moves that one model. The destination
+  can carry a model: `--remap 'label:verify-*=codex:<model>'`. Nothing on
+  disk changes, and stderr names each dispatch the remap moved.
 - **For every run from now on**, rebind the named target in the machine
   configuration's `targets` section. This reaches every workflow on the
   machine that uses the name, from its next run. The file is the
@@ -371,7 +372,8 @@ a fallback step, and stays silent when a worker's family is unknown, so its
 absence proves nothing.
 
 Read [references/rerouting.md](references/rerouting.md) before using any of
-the three: it has the remap's keys and precedence, how names resolve, and
+the three: it has the remap's keys, their precedence and how far each kind
+reaches along a fallback chain, how names resolve, and
 the order in which a chain is found and followed. Read
 [references/machine-configuration.md](references/machine-configuration.md)
 when reading or editing the machine configuration file, or setting an

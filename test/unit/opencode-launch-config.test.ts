@@ -144,7 +144,7 @@ test("a later opencode dispatch reclaims a killed launcher's lean profile and ke
   }
 });
 
-test("the opencode sweep ignores linked or non-regular owner records and writable profiles", async (t) => {
+test("the opencode sweep requires the sticky bit in a writable root and skips unsafe entries", async (t) => {
   const ticks = await readProcessStartTicks("/proc", process.pid);
   if (ticks === null) {
     t.skip("requires process ownership evidence from /proc");
@@ -166,11 +166,17 @@ test("the opencode sweep ignores linked or non-regular owner records and writabl
     await writeFile(path.join(ordinary, "owner.json"), owner);
 
     const moduleUrl = new URL("../../src/opencode-launch-config.js", import.meta.url).href;
-    await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", `
+    const sweep = () => promisify(execFile)(process.execPath, ["--input-type=module", "--eval", `
       const { sweepAbandonedOpenCodeProfiles } = await import(process.argv[1]);
       await sweepAbandonedOpenCodeProfiles();
     `, moduleUrl], { timeout: 5_000, env: { ...process.env, TMPDIR: root } });
 
+    await chmod(root, 0o0777);
+    await sweep();
+    await access(ordinary);
+
+    await chmod(root, 0o1777);
+    await sweep();
     await assert.rejects(access(ordinary), { code: "ENOENT" });
     for (const directory of [linked, pipe, writable]) await access(directory);
   } finally {

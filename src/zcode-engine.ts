@@ -509,10 +509,17 @@ class ZCodeWorkerSession implements EngineWorkerSession {
   beginTurn(prompt: string, turn: EngineSessionTurn): EngineInvocation {
     let turnDelivered = false;
     return {
-      runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context, turnDelivered, () => {
-        turnDelivered = true;
-        this.#opened = true;
-      })
+      runAttempt: (context) => {
+        // A fresh session has received neither the opening instructions nor this turn.
+        if (this.#sessionId === null) {
+          this.#opened = false;
+          turnDelivered = false;
+        }
+        return this.#runTurnAttempt(prompt, turn.schema, context, turnDelivered, () => {
+          turnDelivered = true;
+          this.#opened = true;
+        });
+      }
     };
   }
 

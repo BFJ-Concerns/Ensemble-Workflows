@@ -586,6 +586,53 @@ test("a held zcode retry includes the task when the CLI failed before accepting 
   }
 });
 
+test("a held zcode retry sends only the correction after a failed turn started in the same session", async () => {
+  const failed = failedRun("sess_held", "provider failed mid-turn");
+  failed.events.unshift({ type: "turn.started", sessionId: "sess_held", payload: { turnNumber: 1 } });
+  const runner = new FakeZCodeRunner([
+    finishedRun("sess_held", "first answer"),
+    failed,
+    finishedRun("sess_held", "second answer")
+  ]);
+  const { runtime } = runtimeWith(runner);
+  try {
+    const session = runtime.createWorkerSession({ engine: "zcode", model: "gateway/gpt-6.2-sol" });
+    assert.equal(await session.send("first prompt"), "first answer");
+    assert.equal(await session.send("second prompt"), "second answer");
+    assert.deepEqual(runner.runs.map((run) => run.resume), [undefined, "sess_held", "sess_held"]);
+    assert.equal(runner.runs[1]!.prompt, laterTurnPrompt({ task: "second prompt" }));
+    assert.match(runner.runs[2]!.prompt, /^Your last turn did not complete .*provider failed mid-turn/);
+    assert.doesNotMatch(runner.runs[2]!.prompt, /second prompt/);
+    await session.close();
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a held zcode retry resends an opening task whose only delivery was in a different session", async () => {
+  const failed = failedRun(null, "session id was missing");
+  failed.events.unshift({ type: "turn.started", payload: { turnNumber: 0 } });
+  const runner = new FakeZCodeRunner([
+    failed,
+    failedRun("sess_new", "could not open the working directory"),
+    finishedRun("sess_new", "ok")
+  ]);
+  const { runtime } = runtimeWith(runner);
+  try {
+    const session = runtime.createWorkerSession({ engine: "zcode", model: "gateway/gpt-6.2-sol" });
+    assert.equal(await session.send("opening task"), "ok");
+    assert.deepEqual(runner.runs.map((run) => run.resume), [undefined, undefined, "sess_new"]);
+    for (const retry of runner.runs.slice(1)) {
+      assert.ok(retry.prompt.startsWith(WORKER_STANDING_INSTRUCTIONS));
+      assert.ok(retry.prompt.endsWith("Task:\nopening task"));
+    }
+    assert.match(runner.runs[2]!.prompt, /could not open the working directory/);
+    await session.close();
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("a held zcode retry delivers the opening instructions if only the session was created", async () => {
   const runner = new FakeZCodeRunner([
     failedRun("sess_new", "could not open the working directory"),

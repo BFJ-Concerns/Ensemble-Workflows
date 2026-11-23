@@ -643,7 +643,9 @@ is an availability failure, so a remaining fallback entry runs instead.
   is refused before the worker spawns (`AgentPromptRejectedError`), the error
   naming the limit. A held worker's later turns resume
   the ZCode session its first run created (`--resume`); if zcode no longer
-  finds that session, the session is lost.
+  finds that session, the session is lost. A retry sends only the correction
+  if the session it resumes already accepted that turn. If a retry opens a
+  fresh session, it sends the opening instructions and task again.
 - zcode closes every run it handles with a `result` line, so a run whose
   process ends without one — killed, or crashed — is a dead worker: an
   availability failure that advances a remaining fallback entry.

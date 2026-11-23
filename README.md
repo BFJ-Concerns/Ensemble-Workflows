@@ -169,6 +169,7 @@ Node module. The hooks it can call:
 | Hook | Purpose |
 |---|---|
 | `agent(prompt, options)` | Run one worker; return its answer or `null` on worker failure. Pre-spawn rejections and run endings throw (see [Failures](docs/workflow-scripts.md#failures)) |
+| `lookupDispatch(options)` | Find the first dispatch target without starting a worker (see [Dispatch lookup](docs/workflow-scripts.md#dispatch-lookup)) |
 | `session(options)` | Create a multi-turn worker that keeps its context between turns |
 | `parallel(thunks)` | Run calls concurrently |
 | `pipeline(items, ...stages)` | Run each item through a series of stages |

@@ -579,11 +579,25 @@ model each model request went to, recorded as `provider/model`, and its
 `resolved_effort` is the level a request reports as effective, `null` while
 every request reports it as `unknown`.
 
-Codex supports only a subset of JSON Schema for backend enforcement. A schema
-outside that subset is rejected before generation: the call returns `null`
-after one thread start, without retrying or advancing a fallback chain, and
-the error names `claude`, `opencode`, `agy` and `zcode` as engines that check
-the full JSON Schema themselves.
+Ensemble sends Codex a copy of the schema as `turn/start.outputSchema`.
+In that copy, Ensemble adds every key from `properties` to `required`,
+including in nested objects. Ensemble validates the reply against the
+authored schema.
+
+Use `type: "object"` at the root and set `additionalProperties: false`
+on every object, including objects inside arrays. To represent a missing
+value, use a nullable property such as `type: ["string", "null"]` and
+return `null` for that property. Runs through Codex CLI 0.170.0 with
+OpenAI Structured Outputs accepted this shape. They rejected a root array,
+a root `anyOf`, omission of `additionalProperties: false` at the root or
+in a nested object, and `allOf` and `oneOf` inside a property. The app-server
+protocol schema describes `outputSchema` as a per-turn constraint. For the
+provider's schema rules, see [OpenAI's Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas).
+
+A backend schema rejection ends the call before generation. `agent()`
+returns `null` after one thread start, without retrying or advancing a
+fallback chain. The error names `claude`, `opencode`, `agy` and `zcode`
+as engines that check the full JSON Schema themselves.
 
 On Claude, opencode, agy and zcode, the worker is asked for a conforming JSON value and
 may surround it with prose or a Markdown fence. A candidate value is the whole

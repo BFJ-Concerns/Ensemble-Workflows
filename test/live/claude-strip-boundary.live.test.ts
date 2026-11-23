@@ -84,6 +84,7 @@ test("a stripped Claude worker is offered no agent or skill tool, while unstripp
       for (const name of ["ListAgents", "SendMessage", "Skill"]) {
         assert.ok(before.tools.some(tool => tool.name === name), `first control did not expose ${name}`);
         assert.ok(after.tools.some(tool => tool.name === name), `second control did not expose ${name}`);
+        assert.ok(!stripped.tools.some(tool => tool.name === name), `stripped worker still exposed ${name}`);
       }
       const restrictedRecord = records.find(record => record.label === "surface-1");
       assert.ok(restrictedRecord?.strip, result.stderr);
@@ -92,8 +93,6 @@ test("a stripped Claude worker is offered no agent or skill tool, while unstripp
       assert.ok(denyMatch);
       assert.match(details.agents!.detail, /CLAUDE_CODE_DISABLE_ADVISOR_TOOL.*1/);
       assert.ok(!stripped.tools.some(tool => tool.name === "advisor"));
-      assert.ok(before.tools.some(tool => tool.name === "advisor"));
-      assert.ok(after.tools.some(tool => tool.name === "advisor"));
       const denies = JSON.parse(denyMatch[1]!) as string[];
       const offered = new Set(stripped.tools.map(tool => tool.name));
       assert.ok(denies.every(name => !offered.has(name)));
@@ -135,15 +134,21 @@ test("a built-in agent tool nobody has classified is denied while unrelated tool
       assert.ok(surfaces[0]?.tools.some(tool => tool.name === "ListAgents"), "the control did not expose the stand-in agent tool");
       assert.ok(prepared.permissionDenyRules.includes("ListAgents"));
       assert.equal(prepared.settingsEnv.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "1");
-      assert.ok(surfaces[0]?.tools.some(tool => tool.name === "advisor"));
       assert.ok(!surfaces[1]?.tools.some(tool => tool.name === "advisor"));
       assert.ok(!surfaces[1]?.tools.some(tool => tool.name === "ListAgents"));
       for (const name of ["Read", "Bash"]) assert.ok(surfaces[1]?.tools.some(tool => tool.name === name));
       assert.match(prepared.enforcement.agents?.detail ?? "", /unclassified and denied: \[[^\]]*"ListAgents"/);
       const skills = await preparer.prepare({ strip: ["skills"], cwd: f.root, model: "haiku" });
       assert.deepEqual(skills.settingsEnv, {});
-      assert.ok(surfaces[3]?.tools.some(tool => tool.name === "advisor"), "skills-only strip removed advisor");
-      assert.ok(!surfaces[3]?.tools.some(tool => tool.name === "Skill"));
+      const [, , skillsControl, skillsStripped] = surfaces;
+      assert.ok(skillsControl && skillsStripped);
+      assert.ok(skillsControl.tools.some(tool => tool.name === "Skill"), "the control did not expose the skill tool");
+      assert.ok(!skillsStripped.tools.some(tool => tool.name === "Skill"));
+      assert.equal(
+        skillsStripped.tools.some(tool => tool.name === "advisor"),
+        skillsControl.tools.some(tool => tool.name === "advisor"),
+        "skills-only strip changed advisor availability"
+      );
     } catch (error) {
       testFailed = true;
       throw error;

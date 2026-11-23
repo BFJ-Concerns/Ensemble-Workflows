@@ -38,13 +38,38 @@ The test suite needs a systemd user session (some tests bound child processes
 with `systemd-run --user --scope`) and `codex` on `PATH` (some tests ask it for
 the app-server protocol schema).
 
-## The launcher
+## The plugin and the launcher
 
-`plugin/skills/ensemble-workflow/scripts/ensemble.mjs` is the self-contained
-launcher, built from `src/` by `npm run build:skill`. Skill installs expect
-exactly that path, so do not move or rename it, and keep the directory to that
-one file: the `ensemble-workflow` skill's guidance (`SKILL.md` and its
-references) is maintained in a separate repository.
+`plugin/` is the directory Claude Code and Codex install: a manifest for each
+tool (`plugin/.claude-plugin/plugin.json`, `plugin/.codex-plugin/plugin.json`)
+and one skill, `plugin/skills/ensemble-workflow/`. The catalogues that offer
+it sit at the repository root, `.claude-plugin/marketplace.json` for Claude
+Code and `.agents/plugins/marketplace.json` for Codex; opencode has no plugin
+format that carries a skill, so its users link the skill directory into their
+skills directory. An install copies `plugin/` whole and both tools load
+components from it by directory name, so it holds the manifests and the skill
+and nothing else. `test/unit/plugin-layout.test.ts` holds that, and the
+shapes Codex reads without validating.
+
+The skill directory holds:
+
+- `SKILL.md` and `references/`, the guidance an agent drives the runtime with;
+- `agents/openai.yaml`, Codex's listing of the skill;
+- `scripts/ensemble.mjs`, the self-contained launcher, built from `src/` by
+  `npm run build:skill`. The skill's text and every install find it at that
+  path, so do not move or rename it.
+
+The skill's text ships beside the launcher it describes, so a change to
+runtime behaviour updates the text in the same change, as it does the pages
+in `docs/`. `test/unit/plugin-skill-text.test.ts` fails when the flags,
+`ENSEMBLE_*` variables, engines, `agent()` options or script hooks the text
+names differ from the runtime's, and when the text would not load on one of
+the three tools. The text is read on machines other than this one: it names
+no host, path, service or model-routing policy of any one of them, and it
+writes every command as `node <launcher>`, never as an `ensemble` on `PATH`.
+
+Both manifests carry the product's version. `scripts/release-version.mjs`
+checks them against `package.json` and writes them on a bump.
 
 Building rewrites the tracked launcher, so `just verify` and `npm test` can
 leave the tree dirty. Commit the rebuilt launcher with the change that caused

@@ -29,6 +29,19 @@ test("a command that cannot be started is its substrate refusing, not a raw proc
   }
 });
 
+test("a non-spawn errno from command containment reaches the caller unchanged", async (t) => {
+  const commands = new CommandContainment(new NoWorkerScopes());
+  const failure = Object.assign(new Error("could not read command placement"), {
+    code: "ENOENT", errno: -2, syscall: "open"
+  });
+  t.mock.method(commands, "contain", async () => { throw failure; });
+  try {
+    await assert.rejects(runStreamedCommand(options(commands, {})), (error: unknown) => error === failure);
+  } finally {
+    await commands.close();
+  }
+});
+
 test("Node rejecting a NUL in a command argument is not a substrate refusal", async () => {
   const commands = new CommandContainment(new NoWorkerScopes());
   try {

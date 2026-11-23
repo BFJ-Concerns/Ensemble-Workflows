@@ -11,6 +11,7 @@ import {
   CapabilityStripUnsupportedError,
   EngineShutdownError,
   LeanStartUnsupportedError,
+  SubstrateRefusedError,
   ZCodeModelRequiredError,
   ZCodeSubstrateRefusedError
 } from "../../src/errors.js";
@@ -377,6 +378,31 @@ test("zcode's refusals of an unlisted model and of a level it does not hold are 
 });
 
 for (const inspecting of ["--help", "models"]) {
+  test(`zcode ${inspecting} distinguishes a spawn refusal from another inspection error`, async (t) => {
+    for (const fault of [
+      new SubstrateRefusedError("fixture executable could not be started"),
+      Object.assign(new Error("fixture inspection failed"), { code: "EIO", errno: -5, syscall: "read" })
+    ]) {
+      const runner = new FakeZCodeRunner([]);
+      const inspect = runner.inspect.bind(runner);
+      t.mock.method(runner, "inspect", async (args: readonly string[]) => {
+        if (args[0] === inspecting) throw fault;
+        return inspect(args);
+      });
+      const adapter = new ZCodeEngineAdapter({ runner });
+      try {
+        const invocation = adapter.createInvocation("never launch", { model: "gateway/gpt-6.2-sol" });
+        await assert.rejects(invocation.runAttempt({ attempt: 1 }), (error: unknown) => {
+          if (!(fault instanceof SubstrateRefusedError)) return error === fault;
+          return error instanceof ZCodeSubstrateRefusedError && error.message.includes(fault.message);
+        });
+        assert.equal(runner.runs.length, 0);
+      } finally {
+        await adapter.close();
+      }
+    }
+  });
+
   test(`closing the zcode adapter aborts a shared ${inspecting} inspection`, { timeout: 3_000 }, async (t) => {
     const runner = new FakeZCodeRunner([]);
     const started = Promise.withResolvers<void>();

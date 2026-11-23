@@ -132,13 +132,14 @@ call's own chain still takes precedence over `fallback: false` in defaults.
 - Each step re-dispatches the same prompt, schema, placement, strip and
   lean settings on the next target. Ensemble checks that each target
   offers the requested strip or lean route before the first dispatch.
-  Opencode verifies its resolved configuration only when its entry is
-  reached. If that verification refuses a strip or lean start, the call
-  throws before launching that opencode worker, even if an earlier
-  target already ran. An uncaught refusal fails the run.
+  When a chain reaches an opencode entry, Ensemble verifies its resolved
+  configuration. When it reaches a ZCode entry with a strip, Ensemble checks
+  the installed CLI's help for `--disallowed-tools`. If verification refuses
+  a strip or lean start, the call throws before launching that worker. An
+  uncaught refusal fails the run.
 - An entry with no `effort` inherits the call's effort. If the call uses a raw
-  opencode variant name, a Codex, Claude or agy entry uses its engine's
-  default.
+  opencode variant name, a Codex, Claude, agy or ZCode entry uses its
+  engine's default.
   An opencode entry inherits that variant, and Ensemble refuses the chain
   before any worker spawns if the entry's model does not declare it.
 - `maxAttempts` counts answered attempts across the whole chain; a refusal
@@ -723,7 +724,9 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
   subagent tool and the `CreateWorkflow` dynamic-workflow tool. A withheld
   tool is not offered to the model; on zcode 0.17.1 a run's offered tool
   count fell from 47 to 45 with `Skill` and `Agent` withheld. A stripped
-  worker's shell can still run `zcode` itself.
+  worker's shell can still run `zcode` itself. The dispatch refuses a strip
+  before launching the worker if the installed ZCode does not advertise
+  `--disallowed-tools` in its help.
 
 Each agent record lists the requested strips and how each was enforced.
 
@@ -1002,8 +1005,9 @@ unavailable for the correction. Opening delivery also requires tmux.
 
 Codex, opencode and one-shot agy and zcode calls retry with the failure
 appended to the prompt. A held agy session corrects in place while its worker
-lives (see [agy workers](#agy-workers)); a held zcode worker corrects in its
-resumed session.
+lives (see [agy workers](#agy-workers)). A held zcode worker retries in its
+resumed session. The retry includes the task and its schema, if any, when
+ZCode has yet to confirm the turn started.
 
 An opencode model absent from the machine registry, a missing model, or an
 unsupported registry variant is refused before worker admission: the call

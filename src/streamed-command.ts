@@ -115,10 +115,11 @@ export async function runStreamedCommand(options: StreamedCommandOptions): Promi
   }
 }
 
-/** A spawn failure (it carries the system's error code) as the substrate refusal it is; anything else unchanged. */
+/** Only an operating-system spawn error means the executable could not start. */
 function unstartable(label: string, error: unknown): unknown {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  if (!(error instanceof Error) || typeof code !== "string") return error;
+  if (!(error instanceof Error)) return error;
+  const { code, errno, syscall } = error as NodeJS.ErrnoException;
+  if (typeof code !== "string" || typeof errno !== "number" || !/^spawn(?: |$)/.test(syscall ?? "")) return error;
   return new SubstrateRefusedError(`${label} could not be started (${code}): ${error.message}`, { cause: error });
 }
 

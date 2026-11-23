@@ -257,10 +257,10 @@ before a move in the original cgroup. Run teardown stops the scopes Ensemble own
 Claude control-command scopes and the shared supervisor are outside that
 ownership.
 
-Under `worker`, each opencode command and agy ACP worker takes its own
-scope. Under `run`, each takes a subgroup of the shared scope. Descendants
-inherit that placement, so an attempt can stop its commands while other
-workers continue. If the manager cannot provide a scope or subgroup, the
+Under `worker`, each opencode command, ZCode command and agy ACP worker
+takes its own scope. Under `run`, each takes a subgroup of the shared scope.
+Descendants inherit that placement, so an attempt can stop its commands
+while other workers continue. If the manager cannot provide a scope or subgroup, the
 command uses a process group. A stop
 an attempt makes before the run ends discloses unconfirmed reach on the attempt
 record and stderr, without changing the attempt's or run's outcome. A command

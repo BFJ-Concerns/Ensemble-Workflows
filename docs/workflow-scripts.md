@@ -1310,14 +1310,20 @@ on the session before the first prompt. agy runs on the account it is
 signed in to, and the `agy` binary is found on the worker environment's
 `PATH`.
 
-- **Before any prompt:** a model agy does not list, or a level the model
-  does not offer, throws `InvalidAgentOptionValueError` naming what agy
-  offers. A server that will not start or initialise, a missing sign-in,
-  or a session agy will not open throws `AgySubstrateRefusedError`, a
-  substrate refusal recorded as `agy.substrate-refused` (availability),
-  which advances a remaining chain entry without spending an attempt.
-- **Effort:** to clamp a level, Ensemble reads every model's levels once
-  per run from an agy session it never prompts.
+- **Before any prompt:** a model agy does not list throws
+  `InvalidAgentOptionValueError` naming what agy offers. A server that
+  will not start or initialise, a missing sign-in, or a session agy will
+  not open throws `AgySubstrateRefusedError`, a substrate refusal recorded
+  as `agy.substrate-refused` (availability), which advances a remaining
+  chain entry without spending an attempt.
+- **Effort:** when agy's listing supplies the model's canonical levels
+  for [effort resolution](#per-engine-behaviour), Ensemble clamps the
+  request to the nearest listed level within the machine bounds. It
+  reads the listing from an agy session it never prompts. Before sending
+  the prompt, Ensemble validates the resolved level against the worker's
+  session. It throws `InvalidAgentOptionValueError` if the model offers
+  no level or the session cannot use the resolved level. A model with
+  one level encoded in its name can clamp to that level.
 - **The answer** is the message text after the turn's last tool call. If
   agy returns `end_turn` while its shell commands are running, Ensemble keeps
   the worker open until agy reports that those commands have ended and the

@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+import { isRunScopedEnvironmentVariable } from "../../src/ambient-settings.js";
 import type { WorkflowHooks } from "../../src/hooks.js";
 import type { AgentOptions, EngineName, LiteralWorkerSessionOptions } from "../../src/types.js";
 
@@ -137,15 +138,17 @@ test("the launcher reports the package version", () => {
   assert.equal(result.stdout.trim(), version);
 });
 
-test("every ENSEMBLE_ variable the skill names is one the launcher reads", () => {
-  const variablePattern = /ENSEMBLE_[A-Z0-9_]+/g;
-  const read = new Set(readFileSync(launcherPath, "utf8").match(variablePattern) ?? []);
-  // The launcher builds each engine's concurrency variable from this stem.
-  assert.ok(read.has("ENSEMBLE_CONCURRENCY_"));
-  for (const engine of engines) read.add(`ENSEMBLE_CONCURRENCY_${engine.toUpperCase()}`);
-  const named = new Set(wholeText.match(variablePattern) ?? []);
+test("every ENSEMBLE_ variable the skill names is a run setting", () => {
+  const named = new Set(wholeText.match(/ENSEMBLE_[A-Z0-9_]+/g) ?? []);
   assert.ok(named.size > 0);
-  assert.deepEqual([...named].filter((variable) => !read.has(variable)), []);
+  const concurrencyPrefix = "ENSEMBLE_CONCURRENCY_";
+  const concurrencySettings = new Set(engines.map((engine) => `${concurrencyPrefix}${engine.toUpperCase()}`));
+  // The runtime withholds the entire concurrency namespace from child
+  // processes. Only the known engines have settings in that namespace.
+  const unknown = [...named].filter((variable) => variable.startsWith(concurrencyPrefix)
+    ? !concurrencySettings.has(variable)
+    : !isRunScopedEnvironmentVariable(variable));
+  assert.deepEqual(unknown, [], "named by the skill, unknown as a run setting");
 });
 
 test("the skill covers every engine, agent() option and script hook the runtime has", () => {

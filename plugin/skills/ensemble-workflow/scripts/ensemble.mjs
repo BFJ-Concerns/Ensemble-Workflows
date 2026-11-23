@@ -28157,10 +28157,16 @@ var ZCodeWorkerSession = class {
   beginTurn(prompt, turn) {
     let turnDelivered = false;
     return {
-      runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context, turnDelivered, () => {
-        turnDelivered = true;
-        this.#opened = true;
-      })
+      runAttempt: (context) => {
+        if (this.#sessionId === null) {
+          this.#opened = false;
+          turnDelivered = false;
+        }
+        return this.#runTurnAttempt(prompt, turn.schema, context, turnDelivered, () => {
+          turnDelivered = true;
+          this.#opened = true;
+        });
+      }
     };
   }
   async #runTurnAttempt(prompt, schema, context, turnDelivered, onPromptDelivered) {

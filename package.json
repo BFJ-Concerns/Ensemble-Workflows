@@ -2,7 +2,7 @@
   "name": "ensemble-workflows",
   "version": "0.3.0",
   "private": true,
-  "description": "Deterministic multi-engine orchestration harness for Codex, Claude, opencode, and cross-engine verification.",
+  "description": "Deterministic workflow runtime for orchestrating and cross-checking AI coding agents.",
   "license": "AGPL-3.0-or-later",
   "author": "BFJ Concerns",
   "repository": {

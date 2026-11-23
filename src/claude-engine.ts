@@ -691,9 +691,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     const textFor = (closed: string | undefined) =>
       closed !== undefined && onInputClosed !== undefined ? onInputClosed(closed) : submission.message;
     const outcome = await this.#controlPlane.steer(handle, textFor(submission.closedInput), onInputClosed !== undefined ? { onInputClosed } : {});
-    // What the valve typed is what the receipt must show. A refusal that had
-    // already closed a request keeps its account for the resend, since the
-    // request it describes is not there to close a second time.
+    // What the valve typed is what the receipt must show. Keep the account
+    // after a refusal once Escape was sent, even if the roster still showed
+    // the request. A resend that finds it still waiting closes it again.
     const closedInput = outcome.closedInput ?? submission.closedInput;
     if (!outcome.submitted) {
       this.#refused = closedInput !== undefined ? { ...submission, closedInput } : submission;

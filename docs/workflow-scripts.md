@@ -41,6 +41,11 @@ worker spawns. It may be followed by an optional `defaults` export (see
 `/* … */` comments may separate the two exports; a `defaults` export declared
 later in the body is rejected with a placement error.
 
+The `meta` object may include `task: { id, family? }`, with a string `id`
+and an optional string `family`. Ensemble copies the task identity verbatim
+into the run record for grouping benchmark runs. Reuse the same identity
+across runs of the same task. Runs without it are still recorded.
+
 The rest of the file is the workflow body. It runs as the body of a single
 async function, so `return` produces the run's result and top-level `await`
 works. The body is ordinary, unsandboxed Node: every Node global (`process`,
@@ -543,7 +548,7 @@ lists the accepted type names, and invalid `properties` asks for a JSON object.
 | `model` | Optional; without one the engine's default is used and noted on stderr | Optional; without one a warning is printed on stderr | **Required**: a key or route declared in [`opencode_models`](configuration.md#opencode_models) | Optional: a base name agy lists (`gemini-4-hydrogen`, not `gemini-4-hydrogen-low`); without one, agy's own default | **Required**: a provider and one of its models as `zcode models` lists them, spelt `provider/model` (see [zcode](#zcode)) |
 | `effort` | Resolved per model before thread creation | Resolved before session creation (`none` and `minimal` become `low`) | Canonical level resolved per model, or a declared raw `variant` | Resolved per model against the levels agy lists for it, then set as the session's thought level | Resolved per model against the reasoning levels zcode lists for it |
 | `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
-| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess | Cancels the turn, including any background follow-up. If agy gives no prompt reply within ten seconds, Ensemble stops the worker | Kills the subprocess |
+| `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess | Cancels the turn, including any background follow-up. Ensemble stops the worker unless agy confirms within ten seconds with a prompt reply or, after the original reply, a failed update for the last outstanding background command | Kills the subprocess |
 | `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Enforced through permission deny rules | Not supported: throws before the worker spawns | Enforced by withholding zcode's tools for the run |
 | `lean` | Not supported: throws before the worker spawns | Custom context disabled with safe mode at dispatch | Isolated configuration with provider settings and permissions | Not supported: throws before the worker spawns | Not supported: throws before the worker spawns |
 | `fallback` entry | Yes | Yes | Yes, for one-shot calls | Yes | Yes |
@@ -574,11 +579,25 @@ model each model request went to, recorded as `provider/model`, and its
 `resolved_effort` is the level a request reports as effective, `null` while
 every request reports it as `unknown`.
 
-Codex supports only a subset of JSON Schema for backend enforcement. A schema
-outside that subset is rejected before generation: the call returns `null`
-after one thread start, without retrying or advancing a fallback chain, and
-the error names `claude`, `opencode`, `agy` and `zcode` as engines that check
-the full JSON Schema themselves.
+Ensemble sends Codex a copy of the schema as `turn/start.outputSchema`.
+In that copy, Ensemble adds every key from `properties` to `required`,
+including in nested objects. Ensemble validates the reply against the
+authored schema.
+
+Use `type: "object"` at the root and set `additionalProperties: false`
+on every object, including objects inside arrays. To represent a missing
+value, use a nullable property such as `type: ["string", "null"]` and
+return `null` for that property. Runs through Codex CLI 0.170.0 with
+OpenAI Structured Outputs accepted this shape. They rejected a root array,
+a root `anyOf`, omission of `additionalProperties: false` at the root or
+in a nested object, and `allOf` and `oneOf` inside a property. The app-server
+protocol schema describes `outputSchema` as a per-turn constraint. For the
+provider's schema rules, see [OpenAI's Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas).
+
+A backend schema rejection ends the call before generation. `agent()`
+returns `null` after one thread start, without retrying or advancing a
+fallback chain. The error names `claude`, `opencode`, `agy` and `zcode`
+as engines that check the full JSON Schema themselves.
 
 On Claude, opencode, agy and zcode, the worker is asked for a conforming JSON value and
 may surround it with prose or a Markdown fence. A candidate value is the whole
@@ -624,7 +643,9 @@ is an availability failure, so a remaining fallback entry runs instead.
   is refused before the worker spawns (`AgentPromptRejectedError`), the error
   naming the limit. A held worker's later turns resume
   the ZCode session its first run created (`--resume`); if zcode no longer
-  finds that session, the session is lost.
+  finds that session, the session is lost. A retry sends only the correction
+  if the session it resumes already accepted that turn. If a retry opens a
+  fresh session, it sends the opening instructions and task again.
 - zcode closes every run it handles with a `result` line, so a run whose
   process ends without one — killed, or crashed — is a dead worker: an
   availability failure that advances a remaining fallback entry.
@@ -1121,9 +1142,10 @@ told only to proceed without asking. Any other message the valve delivers by
 cancelling a dialog, such as a follow-up turn, a correction or a
 redelivery, goes behind the same account of the close, except a message
 that opens with a command, which goes as written so that it stays a
-command. Once the valve successfully sends Escape, it remembers the input
-request for redelivery, even if the roster still shows the request when the
-delivery times out.
+command. If the valve sends Escape and then refuses delivery, the resend
+puts the message behind the account of the close, even if the roster still
+showed the request when delivery timed out. If the resend finds the request
+still waiting, the valve closes it again before submitting the message.
 
 In a `session()`, a turn the worker took on altered text runs to its end
 before the attempt fails, with its text kept on the attempt record, so the
@@ -1165,9 +1187,11 @@ activity or reasoning. This fixed bound applies to Codex app-server events,
 Claude transcript entries, opencode run events, agy session updates and
 zcode's streamed run events. On agy a tool call, a tool call's update, a
 thought or a plan is activity. On zcode streamed reasoning, a tool event or
-a tool update is activity. agy ends a stuck stream by cancelling the turn. If agy replies to the pending
-prompt within ten seconds, a held session remains usable. Otherwise
-Ensemble stops the worker and marks a held session lost for later turns.
+a tool update is activity. agy ends a stuck stream by cancelling the turn.
+A held session remains usable if agy confirms cancellation within ten seconds
+with a prompt reply or, after the original reply, a failed update for the
+last outstanding background command. Otherwise Ensemble stops the worker
+and marks a held session lost for later turns.
 The interrupted turn records the whitespace failure, spends one attempt
 and retains its partial text. A turn that has emitted nothing does not
 start a whitespace stream.
@@ -1289,14 +1313,20 @@ on the session before the first prompt. agy runs on the account it is
 signed in to, and the `agy` binary is found on the worker environment's
 `PATH`.
 
-- **Before any prompt:** a model agy does not list, or a level the model
-  does not offer, throws `InvalidAgentOptionValueError` naming what agy
-  offers. A server that will not start or initialise, a missing sign-in,
-  or a session agy will not open throws `AgySubstrateRefusedError`, a
-  substrate refusal recorded as `agy.substrate-refused` (availability),
-  which advances a remaining chain entry without spending an attempt.
-- **Effort:** to clamp a level, Ensemble reads every model's levels once
-  per run from an agy session it never prompts.
+- **Before any prompt:** a model agy does not list throws
+  `InvalidAgentOptionValueError` naming what agy offers. A server that
+  will not start or initialise, a missing sign-in, or a session agy will
+  not open throws `AgySubstrateRefusedError`, a substrate refusal recorded
+  as `agy.substrate-refused` (availability), which advances a remaining
+  chain entry without spending an attempt.
+- **Effort:** when agy's listing supplies the model's canonical levels
+  for [effort resolution](#per-engine-behaviour), Ensemble clamps the
+  request to the nearest listed level within the machine bounds. It
+  reads the listing from an agy session it never prompts. Before sending
+  the prompt, Ensemble validates the resolved level against the worker's
+  session. It throws `InvalidAgentOptionValueError` if the model offers
+  no level or the session cannot use the resolved level. A model with
+  one level encoded in its name can clamp to that level.
 - **The answer** is the message text after the turn's last tool call. If
   agy returns `end_turn` while its shell commands are running, Ensemble keeps
   the worker open until agy reports that those commands have ended and the
@@ -1315,7 +1345,8 @@ signed in to, and the `agy` binary is found on the worker environment's
   to ten seconds for a prompt reply, or, after the original reply, a failed
   update for the last outstanding background command. If agy does not
   confirm cancellation, Ensemble stops the worker and any held session
-  is lost. A deadline records `agy.deadline` (unclassified).
+  is lost. A deadline records `agy.deadline` (unclassified). A whitespace
+  stop records `WhitespaceStreamError` with class and rule `output`.
 - **Failures agy returns:** a prompt refused for want of a sign-in
   (`agy-sign-in-required`, `agy.sign-in-required`) and a worker process
   that ended mid-turn (`agy-worker-lost`, `agy.worker-lost`) are

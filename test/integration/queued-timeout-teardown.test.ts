@@ -10,7 +10,7 @@ import { assertSalvageEnvelope, findOnlyFile, hermeticEstateEnvironment } from "
 
 const deadlinePreload = path.resolve("test/fixtures/codex/release-workflow-timeout.mjs");
 const publicationPreload = path.resolve("test/fixtures/count-manifest-publications.mjs");
-const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 for (const signal of [null, "SIGINT", "SIGTERM"] as const) {
   test(`a timed-out admission backlog seals${signal === null ? "" : ` with ${signal} during teardown`}`, async () => {

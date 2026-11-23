@@ -8,12 +8,13 @@ import test from "node:test";
 
 import type { TestContext } from "node:test";
 
-const launcherPath = "skills/ensemble-workflow/Base/scripts/ensemble.mjs";
+const launcherPath = "plugin/skills/ensemble-workflow/scripts/ensemble.mjs";
+const pluginManifests = ["plugin/.claude-plugin/plugin.json", "plugin/.codex-plugin/plugin.json"];
 
 async function checkout(t: TestContext): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "ensemble-release-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  for (const name of ["scripts", "package.json", "package-lock.json", "THIRD_PARTY_NOTICES", "src", launcherPath]) {
+  for (const name of ["scripts", "package.json", "package-lock.json", "THIRD_PARTY_NOTICES", "src", launcherPath, ...pluginManifests]) {
     const target = path.join(root, name);
     await mkdir(path.dirname(target), { recursive: true });
     await cp(path.resolve(name), target, { recursive: true });
@@ -32,7 +33,7 @@ function run(root: string, script: string, args: string[], env: NodeJS.ProcessEn
   });
 }
 
-test("the version check rejects stale metadata and launcher reports without rebuilding", async (t) => {
+test("the version check rejects stale metadata, plugin manifests and launcher reports without rebuilding", async (t) => {
   const root = await checkout(t);
   const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as { version: string };
   const lockPath = path.join(root, "package-lock.json");
@@ -55,6 +56,16 @@ test("the version check rejects stale metadata and launcher reports without rebu
     assert.match(result.stderr, /package-lock.json.*reports 99.99.99/);
   }
   await writeFile(lockPath, originalLock);
+  for (const name of pluginManifests) {
+    const manifestPath = path.join(root, name);
+    const original = await readFile(manifestPath, "utf8");
+    await writeFile(manifestPath, JSON.stringify({ ...JSON.parse(original) as object, version: "99.99.99" }));
+    const result = versionCheck();
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.ok(result.stderr.includes(`${name} reports 99.99.99`), result.stderr);
+    await writeFile(manifestPath, original);
+  }
   const launcher = path.join(root, launcherPath);
   await writeFile(launcher, "console.log('99.99.99');\n");
   const stale = versionCheck();
@@ -63,7 +74,7 @@ test("the version check rejects stale metadata and launcher reports without rebu
   assert.equal(await readFile(launcher, "utf8"), "console.log('99.99.99');\n");
 });
 
-test("bumping rebuilds a portable launcher and agrees with package and lockfile versions", async (t) => {
+test("bumping rebuilds a portable launcher and agrees with package, lockfile and plugin manifest versions", async (t) => {
   const root = await checkout(t);
   const result = run(root, "release-version.mjs", ["bump"], { RELEASE_VERSION: "2.3.4" });
   assert.equal(result.status, 0, result.stderr);
@@ -83,6 +94,11 @@ test("bumping rebuilds a portable launcher and agrees with package and lockfile 
   assert.equal(pkg.version, "2.3.4");
   assert.equal(lock.version, "2.3.4");
   assert.equal(lock.packages[""]!.version, "2.3.4");
+  for (const name of pluginManifests) {
+    const before = JSON.parse(await readFile(path.resolve(name), "utf8")) as Record<string, unknown>;
+    const after = JSON.parse(await readFile(path.join(root, name), "utf8")) as Record<string, unknown>;
+    assert.deepEqual(after, { ...before, version: "2.3.4" }, name);
+  }
 });
 
 test("invalid release versions are refused before any files change", async (t) => {

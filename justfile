@@ -12,7 +12,8 @@ default:
 # bundle-freshness check — after the tests deliberately, so a red gate on a
 # stale bundle still reports the test results, and the check compares
 # against the bundle the test recipe just rebuilt. Version checking also
-# checks the lockfile metadata against the package and launcher reports.
+# checks the lockfile metadata and the plugin manifests against the package
+# and launcher reports.
 verify: lint test bundle-fresh version-check
 
 # Fail when the tracked skill bundle differs from the fresh build `test`
@@ -20,7 +21,7 @@ verify: lint test bundle-fresh version-check
 # notices the diff. Scoped to the bundle path so unrelated working-tree
 # changes never fail here.
 bundle-fresh:
-    git diff --stat --exit-code -- skills/ensemble-workflow/Base/scripts/ensemble.mjs || { echo "Tracked skill bundle is stale: commit the rebuilt skills/ensemble-workflow/Base/scripts/ensemble.mjs with the change that caused it." >&2; exit 1; }
+    git diff --stat --exit-code -- plugin/skills/ensemble-workflow/scripts/ensemble.mjs || { echo "Tracked skill bundle is stale: commit the rebuilt plugin/skills/ensemble-workflow/scripts/ensemble.mjs with the change that caused it." >&2; exit 1; }
 
 # Alias for `verify`, kept for muscle memory.
 ci: verify
@@ -40,11 +41,11 @@ test:
 install:
     npm ci
 
-# Rebuild the standalone skill launcher (skills/…/Base/scripts/ensemble.mjs).
+# Rebuild the standalone skill launcher (plugin/skills/ensemble-workflow/scripts/ensemble.mjs).
 build:
     npm run build
 
-# Print the agreed package, lockfile and launcher version without rebuilding.
+# Print the agreed package, lockfile, plugin manifest and launcher version without rebuilding.
 version-check:
     node scripts/release-version.mjs check
 

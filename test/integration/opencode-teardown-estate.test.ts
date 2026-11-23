@@ -7,7 +7,7 @@ import test from "node:test";
 import { isLive } from "../../src/worker-scopes.js";
 import { runNode } from "./estate-process.js";
 
-const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 for (const grouping of ["worker", "run"] as const) {
   for (const ending of ["throw", "timeout", "return", "exit"] as const) {

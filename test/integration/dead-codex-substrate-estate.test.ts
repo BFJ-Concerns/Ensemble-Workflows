@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { assertSalvageEnvelope, runProcess } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 const runsPerOrdering = 10;
 const runWaitMilliseconds = 20_000;

@@ -7,7 +7,7 @@ import test from "node:test";
 import { removeTestDirectory } from "../failure-evidence.js";
 import { executablePath, findOnlyFile, runNode } from "./estate-process.js";
 
-const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 const fixture = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 
 for (const ending of ["close", "unsettled", "signal", "mid-turn"] as const) {

@@ -19,7 +19,7 @@ const liveSkip = process.env.ENSEMBLE_LIVE !== "1"
   : process.env.ENSEMBLE_LIVE_FAILURE_EVIDENCE !== "1"
     ? "ENSEMBLE_LIVE_FAILURE_EVIDENCE must be 1; these tests terminate their own real workers"
     : false;
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 for (const scenario of [
   { engine: "claude", model: null, error: /claude-worker-lost: worker left the roster/ },

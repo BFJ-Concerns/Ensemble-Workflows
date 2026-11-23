@@ -1,0 +1,15 @@
+{
+  "name": "ensemble-workflows",
+  "description": "The Ensemble runtime's own plugin: the ensemble-workflow skill and the launcher it drives.",
+  "owner": {
+    "name": "BFJ Concerns",
+    "url": "https://github.com/BFJ-Concerns"
+  },
+  "plugins": [
+    {
+      "name": "ensemble",
+      "source": "./plugin",
+      "description": "Write and run multi-agent workflows across engines with the Ensemble runtime, or dispatch one worker on a chosen engine."
+    }
+  ]
+}

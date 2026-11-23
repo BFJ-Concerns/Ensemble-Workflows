@@ -12,7 +12,7 @@ import { assertEach } from "./launcher.js";
 import { liveCodexScriptOptions } from "./live-models.js";
 
 const isLive = process.env.ENSEMBLE_LIVE === "1";
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 test(
   "live built Codex consumer rejects an exhausted next call without transport, progress, or durable dispatch evidence",

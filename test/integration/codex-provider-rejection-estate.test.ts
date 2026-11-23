@@ -8,7 +8,7 @@ import { seedCodexHome } from "../fixtures/codex/provider-wire.js";
 import { startCaptureProvider } from "../fixtures/provider-capture.js";
 import { runNode } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 test("real Codex provider request rejections retain a named rule and retry without advancing a chain", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-provider-rejection-"));

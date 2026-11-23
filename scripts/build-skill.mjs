@@ -1,13 +1,13 @@
 // Bundles the CLI into the standalone skill launcher
-// (skills/ensemble-workflow/Base/scripts/ensemble.mjs).
+// (plugin/skills/ensemble-workflow/scripts/ensemble.mjs).
 //
-// The skill's guidance is maintained separately; this repo ships only the
-// bundle, at the Base/scripts/ path skill installs expect — no package.json
-// beside the bundle. The version guard needs the Node floor at
-// startup, so we read `engines.node` here at build time and inline it via an
-// esbuild `define`, leaving the bundle self-contained. package.json stays the
-// single source of truth; only the moment of reading it moves from runtime to
-// build time.
+// The launcher ships inside the plugin's skill, in the `scripts/` directory
+// beside its SKILL.md, and an installed skill is only that directory — so the
+// bundle is one file with no package.json beside it. The version guard needs
+// the Node floor at startup, so we read `engines.node` here at build time and
+// inline it via an esbuild `define`, leaving the bundle self-contained.
+// package.json stays the single source of truth; only the moment of reading it
+// moves from runtime to build time.
 //
 // The bundle travels as one file, so its licensing travels inside it: it
 // opens with Ensemble's own copyright and licence notice, built from
@@ -25,7 +25,7 @@ import { build } from "esbuild";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
-const outfile = path.join(repoRoot, "skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const outfile = path.join(repoRoot, "plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 const noticesPath = path.join(repoRoot, "THIRD_PARTY_NOTICES");
 
 const pkg = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));

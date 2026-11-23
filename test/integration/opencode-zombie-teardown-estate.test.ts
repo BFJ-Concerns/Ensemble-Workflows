@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { runProcess } from "./estate-process.js";
 
-const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const launcher = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 // This parent adopts orphaned descendants but deliberately leaves them
 // unreaped until the launcher has finished. The test never depends on PID 1's

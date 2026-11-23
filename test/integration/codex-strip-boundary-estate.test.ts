@@ -27,7 +27,7 @@ import { executablePath, runNode, runProcess } from "./estate-process.js";
  * and an empty directory, so no operator context reaches them.
  */
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("plugin/skills/ensemble-workflow/scripts/ensemble.mjs");
 
 type Arm = "control-before" | "stripped" | "control-after";
 const ARMS: readonly { arm: Arm; strip: readonly string[] }[] = [

@@ -41324,7 +41324,7 @@ if (isMain) {
 /*
 Third-party software in the skill launcher
 
-skills/ensemble-workflow/Base/scripts/ensemble.mjs is a single file built with
+plugin/skills/ensemble-workflow/scripts/ensemble.mjs is a single file built with
 esbuild, and it contains the packages below. Each is redistributed under its
 own licence, reproduced in full. The build copies this file into the launcher
 and fails when a bundled package has no entry here.

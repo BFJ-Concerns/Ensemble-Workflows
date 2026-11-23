@@ -19,12 +19,12 @@ export default tseslint.config(
   },
   {
     // Not repo source: generated build output (the tsc dist tree and the esbuild
-    // skill bundle, now at the unit's Base/scripts/), and installed coding-tool
+    // launcher in the plugin skill's scripts/), and installed coding-tool
     // configs — installed skill bundles carry their own runtime globals.
     ignores: [
       "dist/**",
       "node_modules/**",
-      "skills/**/Base/scripts/**",
+      "plugin/skills/**/scripts/**",
       ".claude/**",
       ".agents/**",
       ".opencode/**"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plugin Authoring"
+  short_description: "Package skills and hooks as a plugin for the coding tools"
+  default_prompt: "Use $ensemble-workflows-plugin-authoring to package skills and hooks as a plugin, with a marketplace, for Claude Code, Codex, opencode, zcode or the Antigravity CLI."

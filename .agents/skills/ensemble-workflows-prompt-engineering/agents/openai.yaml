@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prompt Engineering"
+  short_description: "Write or review instruction text for a large language model"
+  default_prompt: "Use $ensemble-workflows-prompt-engineering before writing or revising text that steers an LLM — a system prompt, a brief for another agent, a skill or rule, AGENTS.md/CLAUDE.md, or a tool description."

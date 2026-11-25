@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Creator"
+  short_description: "Write, import or update a skill, keeping what worked"
+  default_prompt: "Use $ensemble-workflows-skill-creator to write, import or update a skill without losing working behaviour."
